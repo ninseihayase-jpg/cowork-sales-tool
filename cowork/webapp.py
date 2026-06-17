@@ -1,6 +1,6 @@
 """フェーズ2-1：営業情報DBのブラウザ入力画面（標準ライブラリのみ）。
 
-アカウント・商談・活動を入力／一覧し、商談をテーマDBへ同期できる。
+アカウント・商談・活動、リード・ピッチテーマを入力／一覧し、商談をテーマDBへ同期できる。
 入力負荷を抑えるためステージ等はプルダウン。挙動安定を優先し外部依存なし。
 
 起動: python scripts/run_webapp.py  → http://localhost:8787
@@ -9,11 +9,11 @@
 from __future__ import annotations
 
 import html
-import os
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import sfa_db
+from . import leads_csv
 from .theme_db import ThemeDBClient
 from . import theme_link
 
@@ -26,6 +26,15 @@ def _opt(values: list[str], selected: str | None) -> str:
     return "".join(out)
 
 
+def _opt_kv(pairs: list[tuple[str, str]], selected: str | None) -> str:
+    """(value, label) ペアリストから select options を生成。"""
+    out = ['<option value=""></option>']
+    for v, label in pairs:
+        sel = " selected" if v == selected else ""
+        out.append(f'<option value="{html.escape(v)}"{sel}>{html.escape(label)}</option>')
+    return "".join(out)
+
+
 def _esc(v) -> str:
     return "" if v is None else html.escape(str(v))
 
@@ -35,7 +44,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <title>Cowork 営業支援</title>
 <style>
  body{{font-family:system-ui,'Segoe UI','Hiragino Kaku Gothic ProN',sans-serif;margin:0;background:#f4f6f9;color:#1d2430}}
- header{{background:#1f2a44;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:16px}}
+ header{{background:#1f2a44;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}}
  header h1{{font-size:18px;margin:0}} header a{{color:#cdd7ff;text-decoration:none;font-size:14px}}
  main{{max-width:1080px;margin:20px auto;padding:0 16px}}
  .card{{background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
@@ -52,8 +61,24 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}} .full{{grid-column:1/3}}
  .muted{{color:#8893a8;font-size:12px}} .right{{text-align:right}}
  .flash{{background:#e6f7ef;color:#0c6b4a;padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px}}
+ .s-new{{background:#f1f5f9;color:#475569}} .s-following{{background:#dbeafe;color:#1e40af}}
+ .s-meeting{{background:#fef9c3;color:#92400e}} .s-proposal{{background:#ede9fe;color:#5b21b6}}
+ .s-won{{background:#dcfce7;color:#166534}} .s-lost{{background:#fee2e2;color:#991b1b}}
+ .theme-dot{{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin-right:4px}}
+ .filter-row{{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center}}
+ .filter-row select,.filter-row input{{width:auto}}
+ pre{{overflow-x:auto;white-space:pre-wrap;font-size:11px;line-height:1.6}}
+ @media(max-width:640px){{.grid{{grid-template-columns:1fr}}.full{{grid-column:1}}.hide-sm{{display:none}}table{{display:block;overflow-x:auto}}}}
 </style></head><body>
-<header><h1>Cowork 営業支援</h1><a href="/">商談一覧</a><a href="/deal/new">＋新規商談</a><a href="/account/new">＋新規アカウント</a></header>
+<header>
+  <h1>Cowork 営業支援</h1>
+  <a href="/">商談一覧</a>
+  <a href="/leads">リード</a>
+  <a href="/pitch_themes">ピッチテーマ</a>
+  <a href="/deal/new">＋商談</a>
+  <a href="/account/new">＋アカウント</a>
+  <a href="/leads/new">＋リード</a>
+</header>
 <main>{flash}{body}</main></body></html>"""
 
 
@@ -61,6 +86,8 @@ def render(body: str, flash: str = "") -> bytes:
     flash_html = f'<div class="flash">{html.escape(flash)}</div>' if flash else ""
     return PAGE.format(body=body, flash=flash_html).encode("utf-8")
 
+
+# ── 既存ページ（商談・アカウント）─────────────────────────────────────────────
 
 def home_page(con) -> str:
     deals = sfa_db.list_deals(con, status=None)
@@ -83,11 +110,14 @@ def home_page(con) -> str:
     )
     return f"""
     <div class="card"><h2>商談 ({len(deals)})</h2>
-    <table><tr><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th><th class="right">金額(万円)</th><th class="right">連携</th></tr>
-    {''.join(rows) or '<tr><td colspan=6 class=muted>まだ商談がありません。「＋新規商談」から追加してください。</td></tr>'}</table></div>
+    <table><tr><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
+               <th class="right">金額(万円)</th><th class="right">連携</th></tr>
+    {''.join(rows) or '<tr><td colspan=6 class=muted>まだ商談がありません。「＋商談」から追加してください。</td></tr>'}
+    </table></div>
     <div class="card"><h2>アカウント ({len(accounts)})</h2>
     <table><tr><th>企業名</th><th>業界</th><th>企業規模</th></tr>
-    {acc_rows or '<tr><td colspan=3 class=muted>まだアカウントがありません。</td></tr>'}</table></div>
+    {acc_rows or '<tr><td colspan=3 class=muted>まだアカウントがありません。</td></tr>'}
+    </table></div>
     """
 
 
@@ -100,7 +130,9 @@ def account_form(con, acc=None) -> str:
       <label>企業名 *</label><input name="name" required value="{_esc(acc.get('name'))}">
       <div class="grid">
         <div><label>業界</label><input name="industry" value="{_esc(acc.get('industry'))}"></div>
-        <div><label>企業規模</label><select name="company_size">{_opt(sfa_db.COMPANY_SIZES, acc.get('company_size'))}</select></div>
+        <div><label>企業規模</label>
+          <select name="company_size">{_opt(sfa_db.COMPANY_SIZES, acc.get('company_size'))}</select>
+        </div>
       </div>
       <label>メモ</label><textarea name="note" rows="2">{_esc(acc.get('note'))}</textarea>
       <p><button class="btn">保存</button> <a class="btn sec" href="/">キャンセル</a></p>
@@ -119,7 +151,9 @@ def deal_form(con, deal=None) -> str:
     if deal.get("id"):
         acts = sfa_db.list_activities(con, deal["id"])
         act_rows = "".join(
-            f'<tr><td>{_esc(a.get("occurred_on"))}</td><td>{_esc(a.get("type"))}</td><td>{_esc(a.get("body"))}</td></tr>'
+            f'<tr><td>{_esc(a.get("occurred_on"))}</td>'
+            f'<td>{_esc(a.get("type"))}</td>'
+            f'<td>{_esc(a.get("body"))}</td></tr>'
             for a in acts
         ) or '<tr><td colspan=3 class=muted>活動なし</td></tr>'
         activities_html = f"""
@@ -134,26 +168,41 @@ def deal_form(con, deal=None) -> str:
           <label>内容</label><textarea name="body" rows="2"></textarea>
           <p><button class="btn sec">活動を追加</button></p>
         </form></div>"""
-        sync_btn = f"""<form method="post" action="/deal/{deal['id']}/sync" style="display:inline">
-          <button class="btn sync">テーマDB／ダッシュボードへ同期</button></form>
-          <span class="muted">{'連携済 theme_id='+str(deal.get('theme_id')) if deal.get('theme_id') else '未連携'}</span>"""
+        sync_btn = (
+            f'<form method="post" action="/deal/{deal["id"]}/sync" style="display:inline">'
+            f'<button class="btn sync">テーマDB／ダッシュボードへ同期</button></form> '
+            f'<span class="muted">'
+            f'{"連携済 theme_id="+str(deal.get("theme_id")) if deal.get("theme_id") else "未連携"}'
+            f'</span>'
+        )
     return f"""
     <div class="card"><h2>{'商談編集' if deal.get('id') else '新規商談'}</h2>
     <form method="post" action="/deal/save">
       <input type="hidden" name="id" value="{_esc(deal.get('id'))}">
       <div class="grid">
-        <div><label>アカウント *</label><select name="account_id" required>{''.join(acc_opts)}</select></div>
-        <div><label>案件名 *</label><input name="deal_name" required value="{_esc(deal.get('deal_name'))}"></div>
-        <div><label>ステージ</label><select name="stage">{_opt(sfa_db.DEAL_STAGES, deal.get('stage'))}</select></div>
+        <div><label>アカウント *</label>
+          <select name="account_id" required>{''.join(acc_opts)}</select></div>
+        <div><label>案件名 *</label>
+          <input name="deal_name" required value="{_esc(deal.get('deal_name'))}"></div>
+        <div><label>ステージ</label>
+          <select name="stage">{_opt(sfa_db.DEAL_STAGES, deal.get('stage'))}</select></div>
         <div><label>担当</label><input name="owner" value="{_esc(deal.get('owner'))}"></div>
-        <div><label>事業種別L1</label><select name="business_type_l1">{_opt(sfa_db.BUSINESS_TYPE_L1, deal.get('business_type_l1'))}</select></div>
-        <div><label>リード経路</label><select name="lead_pattern">{_opt(sfa_db.LEAD_PATTERNS, deal.get('lead_pattern'))}</select></div>
-        <div><label>単発総額(万円)</label><input name="value_lumpsum" value="{_esc(deal.get('value_lumpsum'))}"></div>
-        <div><label>継続月額(万円)</label><input name="value_recurring" value="{_esc(deal.get('value_recurring'))}"></div>
-        <div><label>クライアント予算</label><input name="client_budget" value="{_esc(deal.get('client_budget'))}"></div>
-        <div><label>ステータス</label><select name="status">{_opt(['open','closed'], deal.get('status') or 'open')}</select></div>
-        <div><label>次回MS日</label><input type="date" name="next_milestone_date" value="{_esc(deal.get('next_milestone_date'))}"></div>
-        <div><label>次回MSラベル</label><input name="next_milestone_label" value="{_esc(deal.get('next_milestone_label'))}"></div>
+        <div><label>事業種別L1</label>
+          <select name="business_type_l1">{_opt(sfa_db.BUSINESS_TYPE_L1, deal.get('business_type_l1'))}</select></div>
+        <div><label>リード経路</label>
+          <select name="lead_pattern">{_opt(sfa_db.LEAD_PATTERNS, deal.get('lead_pattern'))}</select></div>
+        <div><label>単発総額(万円)</label>
+          <input name="value_lumpsum" value="{_esc(deal.get('value_lumpsum'))}"></div>
+        <div><label>継続月額(万円)</label>
+          <input name="value_recurring" value="{_esc(deal.get('value_recurring'))}"></div>
+        <div><label>クライアント予算</label>
+          <input name="client_budget" value="{_esc(deal.get('client_budget'))}"></div>
+        <div><label>ステータス</label>
+          <select name="status">{_opt(['open', 'closed'], deal.get('status') or 'open')}</select></div>
+        <div><label>次回MS日</label>
+          <input type="date" name="next_milestone_date" value="{_esc(deal.get('next_milestone_date'))}"></div>
+        <div><label>次回MSラベル</label>
+          <input name="next_milestone_label" value="{_esc(deal.get('next_milestone_label'))}"></div>
       </div>
       <label>現状メモ</label><textarea name="note" rows="2">{_esc(deal.get('note'))}</textarea>
       <label>ゴール</label><textarea name="goal" rows="2">{_esc(deal.get('goal'))}</textarea>
@@ -161,6 +210,276 @@ def deal_form(con, deal=None) -> str:
     </form></div>
     {activities_html}"""
 
+
+# ── リード / ピッチテーマ ページ（CRM吸収）─────────────────────────────────────
+
+_SOURCE_TO_LP = {"exhibition": "Exh.", "referral": "Connection", "inbound": "HP", "other": "na"}
+
+
+def leads_page(con, *, status=None, source=None, theme_id=None, q=None) -> str:
+    leads = sfa_db.list_leads(
+        con, status=status, source=source,
+        theme_id=int(theme_id) if theme_id else None, q=q,
+    )
+    themes = sfa_db.list_pitch_themes(con, active_only=True)
+
+    status_opts = ('<option value="">全ステージ</option>'
+                   + "".join(
+                       f'<option value="{s}"{" selected" if s == status else ""}>'
+                       f'{sfa_db.LEAD_STATUS_LABELS[s]}</option>'
+                       for s in sfa_db.LEAD_STATUSES))
+    source_opts = ('<option value="">全経路</option>'
+                   + "".join(
+                       f'<option value="{s}"{" selected" if s == source else ""}>'
+                       f'{sfa_db.LEAD_SOURCE_LABELS[s]}</option>'
+                       for s in sfa_db.LEAD_SOURCES))
+    theme_opts = ('<option value="">全テーマ</option>'
+                  + "".join(
+                      f'<option value="{t["id"]}"'
+                      f'{" selected" if str(t["id"]) == str(theme_id) else ""}>'
+                      f'{html.escape(t["name"])}</option>'
+                      for t in themes))
+
+    filter_form = f"""<form method="get" action="/leads" class="filter-row">
+      <select name="status">{status_opts}</select>
+      <select name="source">{source_opts}</select>
+      <select name="theme_id">{theme_opts}</select>
+      <input name="q" placeholder="氏名・会社検索" value="{_esc(q)}" style="min-width:150px">
+      <button class="btn sec" type="submit">絞り込み</button>
+      <a class="btn sec" href="/leads">リセット</a>
+    </form>"""
+
+    rows = []
+    for ld in leads:
+        sc = f's-{ld.get("lead_status", "new")}'
+        sl = sfa_db.LEAD_STATUS_LABELS.get(ld.get("lead_status", "new"), "")
+        th_html = ""
+        if ld.get("theme_color") and ld.get("theme_name"):
+            th_html = (f'<span class="theme-dot" style="background:{html.escape(ld["theme_color"])}"></span>'
+                       f'{_esc(ld["theme_name"])}')
+        elif ld.get("theme_name"):
+            th_html = _esc(ld["theme_name"])
+        src_label = sfa_db.LEAD_SOURCE_LABELS.get(ld.get("source", "other"), "")
+        deal_badge = (f' <a href="/deal/{ld["deal_id"]}" title="紐付け商談">🔗</a>'
+                      if ld.get("deal_id") else "")
+        rows.append(
+            f'<tr>'
+            f'<td><a href="/leads/{ld["id"]}">{_esc(ld["name"])}</a>{deal_badge}<br>'
+            f'<span class="muted">{_esc(ld.get("company"))}</span></td>'
+            f'<td><span class="stage {sc}">{sl}</span></td>'
+            f'<td class="hide-sm">{src_label}</td>'
+            f'<td>{th_html}</td>'
+            f'<td class="hide-sm">{_esc(ld.get("assigned_to"))}</td>'
+            f'<td class="muted">{_esc((ld.get("updated_at") or "")[:10])}</td>'
+            f'</tr>'
+        )
+
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>リード一覧 <span class="muted" style="font-weight:normal">({len(leads)}件)</span></span>
+        <span style="display:flex;gap:8px">
+          <a class="btn sec" href="/leads/import">CSV取込</a>
+          <a class="btn" href="/leads/new">＋新規リード</a>
+        </span>
+      </h2>
+      {filter_form}
+      <table>
+        <tr><th>氏名 / 会社</th><th>ステータス</th>
+            <th class="hide-sm">経路</th><th>テーマ</th>
+            <th class="hide-sm">担当</th><th>更新日</th></tr>
+        {''.join(rows) or '<tr><td colspan=6 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
+      </table>
+    </div>"""
+
+
+def lead_form(con, lead=None) -> str:
+    lead = lead or {}
+    themes = sfa_db.list_pitch_themes(con, active_only=True)
+    theme_opts = ["<option value=''></option>"]
+    for t in themes:
+        sel = " selected" if t["id"] == lead.get("pitch_theme_id") else ""
+        theme_opts.append(f'<option value="{t["id"]}"{sel}>{html.escape(t["name"])}</option>')
+
+    status_items = [(s, sfa_db.LEAD_STATUS_LABELS[s]) for s in sfa_db.LEAD_STATUSES]
+    source_items = [(s, sfa_db.LEAD_SOURCE_LABELS[s]) for s in sfa_db.LEAD_SOURCES]
+
+    status_btns = ""
+    convert_btn = ""
+    deal_link = ""
+    activities_html = ""
+
+    if lead.get("id"):
+        cur_status = lead.get("lead_status", "new")
+        btns = []
+        for s in sfa_db.LEAD_STATUSES:
+            active_style = ("font-weight:700;box-shadow:inset 0 0 0 2px #2f6fed"
+                            if s == cur_status else "opacity:0.55")
+            btns.append(
+                f'<form method="post" action="/leads/{lead["id"]}/status"'
+                f' style="display:inline;margin:0 4px 4px 0">'
+                f'<input type="hidden" name="status" value="{s}">'
+                f'<button class="btn sec" style="{active_style}">'
+                f'{sfa_db.LEAD_STATUS_LABELS[s]}</button></form>'
+            )
+        status_btns = f'<div style="margin:0 0 14px">{"".join(btns)}</div>'
+
+        acts = sfa_db.list_lead_activities(con, lead["id"])
+        act_rows = ""
+        for a in acts:
+            tl = sfa_db.LEAD_ACTIVITY_LABELS.get(a.get("type", "note"), a.get("type", ""))
+            act_rows += (
+                f'<tr><td class="muted" style="white-space:nowrap">{_esc((a.get("created_at") or "")[:16])}</td>'
+                f'<td>{tl}</td><td>{_esc(a.get("author"))}</td>'
+                f'<td style="white-space:pre-wrap">{_esc(a.get("content"))}</td></tr>'
+            )
+        act_type_opts = "".join(
+            f'<option value="{t}">{sfa_db.LEAD_ACTIVITY_LABELS[t]}</option>'
+            for t in sfa_db.LEAD_ACTIVITY_TYPES
+        )
+        activities_html = f"""
+        <div class="card"><h2>活動ログ</h2>
+        <table><tr><th>日時</th><th>種別</th><th>担当</th><th>内容</th></tr>
+        {act_rows or '<tr><td colspan=4 class=muted>活動なし</td></tr>'}
+        </table>
+        <form method="post" action="/leads/{lead['id']}/activity" style="margin-top:14px">
+          <div class="grid">
+            <div><label>種別</label><select name="type">{act_type_opts}</select></div>
+            <div><label>担当者</label><input name="author"></div>
+          </div>
+          <label>内容 *</label><textarea name="content" rows="2" required></textarea>
+          <p><button class="btn sec">活動を追加</button></p>
+        </form></div>"""
+
+        can_convert = (cur_status in ("meeting", "proposal", "won") and not lead.get("deal_id"))
+        if can_convert:
+            convert_btn = (
+                f'<form method="post" action="/leads/{lead["id"]}/convert" style="display:inline">'
+                f'<button class="btn sync"'
+                f' onclick="return confirm(\'商談化してSFA（アカウント/商談）に昇格させます。よろしいですか？\')">'
+                f'商談化 → SFA</button></form>')
+        if lead.get("deal_id"):
+            deal_link = f'<a class="btn sec" href="/deal/{lead["deal_id"]}">紐付け商談を見る 🔗</a>'
+
+    return f"""
+    <div class="card">
+      <h2>{'リード編集' if lead.get('id') else '新規リード'}</h2>
+      {status_btns}
+      <form method="post" action="/leads/save">
+        <input type="hidden" name="id" value="{_esc(lead.get('id'))}">
+        <div class="grid">
+          <div><label>氏名 *</label>
+            <input name="name" required value="{_esc(lead.get('name'))}"></div>
+          <div><label>会社名 *</label>
+            <input name="company" required value="{_esc(lead.get('company'))}"></div>
+          <div><label>役職</label>
+            <input name="title" value="{_esc(lead.get('title'))}"></div>
+          <div><label>メール</label>
+            <input name="email" type="email" value="{_esc(lead.get('email'))}"></div>
+          <div><label>電話</label>
+            <input name="phone" value="{_esc(lead.get('phone'))}"></div>
+          <div><label>担当者</label>
+            <input name="assigned_to" value="{_esc(lead.get('assigned_to'))}"></div>
+          <div><label>獲得経路</label>
+            <select name="source">{_opt_kv(source_items, lead.get('source') or 'other')}</select></div>
+          <div><label>ステータス</label>
+            <select name="lead_status">{_opt_kv(status_items, lead.get('lead_status') or 'new')}</select></div>
+          <div class="full"><label>ピッチテーマ</label>
+            <select name="pitch_theme_id">{''.join(theme_opts)}</select></div>
+        </div>
+        <label>メモ</label><textarea name="notes" rows="2">{_esc(lead.get('notes'))}</textarea>
+        <p style="display:flex;flex-wrap:wrap;gap:8px">
+          <button class="btn">保存</button>
+          <a class="btn sec" href="/leads">一覧へ</a>
+          {convert_btn}
+          {deal_link}
+        </p>
+      </form>
+    </div>
+    {activities_html}"""
+
+
+def leads_import_page(result: str = "") -> str:
+    result_html = f'<div class="flash">{html.escape(result)}</div>' if result else ""
+    return f"""
+    <div class="card"><h2>リード CSV一括取込</h2>
+    {result_html}
+    <p class="muted">下記フォーマットのCSVを貼り付けてください（1行目はヘッダ行、空行はスキップ）。</p>
+    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">名前,会社名,役職,メール,電話,獲得経路,ピッチテーマ,ステータス,メモ,担当者
+田中 太郎,株式会社○○,営業部長,tanaka@example.com,090-xxx-xxxx,exhibition,AI業務自動化,new,展示会で名刺交換,</pre>
+    <p class="muted" style="margin-top:4px">
+      獲得経路: exhibition（展示会）/ referral（紹介）/ inbound（インバウンド）/ other<br>
+      ステータス: new / following / meeting / proposal / won / lost<br>
+      ピッチテーマは登録済みテーマ名と完全一致のみ紐付け。不一致は空欄扱い。
+    </p>
+    <form method="post" action="/leads/import">
+      <label>CSVデータ（ペースト）</label>
+      <textarea name="csv_text" rows="12"
+        style="font-family:monospace;font-size:12px" required></textarea>
+      <p><button class="btn">取込実行</button>
+         <a class="btn sec" href="/leads">キャンセル</a></p>
+    </form></div>"""
+
+
+def pitch_themes_page(con, edit_id: int | None = None) -> str:
+    themes = sfa_db.list_pitch_themes(con)
+    edit_theme = next((t for t in themes if t["id"] == edit_id), None) if edit_id else None
+
+    rows = []
+    for t in themes:
+        total = t.get("lead_count", 0)
+        won = t.get("won_count", 0)
+        win_rate = f"{won * 100 // total}%" if total > 0 else "—"
+        active_label = "稼働中" if t.get("is_active") else "アーカイブ"
+        row_style = "" if t.get("is_active") else ' style="opacity:0.5"'
+        toggle_label = "アーカイブ" if t.get("is_active") else "復元"
+        rows.append(
+            f'<tr{row_style}>'
+            f'<td>'
+            f'<span class="theme-dot" style="background:{html.escape(t.get("color") or "#999")}"></span>'
+            f'{_esc(t["name"])}</td>'
+            f'<td class="muted hide-sm">{_esc(t.get("description"))}</td>'
+            f'<td class="right">{total}</td>'
+            f'<td class="right">{won}</td>'
+            f'<td class="right">{win_rate}</td>'
+            f'<td>{active_label}</td>'
+            f'<td style="white-space:nowrap">'
+            f'<a class="btn sec" href="/pitch_themes?edit={t["id"]}"'
+            f' style="margin-right:4px;padding:4px 10px">編集</a>'
+            f'<form method="post" action="/pitch_themes/{t["id"]}/toggle" style="display:inline">'
+            f'<button class="btn sec" style="padding:4px 10px">{toggle_label}</button>'
+            f'</form></td></tr>'
+        )
+
+    et = edit_theme or {}
+    form_title = f'テーマ編集: {_esc(et.get("name", ""))}' if edit_theme else "テーマ追加"
+    return f"""
+    <div class="card"><h2>ピッチテーマ管理</h2>
+    <table>
+      <tr><th>テーマ名</th><th class="hide-sm">説明</th>
+          <th class="right">リード数</th><th class="right">成約数</th>
+          <th class="right">成約率</th><th>状態</th><th></th></tr>
+      {''.join(rows) or '<tr><td colspan=7 class=muted>テーマがありません。下のフォームから追加してください。</td></tr>'}
+    </table></div>
+    <div class="card"><h2>{form_title}</h2>
+    <form method="post" action="/pitch_themes/save">
+      <input type="hidden" name="id" value="{_esc(et.get('id'))}">
+      <div class="grid">
+        <div><label>テーマ名 *</label>
+          <input name="name" required value="{_esc(et.get('name'))}"></div>
+        <div><label>カラー</label>
+          <input type="color" name="color" value="{_esc(et.get('color') or '#6366f1')}"
+                 style="width:auto;height:38px;padding:2px 4px;cursor:pointer"></div>
+        <div class="full"><label>説明</label>
+          <input name="description" value="{_esc(et.get('description'))}"></div>
+      </div>
+      <p><button class="btn">{'更新' if edit_theme else '追加'}</button>
+         <a class="btn sec" href="/pitch_themes">{'キャンセル' if edit_theme else '一覧へ戻る'}</a>
+         <a class="btn sec" href="/leads">リード一覧へ</a></p>
+    </form></div>"""
+
+
+# ── HTTPハンドラ ───────────────────────────────────────────────────────────────
 
 def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
     class H(BaseHTTPRequestHandler):
@@ -185,6 +504,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             d = urllib.parse.parse_qs(raw, keep_blank_values=True)
             return {k: (v[0] if v else "") for k, v in d.items()}
 
+        def _qs(self) -> dict:
+            qs_raw = self.path.split("?")[1] if "?" in self.path else ""
+            return urllib.parse.parse_qs(qs_raw)
+
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/") or "/"
             con = sfa_db.connect(db_path)
@@ -197,10 +520,41 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(deal_form(con)))
                 elif path == "/account/new":
                     self._send(render(account_form(con)))
+                # ── リード ──
+                elif path == "/leads":
+                    qs = self._qs()
+                    def qs1(k): return (qs.get(k, [None])[0] or None)
+                    self._send(render(leads_page(
+                        con, status=qs1("status"), source=qs1("source"),
+                        theme_id=qs1("theme_id"), q=qs1("q"),
+                    )))
+                elif path == "/leads/new":
+                    self._send(render(lead_form(con)))
+                elif path == "/leads/import":
+                    self._send(render(leads_import_page()))
+                elif path == "/pitch_themes":
+                    qs = self._qs()
+                    edit_s = (qs.get("edit", [None])[0] or None)
+                    self._send(render(pitch_themes_page(con, edit_id=int(edit_s) if edit_s else None)))
+                elif path.startswith("/leads/"):
+                    try:
+                        lid = int(path.split("/")[2])
+                        lead = sfa_db.get_lead(con, lid)
+                        if lead:
+                            self._send(render(lead_form(con, lead)))
+                        else:
+                            self._send(render("<div class=card>リードが見つかりません</div>"), 404)
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>ページが見つかりません</div>"), 404)
+                # ── 商談・アカウント ──
                 elif path.startswith("/deal/"):
                     did = int(path.split("/")[2])
                     deal = sfa_db.get_deal(con, did)
-                    self._send(render(deal_form(con, deal)) if deal else render("<div class=card>商談が見つかりません</div>", ), 200 if deal else 404)
+                    self._send(
+                        render(deal_form(con, deal)) if deal
+                        else render("<div class=card>商談が見つかりません</div>"),
+                        200 if deal else 404,
+                    )
                 elif path.startswith("/account/"):
                     aid = int(path.split("/")[2])
                     acc = con.execute("SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
@@ -215,12 +569,19 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             con = sfa_db.connect(db_path)
             try:
                 f = self._form()
+
+                # ── アカウント ──
                 if path == "/account/save":
                     sfa_db.upsert_account(
                         con, id=int(f["id"]) if f.get("id") else None,
-                        name=f.get("name") or "(無名)", industry=f.get("industry") or None,
-                        company_size=f.get("company_size") or None, note=f.get("note") or None)
+                        name=f.get("name") or "(無名)",
+                        industry=f.get("industry") or None,
+                        company_size=f.get("company_size") or None,
+                        note=f.get("note") or None,
+                    )
                     self._redirect("/")
+
+                # ── 商談 ──
                 elif path == "/deal/save":
                     def num(k):
                         v = f.get(k, "").strip()
@@ -231,34 +592,168 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     did = sfa_db.upsert_deal(
                         con, id=int(f["id"]) if f.get("id") else None,
                         account_id=int(f["account_id"]) if f.get("account_id") else None,
-                        deal_name=f.get("deal_name") or "(無題)", stage=f.get("stage") or None,
+                        deal_name=f.get("deal_name") or "(無題)",
+                        stage=f.get("stage") or None,
                         business_type_l1=f.get("business_type_l1") or None,
-                        lead_pattern=f.get("lead_pattern") or None, owner=f.get("owner") or None,
-                        value_lumpsum=num("value_lumpsum"), value_recurring=num("value_recurring"),
+                        lead_pattern=f.get("lead_pattern") or None,
+                        owner=f.get("owner") or None,
+                        value_lumpsum=num("value_lumpsum"),
+                        value_recurring=num("value_recurring"),
                         client_budget=f.get("client_budget") or None,
                         next_milestone_date=f.get("next_milestone_date") or None,
                         next_milestone_label=f.get("next_milestone_label") or None,
-                        note=f.get("note") or None, goal=f.get("goal") or None,
-                        status=f.get("status") or "open")
+                        note=f.get("note") or None,
+                        goal=f.get("goal") or None,
+                        status=f.get("status") or "open",
+                    )
                     self._redirect(f"/deal/{did}")
+
                 elif path == "/activity/add":
                     sfa_db.add_activity(
-                        con, deal_id=int(f["deal_id"]), type=f.get("type") or None,
-                        occurred_on=f.get("occurred_on") or None, body=f.get("body") or None)
+                        con, deal_id=int(f["deal_id"]),
+                        type=f.get("type") or None,
+                        occurred_on=f.get("occurred_on") or None,
+                        body=f.get("body") or None,
+                    )
                     self._redirect(f"/deal/{f['deal_id']}")
+
                 elif path.startswith("/deal/") and path.endswith("/sync"):
                     did = int(path.split("/")[2])
                     if theme_client is None:
-                        self._send(render(deal_form(con, sfa_db.get_deal(con, did)),
-                                          flash="同期はテーマDBトークン未設定のため無効です（.env の THEME_API_TOKEN を設定）。"))
+                        self._send(render(
+                            deal_form(con, sfa_db.get_deal(con, did)),
+                            flash="同期はテーマDBトークン未設定のため無効です（.env の THEME_API_TOKEN を設定）。",
+                        ))
                     else:
                         try:
                             res = theme_link.sync_deal(theme_client, con, did)
-                            self._send(render(deal_form(con, sfa_db.get_deal(con, did)),
-                                              flash=f"テーマDBへ同期しました（{res['action']} / theme_id={res['theme_id']}）。ダッシュボードに反映されます。"))
+                            self._send(render(
+                                deal_form(con, sfa_db.get_deal(con, did)),
+                                flash=f"テーマDBへ同期しました（{res['action']} / theme_id={res['theme_id']}）。ダッシュボードに反映されます。",
+                            ))
                         except Exception as exc:  # noqa: BLE001
-                            self._send(render(deal_form(con, sfa_db.get_deal(con, did)),
-                                              flash=f"同期エラー: {exc}"))
+                            self._send(render(
+                                deal_form(con, sfa_db.get_deal(con, did)),
+                                flash=f"同期エラー: {exc}",
+                            ))
+
+                # ── リード ──
+                elif path == "/leads/save":
+                    pid = f.get("pitch_theme_id", "").strip()
+                    existing_id = int(f["id"]) if f.get("id") else None
+                    existing_deal_id = None
+                    if existing_id:
+                        existing = sfa_db.get_lead(con, existing_id)
+                        existing_deal_id = existing.get("deal_id") if existing else None
+                    lid = sfa_db.upsert_lead(
+                        con, id=existing_id,
+                        name=f.get("name") or "(無名)",
+                        company=f.get("company") or "(未設定)",
+                        title=f.get("title") or None,
+                        email=f.get("email") or None,
+                        phone=f.get("phone") or None,
+                        source=f.get("source") or "other",
+                        pitch_theme_id=int(pid) if pid else None,
+                        lead_status=f.get("lead_status") or "new",
+                        notes=f.get("notes") or None,
+                        assigned_to=f.get("assigned_to") or None,
+                        deal_id=existing_deal_id,
+                    )
+                    self._redirect(f"/leads/{lid}")
+
+                elif path == "/leads/import":
+                    ok, skip = leads_csv.import_leads(con, f.get("csv_text", ""))
+                    self._send(render(
+                        leads_import_page(),
+                        flash=f"取込完了: {ok}件追加。" + (f"スキップ {skip}件。" if skip else ""),
+                    ))
+
+                elif path.startswith("/leads/") and path.endswith("/activity"):
+                    lid = int(path.split("/")[2])
+                    sfa_db.create_lead_activity(
+                        con, lead_id=lid,
+                        type=f.get("type") or "note",
+                        content=f.get("content") or "(内容なし)",
+                        author=f.get("author") or None,
+                    )
+                    self._redirect(f"/leads/{lid}")
+
+                elif path.startswith("/leads/") and path.endswith("/status"):
+                    lid = int(path.split("/")[2])
+                    new_status = f.get("status", "")
+                    if new_status in sfa_db.LEAD_STATUSES:
+                        con.execute(
+                            "UPDATE leads SET lead_status=?, updated_at=datetime('now') WHERE id=?",
+                            (new_status, lid),
+                        )
+                        con.commit()
+                    self._redirect(f"/leads/{lid}")
+
+                elif path.startswith("/leads/") and path.endswith("/convert"):
+                    lid = int(path.split("/")[2])
+                    lead = sfa_db.get_lead(con, lid)
+                    if not lead or lead.get("deal_id"):
+                        self._redirect(f"/leads/{lid}")
+                    else:
+                        # 1. アカウントを検索または作成
+                        existing_acc = con.execute(
+                            "SELECT id FROM accounts WHERE name=?", (lead["company"],)
+                        ).fetchone()
+                        account_id = (dict(existing_acc)["id"] if existing_acc
+                                      else sfa_db.upsert_account(con, name=lead["company"]))
+                        # 2. コンタクト作成（重複チェック）
+                        if not con.execute(
+                            "SELECT id FROM contacts WHERE account_id=? AND name=?",
+                            (account_id, lead["name"]),
+                        ).fetchone():
+                            con.execute(
+                                "INSERT INTO contacts (account_id,name,title,email,phone)"
+                                " VALUES (?,?,?,?,?)",
+                                (account_id, lead["name"], lead.get("title"),
+                                 lead.get("email"), lead.get("phone")),
+                            )
+                            con.commit()
+                        # 3. 商談作成
+                        stage_map = {
+                            "new": "リード", "following": "アポ獲得",
+                            "meeting": "初回アポ実施", "proposal": "提案",
+                            "won": "受注", "lost": "失注",
+                        }
+                        stage = stage_map.get(lead.get("lead_status", "new"), "リード")
+                        theme_name = lead.get("theme_name", "")
+                        deal_name = (f"{lead['company']} - {theme_name}"
+                                     if theme_name else lead["company"])
+                        deal_id = sfa_db.upsert_deal(
+                            con, account_id=account_id,
+                            deal_name=deal_name, stage=stage,
+                            lead_pattern=_SOURCE_TO_LP.get(lead.get("source", "other"), "na"),
+                            owner=lead.get("assigned_to"),
+                            note=lead.get("notes"),
+                        )
+                        # 4. リードに deal_id をセット
+                        con.execute(
+                            "UPDATE leads SET deal_id=?, updated_at=datetime('now') WHERE id=?",
+                            (deal_id, lid),
+                        )
+                        con.commit()
+                        self._redirect(f"/deal/{deal_id}")
+
+                # ── ピッチテーマ ──
+                elif path == "/pitch_themes/save":
+                    sfa_db.upsert_pitch_theme(
+                        con,
+                        id=int(f["id"]) if f.get("id") else None,
+                        name=f.get("name") or "(無名)",
+                        description=f.get("description") or None,
+                        color=f.get("color") or "#6366f1",
+                    )
+                    self._redirect("/pitch_themes")
+
+                elif path.startswith("/pitch_themes/") and path.endswith("/toggle"):
+                    tid = int(path.split("/")[2])
+                    sfa_db.toggle_pitch_theme(con, tid)
+                    self._redirect("/pitch_themes")
+
                 else:
                     self._send(render("<div class=card>不明な操作</div>"), 404)
             finally:

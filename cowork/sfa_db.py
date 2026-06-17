@@ -20,6 +20,17 @@ LEAD_PATTERNS = ["Connection", "Exh.", "Partner", "Advisor", "PE", "Under", "SNS
 COMPANY_SIZES = ["500億未満", "1000億未満", "5000億未満", "5000億以上"]
 ACTIVITY_TYPES = ["面談", "電話", "メール", "メモ"]
 
+# CRM吸収: リード/ピッチテーマ用定数
+PITCH_THEME_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6']
+LEAD_STATUSES = ["new", "following", "meeting", "proposal", "won", "lost"]
+LEAD_STATUS_LABELS = {"new": "新規", "following": "フォロー中", "meeting": "商談中",
+                      "proposal": "提案済", "won": "成約", "lost": "失注"}
+LEAD_SOURCES = ["exhibition", "referral", "inbound", "other"]
+LEAD_SOURCE_LABELS = {"exhibition": "展示会", "referral": "紹介・知人",
+                      "inbound": "インバウンド", "other": "その他"}
+LEAD_ACTIVITY_TYPES = ["note", "email", "call", "meeting"]
+LEAD_ACTIVITY_LABELS = {"note": "メモ", "email": "メール", "call": "電話", "meeting": "面談"}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +87,47 @@ CREATE TABLE IF NOT EXISTS activities (
 
 CREATE INDEX IF NOT EXISTS idx_deals_account ON deals(account_id);
 CREATE INDEX IF NOT EXISTS idx_activities_deal ON activities(deal_id);
+
+-- CRM吸収: ピッチテーマ
+CREATE TABLE IF NOT EXISTS pitch_themes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    description TEXT,
+    color       TEXT DEFAULT '#6366f1',
+    is_active   INTEGER DEFAULT 1,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- CRM吸収: リード（アカウント紐付け前の人）
+CREATE TABLE IF NOT EXISTS leads (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    company         TEXT NOT NULL,
+    title           TEXT,
+    email           TEXT,
+    phone           TEXT,
+    source          TEXT DEFAULT 'other',
+    pitch_theme_id  INTEGER REFERENCES pitch_themes(id) ON DELETE SET NULL,
+    lead_status     TEXT DEFAULT 'new',
+    notes           TEXT,
+    assigned_to     TEXT,
+    deal_id         INTEGER REFERENCES deals(id) ON DELETE SET NULL,
+    created_at      TEXT DEFAULT (datetime('now')),
+    updated_at      TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(lead_status);
+CREATE INDEX IF NOT EXISTS idx_leads_theme  ON leads(pitch_theme_id);
+
+-- CRM吸収: リード活動ログ
+CREATE TABLE IF NOT EXISTS lead_activities (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id    INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    type       TEXT DEFAULT 'note',
+    content    TEXT NOT NULL,
+    author     TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id);
 """
 
 
@@ -168,6 +220,109 @@ def add_activity(con, *, deal_id, type=None, occurred_on=None, body=None) -> int
     cur = con.execute(
         "INSERT INTO activities (deal_id, type, occurred_on, body) VALUES (?,?,?,?)",
         (deal_id, type, occurred_on, body),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+# ---- ピッチテーマ ----
+
+def list_pitch_themes(con, active_only: bool = False) -> list[dict]:
+    q = ("SELECT *, "
+         "(SELECT count(*) FROM leads WHERE pitch_theme_id=pitch_themes.id) AS lead_count, "
+         "(SELECT count(*) FROM leads WHERE pitch_theme_id=pitch_themes.id AND lead_status='won') AS won_count "
+         "FROM pitch_themes")
+    if active_only:
+        q += " WHERE is_active=1"
+    q += " ORDER BY name"
+    return [dict(r) for r in con.execute(q)]
+
+
+def upsert_pitch_theme(con, *, id=None, name, description=None, color='#6366f1', is_active=1) -> int:
+    if id:
+        con.execute(
+            "UPDATE pitch_themes SET name=?,description=?,color=?,is_active=? WHERE id=?",
+            (name, description, color, int(is_active), id),
+        )
+        con.commit()
+        return int(id)
+    cur = con.execute(
+        "INSERT INTO pitch_themes (name,description,color,is_active) VALUES (?,?,?,?)",
+        (name, description, color, int(is_active)),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+def toggle_pitch_theme(con, theme_id: int) -> None:
+    con.execute(
+        "UPDATE pitch_themes SET is_active=CASE WHEN is_active=1 THEN 0 ELSE 1 END WHERE id=?",
+        (theme_id,),
+    )
+    con.commit()
+
+
+# ---- リード ----
+
+LEAD_FIELDS = [
+    "name", "company", "title", "email", "phone", "source",
+    "pitch_theme_id", "lead_status", "notes", "assigned_to", "deal_id",
+]
+
+
+def list_leads(con, *, status=None, source=None, theme_id=None, q=None) -> list[dict]:
+    sql = ("SELECT l.*, pt.name AS theme_name, pt.color AS theme_color "
+           "FROM leads l LEFT JOIN pitch_themes pt ON pt.id = l.pitch_theme_id WHERE 1=1")
+    params: list = []
+    if status:
+        sql += " AND l.lead_status=?"
+        params.append(status)
+    if source:
+        sql += " AND l.source=?"
+        params.append(source)
+    if theme_id:
+        sql += " AND l.pitch_theme_id=?"
+        params.append(int(theme_id))
+    if q:
+        sql += " AND (l.name LIKE ? OR l.company LIKE ?)"
+        params.extend([f"%{q}%", f"%{q}%"])
+    sql += " ORDER BY l.updated_at DESC"
+    return [dict(r) for r in con.execute(sql, params)]
+
+
+def get_lead(con, lead_id: int) -> dict | None:
+    r = con.execute(
+        "SELECT l.*, pt.name AS theme_name, pt.color AS theme_color "
+        "FROM leads l LEFT JOIN pitch_themes pt ON pt.id = l.pitch_theme_id WHERE l.id=?",
+        (lead_id,),
+    ).fetchone()
+    return dict(r) if r else None
+
+
+def upsert_lead(con, *, id=None, **fields) -> int:
+    data = {k: fields.get(k) for k in LEAD_FIELDS}
+    if id:
+        sets = ", ".join(f"{k}=?" for k in LEAD_FIELDS) + ", updated_at=datetime('now')"
+        con.execute(f"UPDATE leads SET {sets} WHERE id=?", [data[k] for k in LEAD_FIELDS] + [id])
+        con.commit()
+        return int(id)
+    cols = ", ".join(LEAD_FIELDS)
+    ph = ", ".join("?" for _ in LEAD_FIELDS)
+    cur = con.execute(f"INSERT INTO leads ({cols}) VALUES ({ph})", [data[k] for k in LEAD_FIELDS])
+    con.commit()
+    return cur.lastrowid
+
+
+def list_lead_activities(con, lead_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM lead_activities WHERE lead_id=? ORDER BY created_at DESC", (lead_id,)
+    )]
+
+
+def create_lead_activity(con, *, lead_id, type="note", content, author=None) -> int:
+    cur = con.execute(
+        "INSERT INTO lead_activities (lead_id,type,content,author) VALUES (?,?,?,?)",
+        (lead_id, type, content, author),
     )
     con.commit()
     return cur.lastrowid
