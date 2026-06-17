@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+service_account.json
+*.local.json
+.DS_Store
+
+# 実データ（クライアント名・金額等の機微情報）はコミットしない
+seed/
+*.xlsx
+

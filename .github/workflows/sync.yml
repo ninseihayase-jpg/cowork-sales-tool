@@ -1,0 +1,34 @@
+name: スプシ→テーマDB 同期
+
+# 定時実行（UTC基準。例: 日本時間の 8,12,18時 ≒ UTC 23,3,9時）＋手動実行
+on:
+  schedule:
+    - cron: "0 23,3,9 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Write service account key
+        run: printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > service_account.json
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+
+      - name: Sync sheet -> theme DB
+        env:
+          THEME_API_URL: https://hisho-ohxe.onrender.com
+          THEME_API_TOKEN: ${{ secrets.THEME_API_TOKEN }}
+          SALES_SHEET_ID: ${{ secrets.SALES_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: service_account.json
+          SALES_WORKSHEETS: "Sales,Sales以外"
+        run: python scripts/sync_cli.py
