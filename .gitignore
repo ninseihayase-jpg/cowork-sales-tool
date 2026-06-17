@@ -10,3 +10,6 @@ service_account.json
 seed/
 *.xlsx
 
+
+# 営業情報DB（ローカルデータ）
+*.db
