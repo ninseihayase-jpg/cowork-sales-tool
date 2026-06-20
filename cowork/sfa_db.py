@@ -16,9 +16,17 @@ DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "cowork_sfa.db")
 # テーマDBの選択肢に準拠（表記揺れ防止。docs/00 §3 / 秘書 db_schema_design.md）
 DEAL_STAGES = ["リード", "アポ獲得", "初回アポ実施", "要件詰め", "提案", "クロージング", "受注", "失注", "保留中"]
 BUSINESS_TYPE_L1 = ["コスト削減", "コンサルティング", "AI導入", "他"]
+BUSINESS_TYPE_L2_BY_L1 = {
+    "コスト削減":     ["コスト診断(無償)", "コスト診断(有償)", "コスト削減(成果報酬)"],
+    "コンサルティング": ["コンサル(調達/SCM)", "コンサル(IT)", "コンサル(他)", "アンダー"],
+    "AI導入":        ["AI開発(軽)", "AI開発(重)", "汎用AIエージェント(調達)", "汎用AIエージェント(SCM)", "汎用AIエージェント(IT)", "AXパートナー"],
+    "他":            ["調達BPO(スポット)", "未定"],
+}
 LEAD_PATTERNS = ["Connection", "Exh.", "Partner", "Advisor", "PE", "Under", "SNS", "HP", "na"]
 COMPANY_SIZES = ["500億未満", "1000億未満", "5000億未満", "5000億以上"]
 ACTIVITY_TYPES = ["面談", "電話", "メール", "メモ"]
+IMPORTANCE_OPTIONS = ["高", "中", "低"]
+COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
 # CRM吸収: リード/ピッチテーマ用定数
 PITCH_THEME_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6']
@@ -71,7 +79,14 @@ CREATE TABLE IF NOT EXISTS deals (
     next_milestone_label TEXT,
     note TEXT,
     goal TEXT,
+    importance TEXT,                  -- 重要度: 高/中/低
     status TEXT DEFAULT 'open',       -- open / closed
+    cost_stage TEXT,                  -- コスト削減ステージ（L1=コスト削減のみ）
+    approach_value REAL,              -- アプローチ額（億円）
+    approach_rate REAL,               -- アプローチ率(%)
+    reduction_rate REAL,              -- コスト削減率(%)
+    fee_rate REAL,                    -- 成果報酬率(%)
+    diagnosis_cost REAL,              -- 診断原価（万円）
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -81,6 +96,7 @@ CREATE TABLE IF NOT EXISTS activities (
     deal_id INTEGER REFERENCES deals(id) ON DELETE CASCADE,
     type TEXT,                        -- 面談 / 電話 / メール / メモ
     occurred_on TEXT,                 -- YYYY-MM-DD
+    contact_name TEXT,                -- 相手（誰と話したか）
     body TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
@@ -142,6 +158,22 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     con = connect(db_path)
     try:
         con.executescript(SCHEMA)
+        # カラム追加マイグレーション（既存DBへの後付け対応）
+        cols = {r[1] for r in con.execute("PRAGMA table_info(activities)")}
+        if "contact_name" not in cols:
+            con.execute("ALTER TABLE activities ADD COLUMN contact_name TEXT")
+        deal_cols = {r[1] for r in con.execute("PRAGMA table_info(deals)")}
+        for col, typedef in [
+            ("importance", "TEXT"),
+            ("cost_stage", "TEXT"),
+            ("approach_value", "REAL"),
+            ("approach_rate", "REAL"),
+            ("reduction_rate", "REAL"),
+            ("fee_rate", "REAL"),
+            ("diagnosis_cost", "REAL"),
+        ]:
+            if col not in deal_cols:
+                con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")
         con.commit()
     finally:
         con.close()
@@ -198,7 +230,9 @@ def upsert_account(con, *, id=None, name, industry=None, company_size=None, note
 DEAL_FIELDS = [
     "account_id", "theme_id", "deal_name", "stage", "business_type_l1", "business_type_l2",
     "lead_pattern", "owner", "value_lumpsum", "value_lumpsum_monthly", "value_recurring",
-    "client_budget", "next_milestone_date", "next_milestone_label", "note", "goal", "status",
+    "client_budget", "next_milestone_date", "next_milestone_label", "note", "goal",
+    "importance", "status",
+    "cost_stage", "approach_value", "approach_rate", "reduction_rate", "fee_rate", "diagnosis_cost",
 ]
 
 
@@ -216,10 +250,10 @@ def upsert_deal(con, *, id=None, **fields) -> int:
     return cur.lastrowid
 
 
-def add_activity(con, *, deal_id, type=None, occurred_on=None, body=None) -> int:
+def add_activity(con, *, deal_id, type=None, occurred_on=None, contact_name=None, body=None) -> int:
     cur = con.execute(
-        "INSERT INTO activities (deal_id, type, occurred_on, body) VALUES (?,?,?,?)",
-        (deal_id, type, occurred_on, body),
+        "INSERT INTO activities (deal_id, type, occurred_on, contact_name, body) VALUES (?,?,?,?,?)",
+        (deal_id, type, occurred_on, contact_name, body),
     )
     con.commit()
     return cur.lastrowid

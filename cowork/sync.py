@@ -55,6 +55,11 @@ def sync_rows(
             result.errors.append(f"行スキップ: {exc}")
             continue
 
+        # Salesテーマ はSFA側で管理するためスキップ
+        if fields.get("category") == "Sales":
+            result.skipped += 1
+            continue
+
         tid = fields["id"]
         is_update = dry_run or (tid in existing)
 

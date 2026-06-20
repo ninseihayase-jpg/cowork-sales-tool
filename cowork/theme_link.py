@@ -29,7 +29,7 @@ def deal_to_theme_fields(con, deal: dict) -> dict:
     fields.update({
         "title": title,
         "category": "Sales",
-        "importance": None,
+        "importance": deal.get("importance"),
         "status": deal.get("status") or "open",
         "note": deal.get("note"),
         "goal": deal.get("goal"),
@@ -42,6 +42,7 @@ def deal_to_theme_fields(con, deal: dict) -> dict:
         "deal_value_lumpsum": deal.get("value_lumpsum"),
         "deal_value_lumpsum_monthly": deal.get("value_lumpsum_monthly"),
         "deal_value_recurring": deal.get("value_recurring"),
+        "approach_value": deal.get("approach_value"),
         "client_name": account_name,
         "deal_name": deal.get("deal_name"),
         "meeting_dates": _meeting_dates_from_activities(con, deal["id"]),
@@ -50,6 +51,11 @@ def deal_to_theme_fields(con, deal: dict) -> dict:
         "company_size": deal.get("company_size"),
         "milestone_date": deal.get("next_milestone_date"),
         "milestone_label": deal.get("next_milestone_label"),
+        "approach_rate": deal.get("approach_rate"),
+        "reduction_rate": deal.get("reduction_rate"),
+        "fee_rate": deal.get("fee_rate"),
+        "diagnosis_cost": deal.get("diagnosis_cost"),
+        "cost_stage": deal.get("cost_stage"),
     })
     return fields
 

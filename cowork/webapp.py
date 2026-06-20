@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import html
+import json
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -37,6 +38,15 @@ def _opt_kv(pairs: list[tuple[str, str]], selected: str | None) -> str:
 
 def _esc(v) -> str:
     return "" if v is None else html.escape(str(v))
+
+
+def _opt_l2(l1: str | None, selected: str | None) -> str:
+    """L1に対応するL2選択肢を生成。"""
+    opts = ['<option value=""></option>']
+    for v in sfa_db.BUSINESS_TYPE_L2_BY_L1.get(l1 or "", []):
+        sel = " selected" if v == selected else ""
+        opts.append(f'<option value="{html.escape(v)}"{sel}>{html.escape(v)}</option>')
+    return "".join(opts)
 
 
 PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
@@ -95,11 +105,20 @@ def home_page(con) -> str:
     for d in deals:
         val = d.get("value_lumpsum") or d.get("value_recurring") or ""
         linked = "🔗" if d.get("theme_id") else "—"
+        ms = ""
+        if d.get("next_milestone_date"):
+            ms = _esc(d["next_milestone_date"])
+            if d.get("next_milestone_label"):
+                ms += f'<br><span class="muted" style="font-size:.85em">{_esc(d["next_milestone_label"])}</span>'
+        elif d.get("next_milestone_label"):
+            ms = f'<span class="muted">{_esc(d["next_milestone_label"])}</span>'
         rows.append(
             f'<tr><td><a href="/deal/{d["id"]}">{_esc(d.get("account_name"))}</a></td>'
             f'<td>{_esc(d.get("deal_name"))}</td>'
             f'<td><span class="stage">{_esc(d.get("stage"))}</span></td>'
-            f'<td>{_esc(d.get("owner"))}</td><td class="right">{_esc(val)}</td>'
+            f'<td>{_esc(d.get("owner"))}</td>'
+            f'<td>{ms}</td>'
+            f'<td class="right">{_esc(val)}</td>'
             f'<td class="right" title="テーマDB連携">{linked}</td></tr>'
         )
     accounts = sfa_db.list_accounts(con)
@@ -111,8 +130,8 @@ def home_page(con) -> str:
     return f"""
     <div class="card"><h2>商談 ({len(deals)})</h2>
     <table><tr><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
-               <th class="right">金額(万円)</th><th class="right">連携</th></tr>
-    {''.join(rows) or '<tr><td colspan=6 class=muted>まだ商談がありません。「＋商談」から追加してください。</td></tr>'}
+               <th>次回MS</th><th class="right">金額(万円)</th><th class="right">連携</th></tr>
+    {''.join(rows) or '<tr><td colspan=7 class=muted>まだ商談がありません。「＋商談」から追加してください。</td></tr>'}
     </table></div>
     <div class="card"><h2>アカウント ({len(accounts)})</h2>
     <table><tr><th>企業名</th><th>業界</th><th>企業規模</th></tr>
@@ -153,20 +172,30 @@ def deal_form(con, deal=None) -> str:
         act_rows = "".join(
             f'<tr><td>{_esc(a.get("occurred_on"))}</td>'
             f'<td>{_esc(a.get("type"))}</td>'
-            f'<td>{_esc(a.get("body"))}</td></tr>'
+            f'<td>{_esc(a.get("contact_name"))}</td>'
+            f'<td style="white-space:pre-wrap">{_esc(a.get("body"))}</td></tr>'
             for a in acts
-        ) or '<tr><td colspan=3 class=muted>活動なし</td></tr>'
+        ) or '<tr><td colspan=4 class=muted>活動なし</td></tr>'
         activities_html = f"""
         <div class="card"><h2>活動履歴</h2>
-        <table><tr><th>日付</th><th>種別</th><th>内容</th></tr>{act_rows}</table>
-        <form method="post" action="/activity/add" style="margin-top:12px">
+        <table><tr><th>日付</th><th>種別</th><th>相手</th><th>内容</th></tr>{act_rows}</table>
+        <form method="post" action="/activity/add" style="margin-top:16px">
           <input type="hidden" name="deal_id" value="{deal['id']}">
           <div class="grid">
             <div><label>日付</label><input type="date" name="occurred_on"></div>
             <div><label>種別</label><select name="type">{_opt(sfa_db.ACTIVITY_TYPES, '面談')}</select></div>
+            <div><label>相手</label><input name="contact_name" placeholder="例：田中部長"></div>
           </div>
-          <label>内容</label><textarea name="body" rows="2"></textarea>
-          <p><button class="btn sec">活動を追加</button></p>
+          <label>内容・決定事項</label><textarea name="body" rows="3"></textarea>
+          <div style="margin-top:10px;padding:12px;background:#f8f9fa;border-radius:6px">
+            <p style="margin:0 0 8px;font-size:.9em;font-weight:600;color:#555">商談の現状を更新</p>
+            <div class="grid">
+              <div><label>次回MS日</label><input type="date" name="next_milestone_date" value="{_esc(deal.get('next_milestone_date'))}"></div>
+              <div><label>次回MSラベル</label><input name="next_milestone_label" value="{_esc(deal.get('next_milestone_label'))}"></div>
+            </div>
+            <label>現状メモ</label><textarea name="update_note" rows="2">{_esc(deal.get('note'))}</textarea>
+          </div>
+          <p><button class="btn sec">活動を追加して更新</button></p>
         </form></div>"""
         sync_btn = (
             f'<form method="post" action="/deal/{deal["id"]}/sync" style="display:inline">'
@@ -188,15 +217,21 @@ def deal_form(con, deal=None) -> str:
           <select name="stage">{_opt(sfa_db.DEAL_STAGES, deal.get('stage'))}</select></div>
         <div><label>担当</label><input name="owner" value="{_esc(deal.get('owner'))}"></div>
         <div><label>事業種別L1</label>
-          <select name="business_type_l1">{_opt(sfa_db.BUSINESS_TYPE_L1, deal.get('business_type_l1'))}</select></div>
+          <select name="business_type_l1" id="biz_l1" onchange="updateL2()">{_opt(sfa_db.BUSINESS_TYPE_L1, deal.get('business_type_l1'))}</select></div>
+        <div><label>事業種別L2</label>
+          <select name="business_type_l2" id="biz_l2">{_opt_l2(deal.get('business_type_l1'), deal.get('business_type_l2'))}</select></div>
         <div><label>リード経路</label>
           <select name="lead_pattern">{_opt(sfa_db.LEAD_PATTERNS, deal.get('lead_pattern'))}</select></div>
-        <div><label>単発総額(万円)</label>
+        <div><label>ワンタイム総額（万円）</label>
           <input name="value_lumpsum" value="{_esc(deal.get('value_lumpsum'))}"></div>
-        <div><label>継続月額(万円)</label>
+        <div><label>ワンタイム月額換算（万円）</label>
+          <input name="value_lumpsum_monthly" value="{_esc(deal.get('value_lumpsum_monthly'))}"></div>
+        <div><label>継続月額（万円）</label>
           <input name="value_recurring" value="{_esc(deal.get('value_recurring'))}"></div>
         <div><label>クライアント予算</label>
           <input name="client_budget" value="{_esc(deal.get('client_budget'))}"></div>
+        <div><label>重要度</label>
+          <select name="importance">{_opt(sfa_db.IMPORTANCE_OPTIONS, deal.get('importance'))}</select></div>
         <div><label>ステータス</label>
           <select name="status">{_opt(['open', 'closed'], deal.get('status') or 'open')}</select></div>
         <div><label>次回MS日</label>
@@ -206,8 +241,37 @@ def deal_form(con, deal=None) -> str:
       </div>
       <label>現状メモ</label><textarea name="note" rows="2">{_esc(deal.get('note'))}</textarea>
       <label>ゴール</label><textarea name="goal" rows="2">{_esc(deal.get('goal'))}</textarea>
+      <div id="cost_section" style="{'display:none' if deal.get('business_type_l1') != 'コスト削減' else ''}">
+        <hr style="margin:16px 0">
+        <p style="font-weight:600;margin-bottom:8px;color:#555">コスト削減モデル詳細</p>
+        <div class="grid">
+          <div><label>コスト削減ステージ</label>
+            <select name="cost_stage">{_opt(sfa_db.COST_STAGES, deal.get('cost_stage'))}</select></div>
+          <div><label>アプローチ額（億円）</label>
+            <input name="approach_value" type="number" step="0.01" value="{_esc(deal.get('approach_value'))}"></div>
+          <div><label>アプローチ率（%）</label>
+            <input name="approach_rate" type="number" step="0.1" value="{_esc(deal.get('approach_rate'))}"></div>
+          <div><label>コスト削減率（%）</label>
+            <input name="reduction_rate" type="number" step="0.1" value="{_esc(deal.get('reduction_rate'))}"></div>
+          <div><label>成果報酬率（%）</label>
+            <input name="fee_rate" type="number" step="0.1" value="{_esc(deal.get('fee_rate'))}"></div>
+          <div><label>診断原価（万円）</label>
+            <input name="diagnosis_cost" type="number" step="1" value="{_esc(deal.get('diagnosis_cost'))}"></div>
+        </div>
+      </div>
       <p><button class="btn">保存</button> <a class="btn sec" href="/">一覧へ</a> {sync_btn}</p>
-    </form></div>
+    </form>
+    <script>
+    const L2_MAP = {json.dumps(sfa_db.BUSINESS_TYPE_L2_BY_L1, ensure_ascii=False)};
+    function updateL2() {{
+      const l1 = document.getElementById('biz_l1').value;
+      const sel = document.getElementById('biz_l2');
+      const cur = sel.value;
+      sel.innerHTML = '<option value=""></option>' +
+        (L2_MAP[l1] || []).map(v => `<option value="${{v}}"${{v===cur?' selected':''}}>${{v}}</option>`).join('');
+      document.getElementById('cost_section').style.display = l1 === 'コスト削減' ? '' : 'none';
+    }}
+    </script></div>
     {activities_html}"""
 
 
@@ -595,27 +659,65 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         deal_name=f.get("deal_name") or "(無題)",
                         stage=f.get("stage") or None,
                         business_type_l1=f.get("business_type_l1") or None,
+                        business_type_l2=f.get("business_type_l2") or None,
                         lead_pattern=f.get("lead_pattern") or None,
                         owner=f.get("owner") or None,
                         value_lumpsum=num("value_lumpsum"),
+                        value_lumpsum_monthly=num("value_lumpsum_monthly"),
                         value_recurring=num("value_recurring"),
                         client_budget=f.get("client_budget") or None,
                         next_milestone_date=f.get("next_milestone_date") or None,
                         next_milestone_label=f.get("next_milestone_label") or None,
                         note=f.get("note") or None,
                         goal=f.get("goal") or None,
+                        importance=f.get("importance") or None,
                         status=f.get("status") or "open",
+                        cost_stage=f.get("cost_stage") or None,
+                        approach_value=num("approach_value"),
+                        approach_rate=num("approach_rate"),
+                        reduction_rate=num("reduction_rate"),
+                        fee_rate=num("fee_rate"),
+                        diagnosis_cost=num("diagnosis_cost"),
                     )
                     self._redirect(f"/deal/{did}")
 
                 elif path == "/activity/add":
+                    did = int(f["deal_id"])
                     sfa_db.add_activity(
-                        con, deal_id=int(f["deal_id"]),
+                        con, deal_id=did,
                         type=f.get("type") or None,
                         occurred_on=f.get("occurred_on") or None,
+                        contact_name=f.get("contact_name") or None,
                         body=f.get("body") or None,
                     )
-                    self._redirect(f"/deal/{f['deal_id']}")
+                    # 商談の現状メモ・次回MSを同時更新（入力があった場合のみ）
+                    update_note = f.get("update_note", "").strip()
+                    ms_date = f.get("next_milestone_date", "").strip()
+                    ms_label = f.get("next_milestone_label", "").strip()
+                    if update_note or ms_date or ms_label:
+                        deal = sfa_db.get_deal(con, did)
+                        if deal:
+                            sfa_db.upsert_deal(
+                                con, id=did,
+                                account_id=deal["account_id"],
+                                theme_id=deal.get("theme_id"),
+                                deal_name=deal["deal_name"],
+                                stage=deal.get("stage"),
+                                business_type_l1=deal.get("business_type_l1"),
+                                business_type_l2=deal.get("business_type_l2"),
+                                lead_pattern=deal.get("lead_pattern"),
+                                owner=deal.get("owner"),
+                                value_lumpsum=deal.get("value_lumpsum"),
+                                value_lumpsum_monthly=deal.get("value_lumpsum_monthly"),
+                                value_recurring=deal.get("value_recurring"),
+                                client_budget=deal.get("client_budget"),
+                                next_milestone_date=ms_date or deal.get("next_milestone_date"),
+                                next_milestone_label=ms_label or deal.get("next_milestone_label"),
+                                note=update_note or deal.get("note"),
+                                goal=deal.get("goal"),
+                                status=deal.get("status"),
+                            )
+                    self._redirect(f"/deal/{did}")
 
                 elif path.startswith("/deal/") and path.endswith("/sync"):
                     did = int(path.split("/")[2])

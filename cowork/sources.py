@@ -50,7 +50,7 @@ def read_google_sheets(
             ws = sh.worksheet(name)
         except gspread.WorksheetNotFound:
             continue
-        values = ws.get_all_values()
+        values = ws.get_all_values(value_render_option="UNFORMATTED_VALUE")
         if not values:
             continue
         headers = [normalize_header(h) for h in values[0]]

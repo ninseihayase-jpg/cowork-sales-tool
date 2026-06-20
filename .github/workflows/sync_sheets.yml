@@ -1,0 +1,30 @@
+name: スプシ → テーマDB 定時同期
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 毎日 09:00 JST (UTC 00:00)
+  workflow_dispatch:        # 手動実行ボタン
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージインストール
+        run: pip install gspread google-auth
+
+      - name: サービスアカウントJSON を復元
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service_account.json
+
+      - name: スプシ → テーマDB 同期
+        env:
+          THEME_API_TOKEN: ${{ secrets.THEME_API_TOKEN }}
+          SALES_SHEET_ID: ${{ secrets.SALES_SHEET_ID }}
+          SALES_WORKSHEETS: Delivery,その他
+          GOOGLE_SERVICE_ACCOUNT_JSON: service_account.json
+        run: python scripts/sync_cli.py

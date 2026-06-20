@@ -39,6 +39,12 @@ def excel_to_iso(serial) -> str | None:
             date.fromisoformat(s[:10])
             return s[:10]
         except ValueError:
+            pass
+        # Google Sheetsから文字列として届くExcelシリアル値（例: '46191'）
+        try:
+            n = int(s)
+            return (date(1899, 12, 30) + timedelta(days=n)).isoformat()
+        except (ValueError, OverflowError):
             return None
     try:
         n = int(serial)
