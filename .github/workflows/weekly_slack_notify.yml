@@ -1,0 +1,23 @@
+name: 週次商談確認通知
+
+on:
+  schedule:
+    - cron: '30 8 * * 3'   # 水曜 17:30 JST (UTC 08:30)
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 週次Slack通知
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          WEEKLY_SHEET_ID: ${{ secrets.WEEKLY_SHEET_ID }}
+          SFA_DB_PATH: cowork_sfa.db
+        run: python scripts/weekly_slack_notify.py

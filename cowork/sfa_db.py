@@ -26,6 +26,21 @@ LEAD_PATTERNS = ["Connection", "Exh.", "Partner", "Advisor", "PE", "Under", "SNS
 COMPANY_SIZES = ["500億未満", "1000億未満", "5000億未満", "5000億以上"]
 ACTIVITY_TYPES = ["面談", "電話", "メール", "メモ"]
 IMPORTANCE_OPTIONS = ["高", "中", "低"]
+OWNERS = ["吉江", "中島", "早瀬", "岩崎", "高橋", "土屋", "戸田", "片山", "杉山", "山端", "堀籠"]
+
+# マスタ編集対象キー → デフォルト値のマッピング
+MASTER_KEYS = {
+    "owners":         OWNERS,
+    "lead_patterns":  LEAD_PATTERNS,
+    "company_sizes":  COMPANY_SIZES,
+    "activity_types": ACTIVITY_TYPES,
+}
+MASTER_LABELS = {
+    "owners":         "担当者",
+    "lead_patterns":  "リード経路",
+    "company_sizes":  "企業規模",
+    "activity_types": "活動種別",
+}
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
 # CRM吸収: リード/ピッチテーマ用定数
@@ -144,6 +159,12 @@ CREATE TABLE IF NOT EXISTS lead_activities (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id);
+
+-- 入力マスタ（編集可能な選択肢）
+CREATE TABLE IF NOT EXISTS masters (
+    key   TEXT PRIMARY KEY,
+    values_json TEXT NOT NULL
+);
 """
 
 
@@ -186,18 +207,41 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         con.close()
 
 
+# ---- マスタ ----
+import json as _json
+
+
+def get_master_list(con, key: str) -> list[str]:
+    """DB保存値があればそれを返す。なければデフォルト定数を返す。"""
+    row = con.execute("SELECT values_json FROM masters WHERE key=?", (key,)).fetchone()
+    if row:
+        return _json.loads(row[0])
+    return list(MASTER_KEYS.get(key, []))
+
+
+def set_master_list(con, key: str, values: list[str]) -> None:
+    con.execute(
+        "INSERT INTO masters(key,values_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET values_json=excluded.values_json",
+        (key, _json.dumps(values, ensure_ascii=False)),
+    )
+    con.commit()
+
+
 # ---- 取得系 ----
 def list_accounts(con) -> list[dict]:
     return [dict(r) for r in con.execute("SELECT * FROM accounts ORDER BY name")]
 
 
-def list_deals(con, status: str | None = "open") -> list[dict]:
+def list_deals(con, status: str | None = "open", owner: str | None = None) -> list[dict]:
     q = """SELECT d.*, a.name AS account_name, a.industry, a.company_size
-           FROM deals d LEFT JOIN accounts a ON a.id = d.account_id"""
+           FROM deals d LEFT JOIN accounts a ON a.id = d.account_id WHERE 1=1"""
     params: list = []
     if status:
-        q += " WHERE d.status = ?"
+        q += " AND d.status = ?"
         params.append(status)
+    if owner:
+        q += " AND d.owner = ?"
+        params.append(owner)
     q += " ORDER BY d.updated_at DESC"
     return [dict(r) for r in con.execute(q, params)]
 

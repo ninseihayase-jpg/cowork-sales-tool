@@ -186,7 +186,87 @@ def dashboard_page(con) -> str:
         <a class="btn sec" href="/deals">すべての商談を見る</a>
         <a class="btn ext" href="{hisho_url}" target="_blank" style="margin-left:8px">Salesダッシュボード ↗</a>
       </p>
+    </div>
+    <div style="text-align:right;margin-top:-10px;margin-bottom:6px">
+      <a class="btn sec" href="/masters" style="font-size:12px;padding:5px 10px;opacity:0.7">⚙ 入力マスタの編集</a>
     </div>"""
+
+
+def masters_page(con) -> str:
+    """入力マスタ編集ページ。各リストの選択肢を追加・削除・並び替えできる。"""
+    cards = []
+    for key, label in sfa_db.MASTER_LABELS.items():
+        values = sfa_db.get_master_list(con, key)
+        items_html = "".join(
+            f'<div class="master-item" data-key="{html.escape(key)}" data-idx="{i}">'
+            f'<span>{html.escape(v)}</span>'
+            f'<button type="button" onclick="delItem(\'{html.escape(key)}\',{i})" '
+            f'style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0 4px">✕</button>'
+            f'</div>'
+            for i, v in enumerate(values)
+        )
+        hidden_inputs = "".join(
+            f'<input type="hidden" name="{html.escape(key)}[]" value="{html.escape(v)}">'
+            for v in values
+        )
+        cards.append(f"""
+        <div class="card" id="master_{key}">
+          <h2>{label}</h2>
+          <div id="items_{key}" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+            {items_html}
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input id="new_{key}" placeholder="新しい選択肢を追加" style="max-width:200px">
+            <button type="button" class="btn sec" onclick="addItem('{html.escape(key)}')">追加</button>
+          </div>
+          <div id="hidden_{key}">{hidden_inputs}</div>
+        </div>""")
+
+    return f"""
+    <div class="card" style="background:#f0f4f8;border:1.5px solid #d4dae4">
+      <h2>⚙ 入力マスタの編集</h2>
+      <p class="muted">各項目の選択肢を編集できます。変更は「すべて保存」ボタンで反映されます。</p>
+    </div>
+    <form method="post" action="/masters/save" id="master_form">
+      {''.join(cards)}
+      <p><button class="btn">すべて保存</button>
+         <a class="btn sec" href="/">キャンセル</a></p>
+    </form>
+    <style>
+      .master-item{{display:inline-flex;align-items:center;background:#e8edf7;border-radius:20px;padding:3px 10px;font-size:13px;gap:2px}}
+    </style>
+    <script>
+    function delItem(key, idx) {{
+      const container = document.getElementById('items_' + key);
+      const hidden = document.getElementById('hidden_' + key);
+      const items = Array.from(container.querySelectorAll('.master-item'));
+      items[idx].remove();
+      // rebuild hidden inputs
+      const remaining = Array.from(container.querySelectorAll('.master-item span')).map(s => s.textContent);
+      hidden.innerHTML = remaining.map(v => `<input type="hidden" name="${{key}}[]" value="${{v}}">`).join('');
+      // re-index
+      container.querySelectorAll('.master-item').forEach((el, i) => {{
+        el.dataset.idx = i;
+        el.querySelector('button').setAttribute('onclick', `delItem('${{key}}', ${{i}})`);
+      }});
+    }}
+    function addItem(key) {{
+      const input = document.getElementById('new_' + key);
+      const val = input.value.trim();
+      if (!val) return;
+      const container = document.getElementById('items_' + key);
+      const hidden = document.getElementById('hidden_' + key);
+      const idx = container.querySelectorAll('.master-item').length;
+      container.insertAdjacentHTML('beforeend',
+        `<div class="master-item" data-key="${{key}}" data-idx="${{idx}}">` +
+        `<span>${{val}}</span>` +
+        `<button type="button" onclick="delItem('${{key}}',${{idx}})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0 4px">✕</button>` +
+        `</div>`
+      );
+      hidden.insertAdjacentHTML('beforeend', `<input type="hidden" name="${{key}}[]" value="${{val}}">`);
+      input.value = '';
+    }}
+    </script>"""
 
 
 def activity_deal_picker(con) -> str:
@@ -212,8 +292,24 @@ def activity_deal_picker(con) -> str:
 
 # ── 既存ページ（商談・アカウント）─────────────────────────────────────────────
 
-def home_page(con) -> str:
-    deals = sfa_db.list_deals(con, status=None)
+def home_page(con, owner: str | None = None, status_filter: str | None = None) -> str:
+    deals = sfa_db.list_deals(con, status=status_filter, owner=owner)
+    owners = sfa_db.get_master_list(con, "owners")
+    owner_opts = '<option value="">全担当</option>' + "".join(
+        f'<option value="{html.escape(o)}"{" selected" if o == owner else ""}>{html.escape(o)}</option>'
+        for o in owners
+    )
+    status_opts = (
+        '<option value="">全ステータス</option>'
+        + f'<option value="open"{"  selected" if status_filter=="open" else ""}>進行中</option>'
+        + f'<option value="closed"{" selected" if status_filter=="closed" else ""}>クローズ済</option>'
+    )
+    filter_row = f"""<form method="get" action="/deals" class="filter-row">
+      <select name="owner">{owner_opts}</select>
+      <select name="status">{status_opts}</select>
+      <button class="btn sec" type="submit">絞り込み</button>
+      <a class="btn sec" href="/deals">リセット</a>
+    </form>"""
     rows = []
     for d in deals:
         val = d.get("value_lumpsum") or d.get("value_recurring") or ""
@@ -241,10 +337,14 @@ def home_page(con) -> str:
         for a in accounts
     )
     return f"""
-    <div class="card"><h2>商談 ({len(deals)})</h2>
+    <div class="card"><h2 style="display:flex;justify-content:space-between;align-items:center">
+      <span>商談 ({len(deals)})</span>
+      <a class="btn" href="/deal/new">＋商談追加</a>
+    </h2>
+    {filter_row}
     <table><tr><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
                <th>次回MS</th><th class="right">金額(万円)</th><th class="right">連携</th></tr>
-    {''.join(rows) or '<tr><td colspan=7 class=muted>まだ商談がありません。「＋商談」から追加してください。</td></tr>'}
+    {''.join(rows) or '<tr><td colspan=7 class=muted>商談がありません。</td></tr>'}
     </table></div>
     <div class="card"><h2>アカウント ({len(accounts)})</h2>
     <table><tr><th>企業名</th><th>業界</th><th>企業規模</th></tr>
@@ -367,7 +467,8 @@ def deal_form(con, deal=None) -> str:
           <input name="deal_name" required value="{_esc(deal.get('deal_name'))}"></div>
         <div><label>ステージ</label>
           <select name="stage">{_opt(sfa_db.DEAL_STAGES, deal.get('stage'))}</select></div>
-        <div><label>担当</label><input name="owner" value="{_esc(deal.get('owner'))}"></div>
+        <div><label>担当</label>
+          <select name="owner">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('owner'))}</select></div>
         <div><label>事業種別L1</label>
           <select name="business_type_l1" id="biz_l1" onchange="updateL2()">{_opt(sfa_db.BUSINESS_TYPE_L1, deal.get('business_type_l1'))}</select></div>
         <div><label>事業種別L2</label>
@@ -546,7 +647,7 @@ def lead_form(con, lead=None) -> str:
         <form method="post" action="/leads/{lead['id']}/activity" style="margin-top:14px">
           <div class="grid">
             <div><label>種別</label><select name="type">{act_type_opts}</select></div>
-            <div><label>担当者</label><input name="author"></div>
+            <div><label>担当者</label><select name="author">{_opt(sfa_db.get_master_list(con,'owners'), None)}</select></div>
           </div>
           <label>内容 *</label><textarea name="content" rows="2" required></textarea>
           <p><button class="btn sec">活動を追加</button></p>
@@ -585,7 +686,7 @@ def lead_form(con, lead=None) -> str:
           <div><label>電話</label>
             <input name="phone" value="{_esc(lead.get('phone'))}"></div>
           <div><label>担当者</label>
-            <input name="assigned_to" value="{_esc(lead.get('assigned_to'))}"></div>
+            <select name="assigned_to">{_opt(sfa_db.get_master_list(con,'owners'), lead.get('assigned_to'))}</select></div>
           <div><label>獲得経路</label>
             <select name="source">{_opt_kv(source_items, lead.get('source') or 'other')}</select></div>
           <div><label>ステータス</label>
@@ -606,19 +707,30 @@ def lead_form(con, lead=None) -> str:
 def leads_import_page(result: str = "") -> str:
     result_html = f'<div class="flash">{html.escape(result)}</div>' if result else ""
     return f"""
-    <div class="card"><h2>リード CSV一括取込</h2>
+    <div class="card"><h2>リード一括取込</h2>
     {result_html}
+
+    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📇 名刺データ（xlsx）アップロード</h3>
+    <p class="muted">名刺管理アプリ（Eight / CAMCARD / Sansan等）からエクスポートしたxlsxをアップロードします。<br>
+    会社名・業界などはAIがWebリサーチで補強します（ANTHROPIC_API_KEY 設定時）。</p>
+    <form method="post" action="/leads/upload_meishi" enctype="multipart/form-data" style="margin-bottom:20px">
+      <label>名刺xlsxファイル</label>
+      <input type="file" name="meishi_file" accept=".xlsx,.xls,.csv" required style="padding:4px">
+      <p style="margin-top:8px"><button class="btn">アップロードして取込</button>
+         <a class="btn sec" href="/leads">キャンセル</a></p>
+    </form>
+
+    <hr style="margin:20px 0">
+    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📋 CSVペースト取込</h3>
     <p class="muted">下記フォーマットのCSVを貼り付けてください（1行目はヘッダ行、空行はスキップ）。</p>
-    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">名前,会社名,役職,メール,電話,獲得経路,ピッチテーマ,ステータス,メモ,担当者
-田中 太郎,株式会社○○,営業部長,tanaka@example.com,090-xxx-xxxx,exhibition,AI業務自動化,new,展示会で名刺交換,</pre>
+    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">名前,会社名,役職,メール,電話,獲得経路,ステータス,メモ,担当者
+田中 太郎,株式会社○○,営業部長,tanaka@example.com,090-xxx-xxxx,exhibition,new,展示会で名刺交換,</pre>
     <p class="muted" style="margin-top:4px">
-      獲得経路: exhibition（展示会）/ referral（紹介）/ inbound（インバウンド）/ other<br>
-      ステータス: new / following / meeting / proposal / won / lost<br>
-      ピッチテーマは登録済みテーマ名と完全一致のみ紐付け。不一致は空欄扱い。
+      獲得経路: exhibition（展示会）/ referral（紹介）/ inbound（インバウンド）/ other
     </p>
     <form method="post" action="/leads/import">
       <label>CSVデータ（ペースト）</label>
-      <textarea name="csv_text" rows="12"
+      <textarea name="csv_text" rows="8"
         style="font-family:monospace;font-size:12px" required></textarea>
       <p><button class="btn">取込実行</button>
          <a class="btn sec" href="/leads">キャンセル</a></p>
@@ -652,6 +764,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             d = urllib.parse.parse_qs(raw, keep_blank_values=True)
             return {k: (v[0] if v else "") for k, v in d.items()}
 
+        def _form_multi(self) -> dict:
+            """multipart/form-data対応。ファイルはバイト列で返す。"""
+            import cgi, io
+            ctype = self.headers.get("Content-Type", "")
+            n = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(n)
+            environ = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype, "CONTENT_LENGTH": str(n)}
+            fs = cgi.FieldStorage(fp=io.BytesIO(body), environ=environ, keep_blank_values=True)
+            result = {}
+            for key in fs.keys():
+                item = fs[key]
+                if hasattr(item, "file") and item.filename:
+                    result[key] = (item.filename, item.file.read())
+                else:
+                    result[key] = item.value
+            return result
+
         def _qs(self) -> dict:
             qs_raw = self.path.split("?")[1] if "?" in self.path else ""
             return urllib.parse.parse_qs(qs_raw)
@@ -665,7 +794,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/":
                     self._send(render(dashboard_page(con)))
                 elif path == "/deals":
-                    self._send(render(home_page(con)))
+                    qs = self._qs()
+                    def qs1(k): return (qs.get(k, [None])[0] or None)
+                    self._send(render(home_page(con, owner=qs1("owner"), status_filter=qs1("status"))))
+                elif path == "/masters":
+                    self._send(render(masters_page(con)))
                 elif path == "/activity/new":
                     self._send(render(activity_deal_picker(con)))
                 elif path == "/deal/new":
@@ -714,11 +847,29 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
         def do_POST(self):
             path = self.path.split("?")[0].rstrip("/")
             con = sfa_db.connect(db_path)
+            ctype = self.headers.get("Content-Type", "")
             try:
-                f = self._form()
+                if "multipart/form-data" in ctype:
+                    f = self._form_multi()
+                    f_list = {}  # multipart returns single values; list values handled separately
+                else:
+                    n = int(self.headers.get("Content-Length", 0))
+                    raw = self.rfile.read(n).decode("utf-8")
+                    import urllib.parse as _up
+                    d = _up.parse_qs(raw, keep_blank_values=True)
+                    f_list = {k: v for k, v in d.items()}
+                    f = {k: (v[0] if v else "") for k, v in d.items()}
+
+                # ── マスタ ──
+                if path == "/masters/save":
+                    for key in sfa_db.MASTER_KEYS:
+                        values = f_list.get(f"{key}[]", [])
+                        values = [v.strip() for v in values if v.strip()]
+                        sfa_db.set_master_list(con, key, values)
+                    self._redirect("/")
 
                 # ── アカウント ──
-                if path == "/account/save":
+                elif path == "/account/save":
                     sfa_db.upsert_account(
                         con, id=int(f["id"]) if f.get("id") else None,
                         name=f.get("name") or "(無名)",
@@ -850,6 +1001,24 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         deal_id=existing_deal_id,
                     )
                     self._redirect(f"/leads/{lid}")
+
+                elif path == "/leads/upload_meishi":
+                    file_item = f.get("meishi_file")
+                    if not file_item or not isinstance(file_item, tuple):
+                        self._send(render(leads_import_page(), flash="ファイルが選択されていません。"))
+                    else:
+                        filename, data = file_item
+                        try:
+                            from . import meishi_import
+                            added, skipped, errors = meishi_import.import_meishi_file(con, data, filename)
+                            msg = f"取込完了: {added}件追加、{skipped}件スキップ。"
+                            if errors:
+                                msg += " エラー: " + "; ".join(errors[:3])
+                            self._send(render(leads_import_page(result=msg)))
+                        except ImportError:
+                            self._send(render(leads_import_page(), flash="meishi_importモジュールが見つかりません。"))
+                        except Exception as exc:
+                            self._send(render(leads_import_page(), flash=f"取込エラー: {exc}"))
 
                 elif path == "/leads/import":
                     ok, skip = leads_csv.import_leads(con, f.get("csv_text", ""))
