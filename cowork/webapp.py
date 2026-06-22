@@ -94,6 +94,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
   <a href="/">ホーム</a>
   <a href="/deals">商談一覧</a>
   <a href="/leads">リード</a>
+  <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
 </header>
 <main>{flash}{body}</main></body></html>"""
 
