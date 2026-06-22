@@ -466,15 +466,15 @@ def deal_form(con, deal=None) -> str:
         <div><label>案件名 *</label>
           <input name="deal_name" required value="{_esc(deal.get('deal_name'))}"></div>
         <div><label>ステージ</label>
-          <select name="stage">{_opt(sfa_db.DEAL_STAGES, deal.get('stage'))}</select></div>
+          <select name="stage">{_opt(sfa_db.get_master_list(con,'deal_stages'), deal.get('stage'))}</select></div>
         <div><label>担当</label>
           <select name="owner">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('owner'))}</select></div>
         <div><label>事業種別L1</label>
-          <select name="business_type_l1" id="biz_l1" onchange="updateL2()">{_opt(sfa_db.BUSINESS_TYPE_L1, deal.get('business_type_l1'))}</select></div>
+          <select name="business_type_l1" id="biz_l1" onchange="updateL2()">{_opt(sfa_db.get_master_list(con,'business_type_l1'), deal.get('business_type_l1'))}</select></div>
         <div><label>事業種別L2</label>
           <select name="business_type_l2" id="biz_l2">{_opt_l2(deal.get('business_type_l1'), deal.get('business_type_l2'))}</select></div>
         <div><label>リード経路</label>
-          <select name="lead_pattern">{_opt(sfa_db.LEAD_PATTERNS, deal.get('lead_pattern'))}</select></div>
+          <select name="lead_pattern">{_opt(sfa_db.get_master_list(con,'lead_patterns'), deal.get('lead_pattern'))}</select></div>
         <div><label>ワンタイム総額（万円）</label>
           <input name="value_lumpsum" value="{_esc(deal.get('value_lumpsum'))}"></div>
         <div><label>ワンタイム月額換算（万円）</label>
@@ -676,9 +676,9 @@ def lead_form(con, lead=None) -> str:
             <input name="company" required value="{_esc(lead.get('company'))}" list="acc_list" autocomplete="off">
             <datalist id="acc_list">{acc_datalist}</datalist></div>
           <div><label>業界</label>
-            <input name="industry" value="{_esc(lead.get('industry'))}"></div>
+            <select name="industry">{_opt(sfa_db.get_master_list(con,'industries'), lead.get('industry'))}</select></div>
           <div><label>企業規模</label>
-            <select name="company_size">{_opt(sfa_db.COMPANY_SIZES, lead.get('company_size'))}</select></div>
+            <select name="company_size">{_opt(sfa_db.get_master_list(con,'company_sizes'), lead.get('company_size'))}</select></div>
           <div><label>役職</label>
             <input name="title" value="{_esc(lead.get('title'))}"></div>
           <div><label>メール</label>
