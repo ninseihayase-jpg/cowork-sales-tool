@@ -1,14 +1,14 @@
 {
-  "_comment": "担当者名 → Slackメールアドレスのマッピング。実際のメールアドレスに更新してください。",
-  "吉江": "yoshie@inproc.org",
-  "中島": "nakajima@inproc.org",
-  "早瀬": "hayase@inproc.org",
-  "岩崎": "iwasaki@inproc.org",
-  "高橋": "takahashi@inproc.org",
-  "土屋": "tsuchiya@inproc.org",
+  "_comment": "担当者名 → Slackメールアドレスのマッピング",
+  "吉江": "takuya.yoshie@inproc.org",
+  "中島": "yasutaka.nakajima@inproc.org",
+  "早瀬": "ninsei.hayase@inproc.org",
+  "岩崎": "eijiro.iwasaki@inproc.org",
+  "高橋": "masanori.takahashi@inproc.org",
+  "土屋": "tetsuhiro.tsuchiya@inproc.org",
   "戸田": "toda@inproc.org",
-  "片山": "katayama@inproc.org",
-  "杉山": "sugiyama@inproc.org",
-  "山端": "yamahata@inproc.org",
-  "堀籠": "horikago@inproc.org"
+  "片山": "akito.katayama@inproc.org",
+  "杉山": "hiroki.sugiyama@inproc.org",
+  "山端": "rei.yamaberi@inproc.org",
+  "堀籠": "wataru.horigome@inproc.org"
 }

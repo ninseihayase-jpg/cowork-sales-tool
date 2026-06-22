@@ -47,8 +47,19 @@ def slack_api(method: str, **kwargs) -> dict:
     return result
 
 
+def slack_get(method: str, params: dict) -> dict:
+    qs = urllib.parse.urlencode(params)
+    url = f"https://slack.com/api/{method}?{qs}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {SLACK_TOKEN}"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        result = json.loads(resp.read())
+    if not result.get("ok"):
+        print(f"[Slack] {method} error: {result.get('error')}")
+    return result
+
+
 def get_user_id_by_email(email: str) -> str | None:
-    result = slack_api("users.lookupByEmail", email=email)
+    result = slack_get("users.lookupByEmail", {"email": email})
     if result.get("ok"):
         return result["user"]["id"]
     return None
@@ -132,8 +143,13 @@ def main():
         print("[INFO] 進行中の商談がありません。通知をスキップします。")
         return
 
+    test_owner = os.environ.get("TEST_OWNER", "")  # テスト用: 指定した担当者のみ送信
+
     sent = 0
     for owner, deals in deals_by_owner.items():
+        if test_owner and owner != test_owner:
+            print(f"[SKIP] {owner}: TEST_OWNER={test_owner} のためスキップ")
+            continue
         email = owner_map.get(owner)
         if not email:
             print(f"[SKIP] {owner}: メールアドレスが config に未設定")
