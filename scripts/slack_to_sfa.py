@@ -76,7 +76,7 @@ SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SFA_DB_PATH = os.environ.get("SFA_DB_PATH", str(PROJECT_ROOT / "cowork_sfa.db"))
 
-CHANNEL_NAME = "Sales"
+CHANNEL_NAME = "sales"
 HISTORY_HOURS = 24           # 何時間前までのメッセージを対象にするか
 TRIGGER_PREFIX = "【SFA】"   # このテキストで始まるメッセージを処理する
 
@@ -134,7 +134,7 @@ def get_channel_id(channel_name: str) -> str:
     """チャネル名からチャネルIDを取得する（最大1000件検索）。"""
     cursor = None
     while True:
-        params: dict = {"exclude_archived": "true", "limit": 200}
+        params: dict = {"exclude_archived": "true", "limit": 200, "types": "public_channel,private_channel"}
         if cursor:
             params["cursor"] = cursor
         body = _slack_get("conversations.list", params)
