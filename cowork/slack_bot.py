@@ -113,12 +113,13 @@ def get_pending_thread(con: sqlite3.Connection, thread_ts: str) -> dict | None:
 
 
 def save_pending_thread(con: sqlite3.Connection, thread_ts: str, channel_id: str,
-                        deal_id: int | None, bot_message_ts: str | None):
+                        deal_id: int | None, bot_message_ts: str | None,
+                        state: str = "pending"):
     con.execute("""
         INSERT OR REPLACE INTO slack_threads
             (thread_ts, channel_id, deal_id, bot_message_ts, state)
-        VALUES (?, ?, ?, ?, 'pending')
-    """, (thread_ts, channel_id, deal_id, bot_message_ts))
+        VALUES (?, ?, ?, ?, ?)
+    """, (thread_ts, channel_id, deal_id, bot_message_ts, state))
     con.commit()
 
 
@@ -130,32 +131,27 @@ def mark_completed(con: sqlite3.Connection, thread_ts: str):
 
 
 def find_deal(con: sqlite3.Connection, text: str) -> dict | None:
-    rows = con.execute(
-        "SELECT * FROM deals WHERE status='open' ORDER BY updated_at DESC"
-    ).fetchall()
+    rows = con.execute("""
+        SELECT d.*, a.name as account_name FROM deals d
+        LEFT JOIN accounts a ON d.account_id = a.id
+        WHERE d.status='open' ORDER BY d.updated_at DESC
+    """).fetchall()
     text_l = text.lower()
+    # deal_name 優先マッチ（長い名前ほど優先）
     best = None
     best_score = 0
     for r in rows:
         d = dict(r)
         name = (d.get("deal_name") or "").lower()
-        acct = (d.get("account_name") or "")
-        # account_name is on accounts table; get via join if needed
-        score = 0
-        if name and name in text_l:
+        if name and name != "未定" and name in text_l:
             score = len(name)
-        if score > best_score:
-            best_score = score
-            best = d
+            if score > best_score:
+                best_score = score
+                best = d
     if best:
         return best
-    # Fallback: account name via JOIN
-    rows2 = con.execute("""
-        SELECT d.*, a.name as account_name FROM deals d
-        LEFT JOIN accounts a ON d.account_id = a.id
-        WHERE d.status='open' ORDER BY d.updated_at DESC
-    """).fetchall()
-    for r in rows2:
+    # account_name フォールバック
+    for r in rows:
         d = dict(r)
         acct = (d.get("account_name") or "").lower()
         if acct and acct in text_l:
@@ -372,10 +368,14 @@ def handle_mention(event: dict, con: sqlite3.Connection):
     # 二重処理防止
     existing = get_pending_thread(con, thread_ts)
     if existing:
-        if existing.get("state") == "pending":
+        state = existing.get("state", "")
+        if state == "identifying":
+            post_message(channel, thread_ts,
+                "⏳ 商談確認待ちです。「はい」または「いいえ」で返信してください。")
+        elif state == "pending":
             post_message(channel, thread_ts,
                 "⏳ テンプレートは投稿済みです。内容を確認し「確定」または「ok」と返信してください。")
-        elif existing.get("state") == "completed":
+        elif state == "completed":
             post_message(channel, thread_ts,
                 "✅ このスレッドはDB反映済みです。新しい活動は別スレッドでメンションしてください。")
         return
@@ -395,15 +395,30 @@ def handle_mention(event: dict, con: sqlite3.Connection):
     # 商談マッチ
     deal = find_deal(con, thread_text)
 
-    # テンプレートドラフト
-    template = draft_template(thread_text, deal)
+    if not deal:
+        post_message(channel, thread_ts,
+            "⚠️ 商談を特定できませんでした。\n"
+            "スレッド内に会社名か商談名を含めて、再度 @NegoCollection をメンションしてください。")
+        return
 
-    # Slack に投稿
-    bot_ts = post_message(channel, thread_ts, template)
+    # 商談特定結果を人間に確認
+    acct = deal.get("account_name") or deal.get("deal_name") or "不明"
+    deal_name = deal.get("deal_name") or "未定"
+    stage = deal.get("stage") or "未設定"
+    ms_date = deal.get("next_milestone_date") or "—"
+    ms_label = deal.get("next_milestone_label") or "—"
 
-    # 状態保存
-    save_pending_thread(con, thread_ts, channel,
-                        deal.get("id") if deal else None, bot_ts)
+    confirm_text = (
+        f"🔍 以下の商談でよいですか？\n\n"
+        f"*{acct}* / {deal_name}\n"
+        f"ステージ: {stage}　　次回MS: {ms_date} / {ms_label}\n\n"
+        "「はい」で続行 / 「いいえ」でキャンセル"
+    )
+    bot_ts = post_message(channel, thread_ts, confirm_text)
+
+    # state='identifying' で保存（商談確認待ち）
+    save_pending_thread(con, thread_ts, channel, deal["id"], bot_ts,
+                        state="identifying")
 
 
 def handle_message(event: dict, con: sqlite3.Connection):
@@ -415,19 +430,71 @@ def handle_message(event: dict, con: sqlite3.Connection):
     if not thread_ts:
         return
 
-    text = event.get("text", "").strip()
-    if text.lower() not in ("確定", "ok"):
-        return
-
     channel = event.get("channel", "")
+    text = event.get("text", "").strip()
+    text_l = text.lower()
     confirm_ts = event.get("ts", "")
 
     pending = get_pending_thread(con, thread_ts)
-    if not pending or pending.get("state") != "pending":
+    if not pending:
         return
 
+    state = pending.get("state", "")
     deal_id = pending.get("deal_id")
     bot_ts = pending.get("bot_message_ts", "")
+
+    # ── State: identifying — 商談確認待ち ──────────────────────────────────
+    if state == "identifying":
+        if text_l in ("はい", "yes", "y", "ok"):
+            # 確認OK → スレッド全文を再取得してドラフト生成
+            bot_uid = get_bot_user_id()
+            messages = get_thread_messages(channel, thread_ts)
+            parts = []
+            for m in messages:
+                if m.get("bot_id") or m.get("user") == bot_uid:
+                    continue
+                t = re.sub(r"<@[A-Z0-9]+>", "", m.get("text", "")).strip()
+                # 確認返信（はい/いいえ）はドラフト生成用テキストから除外
+                if t and t.lower() not in ("はい", "yes", "y", "ok", "いいえ", "no", "n"):
+                    parts.append(t)
+            thread_text = "\n".join(parts)
+
+            # DBから商談情報取得（account_name含む）
+            deal = None
+            if deal_id:
+                row = con.execute("""
+                    SELECT d.*, a.name as account_name FROM deals d
+                    LEFT JOIN accounts a ON d.account_id = a.id
+                    WHERE d.id = ?
+                """, (deal_id,)).fetchone()
+                if row:
+                    deal = dict(row)
+
+            template = draft_template(thread_text, deal)
+            new_bot_ts = post_message(channel, thread_ts, template)
+
+            con.execute(
+                "UPDATE slack_threads SET state='pending', bot_message_ts=? WHERE thread_ts=?",
+                (new_bot_ts, thread_ts)
+            )
+            con.commit()
+            print(f"[SlackBot] identifying→pending: thread={thread_ts} deal_id={deal_id}")
+
+        elif text_l in ("いいえ", "no", "n"):
+            post_message(channel, thread_ts,
+                "❌ キャンセルしました。\n"
+                "正しい会社名か商談名を含むスレッドで、再度 @NegoCollection をメンションしてください。")
+            con.execute("UPDATE slack_threads SET state='cancelled' WHERE thread_ts=?", (thread_ts,))
+            con.commit()
+        # それ以外（会話の続き等）は無視
+        return
+
+    # ── State: pending — テンプレート確定待ち ─────────────────────────────
+    if state != "pending":
+        return
+
+    if text_l not in ("確定", "ok"):
+        return
 
     # テンプレート + 上書き値を収集
     messages = get_thread_messages(channel, thread_ts)
