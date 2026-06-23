@@ -370,16 +370,32 @@ def handle_mention(event: dict, con: sqlite3.Connection):
     existing = get_pending_thread(con, thread_ts)
     if existing:
         state = existing.get("state", "")
+        bot_ts = existing.get("bot_message_ts")
         if state == "identifying":
             post_message(channel, thread_ts,
-                "⏳ 商談確認待ちです。「はい」または「いいえ」で返信してください。")
+                "⏳ 商談確認待ちです。「はい」または「いいえ」で返信してください。\n"
+                "やり直す場合は「キャンセル」と返信してください。")
+        elif state == "pending" and not bot_ts:
+            # ドラフト未投稿のまま pending になっている（デプロイ中断等）→ 自動リセット
+            con.execute("DELETE FROM slack_threads WHERE thread_ts=?", (thread_ts,))
+            con.commit()
+            print(f"[SlackBot] stuck pending reset: thread={thread_ts}")
+            # 以降は通常フローで再処理
         elif state == "pending":
             post_message(channel, thread_ts,
-                "⏳ テンプレートは投稿済みです。内容を確認し「確定」または「ok」と返信してください。")
+                "⏳ テンプレートは投稿済みです。内容を確認し「確定」または「ok」と返信してください。\n"
+                "やり直す場合は「キャンセル」と返信してください。")
+            return
         elif state == "completed":
             post_message(channel, thread_ts,
                 "✅ このスレッドはDB反映済みです。新しい活動は別スレッドでメンションしてください。")
-        return
+            return
+        elif state == "cancelled":
+            # キャンセル済みは再処理を許可
+            con.execute("DELETE FROM slack_threads WHERE thread_ts=?", (thread_ts,))
+            con.commit()
+        else:
+            return
 
     # スレッド全文取得（botメッセージと@メンション除去）
     bot_uid = get_bot_user_id()
@@ -448,6 +464,12 @@ def handle_message(event: dict, con: sqlite3.Connection):
 
     # ── State: identifying — 商談確認待ち ──────────────────────────────────
     if state == "identifying":
+        if text_l in ("キャンセル", "cancel"):
+            con.execute("DELETE FROM slack_threads WHERE thread_ts=?", (thread_ts,))
+            con.commit()
+            post_message(channel, thread_ts,
+                "🔄 リセットしました。再度 @NegoCollection をメンションしてください。")
+            return
         if text_l in ("はい", "yes", "y", "ok"):
             # 確認OK → スレッド全文を再取得してドラフト生成
             bot_uid = get_bot_user_id()
@@ -533,6 +555,13 @@ def handle_message(event: dict, con: sqlite3.Connection):
 
     # ── State: pending — テンプレート確定待ち ─────────────────────────────
     if state != "pending":
+        return
+
+    if text_l in ("キャンセル", "cancel"):
+        con.execute("DELETE FROM slack_threads WHERE thread_ts=?", (thread_ts,))
+        con.commit()
+        post_message(channel, thread_ts,
+            "🔄 リセットしました。再度 @NegoCollection をメンションしてください。")
         return
 
     if text_l not in ("確定", "ok"):
