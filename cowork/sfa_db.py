@@ -180,6 +180,16 @@ CREATE TABLE IF NOT EXISTS masters (
     key   TEXT PRIMARY KEY,
     values_json TEXT NOT NULL
 );
+
+-- Slack bot スレッド状態管理
+CREATE TABLE IF NOT EXISTS slack_threads (
+    thread_ts      TEXT PRIMARY KEY,
+    channel_id     TEXT NOT NULL,
+    deal_id        INTEGER,
+    bot_message_ts TEXT,
+    state          TEXT DEFAULT 'pending',
+    created_at     TEXT DEFAULT (datetime('now'))
+);
 """
 
 

@@ -1099,6 +1099,44 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con.commit()
                         self._redirect(f"/deal/{deal_id}")
 
+                # ── Slack Events API ──
+                elif path == "/slack/events":
+                    import threading as _threading
+                    n = int(self.headers.get("Content-Length", 0))
+                    body_bytes = self.rfile.read(n)
+                    try:
+                        data = json.loads(body_bytes)
+                    except Exception:
+                        self._send("<error/>", 400)
+                        return
+
+                    # URL検証チャレンジ
+                    if data.get("type") == "url_verification":
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"challenge": data["challenge"]}).encode())
+                        return
+
+                    # Slackに即時200を返してからバックグラウンド処理
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+
+                    # イベントをバックグラウンドで処理（conはスレッドセーフのため再接続）
+                    def _process():
+                        _con = sfa_db.connect(db_path)
+                        try:
+                            from cowork import slack_bot
+                            slack_bot.handle_event(data, _con)
+                        except Exception as _e:
+                            print(f"[slack_events] error: {_e}")
+                        finally:
+                            _con.close()
+                    _threading.Thread(target=_process, daemon=True).start()
+                    return
+
                 else:
                     self._send(render("<div class=card>不明な操作</div>"), 404)
             finally:

@@ -1,20 +1,66 @@
 services:
+  # ── Webアプリ（営業支援ツール本体） ──────────────────────────────────
   - type: web
-    name: cowork-sales-tool
+    name: sfa-crm
     env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
+    region: singapore
+    plan: starter
+    buildCommand: pip install anthropic
     startCommand: python scripts/run_webapp.py
     envVars:
-      - key: THEME_API_URL
-        value: https://hisho-ohxe.onrender.com
-      - key: THEME_API_TOKEN
-        sync: false          # Render Dashboard の Environment > Secret Files で設定
+      - key: PORT
+        value: 8080
+      - key: SFA_DB_PATH
+        value: /data/cowork_sfa.db
       - key: COWORK_SFA_DB
         value: /data/cowork_sfa.db
-      - key: PORT
-        value: "8787"
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: THEME_API_TOKEN
+        value: hisho-2026
+      - key: THEME_API_URL
+        value: https://hisho-ohxe.onrender.com
     disk:
-      name: sfa-data
+      name: sfa-db
       mountPath: /data
       sizeGB: 1
+
+  # ── 週次商談確認通知（機能5）── 水曜 17:30 JST ───────────────────────
+  - type: cron
+    name: sfa-weekly-notify
+    env: python
+    region: singapore
+    schedule: "30 8 * * 3"
+    buildCommand: pip install anthropic
+    startCommand: python scripts/weekly_slack_notify.py
+    envVars:
+      - key: SFA_DB_PATH
+        value: /data/cowork_sfa.db
+      - key: COWORK_SFA_DB
+        value: /data/cowork_sfa.db
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: WEEKLY_SHEET_ID
+        sync: false
+
+  # ── 商談スプシエクスポート（日次 09:00 JST） ────────────────────────
+  - type: cron
+    name: sfa-daily-export
+    env: python
+    region: singapore
+    schedule: "0 0 * * *"
+    buildCommand: pip install anthropic gspread google-auth
+    startCommand: python scripts/export_deals_to_sheets.py
+    envVars:
+      - key: SFA_DB_PATH
+        value: /data/cowork_sfa.db
+      - key: COWORK_SFA_DB
+        value: /data/cowork_sfa.db
+      - key: WEEKLY_SHEET_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
