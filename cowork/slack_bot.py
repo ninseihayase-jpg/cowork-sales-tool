@@ -476,12 +476,15 @@ def handle_message(event: dict, con: sqlite3.Connection):
             template = draft_template(thread_text, deal)
             new_bot_ts = post_message(channel, thread_ts, template)
 
-            con.execute(
-                "UPDATE slack_threads SET state='pending', bot_message_ts=? WHERE thread_ts=?",
-                (new_bot_ts, thread_ts)
-            )
-            con.commit()
-            print(f"[SlackBot] identifying→pending: thread={thread_ts} deal_id={deal_id}")
+            if new_bot_ts:
+                con.execute(
+                    "UPDATE slack_threads SET state='pending', bot_message_ts=? WHERE thread_ts=?",
+                    (new_bot_ts, thread_ts)
+                )
+                con.commit()
+                print(f"[SlackBot] identifying→pending: thread={thread_ts} deal_id={deal_id}")
+            else:
+                print(f"[SlackBot] post_message failed — state stays identifying: thread={thread_ts}")
 
         elif text_l in ("いいえ", "no", "n"):
             # キャンセルせずにSFA番号指定を促す
