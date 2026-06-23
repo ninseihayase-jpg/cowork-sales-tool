@@ -30,7 +30,7 @@ SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SHEET_ID = os.environ.get("WEEKLY_SHEET_ID", "")
 DB_PATH = os.environ.get("SFA_DB_PATH", str(ROOT / "cowork_sfa.db"))
 CONFIG_PATH = ROOT / "config" / "owner_slack_map.json"
-TOOL_URL = "http://localhost:8787"
+TOOL_URL = os.environ.get("SFA_TOOL_URL", "http://localhost:8787")
 
 
 def slack_api(method: str, **kwargs) -> dict:

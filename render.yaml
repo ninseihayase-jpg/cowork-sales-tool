@@ -5,7 +5,7 @@ services:
     env: python
     region: singapore
     plan: starter
-    buildCommand: pip install anthropic
+    buildCommand: pip install -r requirements.txt
     startCommand: python scripts/run_webapp.py
     envVars:
       - key: PORT
@@ -35,7 +35,7 @@ services:
     env: python
     region: singapore
     schedule: "30 8 * * 3"
-    buildCommand: pip install anthropic
+    buildCommand: pip install -r requirements.txt
     startCommand: python scripts/weekly_slack_notify.py
     envVars:
       - key: SFA_DB_PATH
@@ -46,6 +46,8 @@ services:
         sync: false
       - key: WEEKLY_SHEET_ID
         sync: false
+      - key: SFA_TOOL_URL
+        sync: false
 
   # ── 商談スプシエクスポート（日次 09:00 JST） ────────────────────────
   - type: cron
@@ -53,7 +55,7 @@ services:
     env: python
     region: singapore
     schedule: "0 0 * * *"
-    buildCommand: pip install anthropic gspread google-auth
+    buildCommand: pip install -r requirements.txt
     startCommand: python scripts/export_deals_to_sheets.py
     envVars:
       - key: SFA_DB_PATH

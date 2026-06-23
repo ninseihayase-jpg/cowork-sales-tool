@@ -112,7 +112,7 @@ def dashboard_page(con) -> str:
     leads = sfa_db.list_leads(con)
     sheet_id = os.environ.get("SALES_SHEET_ID", "")
     sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit" if sheet_id else "#"
-    hisho_url = os.environ.get("THEME_API_URL", "https://hisho-ohxe.onrender.com")
+    hisho_url = os.environ.get("THEME_API_URL", "https://hisho-ohxe.onrender.com").rstrip("/") + "/dashboard"
 
     # 直近の活動がある商談（最大3件）
     recent_rows = ""

@@ -1,3 +1,4 @@
+anthropic>=0.30
 openpyxl>=3.1
 gspread>=6.0
 google-auth>=2.30
