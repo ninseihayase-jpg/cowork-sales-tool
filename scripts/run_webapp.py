@@ -29,10 +29,31 @@ def _load_dotenv():
             os.environ.setdefault(k.strip(), v.strip())
 
 
+def _auto_seed(db_path: str):
+    """deals テーブルが空かつ seed_render.sql が存在する場合にシードを実行する。"""
+    import sqlite3
+    seed_path = Path(__file__).resolve().parent / "seed_render.sql"
+    if not seed_path.exists():
+        return
+    con = sqlite3.connect(db_path)
+    count = con.execute("SELECT count(*) FROM deals").fetchone()[0]
+    if count == 0:
+        print(f"[Seed] deals が空です。{seed_path.name} を実行します...")
+        con.executescript(seed_path.read_text(encoding="utf-8"))
+        con.commit()
+        count = con.execute("SELECT count(*) FROM deals").fetchone()[0]
+        print(f"[Seed] 完了: deals={count}件")
+    else:
+        print(f"[Seed] deals={count}件 — シードスキップ")
+    con.close()
+
+
 def main():
     _load_dotenv()
     port = int(os.environ.get("PORT", "8787"))
     db_path = os.environ.get("COWORK_SFA_DB", sfa_db.DEFAULT_DB_PATH)
+
+    _auto_seed(db_path)
 
     token = os.environ.get("THEME_API_TOKEN", "").strip()
     client = None
