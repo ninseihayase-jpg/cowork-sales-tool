@@ -450,10 +450,8 @@ def deal_form(con, deal=None) -> str:
           <p><button class="btn sec">活動を追加して更新</button></p>
         </form></div>"""
         sync_btn = (
-            f'<form method="post" action="/deal/{deal["id"]}/sync" style="display:inline">'
-            f'<button class="btn sync">テーマDB／ダッシュボードへ同期</button></form> '
-            f'<span class="muted">'
-            f'{"連携済 theme_id="+str(deal.get("theme_id")) if deal.get("theme_id") else "未連携"}'
+            f'<span class="muted" style="font-size:.85em">'
+            f'{"🔗 テーマDB連携済 (id="+str(deal.get("theme_id"))+")" if deal.get("theme_id") else "テーマDB未連携（保存時に自動連携）"}'
             f'</span>'
         )
     return f"""
@@ -958,26 +956,6 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 status=deal.get("status"),
                             )
                     self._redirect(f"/deal/{did}")
-
-                elif path.startswith("/deal/") and path.endswith("/sync"):
-                    did = int(path.split("/")[2])
-                    if theme_client is None:
-                        self._send(render(
-                            deal_form(con, sfa_db.get_deal(con, did)),
-                            flash="同期はテーマDBトークン未設定のため無効です（.env の THEME_API_TOKEN を設定）。",
-                        ))
-                    else:
-                        try:
-                            res = theme_link.sync_deal(theme_client, con, did)
-                            self._send(render(
-                                deal_form(con, sfa_db.get_deal(con, did)),
-                                flash=f"テーマDBへ同期しました（{res['action']} / theme_id={res['theme_id']}）。ダッシュボードに反映されます。",
-                            ))
-                        except Exception as exc:  # noqa: BLE001
-                            self._send(render(
-                                deal_form(con, sfa_db.get_deal(con, did)),
-                                flash=f"同期エラー: {exc}",
-                            ))
 
                 # ── リード ──
                 elif path == "/leads/save":
