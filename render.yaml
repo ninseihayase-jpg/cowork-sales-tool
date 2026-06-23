@@ -26,6 +26,8 @@ services:
         value: https://hisho-ohxe.onrender.com
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: SFA_TOOL_URL
+        value: https://sfa-crm.onrender.com
     disk:
       name: sfa-db
       mountPath: /data
