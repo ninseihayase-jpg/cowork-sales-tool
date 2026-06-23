@@ -33,6 +33,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "http://localhost:8787")
 
 _bot_user_id: str | None = None
 
@@ -408,11 +409,13 @@ def handle_mention(event: dict, con: sqlite3.Connection):
     ms_date = deal.get("next_milestone_date") or "—"
     ms_label = deal.get("next_milestone_label") or "—"
 
+    deal_id_str = deal.get("id", "?")
     confirm_text = (
         f"🔍 以下の商談でよいですか？\n\n"
-        f"*{acct}* / {deal_name}\n"
+        f"*SFA#{deal_id_str}* | *{acct}* / {deal_name}\n"
         f"ステージ: {stage}　　次回MS: {ms_date} / {ms_label}\n\n"
-        "「はい」で続行 / 「いいえ」でキャンセル"
+        f"「はい」で続行 / 「いいえ」の場合は正しいSFA番号（数字のみ）を返信してください\n"
+        f"商談一覧: {SFA_TOOL_URL}/deals"
     )
     bot_ts = post_message(channel, thread_ts, confirm_text)
 
@@ -481,11 +484,47 @@ def handle_message(event: dict, con: sqlite3.Connection):
             print(f"[SlackBot] identifying→pending: thread={thread_ts} deal_id={deal_id}")
 
         elif text_l in ("いいえ", "no", "n"):
+            # キャンセルせずにSFA番号指定を促す
             post_message(channel, thread_ts,
-                "❌ キャンセルしました。\n"
-                "正しい会社名か商談名を含むスレッドで、再度 @NegoCollection をメンションしてください。")
-            con.execute("UPDATE slack_threads SET state='cancelled' WHERE thread_ts=?", (thread_ts,))
-            con.commit()
+                f"🔄 商談一覧からSFA番号を確認して、数字のみ（例: `8`）で返信してください。\n"
+                f"商談一覧: {SFA_TOOL_URL}/deals")
+
+        elif text.strip().isdigit():
+            # SFA番号で商談を直接指定
+            specified_id = int(text.strip())
+            row = con.execute("""
+                SELECT d.*, a.name as account_name FROM deals d
+                LEFT JOIN accounts a ON d.account_id = a.id
+                WHERE d.id = ? AND d.status = 'open'
+            """, (specified_id,)).fetchone()
+
+            if not row:
+                post_message(channel, thread_ts,
+                    f"❌ SFA#{specified_id} が見つかりません（open商談のみ指定可）。\n"
+                    f"商談一覧: {SFA_TOOL_URL}/deals")
+            else:
+                deal = dict(row)
+                acct = deal.get("account_name") or deal.get("deal_name") or "不明"
+                deal_name = deal.get("deal_name") or "未定"
+                stage = deal.get("stage") or "未設定"
+                ms_date = deal.get("next_milestone_date") or "—"
+                ms_label = deal.get("next_milestone_label") or "—"
+
+                confirm_text = (
+                    f"🔍 以下の商談でよいですか？\n\n"
+                    f"*SFA#{specified_id}* | *{acct}* / {deal_name}\n"
+                    f"ステージ: {stage}　　次回MS: {ms_date} / {ms_label}\n\n"
+                    f"「はい」で続行 / 「いいえ」の場合は正しいSFA番号（数字のみ）を返信してください\n"
+                    f"商談一覧: {SFA_TOOL_URL}/deals"
+                )
+                new_bot_ts = post_message(channel, thread_ts, confirm_text)
+                con.execute(
+                    "UPDATE slack_threads SET deal_id=?, bot_message_ts=? WHERE thread_ts=?",
+                    (specified_id, new_bot_ts, thread_ts)
+                )
+                con.commit()
+                print(f"[SlackBot] deal switched to #{specified_id}: thread={thread_ts}")
+
         # それ以外（会話の続き等）は無視
         return
 

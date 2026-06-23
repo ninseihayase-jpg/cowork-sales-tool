@@ -323,7 +323,9 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None) -
         elif d.get("next_milestone_label"):
             ms = f'<span class="muted">{_esc(d["next_milestone_label"])}</span>'
         rows.append(
-            f'<tr><td><a href="/deal/{d["id"]}">{_esc(d.get("account_name"))}</a></td>'
+            f'<tr>'
+            f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{d["id"]}</td>'
+            f'<td><a href="/deal/{d["id"]}">{_esc(d.get("account_name"))}</a></td>'
             f'<td>{_esc(d.get("deal_name"))}</td>'
             f'<td><span class="stage">{_esc(d.get("stage"))}</span></td>'
             f'<td>{_esc(d.get("owner"))}</td>'
@@ -343,9 +345,9 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None) -
       <a class="btn" href="/deal/new">＋商談追加</a>
     </h2>
     {filter_row}
-    <table><tr><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
+    <table><tr><th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
                <th>次回MS</th><th class="right">金額(万円)</th><th class="right">連携</th></tr>
-    {''.join(rows) or '<tr><td colspan=7 class=muted>商談がありません。</td></tr>'}
+    {''.join(rows) or '<tr><td colspan=8 class=muted>商談がありません。</td></tr>'}
     </table></div>
     <div class="card"><h2>アカウント ({len(accounts)})</h2>
     <table><tr><th>企業名</th><th>業界</th><th>企業規模</th></tr>
