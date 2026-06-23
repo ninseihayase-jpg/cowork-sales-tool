@@ -24,6 +24,8 @@ services:
         value: hisho-2026
       - key: THEME_API_URL
         value: https://hisho-ohxe.onrender.com
+      - key: PYTHONUNBUFFERED
+        value: "1"
     disk:
       name: sfa-db
       mountPath: /data

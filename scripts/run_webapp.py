@@ -34,18 +34,24 @@ def _auto_seed(db_path: str):
     import sqlite3
     seed_path = Path(__file__).resolve().parent / "seed_render.sql"
     if not seed_path.exists():
+        print("[Seed] seed_render.sql が見つかりません — スキップ", flush=True)
         return
+    sfa_db.init_db(db_path)  # テーブルが存在しない場合に先に作成
     con = sqlite3.connect(db_path)
-    count = con.execute("SELECT count(*) FROM deals").fetchone()[0]
-    if count == 0:
-        print(f"[Seed] deals が空です。{seed_path.name} を実行します...")
-        con.executescript(seed_path.read_text(encoding="utf-8"))
-        con.commit()
+    try:
         count = con.execute("SELECT count(*) FROM deals").fetchone()[0]
-        print(f"[Seed] 完了: deals={count}件")
-    else:
-        print(f"[Seed] deals={count}件 — シードスキップ")
-    con.close()
+        if count == 0:
+            print(f"[Seed] deals が空です。{seed_path.name} を実行します...", flush=True)
+            con.executescript(seed_path.read_text(encoding="utf-8"))
+            con.commit()
+            count = con.execute("SELECT count(*) FROM deals").fetchone()[0]
+            print(f"[Seed] 完了: deals={count}件", flush=True)
+        else:
+            print(f"[Seed] deals={count}件 — シードスキップ", flush=True)
+    except Exception as e:
+        print(f"[Seed] エラー: {e}", flush=True)
+    finally:
+        con.close()
 
 
 def main():
