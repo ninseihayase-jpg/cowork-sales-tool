@@ -66,7 +66,19 @@ def main():
         if not Path(sa_json).exists():
             print(f"エラー: サービスアカウント鍵が見つかりません: {sa_json}", file=sys.stderr)
             sys.exit(1)
-        rows = sources.read_google_sheets(sheet_id, worksheets, sa_json)
+        # テーマDBの既存IDを取得（採番の重複防止）
+        existing_ids: set = set()
+        if not args.dry_run:
+            api_url = os.environ.get("THEME_API_URL", "https://hisho-ohxe.onrender.com")
+            token = os.environ.get("THEME_API_TOKEN", "")
+            if token:
+                _c = ThemeDBClient(api_url, token)
+                existing_ids = _c.existing_theme_ids()
+        rows = sources.read_google_sheets(
+            sheet_id, worksheets, sa_json,
+            assign_ids=(not args.dry_run),
+            existing_ids=existing_ids,
+        )
         src_desc = f"GoogleSheets id={sheet_id} worksheets={worksheets}"
 
     print(f"ソース: {src_desc}")
