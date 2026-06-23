@@ -1080,10 +1080,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 # ── Slack Events API ──
                 elif path == "/slack/events":
                     import threading as _threading
-                    n = int(self.headers.get("Content-Length", 0))
-                    body_bytes = self.rfile.read(n)
+                    # body は do_POST 先頭の raw 変数で読み込み済み（rfile は再読不可）
                     try:
-                        data = json.loads(body_bytes)
+                        data = json.loads(raw)
                     except Exception:
                         self._send("<error/>", 400)
                         return
