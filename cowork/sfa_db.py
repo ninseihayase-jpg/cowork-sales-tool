@@ -315,8 +315,10 @@ DEAL_FIELDS = [
 def upsert_deal(con, *, id=None, **fields) -> int:
     data = {k: fields.get(k) for k in DEAL_FIELDS}
     if id:
-        sets = ", ".join(f"{k}=?" for k in DEAL_FIELDS) + ", updated_at=datetime('now')"
-        con.execute(f"UPDATE deals SET {sets} WHERE id=?", [data[k] for k in DEAL_FIELDS] + [id])
+        # theme_id は sync_deal が直接 SQL で管理するため、NULL で上書きしない
+        update_keys = [k for k in DEAL_FIELDS if not (k == "theme_id" and data[k] is None)]
+        sets = ", ".join(f"{k}=?" for k in update_keys) + ", updated_at=datetime('now')"
+        con.execute(f"UPDATE deals SET {sets} WHERE id=?", [data[k] for k in update_keys] + [id])
         con.commit()
         return int(id)
     cols = ", ".join(DEAL_FIELDS)
