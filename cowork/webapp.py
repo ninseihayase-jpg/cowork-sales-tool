@@ -1096,6 +1096,21 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_cors_json(self, body: bytes, status=200):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+
         def _redirect(self, location):
             self.send_response(303)
             self.send_header("Location", location)
@@ -1144,6 +1159,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         effective = None if status_q == "all" else status_q
                         deals = sfa_db.list_deals(con, status=effective)
                         self._send(json.dumps([dict(d) for d in deals], ensure_ascii=False, default=str).encode(), ctype="application/json")
+                elif path == "/api/memo/list":
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        notes = con.execute(
+                            "SELECT * FROM meeting_notes ORDER BY note_date DESC, created_at DESC LIMIT 100"
+                        ).fetchall()
+                        self._send_cors_json(json.dumps([dict(r) for r in notes], ensure_ascii=False, default=str).encode())
                 elif path == "/":
                     self._send(render(dashboard_page(con)))
                 elif path == "/deals":
@@ -1690,6 +1715,26 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             if _lid:
                                 _redirect_to = f"/lead/{_lid}"
                     self._redirect(_redirect_to)
+
+                # ── メモ保存 ──
+                elif path == "/api/memo/save":
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            data = f
+                        note_id = con.execute(
+                            "INSERT INTO meeting_notes(note_date,body,task,task_owner,task_due) VALUES(?,?,?,?,?)",
+                            (data.get("note_date") or None, data.get("body") or None,
+                             data.get("task") or None, data.get("task_owner") or None,
+                             data.get("task_due") or None),
+                        ).lastrowid
+                        con.commit()
+                        self._send_cors_json(json.dumps({"ok": True, "id": note_id}, ensure_ascii=False).encode())
 
                 # ── Slack Events API ──
                 elif path == "/slack/events":

@@ -191,6 +191,17 @@ CREATE TABLE IF NOT EXISTS slack_threads (
     meta           TEXT,
     created_at     TEXT DEFAULT (datetime('now'))
 );
+
+-- ダッシュボードメモ（Hishoダッシュボードから投稿）
+CREATE TABLE IF NOT EXISTS meeting_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_date  TEXT,
+    body       TEXT,
+    task       TEXT,
+    task_owner TEXT,
+    task_due   TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
