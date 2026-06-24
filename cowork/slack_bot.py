@@ -478,9 +478,14 @@ def handle_message(event: dict, con: sqlite3.Connection):
     text_l = text.lower()
     confirm_ts = event.get("ts", "")
 
+    print(f"[SlackBot] handle_message: thread={thread_ts!r} text={text[:30]!r}", flush=True)
+
     pending = get_pending_thread(con, thread_ts)
     if not pending:
+        print(f"[SlackBot] handle_message: no pending thread, skip", flush=True)
         return
+
+    print(f"[SlackBot] handle_message: state={pending.get('state')!r}", flush=True)
 
     state = pending.get("state", "")
     deal_id = pending.get("deal_id")
@@ -620,6 +625,10 @@ def handle_event(data: dict, con: sqlite3.Connection):
     """Slack Events API ディスパッチャ。webapp.py の /slack/events から呼ばれる。"""
     event = data.get("event", {})
     etype = event.get("type", "")
+    subtype = event.get("subtype", "")
+    bot_id = event.get("bot_id", "")
+    thread_ts = event.get("thread_ts", "")
+    print(f"[SlackBot] event: type={etype!r} subtype={subtype!r} bot_id={bool(bot_id)} thread={thread_ts!r}", flush=True)
     try:
         if etype == "app_mention":
             handle_mention(event, con)
