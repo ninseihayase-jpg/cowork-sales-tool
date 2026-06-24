@@ -353,7 +353,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
             for v in values
         )
         return (f'<select onchange="updateDealField({deal_id}, \'{field}\', this.value)"'
-                f' style="font-size:12px;padding:2px 4px;max-width:110px">'
+                f' style="font-size:11px;padding:1px 2px;max-width:90px">'
                 f'<option value=""></option>{opts}</select>')
 
     # バルク編集用JSオブジェクト構築
@@ -386,12 +386,12 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         inp_client_budget = (
             f'<input type="text" value="{_esc(cb_val)}"'
             f' onchange="updateDealField({did}, \'client_budget\', this.value)"'
-            f' style="font-size:12px;padding:2px 4px;width:90px">'
+            f' style="font-size:11px;padding:1px 2px;width:75px">'
         )
         inp_value_lumpsum = (
             f'<input type="number" step="0.1" value="{_esc(vl_val)}"'
             f' onchange="updateDealField({did}, \'value_lumpsum\', this.value)"'
-            f' style="font-size:12px;padding:2px 4px;width:90px">'
+            f' style="font-size:11px;padding:1px 2px;width:75px">'
         )
         rows.append(
             f'<tr>'
@@ -421,14 +421,17 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     </h2>
     {filter_row}
     <form id="deal_bulk_form" method="post" action="/deals/bulk_edit">
-    <table><tr>
-      <th style="width:32px"><input type="checkbox" id="deal_chk_all" title="全選択"
+    <div style="overflow-x:auto">
+    <table style="min-width:900px"><tr>
+      <th style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択"
             onchange="document.querySelectorAll('#deal_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
       <th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
-      <th>事業種別L1</th><th>事業種別L2</th><th>クライアント予算</th><th>ワンタイム総額</th>
+      <th>種別L1</th><th>種別L2</th>
+      <th>予算<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span></th>
+      <th>WT総額<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(提案,万円)</span></th>
       <th>次回MS</th><th class="right">連携</th></tr>
     {''.join(rows) or '<tr><td colspan=12 class=muted>商談がありません。</td></tr>'}
-    </table>
+    </table></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
       <select id="deal_bulk_field" name="field" style="width:auto">
         <option value="stage">ステージ</option>
@@ -695,6 +698,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         "assigned_to": [["", "（変更なし）"]] + [[o, o] for o in owners_list],
         "industry": [["", "（変更なし）"]] + [[i, i] for i in industries_list],
         "company_size": [["", "（変更なし）"]] + [[cs, cs] for cs in company_sizes_list],
+        "lead_status": [["", "（変更なし）"]] + [[s, sfa_db.LEAD_STATUS_LABELS[s]] for s in sfa_db.LEAD_STATUSES],
     }
     bulk_options_json = json.dumps(bulk_options, ensure_ascii=False)
 
@@ -716,12 +720,22 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
                 f' style="font-size:12px;padding:2px 4px;max-width:120px">'
                 f'<option value=""></option>{opts}</select>')
 
+    def _inline_select_status(lead_id, current):
+        opts = "".join(
+            f'<option value="{html.escape(s)}"{" selected" if s == current else ""}>{html.escape(sfa_db.LEAD_STATUS_LABELS[s])}</option>'
+            for s in sfa_db.LEAD_STATUSES
+        )
+        return (f'<select onchange="updateLeadField({lead_id}, \'lead_status\', this.value)"'
+                f' style="font-size:12px;padding:2px 4px;max-width:110px">'
+                f'<option value=""></option>{opts}</select>')
+
     rows = []
     for ld in leads:
         sc = f's-{ld.get("lead_status", "new")}'
         sl = sfa_db.LEAD_STATUS_LABELS.get(ld.get("lead_status", "new"), "")
         deal_badge = (f' <a href="/deal/{ld["deal_id"]}" title="紐付け商談">🔗</a>'
                       if ld.get("deal_id") else "")
+        sel_status = _inline_select_status(ld["id"], ld.get("lead_status", "new"))
         sel_source = _inline_select_source(ld["id"], ld.get("source", "other"))
         sel_owner = _inline_select_master(ld["id"], "assigned_to", owners_list, ld.get("assigned_to") or "")
         sel_industry = _inline_select_master(ld["id"], "industry", industries_list, ld.get("industry") or "")
@@ -731,7 +745,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
             f'<td style="width:32px"><input type="checkbox" name="ids" value="{ld["id"]}"></td>'
             f'<td><a href="/leads/{ld["id"]}">{_esc(ld["name"])}</a>{deal_badge}<br>'
             f'<span class="muted">{_esc(ld.get("company"))}</span></td>'
-            f'<td><span class="stage {sc}">{sl}</span></td>'
+            f'<td>{sel_status}</td>'
             f'<td class="hide-sm">{sel_source}</td>'
             f'<td class="hide-sm">{sel_owner}</td>'
             f'<td class="hide-sm">{sel_industry}</td>'
@@ -764,6 +778,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
       </table>
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
         <select id="bulk_field" name="field" style="width:auto">
+          <option value="lead_status">ステータス</option>
           <option value="source">経路</option>
           <option value="assigned_to">担当</option>
           <option value="industry">業界</option>
