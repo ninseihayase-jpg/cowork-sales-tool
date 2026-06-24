@@ -326,6 +326,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     deals = sfa_db.list_deals(con, status=status_filter, owner=owner, stage=stage_filter)
     owners = sfa_db.get_master_list(con, "owners")
     stages = sfa_db.get_master_list(con, "deal_stages")
+    biz_l1_list = sfa_db.get_master_list(con, "business_type_l1")
     owner_opts = '<option value="">全担当</option>' + "".join(
         f'<option value="{html.escape(o)}"{" selected" if o == owner else ""}>{html.escape(o)}</option>'
         for o in owners
@@ -352,8 +353,16 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
             for v in values
         )
         return (f'<select onchange="updateDealField({deal_id}, \'{field}\', this.value)"'
-                f' style="font-size:12px;padding:2px 4px;max-width:120px">'
+                f' style="font-size:12px;padding:2px 4px;max-width:110px">'
                 f'<option value=""></option>{opts}</select>')
+
+    # バルク編集用JSオブジェクト構築
+    deal_bulk_options = {
+        "stage": [["", "（変更なし）"]] + [[s, s] for s in stages],
+        "owner": [["", "（変更なし）"]] + [[o, o] for o in owners],
+        "business_type_l1": [["", "（変更なし）"]] + [[v, v] for v in biz_l1_list],
+    }
+    deal_bulk_options_json = json.dumps(deal_bulk_options, ensure_ascii=False)
 
     rows = []
     for d in deals:
@@ -368,15 +377,35 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
             ms = f'<span class="muted">{_esc(d["next_milestone_label"])}</span>'
         sel_stage = _deal_inline_select(d["id"], "stage", stages, d.get("stage") or "")
         sel_owner = _deal_inline_select(d["id"], "owner", owners, d.get("owner") or "")
+        sel_biz_l1 = _deal_inline_select(d["id"], "business_type_l1", biz_l1_list, d.get("business_type_l1") or "")
+        biz_l2_values = sfa_db.BUSINESS_TYPE_L2_BY_L1.get(d.get("business_type_l1") or "", [])
+        sel_biz_l2 = _deal_inline_select(d["id"], "business_type_l2", biz_l2_values, d.get("business_type_l2") or "")
+        did = d["id"]
+        cb_val = d.get("client_budget") or ""
+        vl_val = d.get("value_lumpsum") or ""
+        inp_client_budget = (
+            f'<input type="text" value="{_esc(cb_val)}"'
+            f' onchange="updateDealField({did}, \'client_budget\', this.value)"'
+            f' style="font-size:12px;padding:2px 4px;width:90px">'
+        )
+        inp_value_lumpsum = (
+            f'<input type="number" step="0.1" value="{_esc(vl_val)}"'
+            f' onchange="updateDealField({did}, \'value_lumpsum\', this.value)"'
+            f' style="font-size:12px;padding:2px 4px;width:90px">'
+        )
         rows.append(
             f'<tr>'
+            f'<td style="width:32px"><input type="checkbox" name="ids" value="{d["id"]}"></td>'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{d["id"]}</td>'
             f'<td><a href="/deal/{d["id"]}">{_esc(d.get("account_name"))}</a></td>'
             f'<td>{_esc(d.get("deal_name"))}</td>'
             f'<td>{sel_stage}</td>'
             f'<td>{sel_owner}</td>'
+            f'<td>{sel_biz_l1}</td>'
+            f'<td>{sel_biz_l2}</td>'
+            f'<td>{inp_client_budget}</td>'
+            f'<td>{inp_value_lumpsum}</td>'
             f'<td>{ms}</td>'
-            f'<td class="right">{_esc(val)}</td>'
             f'<td class="right" title="テーマDB連携">{linked}</td></tr>'
         )
     accounts = sfa_db.list_accounts(con)
@@ -391,15 +420,32 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <a class="btn" href="/deal/new">＋商談追加</a>
     </h2>
     {filter_row}
-    <table><tr><th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
-               <th>次回MS</th><th class="right">金額(万円)</th><th class="right">連携</th></tr>
-    {''.join(rows) or '<tr><td colspan=8 class=muted>商談がありません。</td></tr>'}
-    </table></div>
+    <form id="deal_bulk_form" method="post" action="/deals/bulk_edit">
+    <table><tr>
+      <th style="width:32px"><input type="checkbox" id="deal_chk_all" title="全選択"
+            onchange="document.querySelectorAll('#deal_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
+      <th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
+      <th>事業種別L1</th><th>事業種別L2</th><th>クライアント予算</th><th>ワンタイム総額</th>
+      <th>次回MS</th><th class="right">連携</th></tr>
+    {''.join(rows) or '<tr><td colspan=12 class=muted>商談がありません。</td></tr>'}
+    </table>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <select id="deal_bulk_field" name="field" style="width:auto">
+        <option value="stage">ステージ</option>
+        <option value="owner">担当</option>
+        <option value="business_type_l1">事業種別L1</option>
+      </select>
+      <select id="deal_bulk_value" name="value" style="width:auto"></select>
+      <button class="btn sec" type="submit">選択した件を一括変更</button>
+    </div>
+    </form>
+    </div>
     <div class="card"><h2>アカウント ({len(accounts)})</h2>
     <table><tr><th>企業名</th><th>業界</th><th>企業規模</th></tr>
     {acc_rows or '<tr><td colspan=3 class=muted>まだアカウントがありません。</td></tr>'}
     </table></div>
     <script>
+    const DEAL_BULK_OPTIONS = {deal_bulk_options_json};
     function updateDealField(id, field, value) {{
       fetch('/deal/' + id + '/field', {{
         method: 'POST',
@@ -409,6 +455,16 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         if (!d.ok) alert('更新エラー');
       }}).catch(() => alert('通信エラー'));
     }}
+    function repopulateDealBulkValue() {{
+      var field = document.getElementById('deal_bulk_field').value;
+      var opts = DEAL_BULK_OPTIONS[field] || [];
+      var sel = document.getElementById('deal_bulk_value');
+      sel.innerHTML = opts.map(function(pair) {{
+        return '<option value="' + pair[0] + '">' + pair[1] + '</option>';
+      }}).join('');
+    }}
+    document.getElementById('deal_bulk_field').addEventListener('change', repopulateDealBulkValue);
+    repopulateDealBulkValue();
     </script>
     """
 
@@ -851,9 +907,9 @@ def lead_form(con, lead=None) -> str:
           <a class="btn sec" href="/leads">一覧へ</a>
           {convert_btn}
           {deal_link}
-          {delete_btn}
         </p>
       </form>
+      {delete_btn}
     </div>
     {activities_html}"""
 
@@ -1033,6 +1089,34 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     )
                     self._redirect("/")
 
+                # ── 商談一括編集 ──
+                elif path == "/deals/bulk_edit":
+                    _DEAL_ALLOWED = {"stage", "owner", "business_type_l1"}
+                    ids = f_list.get("ids", [])
+                    field = f.get("field", "")
+                    value = f.get("value", "")
+                    if field in _DEAL_ALLOWED and ids:
+                        if field == "stage":
+                            valid = sfa_db.get_master_list(con, "deal_stages")
+                            if value and value not in valid:
+                                self._redirect("/deals")
+                                return
+                        for did in ids:
+                            if str(did).isdigit():
+                                con.execute(
+                                    f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
+                                    (value or None, int(did)),
+                                )
+                        con.commit()
+                        if field == "stage" and theme_client is not None:
+                            for did in ids:
+                                if str(did).isdigit():
+                                    try:
+                                        theme_link.sync_deal(theme_client, con, int(did))
+                                    except Exception:
+                                        pass
+                    self._redirect("/deals")
+
                 # ── 商談 ──
                 elif path == "/deal/save":
                     def num(k):
@@ -1114,7 +1198,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── 商談インライン編集 ──
                 elif path.startswith("/deal/") and path.endswith("/field"):
-                    _DEAL_ALLOWED_FIELDS = {"stage", "owner"}
+                    _DEAL_ALLOWED_FIELDS = {"stage", "owner", "business_type_l1", "business_type_l2", "client_budget", "value_lumpsum"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -1142,7 +1226,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                         print(f"[theme_link] sync_deal failed: {_exc}")
                         else:
                             con.execute(
-                                "UPDATE deals SET owner=?, updated_at=datetime('now') WHERE id=?",
+                                f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
                                 (value or None, deal_id),
                             )
                             con.commit()
