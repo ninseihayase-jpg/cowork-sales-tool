@@ -224,10 +224,10 @@ def draft_template(thread_text: str, deal: dict | None) -> str:
 以下のJSONのみ出力（説明不要）:
 {{
   "activity_date": "YYYY-MM-DD（読み取れなければ【記載なし】）",
-  "activity_type": "面談/電話/メール/メモ（読み取れなければ【記載なし】）",
+  "activity_type": "面談・電話・メール・メモ のいずれか（読み取れなければ【記載なし】）",
   "contact_name": "相手の名前（読み取れなければ【記載なし】）",
   "activity_content": "活動内容の要約（スレッドから作成）",
-  "stage_update": "変更後ステージ名（変更不要なら null）",
+  "stage_update": "初回アポ実施・要件詰め・提案・クロージング・受注・失注・保留中 のいずれか（変更不要なら null）",
   "next_milestone_date": "YYYY-MM-DD（変更不要なら null、不明なら【記載なし】）",
   "next_milestone_label": "次回MSラベル（変更不要なら null、不明なら【記載なし】）",
   "memo_addition": "追記すべきメモ（追記不要なら null）"
@@ -266,18 +266,18 @@ def draft_template(thread_text: str, deal: dict | None) -> str:
         "",
         "─── 今回の活動 ───",
         f"活動日: {v(parsed.get('activity_date'))}",
-        f"種別: {v(parsed.get('activity_type'))}",
+        f"種別: {v(parsed.get('activity_type'))}　　＊面談 / 電話 / メール / メモ",
         f"相手: {v(parsed.get('contact_name'))}",
         f"内容: {v(parsed.get('activity_content'))}",
         "",
         "─── 商談更新（変更なしは「-」のまま） ───",
-        f"ステージ: {stage_upd}",
+        f"ステージ: {stage_upd}　　＊初回アポ実施 / 要件詰め / 提案 / クロージング / 受注 / 失注 / 保留中",
         f"次回MS日: {ms_date}",
         f"次回MSラベル: {ms_label}",
         f"追記メモ: {memo_add}",
         "",
         "✅ 確認・編集後「確定」または「ok」と返信してください",
-        "（修正は「活動日: 2026-06-23」のように返信で上書きできます）",
+        "（修正は「種別: 面談」のように返信で上書きできます）",
     ]
     if not deal:
         lines.insert(2, "⚠️ 商談を自動特定できませんでした。商談名を明示して再メンションしてください。")
@@ -331,6 +331,10 @@ def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
 
 # ── DB update ──────────────────────────────────────────────────────────────
 
+_VALID_STAGES = {"初回アポ実施", "要件詰め", "提案", "クロージング", "受注", "失注", "保留中"}
+_VALID_ACTIVITY_TYPES = {"面談", "電話", "メール", "メモ"}
+
+
 def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None):
     import datetime
 
@@ -338,12 +342,15 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None):
     content = fields.get("内容")
     if deal_id and content:
         date_str = fields.get("活動日") or datetime.date.today().isoformat()
+        activity_type = fields.get("種別") or "メモ"
+        if activity_type not in _VALID_ACTIVITY_TYPES:
+            activity_type = "メモ"
         con.execute("""
             INSERT INTO activities (deal_id, type, occurred_on, contact_name, body)
             VALUES (?, ?, ?, ?, ?)
         """, (
             deal_id,
-            fields.get("種別") or "メモ",
+            activity_type,
             date_str,
             fields.get("相手") or "",
             content,
@@ -352,7 +359,7 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None):
     # 商談更新
     if deal_id:
         updates: dict = {}
-        if fields.get("ステージ"):
+        if fields.get("ステージ") and fields["ステージ"] in _VALID_STAGES:
             updates["stage"] = fields["ステージ"]
         if fields.get("次回MS日"):
             updates["next_milestone_date"] = fields["次回MS日"]
