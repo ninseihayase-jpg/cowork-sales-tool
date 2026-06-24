@@ -378,6 +378,7 @@ def handle_mention(event: dict, con: sqlite3.Connection):
             post_message(channel, thread_ts,
                 "⏳ 商談確認待ちです。「はい」または「いいえ」で返信してください。\n"
                 "やり直す場合は「キャンセル」と返信してください。")
+            return
         elif state == "pending" and not bot_ts:
             # ドラフト未投稿のまま pending になっている（デプロイ中断等）→ 自動リセット
             con.execute("DELETE FROM slack_threads WHERE thread_ts=?", (thread_ts,))
