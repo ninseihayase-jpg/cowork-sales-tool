@@ -97,6 +97,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
   <a href="/deals">商談一覧</a>
   <a href="/leads">リード</a>
   <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
+  <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Salesダッシュボード ↗</a>
 </header>
 <main>{flash}{body}</main></body></html>"""
 
