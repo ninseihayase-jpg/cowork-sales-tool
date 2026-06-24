@@ -370,6 +370,8 @@ def _extract_field(text: str, label: str) -> str | None:
     if not m:
         return None
     val = m.group(1).strip()
+    # テンプレートのヒント部分（　　＊選択肢...）を除去
+    val = re.sub(r'[\s　]+＊.*$', '', val).strip()
     if val in ("-", "【記載なし】", "変更なし", "（なし）"):
         return None
     return val
