@@ -28,6 +28,8 @@ services:
         value: "1"
       - key: SFA_TOOL_URL
         value: https://sfa-crm.onrender.com
+      - key: SFA_API_TOKEN
+        sync: false
     disk:
       name: sfa-db
       mountPath: /data
@@ -51,6 +53,10 @@ services:
       - key: WEEKLY_SHEET_ID
         sync: false
       - key: SFA_TOOL_URL
+        sync: false
+      - key: SFA_API_TOKEN
+        sync: false
+      - key: SLACK_BOT_TOKEN
         sync: false
 
   # ── 商談スプシエクスポート（日次 09:00 JST） ────────────────────────

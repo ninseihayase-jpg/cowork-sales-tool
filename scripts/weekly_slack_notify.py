@@ -31,6 +31,7 @@ SHEET_ID = os.environ.get("WEEKLY_SHEET_ID", "")
 DB_PATH = os.environ.get("SFA_DB_PATH", str(ROOT / "cowork_sfa.db"))
 CONFIG_PATH = ROOT / "config" / "owner_slack_map.json"
 TOOL_URL = os.environ.get("SFA_TOOL_URL", "http://localhost:8787")
+SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 
 
 def slack_api(method: str, **kwargs) -> dict:
@@ -80,19 +81,35 @@ def load_owner_map() -> dict:
     return {}
 
 
+def _fetch_deals_from_api() -> list[dict]:
+    url = f"{TOOL_URL}/api/deals?status=open"
+    if SFA_API_TOKEN:
+        url += f"&token={urllib.parse.quote(SFA_API_TOKEN)}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
 def get_deals_by_owner(db_path: str) -> dict[str, list[dict]]:
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    rows = con.execute(
-        """SELECT d.deal_name, d.stage, d.next_milestone_date, d.next_milestone_label, d.owner
-           FROM deals d WHERE d.status='open' AND d.owner IS NOT NULL
-           ORDER BY d.owner, d.updated_at DESC"""
-    ).fetchall()
-    con.close()
+    # DB ファイルが存在しない場合（Render cron）は API 経由で取得
+    if not Path(db_path).exists():
+        print(f"[INFO] DB not found at {db_path}, fetching via API: {TOOL_URL}")
+        rows = _fetch_deals_from_api()
+    else:
+        con = sqlite3.connect(db_path)
+        con.row_factory = sqlite3.Row
+        rows_raw = con.execute(
+            """SELECT d.deal_name, d.stage, d.next_milestone_date, d.next_milestone_label, d.owner
+               FROM deals d WHERE d.status='open' AND d.owner IS NOT NULL
+               ORDER BY d.owner, d.updated_at DESC"""
+        ).fetchall()
+        con.close()
+        rows = [dict(r) for r in rows_raw]
     result: dict[str, list[dict]] = {}
     for r in rows:
-        owner = r["owner"]
-        result.setdefault(owner, []).append(dict(r))
+        owner = r.get("owner")
+        if owner:
+            result.setdefault(owner, []).append(r)
     return result
 
 

@@ -19,6 +19,8 @@ from . import leads_csv
 from .theme_db import ThemeDBClient
 from . import theme_link
 
+SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
+
 
 def _opt(values: list[str], selected: str | None) -> str:
     out = ['<option value=""></option>']
@@ -1132,6 +1134,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             try:
                 if path == "/health":
                     self._send(b'{"status":"ok"}', ctype="application/json")
+                elif path == "/api/deals":
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                        self._send(b'{"error":"unauthorized"}', status=401, ctype="application/json")
+                    else:
+                        status_q = (qs.get("status", ["open"])[0] or "open")
+                        effective = None if status_q == "all" else status_q
+                        deals = sfa_db.list_deals(con, status=effective)
+                        self._send(json.dumps([dict(d) for d in deals], ensure_ascii=False, default=str).encode(), ctype="application/json")
                 elif path == "/":
                     self._send(render(dashboard_page(con)))
                 elif path == "/deals":
