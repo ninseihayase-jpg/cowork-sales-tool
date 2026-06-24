@@ -1744,6 +1744,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con.commit()
                         self._send_cors_json(json.dumps({"ok": True, "id": note_id}, ensure_ascii=False).encode())
 
+                # ── メモ削除 ──
+                elif path == "/api/memo/delete":
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            data = f
+                        note_id = data.get("id")
+                        con.execute("DELETE FROM meeting_notes WHERE id=?", (int(note_id),))
+                        con.commit()
+                        self._send_cors_json(json.dumps({"ok": True}, ensure_ascii=False).encode())
+
                 # ── タスク完了トグル ──
                 elif path == "/api/memo/toggle_task":
                     qs = self._qs()
