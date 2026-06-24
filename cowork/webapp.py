@@ -54,7 +54,7 @@ def _opt_l2(l1: str | None, selected: str | None) -> str:
 
 PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Cowork 営業支援</title>
+<title>Inproc Salesforce</title>
 <style>
  body{{font-family:system-ui,'Segoe UI','Hiragino Kaku Gothic ProN',sans-serif;margin:0;background:#f4f6f9;color:#1d2430}}
  header{{background:#1f2a44;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}}
@@ -92,7 +92,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  @media(max-width:640px){{.grid{{grid-template-columns:1fr}}.full{{grid-column:1}}.hide-sm{{display:none}}table{{display:block;overflow-x:auto}}}}
 </style></head><body>
 <header>
-  <h1>Cowork 営業支援</h1>
+  <h1>Inproc Salesforce</h1>
   <a href="/">ホーム</a>
   <a href="/deals">商談一覧</a>
   <a href="/leads">リード</a>
@@ -1828,5 +1828,5 @@ def start(db_path: str = sfa_db.DEFAULT_DB_PATH, port: int = 8787,
     sfa_db.init_db(db_path)
     handler = _make_handler(db_path, theme_client)
     srv = ThreadingHTTPServer(("0.0.0.0", port), handler)
-    print(f"Cowork 営業支援: http://localhost:{port}  (DB={db_path})")
+    print(f"Inproc Salesforce: http://localhost:{port}  (DB={db_path})")
     srv.serve_forever()
