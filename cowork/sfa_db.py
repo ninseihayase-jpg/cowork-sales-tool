@@ -201,6 +201,7 @@ CREATE TABLE IF NOT EXISTS meeting_notes (
     task       TEXT,
     task_owner TEXT,
     task_due   TEXT,
+    task_done  INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
 );
 """
@@ -248,6 +249,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         if "theme_id" not in note_cols:
             con.execute("ALTER TABLE meeting_notes ADD COLUMN theme_id INTEGER")
             con.execute("CREATE INDEX IF NOT EXISTS idx_meeting_notes_theme ON meeting_notes(theme_id)")
+        if "task_done" not in note_cols:
+            con.execute("ALTER TABLE meeting_notes ADD COLUMN task_done INTEGER DEFAULT 0")
         con.commit()
     finally:
         con.close()
