@@ -258,7 +258,8 @@ def list_accounts(con) -> list[dict]:
     return [dict(r) for r in con.execute("SELECT * FROM accounts ORDER BY name")]
 
 
-def list_deals(con, status: str | None = "open", owner: str | None = None) -> list[dict]:
+def list_deals(con, status: str | None = "open", owner: str | None = None,
+               stage: str | None = None) -> list[dict]:
     q = """SELECT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d LEFT JOIN accounts a ON a.id = d.account_id WHERE 1=1"""
     params: list = []
@@ -268,6 +269,9 @@ def list_deals(con, status: str | None = "open", owner: str | None = None) -> li
     if owner:
         q += " AND d.owner = ?"
         params.append(owner)
+    if stage:
+        q += " AND d.stage = ?"
+        params.append(stage)
     q += " ORDER BY d.updated_at DESC"
     return [dict(r) for r in con.execute(q, params)]
 

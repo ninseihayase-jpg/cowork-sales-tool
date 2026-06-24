@@ -199,7 +199,7 @@ def _call_claude(prompt: str) -> str:
     return result[0] or "{}"
 
 
-def draft_template(thread_text: str, deal: dict | None) -> str:
+def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
     """Claude でスレッド内容からSFA更新ドラフトを作成する。"""
     if deal:
         deal_info = (
@@ -211,6 +211,13 @@ def draft_template(thread_text: str, deal: dict | None) -> str:
         )
     else:
         deal_info = "（商談を特定できませんでした）"
+
+    # DB からマスタを動的取得（未接続時はデフォルト値にフォールバック）
+    from cowork import sfa_db as _sfa_db
+    _stages = (con and _sfa_db.get_master_list(con, "deal_stages")) or _sfa_db.DEAL_STAGES
+    _atypes = (con and _sfa_db.get_master_list(con, "activity_types")) or _sfa_db.ACTIVITY_TYPES
+    stages_str = "・".join(_stages)
+    atypes_str = "・".join(_atypes)
 
     prompt = f"""以下はSlackスレッドの会話内容と、現在のSFA商談情報です。
 スレッドの内容を分析し、SFA更新ドラフトをJSONで作成してください。
@@ -224,10 +231,10 @@ def draft_template(thread_text: str, deal: dict | None) -> str:
 以下のJSONのみ出力（説明不要）:
 {{
   "activity_date": "YYYY-MM-DD（読み取れなければ【記載なし】）",
-  "activity_type": "面談・電話・メール・メモ のいずれか（読み取れなければ【記載なし】）",
+  "activity_type": "{atypes_str} のいずれか（読み取れなければ【記載なし】）",
   "contact_name": "相手の名前（読み取れなければ【記載なし】）",
   "activity_content": "活動内容の要約（スレッドから作成）",
-  "stage_update": "初回アポ実施・要件詰め・提案・クロージング・受注・失注・保留中 のいずれか（変更不要なら null）",
+  "stage_update": "{stages_str} のいずれか（変更不要なら null）",
   "next_milestone_date": "YYYY-MM-DD（変更不要なら null、不明なら【記載なし】）",
   "next_milestone_label": "次回MSラベル（変更不要なら null、不明なら【記載なし】）",
   "memo_addition": "追記すべきメモ（追記不要なら null）"
@@ -266,12 +273,12 @@ def draft_template(thread_text: str, deal: dict | None) -> str:
         "",
         "─── 今回の活動 ───",
         f"活動日: {v(parsed.get('activity_date'))}",
-        f"種別: {v(parsed.get('activity_type'))}　　＊面談 / 電話 / メール / メモ",
+        f"種別: {v(parsed.get('activity_type'))}　　＊{' / '.join(_atypes)}",
         f"相手: {v(parsed.get('contact_name'))}",
         f"内容: {v(parsed.get('activity_content'))}",
         "",
         "─── 商談更新（変更なしは「-」のまま） ───",
-        f"ステージ: {stage_upd}　　＊初回アポ実施 / 要件詰め / 提案 / クロージング / 受注 / 失注 / 保留中",
+        f"ステージ: {stage_upd}　　＊{' / '.join(_stages)}",
         f"次回MS日: {ms_date}",
         f"次回MSラベル: {ms_label}",
         f"追記メモ: {memo_add}",
@@ -331,19 +338,18 @@ def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
 
 # ── DB update ──────────────────────────────────────────────────────────────
 
-_VALID_STAGES = {"初回アポ実施", "要件詰め", "提案", "クロージング", "受注", "失注", "保留中"}
-_VALID_ACTIVITY_TYPES = {"面談", "電話", "メール", "メモ"}
-
-
 def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None):
     import datetime
+    from cowork import sfa_db as _sfa_db
+    valid_stages = set(_sfa_db.get_master_list(con, "deal_stages") or _sfa_db.DEAL_STAGES)
+    valid_atypes = set(_sfa_db.get_master_list(con, "activity_types") or _sfa_db.ACTIVITY_TYPES)
 
     # 活動履歴
     content = fields.get("内容")
     if deal_id and content:
         date_str = fields.get("活動日") or datetime.date.today().isoformat()
         activity_type = fields.get("種別") or "メモ"
-        if activity_type not in _VALID_ACTIVITY_TYPES:
+        if activity_type not in valid_atypes:
             activity_type = "メモ"
         con.execute("""
             INSERT INTO activities (deal_id, type, occurred_on, contact_name, body)
@@ -359,7 +365,7 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None):
     # 商談更新
     if deal_id:
         updates: dict = {}
-        if fields.get("ステージ") and fields["ステージ"] in _VALID_STAGES:
+        if fields.get("ステージ") and fields["ステージ"] in valid_stages:
             updates["stage"] = fields["ステージ"]
         if fields.get("次回MS日"):
             updates["next_milestone_date"] = fields["次回MS日"]
@@ -531,7 +537,7 @@ def handle_message(event: dict, con: sqlite3.Connection):
                 if row:
                     deal = dict(row)
 
-            template = draft_template(thread_text, deal)
+            template = draft_template(thread_text, deal, con)
             new_bot_ts = post_message(channel, thread_ts, template)
 
             if new_bot_ts:

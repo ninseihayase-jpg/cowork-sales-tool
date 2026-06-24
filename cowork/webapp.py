@@ -199,8 +199,9 @@ def masters_page(con) -> str:
     for key, label in sfa_db.MASTER_LABELS.items():
         values = sfa_db.get_master_list(con, key)
         items_html = "".join(
-            f'<div class="master-item" data-key="{html.escape(key)}" data-idx="{i}">'
-            f'<span>{html.escape(v)}</span>'
+            f'<div class="master-item" draggable="true" data-key="{html.escape(key)}" data-idx="{i}">'
+            f'<span class="drag-handle" title="ドラッグで並び替え">⠿</span>'
+            f'<span class="item-label">{html.escape(v)}</span>'
             f'<button type="button" onclick="delItem(\'{html.escape(key)}\',{i})" '
             f'style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0 4px">✕</button>'
             f'</div>'
@@ -234,39 +235,66 @@ def masters_page(con) -> str:
          <a class="btn sec" href="/">キャンセル</a></p>
     </form>
     <style>
-      .master-item{{display:inline-flex;align-items:center;background:#e8edf7;border-radius:20px;padding:3px 10px;font-size:13px;gap:2px}}
+      .master-item{{display:inline-flex;align-items:center;background:#e8edf7;border-radius:20px;padding:3px 10px;font-size:13px;gap:4px;cursor:default;user-select:none}}
+      .master-item.drag-over{{outline:2px dashed #2f6fed;background:#dbeafe}}
+      .drag-handle{{cursor:grab;color:#aab;font-size:15px;line-height:1}}
     </style>
     <script>
-    function delItem(key, idx) {{
+    function rebuildHidden(key) {{
       const container = document.getElementById('items_' + key);
       const hidden = document.getElementById('hidden_' + key);
       const items = Array.from(container.querySelectorAll('.master-item'));
-      items[idx].remove();
-      // rebuild hidden inputs
-      const remaining = Array.from(container.querySelectorAll('.master-item span')).map(s => s.textContent);
-      hidden.innerHTML = remaining.map(v => `<input type="hidden" name="${{key}}[]" value="${{v}}">`).join('');
-      // re-index
-      container.querySelectorAll('.master-item').forEach((el, i) => {{
+      hidden.innerHTML = items.map(el =>
+        `<input type="hidden" name="${{key}}[]" value="${{el.querySelector('.item-label').textContent}}">`
+      ).join('');
+      items.forEach((el, i) => {{
         el.dataset.idx = i;
-        el.querySelector('button').setAttribute('onclick', `delItem('${{key}}', ${{i}})`);
+        el.querySelector('button').setAttribute('onclick', `delItem('${{key}}',${{i}})`);
       }});
+    }}
+    function delItem(key, idx) {{
+      const container = document.getElementById('items_' + key);
+      Array.from(container.querySelectorAll('.master-item'))[idx].remove();
+      rebuildHidden(key);
     }}
     function addItem(key) {{
       const input = document.getElementById('new_' + key);
       const val = input.value.trim();
       if (!val) return;
       const container = document.getElementById('items_' + key);
-      const hidden = document.getElementById('hidden_' + key);
       const idx = container.querySelectorAll('.master-item').length;
       container.insertAdjacentHTML('beforeend',
-        `<div class="master-item" data-key="${{key}}" data-idx="${{idx}}">` +
-        `<span>${{val}}</span>` +
+        `<div class="master-item" draggable="true" data-key="${{key}}" data-idx="${{idx}}">` +
+        `<span class="drag-handle" title="ドラッグで並び替え">⠿</span>` +
+        `<span class="item-label">${{val}}</span>` +
         `<button type="button" onclick="delItem('${{key}}',${{idx}})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0 4px">✕</button>` +
         `</div>`
       );
-      hidden.insertAdjacentHTML('beforeend', `<input type="hidden" name="${{key}}[]" value="${{val}}">`);
+      rebuildHidden(key);
       input.value = '';
+      initDrag(key);
     }}
+    function initDrag(key) {{
+      const container = document.getElementById('items_' + key);
+      container.querySelectorAll('.master-item[draggable]').forEach(item => {{
+        item.ondragstart = e => {{
+          e.dataTransfer.effectAllowed = 'move';
+          container._dragging = item;
+        }};
+        item.ondragover = e => {{
+          e.preventDefault();
+          const dragging = container._dragging;
+          if (!dragging || dragging === item) return;
+          const rect = item.getBoundingClientRect();
+          if (e.clientY < rect.top + rect.height / 2) container.insertBefore(dragging, item);
+          else container.insertBefore(dragging, item.nextSibling);
+        }};
+        item.ondragend = () => {{ rebuildHidden(key); container._dragging = null; }};
+      }});
+    }}
+    document.addEventListener('DOMContentLoaded', () => {{
+      {'; '.join(f"initDrag('{html.escape(key)}')" for key in sfa_db.MASTER_LABELS)}
+    }});
     </script>"""
 
 
@@ -293,9 +321,11 @@ def activity_deal_picker(con) -> str:
 
 # ── 既存ページ（商談・アカウント）─────────────────────────────────────────────
 
-def home_page(con, owner: str | None = None, status_filter: str | None = None) -> str:
-    deals = sfa_db.list_deals(con, status=status_filter, owner=owner)
+def home_page(con, owner: str | None = None, status_filter: str | None = None,
+              stage_filter: str | None = None) -> str:
+    deals = sfa_db.list_deals(con, status=status_filter, owner=owner, stage=stage_filter)
     owners = sfa_db.get_master_list(con, "owners")
+    stages = sfa_db.get_master_list(con, "deal_stages")
     owner_opts = '<option value="">全担当</option>' + "".join(
         f'<option value="{html.escape(o)}"{" selected" if o == owner else ""}>{html.escape(o)}</option>'
         for o in owners
@@ -305,9 +335,14 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None) -
         + f'<option value="open"{"  selected" if status_filter=="open" else ""}>進行中</option>'
         + f'<option value="closed"{" selected" if status_filter=="closed" else ""}>クローズ済</option>'
     )
+    stage_opts = '<option value="">全ステージ</option>' + "".join(
+        f'<option value="{html.escape(s)}"{" selected" if s == stage_filter else ""}>{html.escape(s)}</option>'
+        for s in stages
+    )
     filter_row = f"""<form method="get" action="/deals" class="filter-row">
       <select name="owner">{owner_opts}</select>
       <select name="status">{status_opts}</select>
+      <select name="stage">{stage_opts}</select>
       <button class="btn sec" type="submit">絞り込み</button>
       <a class="btn sec" href="/deals">リセット</a>
     </form>"""
@@ -515,6 +550,12 @@ def deal_form(con, deal=None) -> str:
       </div>
       <p><button class="btn">保存</button> <a class="btn sec" href="/">一覧へ</a> {sync_btn}</p>
     </form>
+    {f'''<form method="post" action="/deal/{deal["id"]}/revert_to_lead" style="margin-top:8px"
+         onsubmit="return confirm('この商談をリードに戻しますか？\\n商談はクローズ、元リード（またはアカウントから新規リード）はナーチャリング状態に移行します。')">
+      <button type="submit" class="btn" style="background:#f59e0b;font-size:12px;padding:6px 12px">
+        ↩ リードに戻す（アポすっぽかし）
+      </button>
+    </form>''' if deal.get("id") and deal.get("status") == "open" else ""}
     <script>
     const L2_MAP = {json.dumps(sfa_db.BUSINESS_TYPE_L2_BY_L1, ensure_ascii=False)};
     function updateL2() {{
@@ -797,7 +838,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/deals":
                     qs = self._qs()
                     def qs1(k): return (qs.get(k, [None])[0] or None)
-                    self._send(render(home_page(con, owner=qs1("owner"), status_filter=qs1("status"))))
+                    self._send(render(home_page(con, owner=qs1("owner"), status_filter=qs1("status"), stage_filter=qs1("stage"))))
                 elif path == "/masters":
                     self._send(render(masters_page(con)))
                 elif path == "/activity/new":
@@ -1078,6 +1119,55 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         )
                         con.commit()
                         self._redirect(f"/deal/{deal_id}")
+
+                # ── 商談 → リード戻し ──
+                elif path.endswith("/revert_to_lead") and "/deal/" in path:
+                    deal_id_str = path.split("/deal/")[1].split("/")[0]
+                    _redirect_to = "/deals"
+                    if deal_id_str.isdigit():
+                        _did = int(deal_id_str)
+                        _deal = sfa_db.get_deal(con, _did)
+                        if _deal and _deal.get("status") == "open":
+                            _lid = None
+                            # 既存リード検索（deal_id が紐付いているもの）
+                            _lead_row = con.execute(
+                                "SELECT * FROM leads WHERE deal_id=? LIMIT 1", (_did,)
+                            ).fetchone()
+                            if _lead_row:
+                                _lid = dict(_lead_row)["id"]
+                                con.execute(
+                                    "UPDATE leads SET lead_status='following', deal_id=NULL, "
+                                    "updated_at=datetime('now') WHERE id=?", (_lid,)
+                                )
+                                con.execute(
+                                    "INSERT INTO lead_activities (lead_id,type,content,author) VALUES (?,?,?,?)",
+                                    (_lid, "note", "アポすっぽかしのため商談からリードへ戻す。ナーチャリング対応。", "システム"),
+                                )
+                            else:
+                                # 既存リードがなければアカウントから新規作成
+                                _acct_row = con.execute(
+                                    "SELECT * FROM accounts WHERE id=?", (_deal.get("account_id"),)
+                                ).fetchone()
+                                _acct = dict(_acct_row) if _acct_row else {}
+                                _lid = sfa_db.upsert_lead(
+                                    con, name=_acct.get("name", "（不明）"),
+                                    company=_acct.get("name", "（不明）"),
+                                    lead_status="following",
+                                    notes=f"アポすっぽかしにより商談 #{_did} ({_deal.get('deal_name','')}) からリード戻し",
+                                    assigned_to=_deal.get("owner"),
+                                )
+                            # 商談をクローズ
+                            con.execute(
+                                "UPDATE deals SET status='closed', "
+                                "note=CASE WHEN note IS NULL OR note='' THEN ? ELSE note||char(10)||? END, "
+                                "updated_at=datetime('now') WHERE id=?",
+                                ("アポすっぽかしのためクローズ（リードに戻す）",
+                                 "アポすっぽかしのためクローズ（リードに戻す）", _did),
+                            )
+                            con.commit()
+                            if _lid:
+                                _redirect_to = f"/lead/{_lid}"
+                    self._redirect(_redirect_to)
 
                 # ── Slack Events API ──
                 elif path == "/slack/events":
