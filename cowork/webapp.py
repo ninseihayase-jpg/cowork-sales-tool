@@ -346,6 +346,15 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <button class="btn sec" type="submit">絞り込み</button>
       <a class="btn sec" href="/deals">リセット</a>
     </form>"""
+    def _deal_inline_select(deal_id, field, values, current):
+        opts = "".join(
+            f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
+            for v in values
+        )
+        return (f'<select onchange="updateDealField({deal_id}, \'{field}\', this.value)"'
+                f' style="font-size:12px;padding:2px 4px;max-width:120px">'
+                f'<option value=""></option>{opts}</select>')
+
     rows = []
     for d in deals:
         val = d.get("value_lumpsum") or d.get("value_recurring") or ""
@@ -357,13 +366,15 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
                 ms += f'<br><span class="muted" style="font-size:.85em">{_esc(d["next_milestone_label"])}</span>'
         elif d.get("next_milestone_label"):
             ms = f'<span class="muted">{_esc(d["next_milestone_label"])}</span>'
+        sel_stage = _deal_inline_select(d["id"], "stage", stages, d.get("stage") or "")
+        sel_owner = _deal_inline_select(d["id"], "owner", owners, d.get("owner") or "")
         rows.append(
             f'<tr>'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{d["id"]}</td>'
             f'<td><a href="/deal/{d["id"]}">{_esc(d.get("account_name"))}</a></td>'
             f'<td>{_esc(d.get("deal_name"))}</td>'
-            f'<td><span class="stage">{_esc(d.get("stage"))}</span></td>'
-            f'<td>{_esc(d.get("owner"))}</td>'
+            f'<td>{sel_stage}</td>'
+            f'<td>{sel_owner}</td>'
             f'<td>{ms}</td>'
             f'<td class="right">{_esc(val)}</td>'
             f'<td class="right" title="テーマDB連携">{linked}</td></tr>'
@@ -388,6 +399,17 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     <table><tr><th>企業名</th><th>業界</th><th>企業規模</th></tr>
     {acc_rows or '<tr><td colspan=3 class=muted>まだアカウントがありません。</td></tr>'}
     </table></div>
+    <script>
+    function updateDealField(id, field, value) {{
+      fetch('/deal/' + id + '/field', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+      }}).then(r => r.json()).then(d => {{
+        if (!d.ok) alert('更新エラー');
+      }}).catch(() => alert('通信エラー'));
+    }}
+    </script>
     """
 
 
@@ -606,26 +628,58 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
       <a class="btn sec" href="/leads">リセット</a>
     </form>"""
 
-    source_opts_bulk = "".join(
-        f'<option value="{s}">{sfa_db.LEAD_SOURCE_LABELS[s]}</option>'
-        for s in sfa_db.LEAD_SOURCES
-    )
+    # マスタデータ取得（インライン編集・バルク編集用）
+    owners_list = sfa_db.get_master_list(con, "owners")
+    industries_list = sfa_db.get_master_list(con, "industries")
+    company_sizes_list = sfa_db.get_master_list(con, "company_sizes")
+
+    # バルク編集用JS オブジェクト構築
+    bulk_options = {
+        "source": [["", "（変更なし）"]] + [[s, sfa_db.LEAD_SOURCE_LABELS[s]] for s in sfa_db.LEAD_SOURCES],
+        "assigned_to": [["", "（変更なし）"]] + [[o, o] for o in owners_list],
+        "industry": [["", "（変更なし）"]] + [[i, i] for i in industries_list],
+        "company_size": [["", "（変更なし）"]] + [[cs, cs] for cs in company_sizes_list],
+    }
+    bulk_options_json = json.dumps(bulk_options, ensure_ascii=False)
+
+    def _inline_select_source(lead_id, current):
+        opts = "".join(
+            f'<option value="{html.escape(s)}"{" selected" if s == current else ""}>{html.escape(sfa_db.LEAD_SOURCE_LABELS[s])}</option>'
+            for s in sfa_db.LEAD_SOURCES
+        )
+        return (f'<select onchange="updateLeadField({lead_id}, \'source\', this.value)"'
+                f' style="font-size:12px;padding:2px 4px;max-width:120px">'
+                f'<option value=""></option>{opts}</select>')
+
+    def _inline_select_master(lead_id, field, values, current):
+        opts = "".join(
+            f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
+            for v in values
+        )
+        return (f'<select onchange="updateLeadField({lead_id}, \'{field}\', this.value)"'
+                f' style="font-size:12px;padding:2px 4px;max-width:120px">'
+                f'<option value=""></option>{opts}</select>')
 
     rows = []
     for ld in leads:
         sc = f's-{ld.get("lead_status", "new")}'
         sl = sfa_db.LEAD_STATUS_LABELS.get(ld.get("lead_status", "new"), "")
-        src_label = sfa_db.LEAD_SOURCE_LABELS.get(ld.get("source", "other"), "")
         deal_badge = (f' <a href="/deal/{ld["deal_id"]}" title="紐付け商談">🔗</a>'
                       if ld.get("deal_id") else "")
+        sel_source = _inline_select_source(ld["id"], ld.get("source", "other"))
+        sel_owner = _inline_select_master(ld["id"], "assigned_to", owners_list, ld.get("assigned_to") or "")
+        sel_industry = _inline_select_master(ld["id"], "industry", industries_list, ld.get("industry") or "")
+        sel_company_size = _inline_select_master(ld["id"], "company_size", company_sizes_list, ld.get("company_size") or "")
         rows.append(
             f'<tr>'
             f'<td style="width:32px"><input type="checkbox" name="ids" value="{ld["id"]}"></td>'
             f'<td><a href="/leads/{ld["id"]}">{_esc(ld["name"])}</a>{deal_badge}<br>'
             f'<span class="muted">{_esc(ld.get("company"))}</span></td>'
             f'<td><span class="stage {sc}">{sl}</span></td>'
-            f'<td class="hide-sm">{src_label}</td>'
-            f'<td class="hide-sm">{_esc(ld.get("assigned_to"))}</td>'
+            f'<td class="hide-sm">{sel_source}</td>'
+            f'<td class="hide-sm">{sel_owner}</td>'
+            f'<td class="hide-sm">{sel_industry}</td>'
+            f'<td class="hide-sm">{sel_company_size}</td>'
             f'<td class="muted">{_esc((ld.get("updated_at") or "")[:10])}</td>'
             f'</tr>'
         )
@@ -640,24 +694,52 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         </span>
       </h2>
       {filter_form}
-      <form id="bulk_form" method="post" action="/leads/bulk_source">
+      <form id="bulk_form" method="post" action="/leads/bulk_edit">
       <table>
         <tr><th style="width:32px"><input type="checkbox" id="chk_all" title="全選択"
               onchange="document.querySelectorAll('[name=ids]').forEach(c=>c.checked=this.checked)"></th>
             <th>氏名 / 会社</th><th>ステータス</th>
             <th class="hide-sm">経路</th>
-            <th class="hide-sm">担当</th><th>更新日</th></tr>
-        {''.join(rows) or '<tr><td colspan=6 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
+            <th class="hide-sm">担当</th>
+            <th class="hide-sm">業界</th>
+            <th class="hide-sm">企業規模</th>
+            <th>更新日</th></tr>
+        {''.join(rows) or '<tr><td colspan=8 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
       </table>
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
-        <select name="source" required style="width:auto">
-          <option value="">経路を選択</option>
-          {source_opts_bulk}
+        <select id="bulk_field" name="field" style="width:auto">
+          <option value="source">経路</option>
+          <option value="assigned_to">担当</option>
+          <option value="industry">業界</option>
+          <option value="company_size">企業規模</option>
         </select>
-        <button class="btn sec" type="submit">選択した件の経路を変更</button>
+        <select id="bulk_value" name="value" style="width:auto"></select>
+        <button class="btn sec" type="submit">選択した件を一括変更</button>
       </div>
       </form>
-    </div>"""
+    </div>
+    <script>
+    const BULK_OPTIONS = {bulk_options_json};
+    function updateLeadField(id, field, value) {{
+      fetch('/leads/' + id + '/field', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+      }}).then(r => r.json()).then(d => {{
+        if (!d.ok) {{ alert('更新エラー: ' + (d.error || '')); }}
+      }}).catch(() => alert('通信エラー'));
+    }}
+    function repopulateBulkValue() {{
+      var field = document.getElementById('bulk_field').value;
+      var opts = BULK_OPTIONS[field] || [];
+      var sel = document.getElementById('bulk_value');
+      sel.innerHTML = opts.map(function(pair) {{
+        return '<option value="' + pair[0] + '">' + pair[1] + '</option>';
+      }}).join('');
+    }}
+    document.getElementById('bulk_field').addEventListener('change', repopulateBulkValue);
+    repopulateBulkValue();
+    </script>"""
 
 
 def lead_form(con, lead=None) -> str:
@@ -1030,6 +1112,46 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             )
                     self._redirect(f"/deal/{did}")
 
+                # ── 商談インライン編集 ──
+                elif path.startswith("/deal/") and path.endswith("/field"):
+                    _DEAL_ALLOWED_FIELDS = {"stage", "owner"}
+                    parts = path.split("/")
+                    _ok = False
+                    _err = ""
+                    if len(parts) == 4 and parts[3] == "field" and parts[2].isdigit():
+                        deal_id = int(parts[2])
+                        field = f.get("field", "")
+                        value = f.get("value", "")
+                        if field not in _DEAL_ALLOWED_FIELDS:
+                            _err = "不正なフィールド"
+                        elif field == "stage":
+                            valid_stages = sfa_db.get_master_list(con, "deal_stages")
+                            if value and value not in valid_stages:
+                                _err = "不正なステージ値"
+                            else:
+                                con.execute(
+                                    "UPDATE deals SET stage=?, updated_at=datetime('now') WHERE id=?",
+                                    (value or None, deal_id),
+                                )
+                                con.commit()
+                                _ok = True
+                                if theme_client is not None:
+                                    try:
+                                        theme_link.sync_deal(theme_client, con, deal_id)
+                                    except Exception as _exc:
+                                        print(f"[theme_link] sync_deal failed: {_exc}")
+                        else:
+                            con.execute(
+                                "UPDATE deals SET owner=?, updated_at=datetime('now') WHERE id=?",
+                                (value or None, deal_id),
+                            )
+                            con.commit()
+                            _ok = True
+                    else:
+                        _err = "不正なリクエスト"
+                    _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
+                    self._send(_resp, ctype="application/json")
+
                 # ── リード ──
                 elif path == "/leads/save":
                     existing_id = int(f["id"]) if f.get("id") else None
@@ -1123,6 +1245,53 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 )
                         con.commit()
                     self._redirect("/leads")
+
+                elif path == "/leads/bulk_edit":
+                    _LEAD_ALLOWED_FIELDS = {"source", "assigned_to", "industry", "company_size", "lead_status"}
+                    ids = f_list.get("ids", [])
+                    field = f.get("field", "")
+                    value = f.get("value", "")
+                    if field in _LEAD_ALLOWED_FIELDS and ids:
+                        if field == "source" and value and value not in sfa_db.LEAD_SOURCES:
+                            pass  # invalid, skip
+                        elif field == "lead_status" and value and value not in sfa_db.LEAD_STATUSES:
+                            pass  # invalid, skip
+                        else:
+                            for lead_id in ids:
+                                if str(lead_id).isdigit():
+                                    con.execute(
+                                        f"UPDATE leads SET {field}=?, updated_at=datetime('now') WHERE id=?",
+                                        (value or None, int(lead_id)),
+                                    )
+                            con.commit()
+                    self._redirect("/leads")
+
+                elif path.startswith("/leads/") and path.endswith("/field"):
+                    _LEAD_ALLOWED_FIELDS = {"source", "assigned_to", "industry", "company_size", "lead_status"}
+                    parts = path.split("/")
+                    _ok = False
+                    _err = ""
+                    if len(parts) == 4 and parts[3] == "field" and parts[2].isdigit():
+                        lid = int(parts[2])
+                        field = f.get("field", "")
+                        value = f.get("value", "")
+                        if field not in _LEAD_ALLOWED_FIELDS:
+                            _err = "不正なフィールド"
+                        elif field == "source" and value and value not in sfa_db.LEAD_SOURCES:
+                            _err = "不正な経路値"
+                        elif field == "lead_status" and value and value not in sfa_db.LEAD_STATUSES:
+                            _err = "不正なステータス値"
+                        else:
+                            con.execute(
+                                f"UPDATE leads SET {field}=?, updated_at=datetime('now') WHERE id=?",
+                                (value or None, lid),
+                            )
+                            con.commit()
+                            _ok = True
+                    else:
+                        _err = "不正なリクエスト"
+                    _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
+                    self._send(_resp, ctype="application/json")
 
                 elif path.startswith("/leads/") and path.endswith("/delete"):
                     parts = path.split("/")
