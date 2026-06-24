@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS slack_threads (
     deal_id        INTEGER,
     bot_message_ts TEXT,
     state          TEXT DEFAULT 'pending',
+    meta           TEXT,
     created_at     TEXT DEFAULT (datetime('now'))
 );
 """
@@ -228,6 +229,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         ]:
             if col not in deal_cols:
                 con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")
+        thread_cols = {r[1] for r in con.execute("PRAGMA table_info(slack_threads)")}
+        if "meta" not in thread_cols:
+            con.execute("ALTER TABLE slack_threads ADD COLUMN meta TEXT")
         con.commit()
     finally:
         con.close()
