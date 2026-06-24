@@ -323,8 +323,8 @@ def activity_deal_picker(con) -> str:
 
 def home_page(con, owner: str | None = None, status_filter: str | None = None,
               stage_filter: str | None = None) -> str:
-    # デフォルトでclosedを除外（NULLもopenとして扱う）
-    effective_status = status_filter if status_filter is not None else "open"
+    # デフォルトでclosedを除外（NULLもopenとして扱う）。"all"は全件表示
+    effective_status = None if status_filter == "all" else (status_filter or "open")
     deals = sfa_db.list_deals(con, status=effective_status, owner=owner, stage=stage_filter)
     owners = sfa_db.get_master_list(con, "owners")
     stages = sfa_db.get_master_list(con, "deal_stages")
@@ -334,7 +334,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         for o in owners
     )
     status_opts = (
-        '<option value="">全て（クローズ含む）</option>'
+        f'<option value="all"{"  selected" if status_filter=="all" else ""}>全て（クローズ含む）</option>'
         + f'<option value="open"{"  selected" if status_filter is None or status_filter=="open" else ""}>進行中のみ</option>'
         + f'<option value="closed"{" selected" if status_filter=="closed" else ""}>クローズ済のみ</option>'
     )
@@ -349,12 +349,15 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <button class="btn sec" type="submit">絞り込み</button>
       <a class="btn sec" href="/deals">リセット</a>
     </form>"""
-    def _deal_inline_select(deal_id, field, values, current):
+    def _deal_inline_select(deal_id, field, values, current, sel_id=None):
         opts = "".join(
             f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
             for v in values
         )
-        return (f'<select onchange="updateDealField({deal_id}, \'{field}\', this.value)"'
+        id_attr = f' id="{sel_id}"' if sel_id else ""
+        onchange = (f"updateDealL1({deal_id}, this.value)" if field == "business_type_l1"
+                    else f"updateDealField({deal_id}, '{field}', this.value)")
+        return (f'<select{id_attr} onchange="{onchange}"'
                 f' style="font-size:11px;padding:1px 2px;max-width:90px">'
                 f'<option value=""></option>{opts}</select>')
 
@@ -381,7 +384,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         sel_owner = _deal_inline_select(d["id"], "owner", owners, d.get("owner") or "")
         sel_biz_l1 = _deal_inline_select(d["id"], "business_type_l1", biz_l1_list, d.get("business_type_l1") or "")
         biz_l2_values = sfa_db.BUSINESS_TYPE_L2_BY_L1.get(d.get("business_type_l1") or "", [])
-        sel_biz_l2 = _deal_inline_select(d["id"], "business_type_l2", biz_l2_values, d.get("business_type_l2") or "")
+        sel_biz_l2 = _deal_inline_select(d["id"], "business_type_l2", biz_l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{d['id']}")
         did = d["id"]
         cb_val = d.get("client_budget") or ""
         vl_val = d.get("value_lumpsum") or ""
@@ -430,7 +433,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
       <th>種別L1</th><th>種別L2</th>
       <th>予算<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span></th>
-      <th>WT総額<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(提案,万円)</span></th>
+      <th>提案総額<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span></th>
       <th>次回MS</th><th class="right">連携</th></tr>
     {''.join(rows) or '<tr><td colspan=12 class=muted>商談がありません。</td></tr>'}
     </table></div>
@@ -451,6 +454,18 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     </table></div>
     <script>
     const DEAL_BULK_OPTIONS = {deal_bulk_options_json};
+    const DEAL_L2_MAP = {json.dumps(sfa_db.BUSINESS_TYPE_L2_BY_L1, ensure_ascii=False)};
+    function updateDealL1(id, l1_value) {{
+      updateDealField(id, 'business_type_l1', l1_value);
+      var l2sel = document.getElementById('l2_' + id);
+      if (l2sel) {{
+        var opts = DEAL_L2_MAP[l1_value] || [];
+        l2sel.innerHTML = '<option value=""></option>' +
+          opts.map(function(v) {{ return '<option value="' + v + '">' + v + '</option>'; }}).join('');
+        l2sel.value = '';
+        updateDealField(id, 'business_type_l2', '');
+      }}
+    }}
     function updateDealField(id, field, value) {{
       fetch('/deal/' + id + '/field', {{
         method: 'POST',
@@ -654,11 +669,13 @@ def deal_form(con, deal=None) -> str:
     new_acc_js = ""
     if not deal.get("id"):
         new_acc_html = (
-            '<label style="margin-top:4px;font-size:11px;display:flex;align-items:center;gap:4px">'
-            '<input type="checkbox" id="new_acc_chk" onchange="toggleNewAcc()"> '
+            '<div style="margin-top:5px;text-align:left">'
+            '<label style="font-size:11px;color:#6b7689;cursor:pointer">'
+            '<input type="checkbox" id="new_acc_chk" onchange="toggleNewAcc()" style="width:auto;margin-right:4px">'
             '新規アカウントを追加（業界・規模を自動推定）</label>'
-            '<div id="new_acc_row" style="display:none;margin-top:6px">'
+            '<div id="new_acc_row" style="display:none;margin-top:4px">'
             '<input name="new_account_name" placeholder="新しい会社名"></div>'
+            '</div>'
         )
         new_acc_js = (
             'function toggleNewAcc() {'
@@ -1553,53 +1570,63 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path.startswith("/leads/") and path.endswith("/convert"):
                     lid = int(path.split("/")[2])
                     lead = sfa_db.get_lead(con, lid)
-                    if not lead or lead.get("deal_id"):
-                        self._redirect(f"/leads/{lid}")
+                    if not lead:
+                        self._redirect("/leads")
                     else:
-                        # 1. アカウントを検索または作成
-                        existing_acc = con.execute(
-                            "SELECT id FROM accounts WHERE name=?", (lead["company"],)
-                        ).fetchone()
-                        account_id = (dict(existing_acc)["id"] if existing_acc
-                                      else sfa_db.upsert_account(
-                                          con, name=lead["company"],
-                                          industry=lead.get("industry"),
-                                          company_size=lead.get("company_size"),
-                                      ))
-                        # 2. コンタクト作成（重複チェック）
-                        if not con.execute(
-                            "SELECT id FROM contacts WHERE account_id=? AND name=?",
-                            (account_id, lead["name"]),
-                        ).fetchone():
+                        # 既存 deal_id がある場合: オープン商談ならそちらへ、クローズ済なら再変換
+                        if lead.get("deal_id"):
+                            _ed = sfa_db.get_deal(con, lead["deal_id"])
+                            if _ed and _ed.get("status") != "closed":
+                                self._redirect(f"/deal/{lead['deal_id']}")
+                                return
                             con.execute(
-                                "INSERT INTO contacts (account_id,name,title,email,phone)"
-                                " VALUES (?,?,?,?,?)",
-                                (account_id, lead["name"], lead.get("title"),
-                                 lead.get("email"), lead.get("phone")),
+                                "UPDATE leads SET deal_id=NULL WHERE id=?", (lid,)
                             )
                             con.commit()
-                        # 3. 商談作成
-                        stage_map = {
-                            "new": "初回アポ実施", "following": "初回アポ実施",
-                            "appointed": "初回アポ実施",
-                        }
-                        stage = stage_map.get(lead.get("lead_status", "new"), "初回アポ実施")
-                        deal_name = lead["company"]
-                        deal_id = sfa_db.upsert_deal(
-                            con, account_id=account_id,
-                            deal_name=deal_name, stage=stage,
-                            status="open",
-                            lead_pattern=_SOURCE_TO_LP.get(lead.get("source", "other"), "na"),
-                            owner=lead.get("assigned_to"),
-                            note=lead.get("notes"),
-                        )
-                        # 4. リードをクローズ（商談化済）してdeal_idをセット
-                        con.execute(
-                            "UPDATE leads SET deal_id=?, lead_status='converted', updated_at=datetime('now') WHERE id=?",
-                            (deal_id, lid),
-                        )
-                        con.commit()
-                        self._redirect(f"/deal/{deal_id}")
+                        try:
+                            # 1. アカウントを検索または作成
+                            company_name = (lead.get("company") or "").strip() or "(未設定)"
+                            existing_acc = con.execute(
+                                "SELECT id FROM accounts WHERE name=?", (company_name,)
+                            ).fetchone()
+                            account_id = (dict(existing_acc)["id"] if existing_acc
+                                          else sfa_db.upsert_account(
+                                              con, name=company_name,
+                                              industry=lead.get("industry"),
+                                              company_size=lead.get("company_size"),
+                                          ))
+                            # 2. コンタクト作成（重複チェック）
+                            if not con.execute(
+                                "SELECT id FROM contacts WHERE account_id=? AND name=?",
+                                (account_id, lead["name"]),
+                            ).fetchone():
+                                con.execute(
+                                    "INSERT INTO contacts (account_id,name,title,email,phone)"
+                                    " VALUES (?,?,?,?,?)",
+                                    (account_id, lead["name"], lead.get("title"),
+                                     lead.get("email"), lead.get("phone")),
+                                )
+                                con.commit()
+                            # 3. 商談作成
+                            deal_id = sfa_db.upsert_deal(
+                                con, account_id=account_id,
+                                deal_name=company_name, stage="初回アポ実施",
+                                status="open",
+                                lead_pattern=_SOURCE_TO_LP.get(lead.get("source", "other"), "na"),
+                                owner=lead.get("assigned_to"),
+                                note=lead.get("notes"),
+                            )
+                            # 4. リードをクローズ（商談化済）してdeal_idをセット
+                            con.execute(
+                                "UPDATE leads SET deal_id=?, lead_status='converted', updated_at=datetime('now') WHERE id=?",
+                                (deal_id, lid),
+                            )
+                            con.commit()
+                            self._redirect(f"/deal/{deal_id}")
+                        except Exception as _conv_e:
+                            print(f"[convert] error lid={lid}: {_conv_e}", flush=True)
+                            import traceback as _tb; _tb.print_exc()
+                            self._redirect(f"/leads/{lid}")
 
                 # ── 商談 → リード戻し ──
                 elif path.endswith("/revert_to_lead") and "/deal/" in path:
@@ -1608,7 +1635,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if deal_id_str.isdigit():
                         _did = int(deal_id_str)
                         _deal = sfa_db.get_deal(con, _did)
-                        if _deal and _deal.get("status") == "open":
+                        if _deal and _deal.get("status") != "closed":
                             _lid = None
                             # 既存リード検索（deal_id が紐付いているもの）
                             _lead_row = con.execute(
