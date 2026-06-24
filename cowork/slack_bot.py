@@ -495,19 +495,17 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
     if not thread_ts:
         return
 
+    # @NegoCollection で開始していないスレッドは無音でスキップ
+    pending = get_pending_thread(con, thread_ts)
+    if not pending:
+        return
+
     channel = event.get("channel", "")
     text = event.get("text", "").strip()
     text_l = text.lower()
     confirm_ts = event.get("ts", "")
 
-    print(f"[SlackBot] handle_message: thread={thread_ts!r} text={text[:30]!r}", flush=True)
-
-    pending = get_pending_thread(con, thread_ts)
-    if not pending:
-        print(f"[SlackBot] handle_message: no pending thread, skip", flush=True)
-        return
-
-    print(f"[SlackBot] handle_message: state={pending.get('state')!r}", flush=True)
+    print(f"[SlackBot] handle_message: thread={thread_ts!r} state={pending.get('state')!r}", flush=True)
 
     state = pending.get("state", "")
     deal_id = pending.get("deal_id")
