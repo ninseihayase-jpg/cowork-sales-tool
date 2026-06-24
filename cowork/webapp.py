@@ -1034,11 +1034,13 @@ def lead_form(con, lead=None) -> str:
         <p style="display:flex;flex-wrap:wrap;gap:8px">
           <button class="btn">保存</button>
           <a class="btn sec" href="/leads">一覧へ</a>
-          {convert_btn}
           {deal_link}
         </p>
       </form>
-      {delete_btn}
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+        {convert_btn}
+        {delete_btn}
+      </div>
     </div>
     {activities_html}"""
 
