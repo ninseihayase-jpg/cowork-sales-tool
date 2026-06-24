@@ -1168,12 +1168,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         theme_id_q = qs.get("theme_id", [None])[0]
                         if theme_id_q:
                             notes = con.execute(
-                                "SELECT * FROM meeting_notes WHERE theme_id=? ORDER BY note_date DESC, created_at DESC LIMIT 100",
+                                "SELECT * FROM meeting_notes WHERE theme_id=? ORDER BY note_date ASC, created_at ASC LIMIT 100",
                                 (int(theme_id_q),)
                             ).fetchall()
                         else:
                             notes = con.execute(
-                                "SELECT * FROM meeting_notes ORDER BY note_date DESC, created_at DESC LIMIT 100"
+                                "SELECT * FROM meeting_notes ORDER BY note_date ASC, created_at ASC LIMIT 100"
                             ).fetchall()
                         self._send_cors_json(json.dumps([dict(r) for r in notes], ensure_ascii=False, default=str).encode())
                 elif path == "/":
