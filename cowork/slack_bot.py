@@ -364,10 +364,13 @@ def handle_mention(event: dict, con: sqlite3.Connection):
     event_ts = event.get("ts", "")
     thread_ts = event.get("thread_ts") or event_ts
 
-    print(f"[SlackBot] mention: channel={channel} thread={thread_ts}")
+    import socket as _socket
+    _socket.setdefaulttimeout(15)  # urllib のハング対策
+    print(f"[SlackBot] mention: channel={channel} thread={thread_ts}", flush=True)
 
     # 二重処理防止
     existing = get_pending_thread(con, thread_ts)
+    print(f"[SlackBot] existing={existing and existing.get('state')}", flush=True)
     if existing:
         state = existing.get("state", "")
         bot_ts = existing.get("bot_message_ts")
@@ -398,8 +401,11 @@ def handle_mention(event: dict, con: sqlite3.Connection):
             return
 
     # スレッド全文取得（botメッセージと@メンション除去）
+    print("[SlackBot] getting bot_uid...", flush=True)
     bot_uid = get_bot_user_id()
+    print(f"[SlackBot] bot_uid={bot_uid}", flush=True)
     messages = get_thread_messages(channel, thread_ts)
+    print(f"[SlackBot] thread messages={len(messages)}", flush=True)
     parts = []
     for m in messages:
         if m.get("bot_id") or m.get("user") == bot_uid:
