@@ -573,7 +573,7 @@ def deal_form(con, deal=None) -> str:
             f'</span>'
         )
     revert_btn = ""
-    if deal.get("id") and deal.get("status") == "open":
+    if deal.get("id") and deal.get("status") != "closed":
         revert_btn = (
             f'<form method="post" action="/deal/{deal["id"]}/revert_to_lead" style="margin-top:8px"'
             ' onsubmit="return confirm(\'アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。\')">'
@@ -1459,6 +1459,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         deal_id = sfa_db.upsert_deal(
                             con, account_id=account_id,
                             deal_name=deal_name, stage=stage,
+                            status="open",
                             lead_pattern=_SOURCE_TO_LP.get(lead.get("source", "other"), "na"),
                             owner=lead.get("assigned_to"),
                             note=lead.get("notes"),
