@@ -338,7 +338,7 @@ def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
 
 # ── DB update ──────────────────────────────────────────────────────────────
 
-def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None):
+def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None, theme_client=None):
     import datetime
     from cowork import sfa_db as _sfa_db
     valid_stages = set(_sfa_db.get_master_list(con, "deal_stages") or _sfa_db.DEAL_STAGES)
@@ -385,6 +385,15 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None):
             )
 
     con.commit()
+
+    # Hisho テーマDB sync
+    if theme_client and deal_id:
+        try:
+            from cowork import theme_link as _tl
+            result = _tl.sync_deal(theme_client, con, deal_id)
+            print(f"[SlackBot] Hisho sync: deal_id={deal_id} action={result.get('action')} theme_id={result.get('theme_id')}", flush=True)
+        except Exception as _e:
+            print(f"[SlackBot] Hisho sync error: {_e}", flush=True)
 
 
 # ── Event handlers ─────────────────────────────────────────────────────────
@@ -477,7 +486,7 @@ def handle_mention(event: dict, con: sqlite3.Connection):
                         state="identifying")
 
 
-def handle_message(event: dict, con: sqlite3.Connection):
+def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
     # botメッセージ・編集イベントはスキップ
     if event.get("bot_id") or event.get("subtype"):
         return
@@ -619,7 +628,7 @@ def handle_message(event: dict, con: sqlite3.Connection):
         return
 
     try:
-        apply_to_db(con, fields, deal_id)
+        apply_to_db(con, fields, deal_id, theme_client)
         mark_completed(con, thread_ts)
 
         updated_parts = []
@@ -634,7 +643,7 @@ def handle_message(event: dict, con: sqlite3.Connection):
         print(f"[SlackBot] DB update error: {e}")
 
 
-def handle_event(data: dict, con: sqlite3.Connection):
+def handle_event(data: dict, con: sqlite3.Connection, theme_client=None):
     """Slack Events API ディスパッチャ。webapp.py の /slack/events から呼ばれる。"""
     event = data.get("event", {})
     etype = event.get("type", "")
@@ -646,7 +655,7 @@ def handle_event(data: dict, con: sqlite3.Connection):
         if etype == "app_mention":
             handle_mention(event, con)
         elif etype in ("message", "message.groups", "message.channels"):
-            handle_message(event, con)
+            handle_message(event, con, theme_client)
     except Exception as e:
         print(f"[SlackBot] unhandled error ({etype}): {e}")
         import traceback; traceback.print_exc()

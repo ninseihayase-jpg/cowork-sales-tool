@@ -491,6 +491,15 @@ def deal_form(con, deal=None) -> str:
             f'{"🔗 テーマDB連携済 (id="+str(deal.get("theme_id"))+")" if deal.get("theme_id") else "テーマDB未連携（保存時に自動連携）"}'
             f'</span>'
         )
+    revert_btn = ""
+    if deal.get("id") and deal.get("status") == "open":
+        revert_btn = (
+            f'<form method="post" action="/deal/{deal["id"]}/revert_to_lead" style="margin-top:8px"'
+            ' onsubmit="return confirm(\'アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。\')">'
+            '<button type="submit" class="btn" style="background:#f59e0b;font-size:12px;padding:6px 12px">'
+            '↩ リードに戻す（アポ獲得前に戻る）'
+            '</button></form>'
+        )
     return f"""
     <div class="card"><h2>{'商談編集' if deal.get('id') else '新規商談'}</h2>
     {lead_picker_html}
@@ -550,12 +559,7 @@ def deal_form(con, deal=None) -> str:
       </div>
       <p><button class="btn">保存</button> <a class="btn sec" href="/">一覧へ</a> {sync_btn}</p>
     </form>
-    {f'''<form method="post" action="/deal/{deal["id"]}/revert_to_lead" style="margin-top:8px"
-         onsubmit="return confirm('この商談をリードに戻しますか？\\n商談はクローズ、元リード（またはアカウントから新規リード）はナーチャリング状態に移行します。')">
-      <button type="submit" class="btn" style="background:#f59e0b;font-size:12px;padding:6px 12px">
-        ↩ リードに戻す（アポすっぽかし）
-      </button>
-    </form>''' if deal.get("id") and deal.get("status") == "open" else ""}
+    {revert_btn}
     <script>
     const L2_MAP = {json.dumps(sfa_db.BUSINESS_TYPE_L2_BY_L1, ensure_ascii=False)};
     function updateL2() {{
@@ -602,6 +606,11 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
       <a class="btn sec" href="/leads">リセット</a>
     </form>"""
 
+    source_opts_bulk = "".join(
+        f'<option value="{s}">{sfa_db.LEAD_SOURCE_LABELS[s]}</option>'
+        for s in sfa_db.LEAD_SOURCES
+    )
+
     rows = []
     for ld in leads:
         sc = f's-{ld.get("lead_status", "new")}'
@@ -611,6 +620,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
                       if ld.get("deal_id") else "")
         rows.append(
             f'<tr>'
+            f'<td style="width:32px"><input type="checkbox" name="ids" value="{ld["id"]}"></td>'
             f'<td><a href="/leads/{ld["id"]}">{_esc(ld["name"])}</a>{deal_badge}<br>'
             f'<span class="muted">{_esc(ld.get("company"))}</span></td>'
             f'<td><span class="stage {sc}">{sl}</span></td>'
@@ -630,12 +640,23 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         </span>
       </h2>
       {filter_form}
+      <form id="bulk_form" method="post" action="/leads/bulk_source">
       <table>
-        <tr><th>氏名 / 会社</th><th>ステータス</th>
+        <tr><th style="width:32px"><input type="checkbox" id="chk_all" title="全選択"
+              onchange="document.querySelectorAll('[name=ids]').forEach(c=>c.checked=this.checked)"></th>
+            <th>氏名 / 会社</th><th>ステータス</th>
             <th class="hide-sm">経路</th>
             <th class="hide-sm">担当</th><th>更新日</th></tr>
-        {''.join(rows) or '<tr><td colspan=5 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
+        {''.join(rows) or '<tr><td colspan=6 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
       </table>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <select name="source" required style="width:auto">
+          <option value="">経路を選択</option>
+          {source_opts_bulk}
+        </select>
+        <button class="btn sec" type="submit">選択した件の経路を変更</button>
+      </div>
+      </form>
     </div>"""
 
 
@@ -700,10 +721,18 @@ def lead_form(con, lead=None) -> str:
             convert_btn = (
                 f'<form method="post" action="/leads/{lead["id"]}/convert" style="display:inline">'
                 f'<button class="btn sync"'
-                f' onclick="return confirm(\'商談化します。リードはクローズされ、アカウント・商談が作成されます。\')">'
-                f'商談化 → SFA</button></form>')
+                f' onclick="return confirm(\'アポ獲得後に商談化します。\\nリードはクローズされ、商談が作成されます。\')">'
+                f'アポ獲得 → 商談化</button></form>')
         if lead.get("deal_id"):
             deal_link = f'<a class="btn sec" href="/deal/{lead["deal_id"]}">紐付け商談を見る 🔗</a>'
+
+    delete_btn = ""
+    if lead.get("id"):
+        delete_btn = (
+            f'<form method="post" action="/leads/{lead["id"]}/delete" style="display:inline;margin:0">'
+            '<button class="btn" style="background:#ef4444"'
+            ' onclick="return confirm(\'このリードを削除しますか？この操作は元に戻せません。\')">削除</button></form>'
+        )
 
     return f"""
     <div class="card">
@@ -740,6 +769,7 @@ def lead_form(con, lead=None) -> str:
           <a class="btn sec" href="/leads">一覧へ</a>
           {convert_btn}
           {deal_link}
+          {delete_btn}
         </p>
       </form>
     </div>
@@ -1007,12 +1037,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if existing_id:
                         existing = sfa_db.get_lead(con, existing_id)
                         existing_deal_id = existing.get("deal_id") if existing else None
+                    company_name = f.get("company") or "(未設定)"
+                    industry = f.get("industry") or None
+                    company_size = f.get("company_size") or None
                     lid = sfa_db.upsert_lead(
                         con, id=existing_id,
                         name=f.get("name") or "(無名)",
-                        company=f.get("company") or "(未設定)",
-                        industry=f.get("industry") or None,
-                        company_size=f.get("company_size") or None,
+                        company=company_name,
+                        industry=industry,
+                        company_size=company_size,
                         title=f.get("title") or None,
                         email=f.get("email") or None,
                         phone=f.get("phone") or None,
@@ -1022,6 +1055,31 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         assigned_to=f.get("assigned_to") or None,
                         deal_id=existing_deal_id,
                     )
+                    # アカウント自動追加・補完
+                    existing_acc = con.execute(
+                        "SELECT id, industry, company_size FROM accounts WHERE name=?",
+                        (company_name,)
+                    ).fetchone()
+                    if existing_acc is None:
+                        sfa_db.upsert_account(
+                            con, name=company_name,
+                            industry=industry,
+                            company_size=company_size,
+                        )
+                    else:
+                        acc = dict(existing_acc)
+                        updates = {}
+                        if industry and not acc.get("industry"):
+                            updates["industry"] = industry
+                        if company_size and not acc.get("company_size"):
+                            updates["company_size"] = company_size
+                        if updates:
+                            set_clause = ", ".join(f"{k}=?" for k in updates)
+                            con.execute(
+                                f"UPDATE accounts SET {set_clause}, updated_at=datetime('now') WHERE id=?",
+                                (*updates.values(), acc["id"]),
+                            )
+                            con.commit()
                     self._redirect(f"/leads/{lid}")
 
                 elif path == "/leads/upload_meishi":
@@ -1043,11 +1101,36 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             self._send(render(leads_import_page(), flash=f"取込エラー: {exc}"))
 
                 elif path == "/leads/import":
-                    ok, skip = leads_csv.import_leads(con, f.get("csv_text", ""))
+                    ok, skip = leads_csv.import_leads(
+                        con, f.get("csv_text", ""),
+                        industries=sfa_db.get_master_list(con, "industries"),
+                        company_sizes=sfa_db.get_master_list(con, "company_sizes"),
+                    )
                     self._send(render(
                         leads_import_page(),
                         flash=f"取込完了: {ok}件追加。" + (f"スキップ {skip}件。" if skip else ""),
                     ))
+
+                elif path == "/leads/bulk_source":
+                    ids = f_list.get("ids", [])
+                    source = f.get("source", "")
+                    if source in sfa_db.LEAD_SOURCES and ids:
+                        for lead_id in ids:
+                            if lead_id.isdigit():
+                                con.execute(
+                                    "UPDATE leads SET source=?, updated_at=datetime('now') WHERE id=?",
+                                    (source, int(lead_id)),
+                                )
+                        con.commit()
+                    self._redirect("/leads")
+
+                elif path.startswith("/leads/") and path.endswith("/delete"):
+                    parts = path.split("/")
+                    if len(parts) == 4 and parts[3] == "delete" and parts[2].isdigit():
+                        lid = int(parts[2])
+                        con.execute("DELETE FROM leads WHERE id=?", (lid,))
+                        con.commit()
+                    self._redirect("/leads")
 
                 elif path.startswith("/leads/") and path.endswith("/activity"):
                     lid = int(path.split("/")[2])
@@ -1141,7 +1224,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 )
                                 con.execute(
                                     "INSERT INTO lead_activities (lead_id,type,content,author) VALUES (?,?,?,?)",
-                                    (_lid, "note", "アポすっぽかしのため商談からリードへ戻す。ナーチャリング対応。", "システム"),
+                                    (_lid, "note", "アポ未獲得のため商談からリードへ戻す（フォロー中に変更）。", "システム"),
                                 )
                             else:
                                 # 既存リードがなければアカウントから新規作成
@@ -1153,7 +1236,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     con, name=_acct.get("name", "（不明）"),
                                     company=_acct.get("name", "（不明）"),
                                     lead_status="following",
-                                    notes=f"アポすっぽかしにより商談 #{_did} ({_deal.get('deal_name','')}) からリード戻し",
+                                    notes=f"アポ未獲得のため商談 #{_did} ({_deal.get('deal_name','')}) からリードに戻す",
                                     assigned_to=_deal.get("owner"),
                                 )
                             # 商談をクローズ
@@ -1161,8 +1244,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 "UPDATE deals SET status='closed', "
                                 "note=CASE WHEN note IS NULL OR note='' THEN ? ELSE note||char(10)||? END, "
                                 "updated_at=datetime('now') WHERE id=?",
-                                ("アポすっぽかしのためクローズ（リードに戻す）",
-                                 "アポすっぽかしのためクローズ（リードに戻す）", _did),
+                                ("アポ未獲得のためクローズ（リードに戻す）",
+                                 "アポ未獲得のためクローズ（リードに戻す）", _did),
                             )
                             con.commit()
                             if _lid:
@@ -1198,7 +1281,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _con = sfa_db.connect(db_path)
                         try:
                             from cowork import slack_bot
-                            slack_bot.handle_event(data, _con)
+                            slack_bot.handle_event(data, _con, theme_client)
                         except Exception as _e:
                             print(f"[slack_events] error: {_e}")
                         finally:
