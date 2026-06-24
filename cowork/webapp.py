@@ -1165,9 +1165,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if SFA_API_TOKEN and token != SFA_API_TOKEN:
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
-                        notes = con.execute(
-                            "SELECT * FROM meeting_notes ORDER BY note_date DESC, created_at DESC LIMIT 100"
-                        ).fetchall()
+                        theme_id_q = qs.get("theme_id", [None])[0]
+                        if theme_id_q:
+                            notes = con.execute(
+                                "SELECT * FROM meeting_notes WHERE theme_id=? ORDER BY note_date DESC, created_at DESC LIMIT 100",
+                                (int(theme_id_q),)
+                            ).fetchall()
+                        else:
+                            notes = con.execute(
+                                "SELECT * FROM meeting_notes ORDER BY note_date DESC, created_at DESC LIMIT 100"
+                            ).fetchall()
                         self._send_cors_json(json.dumps([dict(r) for r in notes], ensure_ascii=False, default=str).encode())
                 elif path == "/":
                     self._send(render(dashboard_page(con)))
@@ -1727,11 +1734,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             data = json.loads(raw)
                         except Exception:
                             data = f
+                        tid = data.get("theme_id")
                         note_id = con.execute(
-                            "INSERT INTO meeting_notes(note_date,body,task,task_owner,task_due) VALUES(?,?,?,?,?)",
-                            (data.get("note_date") or None, data.get("body") or None,
-                             data.get("task") or None, data.get("task_owner") or None,
-                             data.get("task_due") or None),
+                            "INSERT INTO meeting_notes(theme_id,note_date,body,task,task_owner,task_due) VALUES(?,?,?,?,?,?)",
+                            (int(tid) if tid else None, data.get("note_date") or None,
+                             data.get("body") or None, data.get("task") or None,
+                             data.get("task_owner") or None, data.get("task_due") or None),
                         ).lastrowid
                         con.commit()
                         self._send_cors_json(json.dumps({"ok": True, "id": note_id}, ensure_ascii=False).encode())

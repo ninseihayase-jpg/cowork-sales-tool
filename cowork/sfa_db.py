@@ -195,6 +195,7 @@ CREATE TABLE IF NOT EXISTS slack_threads (
 -- ダッシュボードメモ（Hishoダッシュボードから投稿）
 CREATE TABLE IF NOT EXISTS meeting_notes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    theme_id   INTEGER,
     note_date  TEXT,
     body       TEXT,
     task       TEXT,
@@ -202,6 +203,7 @@ CREATE TABLE IF NOT EXISTS meeting_notes (
     task_due   TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_meeting_notes_theme ON meeting_notes(theme_id);
 """
 
 
@@ -243,6 +245,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         thread_cols = {r[1] for r in con.execute("PRAGMA table_info(slack_threads)")}
         if "meta" not in thread_cols:
             con.execute("ALTER TABLE slack_threads ADD COLUMN meta TEXT")
+        note_cols = {r[1] for r in con.execute("PRAGMA table_info(meeting_notes)")}
+        if "theme_id" not in note_cols:
+            con.execute("ALTER TABLE meeting_notes ADD COLUMN theme_id INTEGER")
         con.commit()
     finally:
         con.close()
