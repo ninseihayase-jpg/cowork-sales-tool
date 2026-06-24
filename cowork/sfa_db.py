@@ -197,6 +197,7 @@ def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     con = sqlite3.connect(db_path, timeout=30)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode = WAL")  # 並行読み書きを許可
     return con
 
 

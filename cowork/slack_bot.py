@@ -165,21 +165,38 @@ def find_deal(con: sqlite3.Connection, text: str) -> dict | None:
 def _call_claude(prompt: str) -> str:
     if not ANTHROPIC_API_KEY:
         return "{}"
-    import urllib.request
-    url = "https://api.anthropic.com/v1/messages"
-    payload = json.dumps({
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 1024,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
-    req = urllib.request.Request(url, data=payload, headers={
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    })
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = json.loads(resp.read())
-    return body["content"][0]["text"].strip()
+    import threading as _threading
+    result = [None]
+    error = [None]
+
+    def _do():
+        try:
+            url = "https://api.anthropic.com/v1/messages"
+            payload = json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": prompt}],
+            }).encode()
+            req = urllib.request.Request(url, data=payload, headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            })
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = json.loads(resp.read())
+            result[0] = body["content"][0]["text"].strip()
+        except Exception as e:
+            error[0] = e
+
+    t = _threading.Thread(target=_do, daemon=True)
+    t.start()
+    t.join(timeout=25)  # 最大25秒で強制打ち切り
+    if t.is_alive():
+        print("[SlackBot] Claude API timeout (25s)", flush=True)
+        return "{}"
+    if error[0]:
+        raise error[0]
+    return result[0] or "{}"
 
 
 def draft_template(thread_text: str, deal: dict | None) -> str:
