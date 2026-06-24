@@ -263,7 +263,9 @@ def list_deals(con, status: str | None = "open", owner: str | None = None,
     q = """SELECT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d LEFT JOIN accounts a ON a.id = d.account_id WHERE 1=1"""
     params: list = []
-    if status:
+    if status == "open":
+        q += " AND (d.status = 'open' OR d.status IS NULL)"
+    elif status:
         q += " AND d.status = ?"
         params.append(status)
     if owner:

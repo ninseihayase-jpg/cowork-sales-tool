@@ -163,7 +163,7 @@ def dashboard_page(con) -> str:
         <p class="desc">取引先企業。基本はリード追加時に自動作成されます。<br>手動追加は既存企業との取引開始時のみ。</p>
         <div class="count">{len(accounts)}</div>
         <div class="actions">
-          <a class="btn sec" href="/deals">一覧</a>
+          <a class="btn sec" href="/accounts">一覧</a>
           <a class="btn sec" href="/account/new">＋手動追加</a>
         </div>
       </div>
@@ -323,7 +323,9 @@ def activity_deal_picker(con) -> str:
 
 def home_page(con, owner: str | None = None, status_filter: str | None = None,
               stage_filter: str | None = None) -> str:
-    deals = sfa_db.list_deals(con, status=status_filter, owner=owner, stage=stage_filter)
+    # デフォルトでclosedを除外（NULLもopenとして扱う）
+    effective_status = status_filter if status_filter is not None else "open"
+    deals = sfa_db.list_deals(con, status=effective_status, owner=owner, stage=stage_filter)
     owners = sfa_db.get_master_list(con, "owners")
     stages = sfa_db.get_master_list(con, "deal_stages")
     biz_l1_list = sfa_db.get_master_list(con, "business_type_l1")
@@ -332,9 +334,9 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         for o in owners
     )
     status_opts = (
-        '<option value="">全ステータス</option>'
-        + f'<option value="open"{"  selected" if status_filter=="open" else ""}>進行中</option>'
-        + f'<option value="closed"{" selected" if status_filter=="closed" else ""}>クローズ済</option>'
+        '<option value="">全て（クローズ含む）</option>'
+        + f'<option value="open"{"  selected" if status_filter is None or status_filter=="open" else ""}>進行中のみ</option>'
+        + f'<option value="closed"{" selected" if status_filter=="closed" else ""}>クローズ済のみ</option>'
     )
     stage_opts = '<option value="">全ステージ</option>' + "".join(
         f'<option value="{html.escape(s)}"{" selected" if s == stage_filter else ""}>{html.escape(s)}</option>'
@@ -474,8 +476,9 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
 
 def account_form(con, acc=None) -> str:
     acc = acc or {}
+    cancel_url = f"/account/{acc['id']}" if acc.get("id") else "/accounts"
     return f"""
-    <div class="card"><h2>{'アカウント編集' if acc else '新規アカウント'}</h2>
+    <div class="card"><h2>{'アカウント編集' if acc.get('id') else '新規アカウント'}</h2>
     <form method="post" action="/account/save">
       <input type="hidden" name="id" value="{_esc(acc.get('id'))}">
       <label>企業名 *</label><input name="name" required value="{_esc(acc.get('name'))}">
@@ -486,8 +489,82 @@ def account_form(con, acc=None) -> str:
         </div>
       </div>
       <label>メモ</label><textarea name="note" rows="2">{_esc(acc.get('note'))}</textarea>
-      <p><button class="btn">保存</button> <a class="btn sec" href="/">キャンセル</a></p>
+      <p><button class="btn">保存</button> <a class="btn sec" href="{cancel_url}">キャンセル</a></p>
     </form></div>"""
+
+
+def accounts_page(con) -> str:
+    """アカウント一覧ページ。"""
+    accounts = sfa_db.list_accounts(con)
+    deal_counts = {
+        r["account_id"]: r["cnt"]
+        for r in con.execute(
+            "SELECT account_id, COUNT(*) as cnt FROM deals WHERE account_id IS NOT NULL GROUP BY account_id"
+        )
+    }
+    rows_html = "".join(
+        f'<tr>'
+        f'<td><a href="/account/{a["id"]}">{_esc(a["name"])}</a></td>'
+        f'<td>{_esc(a.get("industry")) or "<span class=muted>―</span>"}</td>'
+        f'<td>{_esc(a.get("company_size")) or "<span class=muted>―</span>"}</td>'
+        f'<td class="right muted">{deal_counts.get(a["id"], 0)}</td>'
+        f'</tr>'
+        for a in accounts
+    ) or '<tr><td colspan=4 class=muted>アカウントがありません。</td></tr>'
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center">
+        <span>アカウント一覧 ({len(accounts)})</span>
+        <a class="btn" href="/account/new">＋手動追加</a>
+      </h2>
+      <table>
+        <tr><th>企業名</th><th>業界</th><th>企業規模</th><th class="right">商談数</th></tr>
+        {rows_html}
+      </table>
+    </div>"""
+
+
+def account_detail(con, acc: dict) -> str:
+    """アカウント詳細ページ（関連商談含む）。"""
+    deals = [dict(r) for r in con.execute(
+        "SELECT id, deal_name, stage, owner, status FROM deals WHERE account_id=? ORDER BY id DESC",
+        (acc["id"],)
+    )]
+    deal_rows = "".join(
+        f'<tr>'
+        f'<td><a href="/deal/{d["id"]}">{_esc(d["deal_name"])}</a></td>'
+        f'<td>{_esc(d.get("stage")) or "<span class=muted>―</span>"}</td>'
+        f'<td>{_esc(d.get("owner")) or "<span class=muted>―</span>"}</td>'
+        f'<td><span class="muted">{_esc(d.get("status") or "open")}</span></td>'
+        f'</tr>'
+        for d in deals
+    ) or '<tr><td colspan=4 class=muted>関連商談がありません</td></tr>'
+    note_html = (
+        f'<p style="margin-top:8px;white-space:pre-wrap;font-size:13px">{_esc(acc.get("note"))}</p>'
+        if acc.get("note") else ""
+    )
+    return f"""
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0">{_esc(acc["name"])}</h2>
+        <a class="btn sec" href="/account/{acc['id']}/edit" style="font-size:12px;padding:5px 10px">編集</a>
+      </div>
+      <div class="grid" style="margin-top:12px">
+        <div><label>業界</label><p style="margin:2px 0">{_esc(acc.get("industry")) or "―"}</p></div>
+        <div><label>企業規模</label><p style="margin:2px 0">{_esc(acc.get("company_size")) or "―"}</p></div>
+      </div>
+      {note_html}
+    </div>
+    <div class="card">
+      <h2>関連商談 ({len(deals)})</h2>
+      <table><tr><th>案件名</th><th>ステージ</th><th>担当</th><th>状態</th></tr>
+      {deal_rows}
+      </table>
+      <p style="margin-top:12px">
+        <a class="btn" href="/deal/new">＋商談追加</a>
+        <a class="btn sec" href="/accounts" style="margin-left:8px">一覧へ</a>
+      </p>
+    </div>"""
 
 
 def deal_form(con, deal=None) -> str:
@@ -572,6 +649,24 @@ def deal_form(con, deal=None) -> str:
             f'{"🔗 テーマDB連携済 (id="+str(deal.get("theme_id"))+")" if deal.get("theme_id") else "テーマDB未連携（保存時に自動連携）"}'
             f'</span>'
         )
+    acc_req = "required" if deal.get("id") else ""
+    new_acc_html = ""
+    new_acc_js = ""
+    if not deal.get("id"):
+        new_acc_html = (
+            '<label style="margin-top:4px;font-size:11px;display:flex;align-items:center;gap:4px">'
+            '<input type="checkbox" id="new_acc_chk" onchange="toggleNewAcc()"> '
+            '新規アカウントを追加（業界・規模を自動推定）</label>'
+            '<div id="new_acc_row" style="display:none;margin-top:6px">'
+            '<input name="new_account_name" placeholder="新しい会社名"></div>'
+        )
+        new_acc_js = (
+            'function toggleNewAcc() {'
+            ' var chk=document.getElementById("new_acc_chk");'
+            ' document.getElementById("new_acc_row").style.display=chk.checked?"":"none";'
+            ' document.getElementById("acc_id_sel").required=!chk.checked;'
+            '}'
+        )
     revert_btn = ""
     if deal.get("id") and deal.get("status") != "closed":
         revert_btn = (
@@ -587,8 +682,9 @@ def deal_form(con, deal=None) -> str:
     <form method="post" action="/deal/save">
       <input type="hidden" name="id" value="{_esc(deal.get('id'))}">
       <div class="grid">
-        <div><label>アカウント *</label>
-          <select name="account_id" required>{''.join(acc_opts)}</select></div>
+        <div><label>アカウント{"" if not deal.get("id") else " *"}</label>
+          <select name="account_id" id="acc_id_sel" {acc_req}>{''.join(acc_opts)}</select>
+          {new_acc_html}</div>
         <div><label>案件名 *</label>
           <input name="deal_name" required value="{_esc(deal.get('deal_name'))}"></div>
         <div><label>ステージ</label>
@@ -642,6 +738,7 @@ def deal_form(con, deal=None) -> str:
     </form>
     {revert_btn}
     <script>
+    {new_acc_js}
     const L2_MAP = {json.dumps(sfa_db.BUSINESS_TYPE_L2_BY_L1, ensure_ascii=False)};
     function updateL2() {{
       const l1 = document.getElementById('biz_l1').value;
@@ -1028,6 +1125,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(activity_deal_picker(con)))
                 elif path == "/deal/new":
                     self._send(render(deal_form(con)))
+                elif path == "/accounts":
+                    self._send(render(accounts_page(con)))
                 elif path == "/account/new":
                     self._send(render(account_form(con)))
                 # ── リード ──
@@ -1061,9 +1160,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         200 if deal else 404,
                     )
                 elif path.startswith("/account/"):
-                    aid = int(path.split("/")[2])
+                    parts = path.split("/")
+                    aid = int(parts[2])
                     acc = con.execute("SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
-                    self._send(render(account_form(con, dict(acc) if acc else None)))
+                    if len(parts) >= 4 and parts[3] == "edit":
+                        self._send(render(account_form(con, dict(acc) if acc else None)))
+                    else:
+                        self._send(
+                            render(account_detail(con, dict(acc))) if acc
+                            else render("<div class=card>アカウントが見つかりません</div>"),
+                            200 if acc else 404,
+                        )
                 else:
                     self._send(render("<div class=card>ページが見つかりません</div>"), 404)
             finally:
@@ -1095,14 +1202,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── アカウント ──
                 elif path == "/account/save":
-                    sfa_db.upsert_account(
+                    saved_acc_id = sfa_db.upsert_account(
                         con, id=int(f["id"]) if f.get("id") else None,
                         name=f.get("name") or "(無名)",
                         industry=f.get("industry") or None,
                         company_size=f.get("company_size") or None,
                         note=f.get("note") or None,
                     )
-                    self._redirect("/")
+                    self._redirect(f"/account/{saved_acc_id}")
 
                 # ── 商談一括編集 ──
                 elif path == "/deals/bulk_edit":
@@ -1140,9 +1247,31 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             return float(v) if v else None
                         except ValueError:
                             return None
+                    # 新規アカウント自動作成（deal/new フォームで「新規アカウントを追加」チェック時）
+                    deal_account_id = int(f["account_id"]) if f.get("account_id") else None
+                    new_acc_name = (f.get("new_account_name") or "").strip()
+                    if new_acc_name and not deal_account_id:
+                        existing_acc = con.execute(
+                            "SELECT id FROM accounts WHERE name=?", (new_acc_name,)
+                        ).fetchone()
+                        if existing_acc:
+                            deal_account_id = existing_acc["id"]
+                        else:
+                            industries_m = sfa_db.get_master_list(con, "industries")
+                            sizes_m = sfa_db.get_master_list(con, "company_sizes")
+                            try:
+                                est = leads_csv.estimate_companies([new_acc_name], industries_m, sizes_m)
+                                est1 = est.get(new_acc_name, {})
+                            except Exception:
+                                est1 = {}
+                            deal_account_id = sfa_db.upsert_account(
+                                con, name=new_acc_name,
+                                industry=est1.get("industry"),
+                                company_size=est1.get("company_size"),
+                            )
                     did = sfa_db.upsert_deal(
                         con, id=int(f["id"]) if f.get("id") else None,
-                        account_id=int(f["account_id"]) if f.get("account_id") else None,
+                        account_id=deal_account_id,
                         deal_name=f.get("deal_name") or "(無題)",
                         stage=f.get("stage") or None,
                         business_type_l1=f.get("business_type_l1") or None,

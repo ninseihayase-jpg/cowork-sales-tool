@@ -57,19 +57,14 @@ def parse_leads_csv(csv_text: str, themes_by_name: dict) -> list[dict]:
     return results
 
 
-def _estimate_fields(rows: list[dict], industries: list[str], company_sizes: list[str]) -> list[dict]:
-    """業界・企業規模が未入力の行をClaude APIで推定補完する。"""
+def estimate_companies(companies: list[str], industries: list[str], company_sizes: list[str]) -> dict:
+    """会社名リストの業界・企業規模をClaude APIで一括推定。
+    Returns {company_name: {"industry": ..., "company_size": ...}}（選択肢外はNone）。
+    """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return rows
+    if not api_key or not companies:
+        return {}
 
-    # 推定が必要な行のインデックスと会社名を収集
-    need = [(i, r["company"]) for i, r in enumerate(rows)
-            if not r.get("industry") or not r.get("company_size")]
-    if not need:
-        return rows
-
-    companies = list({company for _, company in need})
     prompt = (
         f"以下の会社名のリストについて、業界と企業規模を推定してください。\n"
         f"業界の選択肢: {industries}\n"
@@ -78,13 +73,11 @@ def _estimate_fields(rows: list[dict], industries: list[str], company_sizes: lis
         f"回答はJSON形式で、会社名をキーとし、値は {{\"industry\": \"...\", \"company_size\": \"...\"}} の形式にしてください。"
         f"選択肢にない場合はnullにしてください。JSONのみ返してください。"
     )
-
     payload = json.dumps({
         "model": "claude-haiku-4-5",
         "max_tokens": 1024,
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
-
     req = urllib.request.Request(
         "https://api.anthropic.com/v1/messages",
         data=payload,
@@ -99,28 +92,41 @@ def _estimate_fields(rows: list[dict], industries: list[str], company_sizes: lis
         with urllib.request.urlopen(req, timeout=20) as resp:
             result = json.loads(resp.read().decode("utf-8"))
         text = result["content"][0]["text"].strip()
-        # JSONブロックを抽出（```json ... ``` の場合に対応）
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
-        estimates: dict = json.loads(text.strip())
+        raw: dict = json.loads(text.strip())
     except Exception:
-        return rows
+        return {}
 
     valid_industries = set(industries)
     valid_sizes = set(company_sizes)
-    for i, company in need:
-        est = estimates.get(company, {})
-        if not rows[i].get("industry"):
-            ind = est.get("industry")
-            if ind in valid_industries:
-                rows[i]["industry"] = ind
-        if not rows[i].get("company_size"):
-            sz = est.get("company_size")
-            if sz in valid_sizes:
-                rows[i]["company_size"] = sz
+    out = {}
+    for company, est in raw.items():
+        if not isinstance(est, dict):
+            continue
+        ind = est.get("industry")
+        sz = est.get("company_size")
+        out[company] = {
+            "industry": ind if ind in valid_industries else None,
+            "company_size": sz if sz in valid_sizes else None,
+        }
+    return out
 
+
+def _estimate_fields(rows: list[dict], industries: list[str], company_sizes: list[str]) -> list[dict]:
+    """業界・企業規模が未入力の行をClaude APIで推定補完する。"""
+    need_companies = list({r["company"] for r in rows if not r.get("industry") or not r.get("company_size")})
+    if not need_companies:
+        return rows
+    estimates = estimate_companies(need_companies, industries, company_sizes)
+    for r in rows:
+        est = estimates.get(r["company"], {})
+        if not r.get("industry") and est.get("industry"):
+            r["industry"] = est["industry"]
+        if not r.get("company_size") and est.get("company_size"):
+            r["company_size"] = est["company_size"]
     return rows
 
 
@@ -135,6 +141,33 @@ def import_leads(con, csv_text: str, industries=None, company_sizes=None) -> tup
     for r in rows:
         try:
             sfa_db.upsert_lead(con, **r)
+            # アカウント自動追加・補完
+            company = r.get("company", "")
+            if company:
+                existing = con.execute(
+                    "SELECT id, industry, company_size FROM accounts WHERE name=?",
+                    (company,)
+                ).fetchone()
+                if existing is None:
+                    sfa_db.upsert_account(
+                        con, name=company,
+                        industry=r.get("industry"),
+                        company_size=r.get("company_size"),
+                    )
+                else:
+                    acc_row = dict(existing)
+                    updates = {}
+                    if r.get("industry") and not acc_row.get("industry"):
+                        updates["industry"] = r["industry"]
+                    if r.get("company_size") and not acc_row.get("company_size"):
+                        updates["company_size"] = r["company_size"]
+                    if updates:
+                        set_clause = ", ".join(f"{k}=?" for k in updates)
+                        con.execute(
+                            f"UPDATE accounts SET {set_clause}, updated_at=datetime('now') WHERE id=?",
+                            (*updates.values(), acc_row["id"]),
+                        )
+                        con.commit()
             ok += 1
         except Exception:
             skip += 1
