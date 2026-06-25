@@ -21,6 +21,20 @@ from . import theme_link
 
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 
+INPROC_MEMBERS = [
+    ("吉江", "takuya.yoshie@inproc.org"),
+    ("中島", "yasutaka.nakajima@inproc.org"),
+    ("早瀬", "ninsei.hayase@inproc.org"),
+    ("岩崎", "eijiro.iwasaki@inproc.org"),
+    ("高橋", "masanori.takahashi@inproc.org"),
+    ("土屋", "tetsuhiro.tsuchiya@inproc.org"),
+    ("戸田", "toda@inproc.org"),
+    ("片山", "akito.katayama@inproc.org"),
+    ("杉山", "hiroki.sugiyama@inproc.org"),
+    ("山端", "rei.yamaberi@inproc.org"),
+    ("堀籠", "wataru.horigome@inproc.org"),
+]
+
 
 def _opt(values: list[str], selected: str | None) -> str:
     out = ['<option value=""></option>']
@@ -96,6 +110,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
   <a href="/">ホーム</a>
   <a href="/deals">商談一覧</a>
   <a href="/leads">リード</a>
+  <a href="/email-patterns" style="opacity:.8;font-size:13px">メール</a>
   <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
   <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Inproc Dashboard ↗</a>
 </header>
@@ -105,6 +120,167 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
 def render(body: str, flash: str = "") -> bytes:
     flash_html = f'<div class="flash">{html.escape(flash)}</div>' if flash else ""
     return PAGE.format(body=body, flash=flash_html).encode("utf-8")
+
+
+# ── メールパターン管理 ───────────────────────────────────────────────────────────
+
+def email_patterns_page(con) -> str:
+    patterns = sfa_db.list_email_patterns(con)
+    rows = ""
+    for p in patterns:
+        cc = _esc(p.get("cc_addresses") or "")
+        rows += (
+            f'<tr>'
+            f'<td><a href="/email-patterns/{p["id"]}/edit"><strong>{_esc(p["name"])}</strong></a></td>'
+            f'<td>{_esc(p.get("from_address") or "—")}</td>'
+            f'<td class="muted">{cc or "—"}</td>'
+            f'<td>{_esc(p.get("subject") or "")}</td>'
+            f'<td><form method="post" action="/email-patterns/{p["id"]}/delete" style="display:inline">'
+            f'<button class="btn sec" style="font-size:11px;padding:4px 8px" '
+            f'onclick="return confirm(\'削除しますか？\')">削除</button></form></td>'
+            f'</tr>'
+        )
+    count = sfa_db.list_leads(con, status=None)
+    assigned = sum(1 for l in count if l.get("email_pattern_id"))
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>メールパターン管理</span>
+        <span style="display:flex;gap:8px">
+          <a class="btn sec" href="/email-draft">ドラフト生成 ({assigned}件選択中)</a>
+          <a class="btn" href="/email-patterns/new">＋パターン追加</a>
+        </span>
+      </h2>
+      <p class="muted" style="margin-bottom:14px">テンプレート変数: <code>{{company}}</code> 社名　<code>{{name}}</code> 氏名　<code>{{title}}</code> 役職</p>
+      <table>
+        <tr><th>パターン名</th><th>From</th><th>CC</th><th>件名テンプレート</th><th></th></tr>
+        {rows or '<tr><td colspan=5 class="muted">パターンがありません。</td></tr>'}
+      </table>
+    </div>"""
+
+
+def email_pattern_form(con, pattern=None) -> str:
+    pid = pattern["id"] if pattern else None
+    action = f"/email-patterns/{pid}/save" if pid else "/email-patterns/save"
+    title = "パターン編集" if pid else "パターン追加"
+    from_opts = '<option value=""></option>' + "".join(
+        f'<option value="{email}"{" selected" if pattern and pattern.get("from_address") == email else ""}>'
+        f'{name} &lt;{email}&gt;</option>'
+        for name, email in INPROC_MEMBERS
+    )
+    cc_existing = set((pattern.get("cc_addresses") or "").split(",")) if pattern else set()
+    cc_checks = "".join(
+        f'<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:13px">'
+        f'<input type="checkbox" name="cc" value="{email}"'
+        f'{" checked" if email in cc_existing else ""}> {name} &lt;{email}&gt;</label>'
+        for name, email in INPROC_MEMBERS
+    )
+    return f"""
+    <div class="card" style="max-width:700px">
+      <h2>{title}</h2>
+      <form method="post" action="{action}">
+        <label>パターン名</label>
+        <input name="name" required value="{_esc(pattern.get('name') if pattern else '')}">
+        <label>From（送信元）</label>
+        <select name="from_address">{from_opts}</select>
+        <label>CC</label>
+        <div style="background:#f4f6f9;border-radius:6px;padding:10px 14px;border:1px solid #d4dae4">{cc_checks}</div>
+        <label>件名テンプレート <span class="muted">（{{company}} 等使用可）</span></label>
+        <input name="subject" required value="{_esc(pattern.get('subject') if pattern else '')}">
+        <label>本文テンプレート <span class="muted">（{{company}} / {{name}} / {{title}} 使用可）</span></label>
+        <textarea name="body" rows="12" style="min-height:220px">{_esc(pattern.get('body') if pattern else '')}</textarea>
+        <div style="margin-top:14px;display:flex;gap:8px">
+          <button class="btn" type="submit">保存</button>
+          <a class="btn sec" href="/email-patterns">キャンセル</a>
+        </div>
+      </form>
+    </div>"""
+
+
+def email_draft_page(con) -> str:
+    all_leads = sfa_db.list_leads(con)
+    assigned = [l for l in all_leads if l.get("email_pattern_id")]
+    patterns = {p["id"]: p for p in sfa_db.list_email_patterns(con)}
+
+    if not assigned:
+        return """<div class="card">
+          <h2>メールドラフト生成</h2>
+          <p class="muted">パターンが割り当てられたリードがありません。<br>
+          <a href="/leads">リード一覧</a> でパターン列からパターンを選択してください。</p>
+        </div>"""
+
+    def _render(tmpl, lead):
+        return (tmpl or "").replace("{company}", lead.get("company") or "").replace(
+            "{name}", lead.get("name") or "").replace("{title}", lead.get("title") or "")
+
+    def _mailto(p, lead):
+        to_addr = lead.get("email") or ""
+        if not to_addr:
+            return ""
+        params = {"subject": _render(p.get("subject", ""), lead),
+                  "body": _render(p.get("body", ""), lead)}
+        if p.get("cc_addresses"):
+            params["cc"] = p["cc_addresses"]
+        return "mailto:" + urllib.parse.quote(to_addr) + "?" + urllib.parse.urlencode(params)
+
+    by_pattern: dict = {}
+    for lead in assigned:
+        pid = lead["email_pattern_id"]
+        by_pattern.setdefault(pid, []).append(lead)
+
+    sections = []
+    for pid, leads in by_pattern.items():
+        p = patterns.get(pid)
+        if not p:
+            continue
+        cc_str = _esc(p.get("cc_addresses") or "")
+        fr_str = _esc(p.get("from_address") or "")
+
+        # 全件開くボタン用 mailto リストを JS 配列として埋め込む
+        mailto_list = [_mailto(p, lead) for lead in leads if lead.get("email")]
+        js_links = json.dumps(mailto_list, ensure_ascii=False)
+        open_js = f"var links={js_links};links.forEach(function(u){{window.open(u)}});"
+
+        rows = ""
+        for lead in leads:
+            mailto = _mailto(p, lead)
+            mailto_btn = (
+                f'<a class="btn" href="{html.escape(mailto)}" '
+                f'style="font-size:12px;padding:5px 10px">開く</a>'
+                if mailto else '<span class="muted">アドレス未登録</span>'
+            )
+            rows += (
+                f'<tr>'
+                f'<td><strong>{_esc(lead.get("company"))}</strong><br>'
+                f'<span class="muted">{_esc(lead.get("name"))}</span></td>'
+                f'<td class="muted">{_esc(lead.get("email") or "—")}</td>'
+                f'<td>{_esc(_render(p.get("subject", ""), lead))}</td>'
+                f'<td>{mailto_btn}</td>'
+                f'</tr>'
+            )
+        sections.append(f"""
+        <div class="card">
+          <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <span>{_esc(p["name"])} <span class="muted" style="font-weight:normal">({len(leads)}件)</span></span>
+            <span style="display:flex;gap:8px;align-items:center">
+              <span class="muted" style="font-size:12px">From: {fr_str}{"　CC: " + cc_str if cc_str else ""}</span>
+              <button class="btn sec" style="font-size:12px"
+                onclick="{html.escape(open_js)}">全件開く</button>
+            </span>
+          </h2>
+          <table>
+            <tr><th>会社 / 氏名</th><th>メールアドレス</th><th>件名（プレビュー）</th><th></th></tr>
+            {rows}
+          </table>
+        </div>""")
+
+    return f"""
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <h2 style="margin:0">メールドラフト生成
+        <span class="muted" style="font-weight:normal">({len(assigned)}件)</span></h2>
+      <a class="btn sec" href="/email-patterns">← パターン管理</a>
+    </div>
+    {''.join(sections)}"""
 
 
 # ── ダッシュボード ──────────────────────────────────────────────────────────────
@@ -808,6 +984,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
     owners_list = sfa_db.get_master_list(con, "owners")
     industries_list = sfa_db.get_master_list(con, "industries")
     company_sizes_list = sfa_db.get_master_list(con, "company_sizes")
+    email_patterns = sfa_db.list_email_patterns(con)
 
     # バルク編集用JS オブジェクト構築
     bulk_options = {
@@ -846,6 +1023,17 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
                 f' style="font-size:12px;padding:2px 4px;max-width:110px">'
                 f'<option value=""></option>{opts}</select>')
 
+    def _inline_select_pattern(lead_id, current_id):
+        opts = '<option value="">— なし —</option>' + "".join(
+            f'<option value="{p["id"]}"{" selected" if p["id"] == current_id else ""}>'
+            f'{html.escape(p["name"])}</option>'
+            for p in email_patterns
+        )
+        return (f'<select onchange="setLeadPattern({lead_id}, this.value)"'
+                f' style="font-size:12px;padding:2px 4px;max-width:130px;'
+                f'{"background:#eef6ff;font-weight:600;" if current_id else ""}">'
+                f'{opts}</select>')
+
     rows = []
     for ld in leads:
         sc = f's-{ld.get("lead_status", "new")}'
@@ -857,6 +1045,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         sel_owner = _inline_select_master(ld["id"], "assigned_to", owners_list, ld.get("assigned_to") or "")
         sel_industry = _inline_select_master(ld["id"], "industry", industries_list, ld.get("industry") or "")
         sel_company_size = _inline_select_master(ld["id"], "company_size", company_sizes_list, ld.get("company_size") or "")
+        sel_pattern = _inline_select_pattern(ld["id"], ld.get("email_pattern_id"))
         rows.append(
             f'<tr>'
             f'<td style="width:32px"><input type="checkbox" name="ids" value="{ld["id"]}"></td>'
@@ -867,6 +1056,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
             f'<td class="hide-sm">{sel_owner}</td>'
             f'<td class="hide-sm">{sel_industry}</td>'
             f'<td class="hide-sm">{sel_company_size}</td>'
+            f'<td>{sel_pattern}</td>'
             f'<td class="muted">{_esc((ld.get("updated_at") or "")[:10])}</td>'
             f'</tr>'
         )
@@ -876,12 +1066,14 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>リード一覧 <span class="muted" style="font-weight:normal">({len(leads)}件)</span></span>
         <span style="display:flex;gap:8px">
+          <a class="btn sec" href="/email-draft">メールドラフト</a>
           <a class="btn sec" href="/leads/import">CSV取込</a>
           <a class="btn" href="/leads/new">＋新規リード</a>
         </span>
       </h2>
       {filter_form}
       <form id="bulk_form" method="post" action="/leads/bulk_edit">
+      <div style="overflow-x:auto">
       <table>
         <tr><th style="width:32px"><input type="checkbox" id="chk_all" title="全選択"
               onchange="document.querySelectorAll('[name=ids]').forEach(c=>c.checked=this.checked)"></th>
@@ -890,8 +1082,9 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
             <th class="hide-sm">担当</th>
             <th class="hide-sm">業界</th>
             <th class="hide-sm">企業規模</th>
+            <th>メールパターン</th>
             <th>更新日</th></tr>
-        {''.join(rows) or '<tr><td colspan=8 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
+        {''.join(rows) or '<tr><td colspan=9 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
       </table>
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
         <select id="bulk_field" name="field" style="width:auto">
@@ -904,6 +1097,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         <select id="bulk_value" name="value" style="width:auto"></select>
         <button class="btn sec" type="submit">選択した件を一括変更</button>
       </div>
+      </div>
       </form>
     </div>
     <script>
@@ -913,6 +1107,15 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         method: 'POST',
         headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
         body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+      }}).then(r => r.json()).then(d => {{
+        if (!d.ok) {{ alert('更新エラー: ' + (d.error || '')); }}
+      }}).catch(() => alert('通信エラー'));
+    }}
+    function setLeadPattern(id, patternId) {{
+      fetch('/leads/' + id + '/set_pattern', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+        body: 'pattern_id=' + encodeURIComponent(patternId)
       }}).then(r => r.json()).then(d => {{
         if (!d.ok) {{ alert('更新エラー: ' + (d.error || '')); }}
       }}).catch(() => alert('通信エラー'));
@@ -1119,9 +1322,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
         def _form(self) -> dict:
             n = int(self.headers.get("Content-Length", 0))
-            raw = self.rfile.read(n).decode("utf-8")
-            d = urllib.parse.parse_qs(raw, keep_blank_values=True)
+            self._form_raw = self.rfile.read(n).decode("utf-8", errors="replace")
+            d = urllib.parse.parse_qs(self._form_raw, keep_blank_values=True)
             return {k: (v[0] if v else "") for k, v in d.items()}
+
+        def _form_list(self, key: str) -> list[str]:
+            """_form() 呼び出し後に特定キーの全値リストを返す。"""
+            d = urllib.parse.parse_qs(getattr(self, "_form_raw", ""), keep_blank_values=True)
+            return d.get(key, [])
 
         def _form_multi(self) -> dict:
             """multipart/form-data対応。ファイルはバイト列で返す。"""
@@ -1179,6 +1387,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send_cors_json(json.dumps([dict(r) for r in notes], ensure_ascii=False, default=str).encode())
                 elif path == "/":
                     self._send(render(dashboard_page(con)))
+                # ── メールパターン ──
+                elif path == "/email-patterns":
+                    self._send(render(email_patterns_page(con)))
+                elif path == "/email-patterns/new":
+                    self._send(render(email_pattern_form(con)))
+                elif path == "/email-draft":
+                    self._send(render(email_draft_page(con)))
+                elif path.startswith("/email-patterns/") and path.endswith("/edit"):
+                    try:
+                        pid = int(path.split("/")[2])
+                        p = sfa_db.get_email_pattern(con, pid)
+                        self._send(render(email_pattern_form(con, p) if p else "<div class=card>見つかりません</div>"))
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>見つかりません</div>"), 404)
                 elif path == "/deals":
                     qs = self._qs()
                     def qs1(k): return (qs.get(k, [None])[0] or None)
@@ -1444,6 +1666,41 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
                     self._send(_resp, ctype="application/json")
 
+                # ── メールパターン ──
+                elif path == "/email-patterns/save":
+                    cc_list = self._form_list("cc")
+                    sfa_db.save_email_pattern(
+                        con,
+                        name=f.get("name", ""),
+                        subject=f.get("subject", ""),
+                        body=f.get("body", ""),
+                        from_address=f.get("from_address") or None,
+                        cc_addresses=",".join(cc_list) if cc_list else None,
+                    )
+                    self._redirect("/email-patterns")
+                elif path.startswith("/email-patterns/") and path.endswith("/save"):
+                    try:
+                        pid = int(path.split("/")[2])
+                        cc_list = self._form_list("cc")
+                        sfa_db.save_email_pattern(
+                            con, id=pid,
+                            name=f.get("name", ""),
+                            subject=f.get("subject", ""),
+                            body=f.get("body", ""),
+                            from_address=f.get("from_address") or None,
+                            cc_addresses=",".join(cc_list) if cc_list else None,
+                        )
+                        self._redirect("/email-patterns")
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>不正なリクエスト</div>"), 400)
+                elif path.startswith("/email-patterns/") and path.endswith("/delete"):
+                    try:
+                        pid = int(path.split("/")[2])
+                        sfa_db.delete_email_pattern(con, pid)
+                        self._redirect("/email-patterns")
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>不正なリクエスト</div>"), 400)
+
                 # ── リード ──
                 elif path == "/leads/save":
                     existing_id = int(f["id"]) if f.get("id") else None
@@ -1558,6 +1815,19 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             con.commit()
                     self._redirect("/leads")
 
+                elif path.startswith("/leads/") and path.endswith("/set_pattern"):
+                    parts = path.split("/")
+                    _ok = False
+                    _err = ""
+                    if len(parts) == 4 and parts[2].isdigit():
+                        lid = int(parts[2])
+                        pid_str = f.get("pattern_id", "")
+                        pid = int(pid_str) if pid_str and pid_str.isdigit() else None
+                        sfa_db.set_lead_email_pattern(con, lid, pid)
+                        _ok = True
+                    else:
+                        _err = "不正なリクエスト"
+                    self._send(json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode(), ctype="application/json")
                 elif path.startswith("/leads/") and path.endswith("/field"):
                     _LEAD_ALLOWED_FIELDS = {"source", "assigned_to", "industry", "company_size", "lead_status"}
                     parts = path.split("/")

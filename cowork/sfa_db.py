@@ -181,6 +181,17 @@ CREATE TABLE IF NOT EXISTS masters (
     values_json TEXT NOT NULL
 );
 
+-- メールパターン（一斉ドラフト用テンプレート）
+CREATE TABLE IF NOT EXISTS email_patterns (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    subject      TEXT NOT NULL DEFAULT '',
+    body         TEXT NOT NULL DEFAULT '',
+    from_address TEXT,
+    cc_addresses TEXT,
+    created_at   TEXT DEFAULT (datetime('now'))
+);
+
 -- Slack bot スレッド状態管理
 CREATE TABLE IF NOT EXISTS slack_threads (
     thread_ts      TEXT PRIMARY KEY,
@@ -227,6 +238,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         for col, typedef in [
             ("industry", "TEXT"),
             ("company_size", "TEXT"),
+            ("email_pattern_id", "INTEGER REFERENCES email_patterns(id) ON DELETE SET NULL"),
         ]:
             if col not in lead_cols:
                 con.execute(f"ALTER TABLE leads ADD COLUMN {col} {typedef}")
@@ -413,8 +425,12 @@ LEAD_FIELDS = [
 
 
 def list_leads(con, *, status=None, source=None, theme_id=None, q=None) -> list[dict]:
-    sql = ("SELECT l.*, pt.name AS theme_name, pt.color AS theme_color "
-           "FROM leads l LEFT JOIN pitch_themes pt ON pt.id = l.pitch_theme_id WHERE 1=1")
+    sql = ("SELECT l.*, pt.name AS theme_name, pt.color AS theme_color, "
+           "ep.name AS email_pattern_name "
+           "FROM leads l "
+           "LEFT JOIN pitch_themes pt ON pt.id = l.pitch_theme_id "
+           "LEFT JOIN email_patterns ep ON ep.id = l.email_pattern_id "
+           "WHERE 1=1")
     params: list = []
     if status:
         sql += " AND l.lead_status=?"
@@ -453,6 +469,48 @@ def upsert_lead(con, *, id=None, **fields) -> int:
     cur = con.execute(f"INSERT INTO leads ({cols}) VALUES ({ph})", [data[k] for k in LEAD_FIELDS])
     con.commit()
     return cur.lastrowid
+
+
+def list_email_patterns(con) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM email_patterns ORDER BY created_at ASC"
+    )]
+
+
+def get_email_pattern(con, id: int) -> dict | None:
+    r = con.execute("SELECT * FROM email_patterns WHERE id=?", (int(id),)).fetchone()
+    return dict(r) if r else None
+
+
+def save_email_pattern(con, *, id=None, name, subject, body,
+                       from_address=None, cc_addresses=None) -> int:
+    if id:
+        con.execute(
+            "UPDATE email_patterns SET name=?, subject=?, body=?, from_address=?, cc_addresses=? WHERE id=?",
+            (name, subject, body, from_address or None, cc_addresses or None, int(id)),
+        )
+        con.commit()
+        return int(id)
+    cur = con.execute(
+        "INSERT INTO email_patterns(name, subject, body, from_address, cc_addresses) VALUES(?,?,?,?,?)",
+        (name, subject, body, from_address or None, cc_addresses or None),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+def delete_email_pattern(con, id: int):
+    con.execute("UPDATE leads SET email_pattern_id=NULL WHERE email_pattern_id=?", (int(id),))
+    con.execute("DELETE FROM email_patterns WHERE id=?", (int(id),))
+    con.commit()
+
+
+def set_lead_email_pattern(con, lead_id: int, pattern_id: int | None):
+    con.execute(
+        "UPDATE leads SET email_pattern_id=?, updated_at=datetime('now') WHERE id=?",
+        (int(pattern_id) if pattern_id else None, int(lead_id)),
+    )
+    con.commit()
 
 
 def list_lead_activities(con, lead_id: int) -> list[dict]:
