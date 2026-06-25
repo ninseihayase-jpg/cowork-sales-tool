@@ -145,17 +145,23 @@ def main() -> None:
     if sa_path:
         creds = Credentials.from_service_account_file(str(sa_path), scopes=scopes)
     else:
-        # JSON文字列として渡された場合（private_key内の実際の改行を\nエスケープに修正）
-        import re, tempfile
-        fixed = re.sub(
-            r'("private_key"\s*:\s*")(.*?)(")',
-            lambda m: m.group(1) + m.group(2).replace('\n', '\\n') + m.group(3),
-            SA_JSON, flags=re.DOTALL
-        )
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
-        tmp.write(fixed)
-        tmp.close()
-        creds = Credentials.from_service_account_file(tmp.name, scopes=scopes)
+        # JSON文字列として渡された場合
+        import re, json as _json
+        # 1) JSONパース（private_key内の実際の改行を先に修正）
+        try:
+            sa_info = _json.loads(SA_JSON)
+        except _json.JSONDecodeError:
+            fixed = re.sub(
+                r'("private_key"\s*:\s*")(.*?)(")',
+                lambda m: m.group(1) + m.group(2).replace('\n', '\\n') + m.group(3),
+                SA_JSON, flags=re.DOTALL
+            )
+            sa_info = _json.loads(fixed)
+        # 2) private_keyの正規化: \n(バックスラッシュ+n)を実際の改行に統一
+        pk = sa_info.get("private_key", "")
+        sa_info["private_key"] = pk.replace("\\n", "\n")
+        from google.oauth2.service_account import Credentials as _Creds
+        creds = _Creds.from_service_account_info(sa_info, scopes=scopes)
 
     gc = gspread.authorize(creds)
 
