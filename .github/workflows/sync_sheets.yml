@@ -2,8 +2,8 @@ name: スプシ → テーマDB 定時同期
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # 毎日 09:00 JST (UTC 00:00)
-  workflow_dispatch:        # 手動実行ボタン
+    - cron: '0 23,3,9 * * *'  # 毎日 08:00/12:00/18:00 JST (UTC 23,3,9)
+  workflow_dispatch:             # 手動実行ボタン
 
 jobs:
   sync:
