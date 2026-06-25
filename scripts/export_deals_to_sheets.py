@@ -145,10 +145,15 @@ def main() -> None:
     if sa_path:
         creds = Credentials.from_service_account_file(str(sa_path), scopes=scopes)
     else:
-        # JSON文字列として渡された場合
-        import json, tempfile
+        # JSON文字列として渡された場合（private_key内の実際の改行を\nエスケープに修正）
+        import re, tempfile
+        fixed = re.sub(
+            r'("private_key"\s*:\s*")(.*?)(")',
+            lambda m: m.group(1) + m.group(2).replace('\n', '\\n') + m.group(3),
+            SA_JSON, flags=re.DOTALL
+        )
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
-        tmp.write(SA_JSON)
+        tmp.write(fixed)
         tmp.close()
         creds = Credentials.from_service_account_file(tmp.name, scopes=scopes)
 
