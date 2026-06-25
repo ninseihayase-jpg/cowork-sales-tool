@@ -1,18 +1,23 @@
 """
 SFA DBの商談一覧をGoogleスプシに転記。
-毎日GitHub Actionsで自動実行。
+毎日Renderのcron jobで自動実行。
 
 使用方法: python scripts/export_deals_to_sheets.py
 
 環境変数:
   GOOGLE_SERVICE_ACCOUNT_JSON - サービスアカウントJSONのパス（またはJSON文字列）
   WEEKLY_SHEET_ID - 転記先スプシのID
-  SFA_DB_PATH - DBパス（省略時はcowork_sfa.db）
+  SFA_API_URL  - SFA WebアプリのURL（Render cron環境用。設定時はAPIで取得）
+  SFA_API_TOKEN - SFA APIトークン（SFA_API_URL設定時に使用）
+  SFA_DB_PATH  - DBパス（ローカル実行時フォールバック）
 """
 from __future__ import annotations
 
 import os
 import sys
+import urllib.request
+import urllib.parse
+import json
 from pathlib import Path
 
 # --- .env 読み込み（ローカル実行時） ---
@@ -25,14 +30,15 @@ if _env_file.exists():
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
 
-# --- cowork パッケージをパスに追加 ---
+# --- cowork パッケージをパスに追加（ローカル実行時に使用） ---
 sys.path.insert(0, str(ROOT))
-from cowork import sfa_db
 
 # --- 設定 ---
 WEEKLY_SHEET_ID = os.environ.get("WEEKLY_SHEET_ID", "")
 SA_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "service_account.json")
 DB_PATH = os.environ.get("SFA_DB_PATH", str(ROOT / "cowork_sfa.db"))
+SFA_API_URL = os.environ.get("SFA_API_URL", "").rstrip("/")
+SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 SHEET_NAME = "商談一覧"
 
 # スプシのカラム定義: (ヘッダ表示名, deals dictのキー名)
@@ -83,6 +89,33 @@ def write_sheet(gc, sheet_id: str, sheet_name: str, rows: list[list]) -> None:
     print(f"  シート「{sheet_name}」: {len(rows)}行 書き込み完了")
 
 
+def fetch_deals_via_api() -> list[dict]:
+    """SFA WebアプリのAPIから商談一覧を取得する（Renderのcron環境用）。"""
+    url = f"{SFA_API_URL}/api/deals?status=open&token={urllib.parse.quote(SFA_API_TOKEN)}"
+    print(f"SFA API ({SFA_API_URL}/api/deals) から商談を取得中...")
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(f"API エラー: {data['error']}")
+    return data
+
+
+def fetch_deals_via_db() -> list[dict]:
+    """ローカルSQLite DBから商談一覧を取得する（ローカル実行時フォールバック）。"""
+    from cowork import sfa_db
+    db_path = Path(DB_PATH)
+    if not db_path.exists():
+        print(f"エラー: SFA DB が見つかりません: {DB_PATH}", file=sys.stderr)
+        sys.exit(1)
+    print(f"SFA DB ({DB_PATH}) から商談を取得中...")
+    con = sfa_db.connect(DB_PATH)
+    try:
+        return [dict(d) for d in sfa_db.list_deals(con, status="open")]
+    finally:
+        con.close()
+
+
 def main() -> None:
     # --- バリデーション ---
     if not WEEKLY_SHEET_ID:
@@ -94,18 +127,11 @@ def main() -> None:
         print(f"エラー: サービスアカウント鍵が見つかりません: {SA_JSON}", file=sys.stderr)
         sys.exit(1)
 
-    db_path = Path(DB_PATH)
-    if not db_path.exists():
-        print(f"エラー: SFA DB が見つかりません: {DB_PATH}", file=sys.stderr)
-        sys.exit(1)
-
-    # --- DB から open 商談を取得 ---
-    print(f"SFA DB ({DB_PATH}) から商談を取得中...")
-    con = sfa_db.connect(DB_PATH)
-    try:
-        deals = sfa_db.list_deals(con, status="open")
-    finally:
-        con.close()
+    # --- 商談一覧を取得（API優先、なければDB直接） ---
+    if SFA_API_URL and SFA_API_TOKEN:
+        deals = fetch_deals_via_api()
+    else:
+        deals = fetch_deals_via_db()
 
     print(f"  open 商談: {len(deals)}件")
     rows = [deal_to_row(d) for d in deals]

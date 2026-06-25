@@ -23,7 +23,8 @@ jobs:
 
       - name: スプシ → テーマDB 同期
         env:
-          THEME_API_TOKEN: ${{ secrets.THEME_API_TOKEN }}
+          THEME_API_TOKEN: hisho-2026
+          THEME_API_URL: https://hisho-ohxe.onrender.com
           SALES_SHEET_ID: ${{ secrets.SALES_SHEET_ID }}
           SALES_WORKSHEETS: Delivery,その他
           GOOGLE_SERVICE_ACCOUNT_JSON: service_account.json

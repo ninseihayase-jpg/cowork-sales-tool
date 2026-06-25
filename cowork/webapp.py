@@ -110,7 +110,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
   <a href="/">ホーム</a>
   <a href="/deals">商談一覧</a>
   <a href="/leads">リード</a>
-  <a href="/email-patterns" style="opacity:.8;font-size:13px">メール</a>
+  <a href="/email-draft" style="opacity:.8;font-size:13px">メール</a>
   <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
   <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Inproc Dashboard ↗</a>
 </header>
@@ -197,17 +197,20 @@ def email_pattern_form(con, pattern=None) -> str:
     </div>"""
 
 
-def email_draft_page(con) -> str:
-    all_leads = sfa_db.list_leads(con)
-    assigned = [l for l in all_leads if l.get("email_pattern_id")]
-    patterns = {p["id"]: p for p in sfa_db.list_email_patterns(con)}
+def email_draft_page(con, *, status_filter=None, q=None) -> str:
+    """メール送信ワークスペース。
+    上段: リードごとにパターンを選択（前回値プリセット、変更はAJAX保存）
+    下段: 選択済みリードのドラフトを常時表示
+    """
+    patterns_list = sfa_db.list_email_patterns(con)
+    patterns = {p["id"]: p for p in patterns_list}
 
-    if not assigned:
-        return """<div class="card">
-          <h2>メールドラフト生成</h2>
-          <p class="muted">パターンが割り当てられたリードがありません。<br>
-          <a href="/leads">リード一覧</a> でパターン列からパターンを選択してください。</p>
-        </div>"""
+    # リード取得（デフォルト: converted/lost 除外）
+    all_leads = sfa_db.list_leads(con, q=q)
+    if status_filter:
+        leads = [l for l in all_leads if l.get("lead_status") == status_filter]
+    else:
+        leads = [l for l in all_leads if l.get("lead_status") not in ("converted", "lost")]
 
     def _render(tmpl, lead):
         return (tmpl or "").replace("{company}", lead.get("company") or "").replace(
@@ -223,64 +226,147 @@ def email_draft_page(con) -> str:
             params["cc"] = p["cc_addresses"]
         return "mailto:" + urllib.parse.quote(to_addr) + "?" + urllib.parse.urlencode(params)
 
+    # ── 上段: リスト + パターン選択 ──
+    pattern_opts_base = '<option value="">— なし —</option>' + "".join(
+        f'<option value="{p["id"]}">{_esc(p["name"])}</option>'
+        for p in patterns_list
+    )
+
+    status_filter_opts = (
+        '<option value="">アクティブ（default）</option>'
+        + "".join(
+            f'<option value="{s}"{" selected" if s == status_filter else ""}>'
+            f'{sfa_db.LEAD_STATUS_LABELS[s]}</option>'
+            for s in sfa_db.LEAD_STATUSES
+        )
+    )
+
+    sel_rows = ""
+    for ld in leads:
+        cur_pid = ld.get("email_pattern_id")
+        opts = '<option value="">— なし —</option>' + "".join(
+            f'<option value="{p["id"]}"{" selected" if p["id"] == cur_pid else ""}>'
+            f'{_esc(p["name"])}</option>'
+            for p in patterns_list
+        )
+        has_email = bool(ld.get("email"))
+        email_badge = (f'<span style="color:#16a34a;font-size:11px">✓</span>'
+                       if has_email else '<span class="muted" style="font-size:11px">—</span>')
+        sel_rows += (
+            f'<tr>'
+            f'<td><strong>{_esc(ld.get("company"))}</strong>'
+            f'<span class="muted" style="font-size:11px;margin-left:6px">{_esc(ld.get("name"))}</span></td>'
+            f'<td style="text-align:center">{email_badge}</td>'
+            f'<td><select onchange="setLeadPattern({ld["id"]}, this.value)"'
+            f' style="font-size:12px;padding:2px 4px;width:100%;">'
+            f'{opts}</select></td>'
+            f'</tr>'
+        )
+
+    if not leads:
+        sel_rows = '<tr><td colspan=3 class="muted">リードがありません。</td></tr>'
+
+    # ── 下段: ドラフト ──
+    assigned = [l for l in sfa_db.list_leads(con) if l.get("email_pattern_id")]
     by_pattern: dict = {}
     for lead in assigned:
         pid = lead["email_pattern_id"]
         by_pattern.setdefault(pid, []).append(lead)
 
-    sections = []
-    for pid, leads in by_pattern.items():
+    draft_sections = []
+    all_mailto_all = []
+    for pid, p_leads in by_pattern.items():
         p = patterns.get(pid)
         if not p:
             continue
         cc_str = _esc(p.get("cc_addresses") or "")
         fr_str = _esc(p.get("from_address") or "")
-
-        # 全件開くボタン用 mailto リストを JS 配列として埋め込む
-        mailto_list = [_mailto(p, lead) for lead in leads if lead.get("email")]
+        mailto_list = [_mailto(p, l) for l in p_leads if l.get("email")]
+        all_mailto_all.extend(mailto_list)
         js_links = json.dumps(mailto_list, ensure_ascii=False)
-        open_js = f"var links={js_links};links.forEach(function(u){{window.open(u)}});"
-
+        open_js = f"var lnks={js_links};lnks.forEach(function(u){{window.open(u)}});"
         rows = ""
-        for lead in leads:
+        for lead in p_leads:
             mailto = _mailto(p, lead)
-            mailto_btn = (
-                f'<a class="btn" href="{html.escape(mailto)}" '
-                f'style="font-size:12px;padding:5px 10px">開く</a>'
-                if mailto else '<span class="muted">アドレス未登録</span>'
-            )
+            btn = (f'<a class="btn" href="{html.escape(mailto)}" style="font-size:12px;padding:4px 10px">開く</a>'
+                   if mailto else '<span class="muted" style="font-size:11px">アドレス未登録</span>')
             rows += (
                 f'<tr>'
-                f'<td><strong>{_esc(lead.get("company"))}</strong><br>'
-                f'<span class="muted">{_esc(lead.get("name"))}</span></td>'
+                f'<td><strong>{_esc(lead.get("company"))}</strong>'
+                f'<span class="muted" style="font-size:11px;margin-left:6px">{_esc(lead.get("name"))}</span></td>'
                 f'<td class="muted">{_esc(lead.get("email") or "—")}</td>'
-                f'<td>{_esc(_render(p.get("subject", ""), lead))}</td>'
-                f'<td>{mailto_btn}</td>'
+                f'<td>{_esc(_render(p.get("subject",""), lead))}</td>'
+                f'<td>{btn}</td>'
                 f'</tr>'
             )
-        sections.append(f"""
-        <div class="card">
-          <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <span>{_esc(p["name"])} <span class="muted" style="font-weight:normal">({len(leads)}件)</span></span>
+        draft_sections.append(f"""
+        <div style="margin-bottom:16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <strong>{_esc(p["name"])}</strong>
             <span style="display:flex;gap:8px;align-items:center">
-              <span class="muted" style="font-size:12px">From: {fr_str}{"　CC: " + cc_str if cc_str else ""}</span>
-              <button class="btn sec" style="font-size:12px"
-                onclick="{html.escape(open_js)}">全件開く</button>
+              <span class="muted" style="font-size:11px">From: {fr_str}{"　CC: "+cc_str if cc_str else ""}</span>
+              <button class="btn sec" style="font-size:11px;padding:4px 10px"
+                onclick="{html.escape(open_js)}">このパターン全件開く</button>
             </span>
-          </h2>
-          <table>
-            <tr><th>会社 / 氏名</th><th>メールアドレス</th><th>件名（プレビュー）</th><th></th></tr>
-            {rows}
-          </table>
+          </div>
+          <table><tr><th>会社 / 氏名</th><th>メールアドレス</th><th>件名プレビュー</th><th></th></tr>
+          {rows}</table>
         </div>""")
 
+    draft_count = len(assigned)
+    draft_body = "".join(draft_sections) if draft_sections else '<p class="muted">パターンが選択されているリードがありません。</p>'
+    all_js = json.dumps(all_mailto_all, ensure_ascii=False)
+    all_open_js = f"var all={all_js};all.forEach(function(u){{window.open(u)}});"
+
+    no_patterns_note = (
+        f'<p class="muted" style="margin-bottom:10px">'
+        f'パターンがまだありません。<a href="/email-patterns">パターン管理</a> から作成してください。</p>'
+        if not patterns_list else ""
+    )
+
     return f"""
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-      <h2 style="margin:0">メールドラフト生成
-        <span class="muted" style="font-weight:normal">({len(assigned)}件)</span></h2>
-      <a class="btn sec" href="/email-patterns">← パターン管理</a>
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>メール送信ワークスペース</span>
+        <a class="btn sec" href="/email-patterns" style="font-size:12px">パターン管理</a>
+      </h2>
+      {no_patterns_note}
+      <p class="muted" style="margin-bottom:12px;font-size:12px">
+        各リードにパターンを選択してください。選択内容は自動保存され、次回も引き継がれます。
+      </p>
+      <form class="filter-row" style="margin-bottom:10px">
+        <select name="status" onchange="this.form.submit()" style="width:auto">{status_filter_opts}</select>
+        <input name="q" placeholder="会社・氏名検索" value="{_esc(q or '')}" style="min-width:140px">
+        <button class="btn sec" type="submit">絞り込み</button>
+        <a class="btn sec" href="/email-draft">リセット</a>
+      </form>
+      <div style="overflow-x:auto">
+      <table>
+        <tr><th>会社 / 氏名</th><th style="text-align:center;width:40px">メール</th><th>パターン選択</th></tr>
+        {sel_rows}
+      </table>
+      </div>
     </div>
-    {''.join(sections)}"""
+
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>ドラフト <span class="muted" style="font-weight:normal">({draft_count}件選択中)</span></span>
+        {'<button class="btn" style="font-size:12px" onclick="' + html.escape(all_open_js) + '">全件まとめて開く</button>' if all_mailto_all else ''}
+      </h2>
+      {draft_body}
+    </div>
+
+    <script>
+    function setLeadPattern(id, patternId) {{
+      fetch('/leads/' + id + '/set_pattern', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+        body: 'pattern_id=' + encodeURIComponent(patternId)
+      }}).then(r => r.json()).then(d => {{
+        if (d.ok) {{ location.reload(); }} else {{ alert('エラー: ' + (d.error||'')); }}
+      }}).catch(() => alert('通信エラー'));
+    }}
+    </script>"""
 
 
 # ── ダッシュボード ──────────────────────────────────────────────────────────────
@@ -984,8 +1070,6 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
     owners_list = sfa_db.get_master_list(con, "owners")
     industries_list = sfa_db.get_master_list(con, "industries")
     company_sizes_list = sfa_db.get_master_list(con, "company_sizes")
-    email_patterns = sfa_db.list_email_patterns(con)
-
     # バルク編集用JS オブジェクト構築
     bulk_options = {
         "source": [["", "（変更なし）"]] + [[s, sfa_db.LEAD_SOURCE_LABELS[s]] for s in sfa_db.LEAD_SOURCES],
@@ -1023,17 +1107,6 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
                 f' style="font-size:12px;padding:2px 4px;max-width:110px">'
                 f'<option value=""></option>{opts}</select>')
 
-    def _inline_select_pattern(lead_id, current_id):
-        opts = '<option value="">— なし —</option>' + "".join(
-            f'<option value="{p["id"]}"{" selected" if p["id"] == current_id else ""}>'
-            f'{html.escape(p["name"])}</option>'
-            for p in email_patterns
-        )
-        return (f'<select onchange="setLeadPattern({lead_id}, this.value)"'
-                f' style="font-size:12px;padding:2px 4px;max-width:130px;'
-                f'{"background:#eef6ff;font-weight:600;" if current_id else ""}">'
-                f'{opts}</select>')
-
     rows = []
     for ld in leads:
         sc = f's-{ld.get("lead_status", "new")}'
@@ -1045,7 +1118,6 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         sel_owner = _inline_select_master(ld["id"], "assigned_to", owners_list, ld.get("assigned_to") or "")
         sel_industry = _inline_select_master(ld["id"], "industry", industries_list, ld.get("industry") or "")
         sel_company_size = _inline_select_master(ld["id"], "company_size", company_sizes_list, ld.get("company_size") or "")
-        sel_pattern = _inline_select_pattern(ld["id"], ld.get("email_pattern_id"))
         rows.append(
             f'<tr>'
             f'<td style="width:32px"><input type="checkbox" name="ids" value="{ld["id"]}"></td>'
@@ -1056,7 +1128,6 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
             f'<td class="hide-sm">{sel_owner}</td>'
             f'<td class="hide-sm">{sel_industry}</td>'
             f'<td class="hide-sm">{sel_company_size}</td>'
-            f'<td>{sel_pattern}</td>'
             f'<td class="muted">{_esc((ld.get("updated_at") or "")[:10])}</td>'
             f'</tr>'
         )
@@ -1082,9 +1153,8 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
             <th class="hide-sm">担当</th>
             <th class="hide-sm">業界</th>
             <th class="hide-sm">企業規模</th>
-            <th>メールパターン</th>
             <th>更新日</th></tr>
-        {''.join(rows) or '<tr><td colspan=9 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
+        {''.join(rows) or '<tr><td colspan=8 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
       </table>
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
         <select id="bulk_field" name="field" style="width:auto">
@@ -1107,15 +1177,6 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         method: 'POST',
         headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
         body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
-      }}).then(r => r.json()).then(d => {{
-        if (!d.ok) {{ alert('更新エラー: ' + (d.error || '')); }}
-      }}).catch(() => alert('通信エラー'));
-    }}
-    function setLeadPattern(id, patternId) {{
-      fetch('/leads/' + id + '/set_pattern', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
-        body: 'pattern_id=' + encodeURIComponent(patternId)
       }}).then(r => r.json()).then(d => {{
         if (!d.ok) {{ alert('更新エラー: ' + (d.error || '')); }}
       }}).catch(() => alert('通信エラー'));
@@ -1393,7 +1454,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/email-patterns/new":
                     self._send(render(email_pattern_form(con)))
                 elif path == "/email-draft":
-                    self._send(render(email_draft_page(con)))
+                    qs = self._qs()
+                    self._send(render(email_draft_page(
+                        con,
+                        status_filter=(qs.get("status", [None])[0] or None),
+                        q=(qs.get("q", [None])[0] or None),
+                    )))
                 elif path.startswith("/email-patterns/") and path.endswith("/edit"):
                     try:
                         pid = int(path.split("/")[2])

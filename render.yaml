@@ -68,10 +68,10 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python scripts/export_deals_to_sheets.py
     envVars:
-      - key: SFA_DB_PATH
-        value: /data/cowork_sfa.db
-      - key: COWORK_SFA_DB
-        value: /data/cowork_sfa.db
+      - key: SFA_API_URL
+        value: https://sfa-crm.onrender.com
+      - key: SFA_API_TOKEN
+        sync: false
       - key: WEEKLY_SHEET_ID
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
