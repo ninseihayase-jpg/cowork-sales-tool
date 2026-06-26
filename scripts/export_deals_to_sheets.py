@@ -63,23 +63,47 @@ HEADERS = [h for h, _ in COLUMNS]
 FIELDS  = [f for _, f in COLUMNS]
 
 
-MEMO_COLUMNS = [
-    ("日付",     "note_date"),
-    ("アカウント", "account_name"),
-    ("案件名",   "deal_name"),
-    ("メモ",     "body"),
-    ("タスク",   "task"),
-    ("担当",     "task_owner"),
-    ("期日",     "task_due"),
-    ("完了",     "task_done_label"),
-]
-MEMO_HEADERS = [h for h, _ in MEMO_COLUMNS]
-MEMO_FIELDS  = [f for _, f in MEMO_COLUMNS]
+MEMO_HEADERS = ["アカウント", "案件名", "メモ一覧（日付つき）", "タスク一覧（未完了）"]
 
 
-def memo_to_row(m: dict) -> list:
-    m["task_done_label"] = "○" if m.get("task_done") else ("—" if m.get("task") else "")
-    return [m.get(f) or "" for f in MEMO_FIELDS]
+def group_memos(memos: list[dict]) -> list[list]:
+    """メモをtheme_id（商談）単位に集約して1行にまとめる。"""
+    from collections import defaultdict
+    groups: dict = defaultdict(list)
+    for m in memos:
+        key = m.get("theme_id") or 0
+        groups[key].append(m)
+
+    rows = []
+    for key, items in groups.items():
+        # 日付昇順にソート
+        items.sort(key=lambda x: (x.get("note_date") or "", x.get("created_at") or ""))
+        first = items[0]
+        account = first.get("account_name") or ""
+        deal    = first.get("deal_name") or ""
+
+        # メモ本文を日付つきで結合（空bodyはスキップ）
+        body_lines = []
+        for m in items:
+            if m.get("body"):
+                date_str = m.get("note_date") or ""
+                body_lines.append(f"[{date_str}] {m['body']}")
+        bodies = "\n".join(body_lines)
+
+        # 未完了タスクを結合
+        task_lines = []
+        for m in items:
+            if m.get("task") and not m.get("task_done"):
+                parts = [m["task"]]
+                if m.get("task_owner"):
+                    parts.append(f"({m['task_owner']})")
+                if m.get("task_due"):
+                    parts.append(f"期日:{m['task_due']}")
+                task_lines.append(" ".join(parts))
+        tasks = "\n".join(task_lines)
+
+        rows.append([account, deal, bodies, tasks])
+    return rows
 
 
 def deal_to_row(d: dict) -> list:
@@ -93,7 +117,9 @@ def deal_to_row(d: dict) -> list:
     return row
 
 
-def write_sheet(gc, sheet_id: str, sheet_name: str, rows: list[list]) -> None:
+def write_sheet(gc, sheet_id: str, sheet_name: str, rows: list[list], headers: list[str] | None = None) -> None:
+    if headers is None:
+        headers = HEADERS
     sh = gc.open_by_key(sheet_id)
     try:
         ws = sh.worksheet(sheet_name)
@@ -102,9 +128,9 @@ def write_sheet(gc, sheet_id: str, sheet_name: str, rows: list[list]) -> None:
         ws = sh.add_worksheet(
             title=sheet_name,
             rows=max(len(rows) + 20, 100),
-            cols=len(HEADERS),
+            cols=len(headers),
         )
-    data = [HEADERS] + rows
+    data = [headers] + rows
     ws.update(data, value_input_option="USER_ENTERED")
     print(f"  シート「{sheet_name}」: {len(rows)}行 書き込み完了")
 
@@ -219,11 +245,11 @@ def main() -> None:
     else:
         memos = fetch_memos_via_db()
     print(f"  メモ: {len(memos)}件")
-    memo_rows = [memo_to_row(m) for m in memos]
+    memo_rows = group_memos(memos)
 
     print(f"Google Sheets (id={WEEKLY_SHEET_ID}) へ書き込み中...")
     write_sheet(gc, WEEKLY_SHEET_ID, SHEET_NAME, rows)
-    write_sheet(gc, WEEKLY_SHEET_ID, MEMO_SHEET_NAME, memo_rows)
+    write_sheet(gc, WEEKLY_SHEET_ID, MEMO_SHEET_NAME, memo_rows, headers=MEMO_HEADERS)
     print("完了")
 
 
