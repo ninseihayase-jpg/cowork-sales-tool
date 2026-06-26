@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -222,11 +223,20 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
         to_addr = lead.get("email") or ""
         if not to_addr:
             return ""
-        params = {"subject": _render(p.get("subject", ""), lead),
-                  "body": _render(p.get("body", ""), lead)}
+        subj = _render(p.get("subject", ""), lead)
+        body_plain = _render(p.get("body", ""), lead).replace("**", "")
+        qs = "subject=" + urllib.parse.quote(subj) + "&body=" + urllib.parse.quote(body_plain)
         if p.get("cc_addresses"):
-            params["cc"] = p["cc_addresses"]
-        return "mailto:" + urllib.parse.quote(to_addr) + "?" + urllib.parse.urlencode(params)
+            qs += "&cc=" + urllib.parse.quote(p["cc_addresses"])
+        return "mailto:" + urllib.parse.quote(to_addr) + "?" + qs
+
+    def _body_html(text):
+        escaped = html.escape(text)
+        escaped = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', escaped)
+        escaped = re.sub(r'\[([^\]]+)\]',
+                         r'<mark style="background:#fef08a;border-radius:2px;padding:1px 3px">\1</mark>',
+                         escaped)
+        return escaped.replace('\n', '<br>')
 
     # ── 上段: リスト + パターン選択 ──
     pattern_opts_base = '<option value="">— なし —</option>' + "".join(
@@ -275,6 +285,7 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
         pid = lead["email_pattern_id"]
         by_pattern.setdefault(pid, []).append(lead)
 
+    preview_data = []
     draft_sections = []
     all_mailto_all = []
     for pid, p_leads in by_pattern.items():
@@ -290,14 +301,25 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
         rows = ""
         for lead in p_leads:
             mailto = _mailto(p, lead)
-            btn = (f'<a class="btn" href="{html.escape(mailto)}" style="font-size:12px;padding:4px 10px">開く</a>'
-                   if mailto else '<span class="muted" style="font-size:11px">アドレス未登録</span>')
+            subj = _render(p.get("subject", ""), lead)
+            body_raw = _render(p.get("body", ""), lead)
+            pidx = len(preview_data)
+            preview_data.append({
+                "label": f'{lead.get("company") or ""} / {lead.get("name") or ""}',
+                "subject": subj,
+                "body_html": _body_html(body_raw),
+                "mailto": mailto,
+            })
+            btn = (
+                f'<button class="btn" onclick="showEmailPreview({pidx})" style="font-size:12px;padding:4px 10px">プレビュー</button>'
+                if mailto else '<span class="muted" style="font-size:11px">アドレス未登録</span>'
+            )
             rows += (
                 f'<tr>'
                 f'<td><strong>{_esc(lead.get("company"))}</strong>'
                 f'<span class="muted" style="font-size:11px;margin-left:6px">{_esc(lead.get("name"))}</span></td>'
                 f'<td class="muted">{_esc(lead.get("email") or "—")}</td>'
-                f'<td>{_esc(_render(p.get("subject",""), lead))}</td>'
+                f'<td>{_esc(subj)}</td>'
                 f'<td>{btn}</td>'
                 f'</tr>'
             )
@@ -358,7 +380,44 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
       {draft_body}
     </div>
 
+    <!-- メールプレビューモーダル -->
+    <div id="emailPreviewModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;align-items:flex-start;justify-content:center;padding-top:60px">
+      <div style="background:#fff;border-radius:10px;max-width:620px;width:92%;max-height:80vh;overflow-y:auto;padding:24px 28px;box-shadow:0 12px 40px rgba(0,0,0,.3)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+          <strong id="epLabel" style="font-size:14px;color:#2a3245"></strong>
+          <button onclick="closeEmailPreview()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#999;line-height:1">×</button>
+        </div>
+        <div style="font-size:11px;color:#8a98b4;margin-bottom:3px;letter-spacing:.04em">件名</div>
+        <div id="epSubject" style="font-size:13px;font-weight:600;padding:8px 12px;background:#f5f7fa;border-radius:5px;margin-bottom:16px;color:#2a3245"></div>
+        <div style="font-size:11px;color:#8a98b4;margin-bottom:3px;letter-spacing:.04em">本文</div>
+        <div id="epBody" style="font-size:13px;line-height:1.75;padding:14px 16px;background:#f5f7fa;border-radius:5px;color:#2a3245"></div>
+        <div style="margin-top:10px;font-size:11px;color:#aab">
+          <mark style="background:#fef08a;padding:1px 4px;border-radius:2px">黄色</mark>＝送信前に書き換えが必要な箇所
+        </div>
+        <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:10px">
+          <button onclick="closeEmailPreview()" class="btn sec" style="font-size:13px">閉じる</button>
+          <a id="epOpen" href="#" class="btn" style="font-size:13px" target="_blank">Outlookで開く</a>
+        </div>
+      </div>
+    </div>
+
     <script>
+    var _epData = {json.dumps(preview_data)};
+    function showEmailPreview(idx) {{
+      var d = _epData[idx];
+      document.getElementById('epLabel').textContent = d.label;
+      document.getElementById('epSubject').textContent = d.subject;
+      document.getElementById('epBody').innerHTML = d.body_html;
+      document.getElementById('epOpen').href = d.mailto;
+      var m = document.getElementById('emailPreviewModal');
+      m.style.display = 'flex';
+    }}
+    function closeEmailPreview() {{
+      document.getElementById('emailPreviewModal').style.display = 'none';
+    }}
+    document.getElementById('emailPreviewModal').addEventListener('click', function(e) {{
+      if (e.target === this) closeEmailPreview();
+    }});
     function setLeadPattern(id, patternId) {{
       fetch('/leads/' + id + '/set_pattern', {{
         method: 'POST',
