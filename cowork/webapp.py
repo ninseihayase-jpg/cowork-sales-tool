@@ -170,9 +170,11 @@ def email_pattern_form(con, pattern=None) -> str:
     )
     cc_existing = set((pattern.get("cc_addresses") or "").split(",")) if pattern else set()
     cc_checks = "".join(
-        f'<label style="display:flex;align-items:center;gap:6px;margin:4px 0;font-size:13px">'
-        f'<input type="checkbox" name="cc" value="{email}"'
-        f'{" checked" if email in cc_existing else ""}> {name} &lt;{email}&gt;</label>'
+        f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0">'
+        f'<input type="checkbox" name="cc" value="{email}" id="cc_{email}"'
+        f'{" checked" if email in cc_existing else ""} style="flex-shrink:0;width:14px;height:14px">'
+        f'<label for="cc_{email}" style="display:inline;font-size:13px;color:#2a3245;margin:0;cursor:pointer">'
+        f'{name} &lt;{email}&gt;</label></div>'
         for name, email in INPROC_MEMBERS
     )
     return f"""
