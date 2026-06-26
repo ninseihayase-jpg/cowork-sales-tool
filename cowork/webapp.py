@@ -1917,7 +1917,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── メールパターン ──
                 elif path == "/email-patterns/save":
-                    cc_list = self._form_list("cc")
+                    cc_list = f_list.get("cc", [])
                     sfa_db.save_email_pattern(
                         con,
                         name=f.get("name", ""),
@@ -1930,7 +1930,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path.startswith("/email-patterns/") and path.endswith("/save"):
                     try:
                         pid = int(path.split("/")[2])
-                        cc_list = self._form_list("cc")
+                        cc_list = f_list.get("cc", [])
                         sfa_db.save_email_pattern(
                             con, id=pid,
                             name=f.get("name", ""),
