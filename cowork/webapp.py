@@ -212,6 +212,11 @@ def build_eml_bytes(p, lead) -> bytes:
     body_raw = _render_tmpl(p.get("body", ""), lead)
     escaped = html.escape(body_raw)
     escaped = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', escaped)
+    escaped = re.sub(
+        r'\[([^\]]+)\]',
+        r'<span style="background-color:yellow">[\1]</span>',
+        escaped,
+    )
     body_content = escaped.replace('\n', '<br>')
     full_html = (
         '<html><head><meta charset="UTF-8"></head>'
@@ -484,18 +489,29 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
     }});
     function openWithOutlook() {{
       if (!_epCurrent) return;
-      var htmlBody = _epCurrent.clipboard_html;
       var mailto = _epCurrent.mailto_noBody || _epCurrent.mailto;
-      if (navigator.clipboard && window.ClipboardItem) {{
-        navigator.clipboard.write([new ClipboardItem({{'text/html': new Blob([htmlBody], {{type:'text/html'}})}})]).then(function() {{
-          window.location.href = mailto;
-          setTimeout(function() {{ showToast('本文をコピーしました。Outlookの本文欄に Ctrl+V で貼り付けてください'); }}, 600);
-        }}).catch(function() {{
-          window.location.href = _epCurrent.mailto;
-          setTimeout(function() {{ showToast('Outlookを開きます（書式なし）'); }}, 600);
-        }});
-      }} else {{
+      // execCommand('copy') でレンダリング済みDOMをコピー → background-color が Outlook に伝わる
+      try {{
+        var parser = new DOMParser();
+        var doc = parser.parseFromString(_epCurrent.clipboard_html, 'text/html');
+        var temp = document.createElement('div');
+        var bodyStyle = doc.body.getAttribute('style') || '';
+        temp.style.cssText = bodyStyle + ';position:fixed;left:-9999px;top:0;width:600px;pointer-events:none';
+        temp.innerHTML = doc.body.innerHTML;
+        document.body.appendChild(temp);
+        var range = document.createRange();
+        range.selectNodeContents(temp);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('copy');
+        sel.removeAllRanges();
+        document.body.removeChild(temp);
+        window.location.href = mailto;
+        setTimeout(function() {{ showToast('本文をコピーしました。Outlookの本文欄に Ctrl+V で貼り付けてください'); }}, 600);
+      }} catch(e) {{
         window.location.href = _epCurrent.mailto;
+        setTimeout(function() {{ showToast('Outlookを開きます（書式なし）'); }}, 600);
       }}
     }}
     function showToast(msg) {{
