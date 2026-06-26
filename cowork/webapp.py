@@ -13,6 +13,7 @@ import json
 import os
 import re
 import urllib.parse
+from datetime import date, timedelta
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -549,11 +550,24 @@ def dashboard_page(con) -> str:
     sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit" if sheet_id else "#"
     hisho_url = os.environ.get("THEME_API_URL", "https://hisho-ohxe.onrender.com").rstrip("/") + "/dashboard"
 
-    # 直近の活動がある商談（最大3件）
+    # 当日〜1週間以内に次回MSがある商談
+    today_str = date.today().isoformat()
+    week_later_str = (date.today() + timedelta(days=7)).isoformat()
+    recent_deals = sorted(
+        [d for d in deals
+         if d.get("next_milestone_date")
+         and today_str <= d["next_milestone_date"] <= week_later_str],
+        key=lambda d: d["next_milestone_date"],
+    )
     recent_rows = ""
-    recent_deals = deals[:3]
     for d in recent_deals:
-        ms = _esc(d.get("next_milestone_date") or "—")
+        ms_raw = d.get("next_milestone_date", "")
+        if ms_raw == today_str:
+            ms = f'<span style="color:#dc2626;font-weight:700">今日 {_esc(ms_raw)}</span>'
+        else:
+            ms = _esc(ms_raw)
+        if d.get("next_milestone_label"):
+            ms += f'<br><span class="muted" style="font-size:.85em">{_esc(d["next_milestone_label"])}</span>'
         recent_rows += (
             f'<tr><td><a href="/deal/{d["id"]}">{_esc(d.get("account_name"))}</a></td>'
             f'<td>{_esc(d.get("deal_name"))}</td>'
@@ -613,10 +627,10 @@ def dashboard_page(con) -> str:
       </div>
     </div>
     <div class="card">
-      <h2>進行中の商談（直近）</h2>
+      <h2>進行中の商談（直近1週間）</h2>
       <table>
         <tr><th>アカウント</th><th>案件名</th><th>ステージ</th><th>次回MS</th></tr>
-        {recent_rows or '<tr><td colspan=4 class=muted>進行中の商談がありません</td></tr>'}
+        {recent_rows or '<tr><td colspan=4 class=muted>今週1週間以内に次回MSがある商談はありません</td></tr>'}
       </table>
         <p style="margin-top:10px">
         <a class="btn sec" href="/deals">すべての商談を見る</a>
