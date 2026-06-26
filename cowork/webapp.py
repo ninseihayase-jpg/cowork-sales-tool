@@ -260,6 +260,28 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
             qs += "&cc=" + urllib.parse.quote(p["cc_addresses"])
         return "mailto:" + urllib.parse.quote(to_addr) + "?" + qs
 
+    def _mailto_noBody(p, lead):
+        """To/CC/Subject のみ（bodyなし）のmailtoリンク。クリップボード貼り付け用。"""
+        to_addr = lead.get("email") or ""
+        if not to_addr:
+            return ""
+        subj = _render(p.get("subject", ""), lead)
+        qs = "subject=" + urllib.parse.quote(subj)
+        if p.get("cc_addresses"):
+            qs += "&cc=" + urllib.parse.quote(p["cc_addresses"])
+        return "mailto:" + urllib.parse.quote(to_addr) + "?" + qs
+
+    def _clipboard_html(text):
+        """クリップボード用HTMLボディ: ** → <strong>、括弧はそのまま（ハイライトなし）。"""
+        escaped = html.escape(text)
+        escaped = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', escaped)
+        body_content = escaped.replace('\n', '<br>')
+        return (
+            '<html><head><meta charset="UTF-8"></head>'
+            '<body style="font-family:Meiryo UI,Meiryo,sans-serif;font-size:13px;line-height:1.7;color:#222">'
+            f'{body_content}</body></html>'
+        )
+
     def _body_html(text):
         escaped = html.escape(text)
         escaped = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', escaped)
@@ -339,6 +361,8 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
                 "subject": subj,
                 "body_html": _body_html(body_raw),
                 "mailto": mailto,
+                "mailto_noBody": _mailto_noBody(p, lead),
+                "clipboard_html": _clipboard_html(body_raw),
                 "eml_url": f"/email-draft/eml?lead_id={lead['id']}&pattern_id={pid}",
             })
             btn = (
@@ -425,21 +449,25 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
         <div style="margin-top:10px;font-size:11px;color:#aab">
           <mark style="background:#fef08a;padding:1px 4px;border-radius:2px">黄色</mark>＝送信前に書き換えが必要な箇所
         </div>
-        <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:10px">
-          <button onclick="closeEmailPreview()" class="btn sec" style="font-size:13px">閉じる</button>
-          <a id="epOpen" href="#" class="btn" style="font-size:13px">Outlookで開く (.eml)</a>
+        <div style="margin-top:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <a id="epEml" href="#" style="font-size:11px;color:#8a98b4">EMLダウンロード（書式あり）</a>
+          <div style="display:flex;gap:8px">
+            <button onclick="closeEmailPreview()" class="btn sec" style="font-size:13px">閉じる</button>
+            <button id="epOpen" onclick="openWithOutlook()" class="btn" style="font-size:13px">Outlookで開く</button>
+          </div>
         </div>
       </div>
     </div>
 
     <script>
     var _epData = {json.dumps(preview_data)};
+    var _epCurrent = null;
     function showEmailPreview(idx) {{
-      var d = _epData[idx];
-      document.getElementById('epLabel').textContent = d.label;
-      document.getElementById('epSubject').textContent = d.subject;
-      document.getElementById('epBody').innerHTML = d.body_html;
-      document.getElementById('epOpen').href = d.eml_url || d.mailto;
+      _epCurrent = _epData[idx];
+      document.getElementById('epLabel').textContent = _epCurrent.label;
+      document.getElementById('epSubject').textContent = _epCurrent.subject;
+      document.getElementById('epBody').innerHTML = _epCurrent.body_html;
+      document.getElementById('epEml').href = _epCurrent.eml_url || '#';
       var m = document.getElementById('emailPreviewModal');
       m.style.display = 'flex';
     }}
@@ -449,6 +477,29 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
     document.getElementById('emailPreviewModal').addEventListener('click', function(e) {{
       if (e.target === this) closeEmailPreview();
     }});
+    function openWithOutlook() {{
+      if (!_epCurrent) return;
+      var htmlBody = _epCurrent.clipboard_html;
+      var mailto = _epCurrent.mailto_noBody || _epCurrent.mailto;
+      if (navigator.clipboard && window.ClipboardItem) {{
+        navigator.clipboard.write([new ClipboardItem({{'text/html': new Blob([htmlBody], {{type:'text/html'}})}})]).then(function() {{
+          window.location.href = mailto;
+          setTimeout(function() {{ showToast('本文をコピーしました。Outlookの本文欄に Ctrl+V で貼り付けてください'); }}, 600);
+        }}).catch(function() {{
+          window.location.href = _epCurrent.mailto;
+          setTimeout(function() {{ showToast('Outlookを開きます（書式なし）'); }}, 600);
+        }});
+      }} else {{
+        window.location.href = _epCurrent.mailto;
+      }}
+    }}
+    function showToast(msg) {{
+      var t = document.createElement('div');
+      t.textContent = msg;
+      t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#2a3245;color:#fff;padding:10px 20px;border-radius:6px;font-size:13px;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,.3);white-space:nowrap';
+      document.body.appendChild(t);
+      setTimeout(function(){{ t.style.opacity='0'; t.style.transition='opacity .4s'; setTimeout(function(){{t.remove()}},400); }}, 3500);
+    }}
     function setLeadPattern(id, patternId) {{
       fetch('/leads/' + id + '/set_pattern', {{
         method: 'POST',
