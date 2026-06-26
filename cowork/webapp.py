@@ -254,6 +254,14 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
     def _render(tmpl, lead):
         return _render_tmpl(tmpl, lead)
 
+    def _cc_param(p):
+        """CC アドレスをOutlook互換の '; ' 区切りでURLエンコードして返す。"""
+        cc_raw = p.get("cc_addresses") or ""
+        if not cc_raw:
+            return ""
+        cc_str = "; ".join(a.strip() for a in cc_raw.split(",") if a.strip())
+        return "&cc=" + urllib.parse.quote(cc_str, safe="@;, ")
+
     def _mailto(p, lead):
         to_addr = lead.get("email") or ""
         if not to_addr:
@@ -261,9 +269,8 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
         subj = _render(p.get("subject", ""), lead)
         body_plain = _render(p.get("body", ""), lead).replace("**", "")
         qs = "subject=" + urllib.parse.quote(subj) + "&body=" + urllib.parse.quote(body_plain)
-        if p.get("cc_addresses"):
-            qs += "&cc=" + urllib.parse.quote(p["cc_addresses"])
-        return "mailto:" + urllib.parse.quote(to_addr) + "?" + qs
+        qs += _cc_param(p)
+        return "mailto:" + urllib.parse.quote(to_addr, safe="@") + "?" + qs
 
     def _mailto_noBody(p, lead):
         """To/CC/Subject のみ（bodyなし）のmailtoリンク。クリップボード貼り付け用。"""
@@ -272,9 +279,8 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
             return ""
         subj = _render(p.get("subject", ""), lead)
         qs = "subject=" + urllib.parse.quote(subj)
-        if p.get("cc_addresses"):
-            qs += "&cc=" + urllib.parse.quote(p["cc_addresses"])
-        return "mailto:" + urllib.parse.quote(to_addr) + "?" + qs
+        qs += _cc_param(p)
+        return "mailto:" + urllib.parse.quote(to_addr, safe="@") + "?" + qs
 
     def _clipboard_html(text):
         """クリップボード用HTMLボディ: ** → <strong>、[括弧] → 黄色ハイライト（Outlook互換）。"""
