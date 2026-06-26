@@ -550,20 +550,6 @@ def dashboard_page(con) -> str:
     sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit" if sheet_id else "#"
     hisho_url = os.environ.get("THEME_API_URL", "https://hisho-ohxe.onrender.com").rstrip("/") + "/dashboard"
 
-    # 商談総数サマリー（受注/失注含む全件）
-    all_deals = sfa_db.list_deals(con, status=None)
-    _sales = [d for d in all_deals if (d.get("business_type_l1") or "") != "コスト削減"]
-    _cost  = [d for d in all_deals if (d.get("business_type_l1") or "") == "コスト削減"]
-    n_pipe  = sum(1 for d in _sales if (d.get("stage") or "") not in ("受注", "失注"))
-    n_won   = sum(1 for d in _sales if d.get("stage") == "受注")
-    n_lost  = sum(1 for d in _sales if d.get("stage") == "失注")
-    n_cost  = len(_cost)
-    n_total = n_pipe + n_won + n_lost + n_cost
-    total_banner = (
-        f"商談総数 = パイプライン {n_pipe} ＋ 受注 {n_won}"
-        f" ＋ 失注 {n_lost} ＋ コスト削減 {n_cost} = {n_total} 件"
-    )
-
     # 当日〜1週間以内に次回MSがある商談
     today_str = date.today().isoformat()
     week_later_str = (date.today() + timedelta(days=7)).isoformat()
@@ -590,7 +576,6 @@ def dashboard_page(con) -> str:
         )
 
     return f"""
-    <p style="font-size:12px;color:#8693a8;margin-bottom:12px;letter-spacing:.03em">{total_banner}</p>
     <div class="dash-grid">
       <div class="dash-card">
         <div class="icon">🎯</div>
