@@ -272,9 +272,12 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
         return "mailto:" + urllib.parse.quote(to_addr) + "?" + qs
 
     def _clipboard_html(text):
-        """クリップボード用HTMLボディ: ** → <strong>、括弧はそのまま（ハイライトなし）。"""
+        """クリップボード用HTMLボディ: ** → <strong>、[括弧] → 黄色ハイライト。"""
         escaped = html.escape(text)
         escaped = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', escaped)
+        escaped = re.sub(r'\[([^\]]+)\]',
+                         r'<mark style="background:#fef08a;border-radius:2px;padding:1px 3px">\1</mark>',
+                         escaped)
         body_content = escaped.replace('\n', '<br>')
         return (
             '<html><head><meta charset="UTF-8"></head>'
