@@ -13,6 +13,7 @@ import json
 import os
 import re
 import urllib.parse
+from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import sfa_db
@@ -200,6 +201,36 @@ def email_pattern_form(con, pattern=None) -> str:
     </div>"""
 
 
+def _render_tmpl(tmpl, lead) -> str:
+    return (tmpl or "").replace("{company}", lead.get("company") or "").replace(
+        "{name}", lead.get("name") or "").replace("{title}", lead.get("title") or "")
+
+
+def build_eml_bytes(p, lead) -> bytes:
+    """メールパターン + リードからEMLファイルのバイト列を生成する。"""
+    subj = _render_tmpl(p.get("subject", ""), lead)
+    body_raw = _render_tmpl(p.get("body", ""), lead)
+    escaped = html.escape(body_raw)
+    escaped = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', escaped)
+    body_content = escaped.replace('\n', '<br>')
+    full_html = (
+        '<html><head><meta charset="UTF-8"></head>'
+        '<body style="font-family:Meiryo UI,Meiryo,sans-serif;font-size:13px;line-height:1.7;color:#222">'
+        f'{body_content}'
+        '</body></html>'
+    )
+    msg = EmailMessage()
+    to_addr = lead.get("email") or ""
+    msg['To'] = to_addr
+    if p.get("cc_addresses"):
+        msg['CC'] = p["cc_addresses"]
+    if p.get("from_address"):
+        msg['From'] = p["from_address"]
+    msg['Subject'] = subj
+    msg.set_content(full_html, subtype='html')
+    return msg.as_bytes()
+
+
 def email_draft_page(con, *, status_filter=None, q=None) -> str:
     """メール送信ワークスペース。
     上段: リードごとにパターンを選択（前回値プリセット、変更はAJAX保存）
@@ -216,8 +247,7 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
         leads = [l for l in all_leads if l.get("lead_status") not in ("converted", "lost")]
 
     def _render(tmpl, lead):
-        return (tmpl or "").replace("{company}", lead.get("company") or "").replace(
-            "{name}", lead.get("name") or "").replace("{title}", lead.get("title") or "")
+        return _render_tmpl(tmpl, lead)
 
     def _mailto(p, lead):
         to_addr = lead.get("email") or ""
@@ -309,6 +339,7 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
                 "subject": subj,
                 "body_html": _body_html(body_raw),
                 "mailto": mailto,
+                "eml_url": f"/email-draft/eml?lead_id={lead['id']}&pattern_id={pid}",
             })
             btn = (
                 f'<button class="btn" onclick="showEmailPreview({pidx})" style="font-size:12px;padding:4px 10px">プレビュー</button>'
@@ -396,7 +427,7 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
         </div>
         <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:10px">
           <button onclick="closeEmailPreview()" class="btn sec" style="font-size:13px">閉じる</button>
-          <a id="epOpen" href="#" class="btn" style="font-size:13px" target="_blank">Outlookで開く</a>
+          <a id="epOpen" href="#" class="btn" style="font-size:13px">Outlookで開く (.eml)</a>
         </div>
       </div>
     </div>
@@ -408,7 +439,7 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
       document.getElementById('epLabel').textContent = d.label;
       document.getElementById('epSubject').textContent = d.subject;
       document.getElementById('epBody').innerHTML = d.body_html;
-      document.getElementById('epOpen').href = d.mailto;
+      document.getElementById('epOpen').href = d.eml_url || d.mailto;
       var m = document.getElementById('emailPreviewModal');
       m.style.display = 'flex';
     }}
@@ -1521,6 +1552,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         status_filter=(qs.get("status", [None])[0] or None),
                         q=(qs.get("q", [None])[0] or None),
                     )))
+                elif path == "/email-draft/eml":
+                    qs = self._qs()
+                    try:
+                        lid = int((qs.get("lead_id", [None])[0]) or 0)
+                        pid = int((qs.get("pattern_id", [None])[0]) or 0)
+                        lead = sfa_db.get_lead(con, lid)
+                        p = sfa_db.get_email_pattern(con, pid)
+                        if lead and p:
+                            eml = build_eml_bytes(p, lead)
+                            self.send_response(200)
+                            self.send_header("Content-Type", "message/rfc822")
+                            self.send_header("Content-Disposition", 'attachment; filename="draft.eml"')
+                            self.send_header("Content-Length", str(len(eml)))
+                            self.end_headers()
+                            self.wfile.write(eml)
+                        else:
+                            self._send(b"Not found", 404)
+                    except (ValueError, TypeError):
+                        self._send(b"Bad request", 400)
                 elif path.startswith("/email-patterns/") and path.endswith("/edit"):
                     try:
                         pid = int(path.split("/")[2])
