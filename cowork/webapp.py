@@ -1630,6 +1630,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 "SELECT * FROM meeting_notes ORDER BY note_date ASC, created_at ASC LIMIT 100"
                             ).fetchall()
                         self._send_cors_json(json.dumps([dict(r) for r in notes], ensure_ascii=False, default=str).encode())
+                elif path == "/api/memo/list_all":
+                    # スプシ出力用: 全メモ + deals/accounts JOIN
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        rows = con.execute("""
+                            SELECT m.id, m.note_date, m.body, m.task, m.task_owner,
+                                   m.task_due, m.task_done, m.created_at,
+                                   d.deal_name, a.name AS account_name
+                            FROM meeting_notes m
+                            LEFT JOIN deals d ON d.theme_id = m.theme_id
+                            LEFT JOIN accounts a ON a.id = d.account_id
+                            ORDER BY m.note_date DESC, m.created_at DESC
+                        """).fetchall()
+                        self._send_cors_json(json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str).encode())
                 elif path == "/":
                     self._send(render(dashboard_page(con)))
                 # ── メールパターン ──

@@ -40,6 +40,7 @@ DB_PATH = os.environ.get("SFA_DB_PATH", str(ROOT / "cowork_sfa.db"))
 SFA_API_URL = os.environ.get("SFA_API_URL", "").rstrip("/")
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 SHEET_NAME = "商談一覧"
+MEMO_SHEET_NAME = "メモ・タスク"
 
 # スプシのカラム定義: (ヘッダ表示名, deals dictのキー名)
 COLUMNS = [
@@ -60,6 +61,25 @@ COLUMNS = [
 ]
 HEADERS = [h for h, _ in COLUMNS]
 FIELDS  = [f for _, f in COLUMNS]
+
+
+MEMO_COLUMNS = [
+    ("日付",     "note_date"),
+    ("アカウント", "account_name"),
+    ("案件名",   "deal_name"),
+    ("メモ",     "body"),
+    ("タスク",   "task"),
+    ("担当",     "task_owner"),
+    ("期日",     "task_due"),
+    ("完了",     "task_done_label"),
+]
+MEMO_HEADERS = [h for h, _ in MEMO_COLUMNS]
+MEMO_FIELDS  = [f for _, f in MEMO_COLUMNS]
+
+
+def memo_to_row(m: dict) -> list:
+    m["task_done_label"] = "○" if m.get("task_done") else ("—" if m.get("task") else "")
+    return [m.get(f) or "" for f in MEMO_FIELDS]
 
 
 def deal_to_row(d: dict) -> list:
@@ -87,6 +107,34 @@ def write_sheet(gc, sheet_id: str, sheet_name: str, rows: list[list]) -> None:
     data = [HEADERS] + rows
     ws.update(data, value_input_option="USER_ENTERED")
     print(f"  シート「{sheet_name}」: {len(rows)}行 書き込み完了")
+
+
+def fetch_memos_via_api() -> list[dict]:
+    """SFA WebアプリのAPIから全メモを取得する（deal/account情報つき）。"""
+    url = f"{SFA_API_URL}/api/memo/list_all?token={urllib.parse.quote(SFA_API_TOKEN)}"
+    print(f"SFA API からメモを取得中...")
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode())
+
+
+def fetch_memos_via_db() -> list[dict]:
+    """ローカルSQLite DBから全メモをdeal/account情報つきで取得する。"""
+    from cowork import sfa_db
+    con = sfa_db.connect(DB_PATH)
+    try:
+        rows = con.execute("""
+            SELECT m.id, m.note_date, m.body, m.task, m.task_owner,
+                   m.task_due, m.task_done, m.created_at,
+                   d.deal_name, a.name AS account_name
+            FROM meeting_notes m
+            LEFT JOIN deals d ON d.theme_id = m.theme_id
+            LEFT JOIN accounts a ON a.id = d.account_id
+            ORDER BY m.note_date DESC, m.created_at DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
 
 
 def fetch_deals_via_api() -> list[dict]:
@@ -165,8 +213,17 @@ def main() -> None:
 
     gc = gspread.authorize(creds)
 
+    # --- メモ一覧を取得 ---
+    if SFA_API_URL and SFA_API_TOKEN:
+        memos = fetch_memos_via_api()
+    else:
+        memos = fetch_memos_via_db()
+    print(f"  メモ: {len(memos)}件")
+    memo_rows = [memo_to_row(m) for m in memos]
+
     print(f"Google Sheets (id={WEEKLY_SHEET_ID}) へ書き込み中...")
     write_sheet(gc, WEEKLY_SHEET_ID, SHEET_NAME, rows)
+    write_sheet(gc, WEEKLY_SHEET_ID, MEMO_SHEET_NAME, memo_rows)
     print("完了")
 
 
