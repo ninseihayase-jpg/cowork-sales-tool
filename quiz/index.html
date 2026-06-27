@@ -14,6 +14,11 @@ body{font-family:-apple-system,'Segoe UI',Meiryo,sans-serif;background:#f5f5f5;c
 @media (max-width:640px){.container{margin:10px;padding:15px}}
 h1{font-size:clamp(24px,6vw,28px);margin-bottom:5px;color:#295e7e}
 .subtitle{font-size:clamp(12px,3vw,14px);color:#999;margin-bottom:20px}
+.score-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px}
+.score-header h2{font-size:clamp(16px,4vw,18px);color:#295e7e}
+.reset-btn{padding:8px 15px;font-size:clamp(11px,2.5vw,12px);background:#ff9800;color:white;border:none;border-radius:4px;cursor:pointer;transition:background 0.3s}
+.reset-btn:active{background:#f57c00}
+@media (hover:hover){.reset-btn:hover{background:#f57c00}}
 .score-board{background:#e8f5e9;border:2px solid #4caf50;border-radius:8px;padding:15px;margin-bottom:20px;display:grid;grid-template-columns:1fr 1fr;gap:15px}
 .score-item{text-align:center}
 .score-label{font-size:12px;color:#666;margin-bottom:5px}
@@ -59,6 +64,11 @@ h1{font-size:clamp(24px,6vw,28px);margin-bottom:5px;color:#295e7e}
 <h1 style="font-size:clamp(16px,4vw,20px);color:#666;font-weight:normal">ロープレクイズ</h1>
 <div class="subtitle">40ペルソナを相手に7ターンの実践会話。</div>
 
+<div class="score-header">
+  <h2>📊 スコア</h2>
+  <button class="reset-btn" onclick="resetScore()">リセット</button>
+</div>
+
 <div class="score-board">
   <div class="score-item">
     <div class="score-label">テスト済み</div>
@@ -94,6 +104,16 @@ function saveHistory(){
   try{
     localStorage.setItem('rolepray-history',JSON.stringify({tested:Array.from(history.tested),apo:history.apo}));
   }catch(e){}
+}
+
+function resetScore(){
+  if(confirm('スコアをリセットしますか？')){
+    history.tested=new Set();
+    history.apo=0;
+    localStorage.removeItem('rolepray-history');
+    updateScore();
+    alert('スコアがリセットされました');
+  }
 }
 
 function updateScore(){
