@@ -31,7 +31,7 @@ h1{font-size:clamp(24px,6vw,28px);margin-bottom:5px;color:#295e7e}
 .option-btn:disabled{cursor:not-allowed;opacity:0.6}
 .reaction{margin:15px 0;padding:12px;border-radius:4px;font-size:clamp(12px,3vw,14px);line-height:1.5;margin-left:15px;border-left:4px solid #4caf50;background:#e8f5e9;color:#2e7d32;word-break:break-word}
 .reaction.incorrect{border-left-color:#f44336;background:#ffebee;color:#c62828}
-.recap-section{background:#fff3e0;border:2px solid #ff9800;border-radius:4px;padding:15px;margin:30px 0 15px 0}
+.recap-section{background:#fff3e0;border:2px solid #ff9800;border-radius:4px;padding:15px;margin:30px 0 15px 0;scroll-margin-top:80px}
 .recap-title{font-size:clamp(14px,4vw,16px);font-weight:bold;margin-bottom:10px;color:#e65100}
 .recap-item{margin:8px 0;font-size:clamp(13px,3vw,14px);line-height:1.5;word-break:break-word}
 .persona-section{background:#e8eaf6;border:2px solid #3f51b5;border-radius:4px;padding:15px;margin:15px 0}
@@ -172,7 +172,7 @@ function showRecap(){
   saveHistory();
   updateScore();
   
-  let recapHtml=`<div class="recap-section">
+  let recapHtml=`<div class="recap-section" id="recapStart">
     <div class="recap-title">📊 このペルソナの結果</div>
     <div class="recap-item"><strong>${p.company}</strong></div>
     <div class="recap-item">${p.name}（${p.title}）</div>
@@ -211,7 +211,10 @@ function showRecap(){
   current.html+=recapHtml;
   document.getElementById('quizArea').innerHTML=current.html;
   
-  setTimeout(()=>window.scrollTo(0,document.body.scrollHeight),100);
+  setTimeout(()=>{
+    const recapElem=document.getElementById('recapStart');
+    if(recapElem) recapElem.scrollIntoView({behavior:'smooth',block:'start'});
+  },100);
 }
 
 loadHistory();
