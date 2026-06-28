@@ -117,21 +117,48 @@ def deal_to_row(d: dict) -> list:
     return row
 
 
+def _with_retry(fn, what: str, retries: int = 4):
+    """Google API の一時的な 5xx / レート制限エラーをバックオフ付きで再試行する。
+
+    gspread の APIError は 503(一時的に利用不可) や 429(レート制限) を投げることがある。
+    これらを「シートが存在しない」等の恒久エラーと混同しないよう、ここで個別に再試行する。
+    """
+    import time
+    from gspread.exceptions import APIError
+    for attempt in range(retries):
+        try:
+            return fn()
+        except APIError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (429, 500, 502, 503) and attempt < retries - 1:
+                wait = 2 ** attempt
+                print(f"  {what}: 一時エラー(status={status})。{wait}秒後に再試行 "
+                      f"({attempt + 1}/{retries - 1})", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            raise
+
+
 def write_sheet(gc, sheet_id: str, sheet_name: str, rows: list[list], headers: list[str] | None = None) -> None:
+    from gspread.exceptions import WorksheetNotFound
     if headers is None:
         headers = HEADERS
-    sh = gc.open_by_key(sheet_id)
+    sh = _with_retry(lambda: gc.open_by_key(sheet_id), f"open({sheet_name})")
     try:
-        ws = sh.worksheet(sheet_name)
-        ws.clear()
-    except Exception:
-        ws = sh.add_worksheet(
-            title=sheet_name,
-            rows=max(len(rows) + 20, 100),
-            cols=len(headers),
+        ws = _with_retry(lambda: sh.worksheet(sheet_name), f"worksheet({sheet_name})")
+        _with_retry(lambda: ws.clear(), f"clear({sheet_name})")
+    except WorksheetNotFound:
+        ws = _with_retry(
+            lambda: sh.add_worksheet(
+                title=sheet_name,
+                rows=max(len(rows) + 20, 100),
+                cols=len(headers),
+            ),
+            f"add_worksheet({sheet_name})",
         )
     data = [headers] + rows
-    ws.update(data, value_input_option="USER_ENTERED")
+    _with_retry(lambda: ws.update(data, value_input_option="USER_ENTERED"),
+                f"update({sheet_name})")
     print(f"  シート「{sheet_name}」: {len(rows)}行 書き込み完了")
 
 
