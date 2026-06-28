@@ -215,6 +215,28 @@ CREATE TABLE IF NOT EXISTS meeting_notes (
     task_done  INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
 );
+
+-- 初回ヒアリング: テンプレート（質問項目集）
+CREATE TABLE IF NOT EXISTS hearing_templates (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    description TEXT,
+    items_json  TEXT NOT NULL DEFAULT '[]',  -- [{label,type:'text'|'choice',multi:bool,required:bool,options:[...]}]
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- 初回ヒアリング: 結果（商談#をキーに蓄積。活動履歴とは別管理）
+CREATE TABLE IF NOT EXISTS hearing_results (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id       INTEGER REFERENCES deals(id) ON DELETE CASCADE,
+    template_id   INTEGER,
+    template_name TEXT,                       -- テンプレ名スナップショット
+    conducted_on  TEXT,                        -- ヒアリング日（バージョン識別）
+    answers_json  TEXT NOT NULL DEFAULT '[]',  -- [{label,type,answer:str|[str]}]
+    activity_id   INTEGER,                     -- 紐づく活動履歴
+    created_at    TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hearing_results_deal ON hearing_results(deal_id);
 """
 
 
@@ -526,3 +548,117 @@ def create_lead_activity(con, *, lead_id, type="note", content, author=None) -> 
     )
     con.commit()
     return cur.lastrowid
+
+
+# ---- 初回ヒアリング: テンプレート ----
+
+def _parse_items(items_json: str | None) -> list[dict]:
+    """items_json をパースして項目リストを返す（壊れていれば空）。"""
+    try:
+        items = _json.loads(items_json or "[]")
+        return items if isinstance(items, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
+def list_hearing_templates(con) -> list[dict]:
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM hearing_templates ORDER BY created_at ASC"
+    )]
+    for r in rows:
+        r["items"] = _parse_items(r.get("items_json"))
+    return rows
+
+
+def get_hearing_template(con, id: int) -> dict | None:
+    r = con.execute("SELECT * FROM hearing_templates WHERE id=?", (int(id),)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    d["items"] = _parse_items(d.get("items_json"))
+    return d
+
+
+def save_hearing_template(con, *, id=None, name, description=None, items: list[dict]) -> int:
+    items_json = _json.dumps(items or [], ensure_ascii=False)
+    if id:
+        con.execute(
+            "UPDATE hearing_templates SET name=?, description=?, items_json=? WHERE id=?",
+            (name, description or None, items_json, int(id)),
+        )
+        con.commit()
+        return int(id)
+    cur = con.execute(
+        "INSERT INTO hearing_templates(name, description, items_json) VALUES(?,?,?)",
+        (name, description or None, items_json),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+def delete_hearing_template(con, id: int) -> None:
+    con.execute("DELETE FROM hearing_templates WHERE id=?", (int(id),))
+    con.commit()
+
+
+# ---- 初回ヒアリング: 結果 ----
+
+def add_hearing_result(con, *, deal_id, template_id=None, template_name=None,
+                       conducted_on=None, answers: list[dict], activity_id=None) -> int:
+    cur = con.execute(
+        "INSERT INTO hearing_results "
+        "(deal_id, template_id, template_name, conducted_on, answers_json, activity_id) "
+        "VALUES (?,?,?,?,?,?)",
+        (int(deal_id), int(template_id) if template_id else None, template_name,
+         conducted_on, _json.dumps(answers or [], ensure_ascii=False),
+         int(activity_id) if activity_id else None),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+def _hydrate_hearing_result(r: dict) -> dict:
+    try:
+        r["answers"] = _json.loads(r.get("answers_json") or "[]")
+    except (ValueError, TypeError):
+        r["answers"] = []
+    return r
+
+
+def list_hearing_results(con, deal_id: int) -> list[dict]:
+    """1商談のヒアリング結果（新しい順）。"""
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM hearing_results WHERE deal_id=? "
+        "ORDER BY conducted_on DESC, id DESC", (int(deal_id),)
+    )]
+    return [_hydrate_hearing_result(r) for r in rows]
+
+
+def get_hearing_result(con, id: int) -> dict | None:
+    r = con.execute(
+        "SELECT hr.*, d.deal_name, a.name AS account_name "
+        "FROM hearing_results hr "
+        "LEFT JOIN deals d ON d.id = hr.deal_id "
+        "LEFT JOIN accounts a ON a.id = d.account_id WHERE hr.id=?",
+        (int(id),),
+    ).fetchone()
+    return _hydrate_hearing_result(dict(r)) if r else None
+
+
+def list_all_hearing_results(con) -> list[dict]:
+    """全ヒアリング結果（商談・アカウント名つき）。一覧/エクスポート用。"""
+    rows = [dict(r) for r in con.execute(
+        "SELECT hr.*, d.deal_name, a.name AS account_name "
+        "FROM hearing_results hr "
+        "LEFT JOIN deals d ON d.id = hr.deal_id "
+        "LEFT JOIN accounts a ON a.id = d.account_id "
+        "ORDER BY hr.conducted_on DESC, hr.id DESC"
+    )]
+    return [_hydrate_hearing_result(r) for r in rows]
+
+
+def count_hearing_results(con, deal_id: int) -> int:
+    r = con.execute(
+        "SELECT count(*) FROM hearing_results WHERE deal_id=?", (int(deal_id),)
+    ).fetchone()
+    return int(r[0]) if r else 0
