@@ -1940,24 +1940,13 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         return inp ? inp.value.trim() : '';
       }}
 
-      function clearDiv(div) {{
-        div.querySelectorAll('input[type="radio"],input[type="checkbox"]').forEach(function(inp) {{
-          inp.checked = false;
-        }});
-        div.querySelectorAll('textarea,input[type="number"],input[type="text"]').forEach(function(inp) {{
-          inp.value = '';
-        }});
-      }}
-
       function updateBranch() {{
         form.querySelectorAll('.hq-branch').forEach(function(div) {{
           var pIdx = div.dataset.parentIdx;
           var pVal = div.dataset.parentValue;
           if (pIdx === undefined || pVal === undefined) return;
           var shouldInactive = getParentValue(parseInt(pIdx)) !== pVal;
-          var wasActive = !div.classList.contains('hq-inactive');
           div.classList.toggle('hq-inactive', shouldInactive);
-          if (!_initialLoad && shouldInactive && wasActive) clearDiv(div);
         }});
         _initialLoad = false;
       }}
