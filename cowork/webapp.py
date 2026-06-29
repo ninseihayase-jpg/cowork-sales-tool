@@ -1383,9 +1383,14 @@ def hearing_template_form(con, tmpl=None) -> str:
         steps:[{{label:'ステップ1'}},{{label:'ステップ2'}},{{label:'ステップ3'}}]}};
       var box=document.getElementById('items_box');
       var el=document.createElement('div'); el.className='yb-block';
+      el.setAttribute('draggable','true');
       el.style.cssText='border:2px solid #3b82f660;border-radius:8px;padding:12px;margin:8px 0;background:#0a1828';
       // header
       var hdr=document.createElement('div'); hdr.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:10px';
+      var dh=document.createElement('span'); dh.className='drag-handle';
+      dh.title='ドラッグで並び替え';
+      dh.style.cssText='cursor:grab;color:#555;font-size:18px;user-select:none;line-height:1;flex-shrink:0';
+      dh.textContent='⠿';
       var badge=document.createElement('span');
       badge.style.cssText='font-size:10px;font-weight:700;color:#3b82f6;background:#3b82f615;border:1px solid #3b82f640;border-radius:4px;padding:2px 8px;white-space:nowrap;flex-shrink:0';
       badge.textContent='矢羽';
@@ -1396,7 +1401,7 @@ def hearing_template_form(con, tmpl=None) -> str:
       var db=document.createElement('button'); db.type='button'; db.className='btn sec';
       db.style.cssText='font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b;flex-shrink:0';
       db.textContent='削除'; db.onclick=function(){{this.closest('.yb-block').remove();}};
-      hdr.appendChild(badge); hdr.appendChild(lw); hdr.appendChild(db); el.appendChild(hdr);
+      hdr.appendChild(dh); hdr.appendChild(badge); hdr.appendChild(lw); hdr.appendChild(db); el.appendChild(hdr);
       // body
       var body=document.createElement('div'); body.style.cssText='display:flex;gap:12px;flex-wrap:wrap';
       var dd=document.createElement('div'); dd.style.cssText='flex:1;min-width:160px';
@@ -1422,8 +1427,9 @@ def hearing_template_form(con, tmpl=None) -> str:
       const opts = (it.options || []).join('\\n');
       const hasBranch = it.parent_idx !== null && it.parent_idx !== undefined;
       return `
-      <div class="hitem" style="border:1px solid #d4dae4;border-radius:8px;padding:12px;margin:8px 0;background:#fafbfc">
+      <div class="hitem" draggable="true" style="border:1px solid #d4dae4;border-radius:8px;padding:12px;margin:8px 0;background:#fafbfc">
         <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+          <span class="drag-handle" title="ドラッグで並び替え" style="cursor:grab;color:#bbb;font-size:18px;padding-bottom:6px;user-select:none;line-height:1;flex-shrink:0">⠿</span>
           <div style="flex:2;min-width:200px"><label style="font-size:12px">質問ラベル</label>
             <input class="i-label" value="${{(it.label||'').replace(/"/g,'&quot;')}}" placeholder="例：現状の課題"></div>
           <div style="flex:1;min-width:120px"><label style="font-size:12px">回答形式</label>
@@ -1588,6 +1594,35 @@ def hearing_template_form(con, tmpl=None) -> str:
           else {{ addItem(it); }}
         }});
       }} else {{ addItem(); }}
+    }})();
+
+    // ── ドラッグ並び替え ──
+    (function() {{
+      var box = document.getElementById('items_box');
+      var _drag = null;
+      box.addEventListener('dragstart', function(e) {{
+        var t = e.target;
+        if (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.tagName==='BUTTON') {{
+          e.preventDefault(); return;
+        }}
+        var item = t.closest('.hitem,.yb-block');
+        if (!item) return;
+        _drag = item;
+        setTimeout(function(){{item.style.opacity='0.4';}}, 0);
+      }});
+      box.addEventListener('dragend', function() {{
+        if (_drag) _drag.style.opacity='';
+        _drag = null;
+      }});
+      box.addEventListener('dragover', function(e) {{
+        e.preventDefault();
+        if (!_drag) return;
+        var over = e.target.closest('.hitem,.yb-block');
+        if (!over||over===_drag) return;
+        var rect = over.getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height/2) box.insertBefore(_drag, over);
+        else box.insertBefore(_drag, over.nextSibling);
+      }});
     }})();
     </script>"""
 
@@ -1863,8 +1898,10 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         td.appendChild(ta); tr.appendChild(td);
       }});
       var delTd=document.createElement('td'); delTd.className='yb-del-cell';
-      delTd.innerHTML='<button type="button" class="btn sec" style="font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b" onclick="this.closest(\'tr\').remove()">削除</button>';
-      tr.appendChild(delTd); tbody.appendChild(tr);
+      var delBtn=document.createElement('button'); delBtn.type='button'; delBtn.className='btn sec';
+      delBtn.style.cssText='font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b';
+      delBtn.textContent='削除'; delBtn.onclick=function(){{this.closest('tr').remove();}};
+      delTd.appendChild(delBtn); tr.appendChild(delTd); tbody.appendChild(tr);
     }}
     function addYbRowForIdx(idx) {{
       var wrapper=document.getElementById('yb_wrapper_'+idx);
