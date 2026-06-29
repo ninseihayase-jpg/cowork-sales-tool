@@ -1336,25 +1336,8 @@ def hearing_template_form(con, tmpl=None) -> str:
     tid = tmpl["id"] if tmpl else None
     action = f"/hearing-templates/{tid}/save" if tid else "/hearing-templates/save"
     title = "テンプレート編集" if tmpl else "テンプレート追加"
-    raw_items_json = tmpl.get("items_json") if tmpl else None
-    try:
-        raw_items = json.loads(raw_items_json or "[]")
-    except (ValueError, TypeError):
-        raw_items = []
-    is_yabane = isinstance(raw_items, dict) and raw_items.get("template_type") == "yabane"
-    items = raw_items if isinstance(raw_items, list) else []
+    items = (tmpl.get("items") if tmpl else None) or []
     items_data = json.dumps(items, ensure_ascii=False)
-    yabane_cfg = raw_items if is_yabane else {}
-    _default_steps = [{"label": "ステップ1"}, {"label": "ステップ2"}, {"label": "ステップ3"}]
-    yb_depts_val = _esc("\n".join(yabane_cfg.get("departments") or ["部署A", "部署B", "部署C"]))
-    yb_steps_json = json.dumps(
-        [s.get("label", "") for s in (yabane_cfg.get("steps") or _default_steps)],
-        ensure_ascii=False,
-    )
-    std_display = "none" if is_yabane else ""
-    yb_display = "" if is_yabane else "none"
-    std_checked = "" if is_yabane else " checked"
-    yb_checked = " checked" if is_yabane else ""
     return f"""
     <div class="card" style="max-width:820px">
       <h2>{title}</h2>
@@ -1363,29 +1346,13 @@ def hearing_template_form(con, tmpl=None) -> str:
         <input name="name" required value="{_esc(tmpl.get('name') if tmpl else '')}">
         <label>説明（任意）</label>
         <input name="description" value="{_esc(tmpl.get('description') if tmpl else '')}">
-        <label style="margin-top:14px">テンプレート種別</label>
-        <div style="display:flex;gap:20px;margin:6px 0 14px">
-          <label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer">
-            <input type="radio" name="tmpl_type" value="standard"{std_checked}
-              onchange="switchEditor(this.value)">標準（Q&amp;A形式）</label>
-          <label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer">
-            <input type="radio" name="tmpl_type" value="yabane"{yb_checked}
-              onchange="switchEditor(this.value)">矢羽（業務プロセス表）</label>
-        </div>
-        <div id="standard_editor" style="display:{std_display}">
-          <label>ヒアリング項目</label>
-          <div id="items_box"></div>
-          <button type="button" class="btn sec" style="margin-top:8px" onclick="addItem()">＋項目を追加</button>
-        </div>
-        <div id="yabane_editor" style="display:{yb_display}">
-          <label>関係部署（横軸・1行に1つ）</label>
-          <textarea id="yb_depts" rows="4" style="font-family:inherit"
-            placeholder="例：営業&#10;生産&#10;経理">{yb_depts_val}</textarea>
-          <label style="margin-top:10px">初期ステップ（縦軸）</label>
-          <div id="yb_steps_box" style="margin:6px 0"></div>
-          <button type="button" class="btn sec" style="margin-top:6px" onclick="addYbStep('')">＋ステップ追加</button>
-          <p class="muted" style="font-size:12px;margin-top:8px">
-            ヒアリング入力画面でもステップを追加できます。ここでは初期枠を設定します。</p>
+        <label style="margin-top:14px">ヒアリング項目</label>
+        <p class="muted" style="font-size:12px;margin:4px 0 8px">Q&amp;A項目と矢羽セクションを自由に組み合わせられます。</p>
+        <div id="items_box"></div>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <button type="button" class="btn sec" onclick="addItem()">＋Q&amp;A項目を追加</button>
+          <button type="button" class="btn sec" style="border-color:#3b82f660;color:#3b82f6"
+            onclick="addYabaneItem(null)">＋矢羽セクションを追加</button>
         </div>
         <input type="hidden" name="items_json" id="items_json">
         <div style="margin-top:16px;display:flex;gap:8px">
@@ -1395,26 +1362,59 @@ def hearing_template_form(con, tmpl=None) -> str:
       </form>
     </div>
     <script>
-    const _ITEMS = {items_data};
-    const _YB_STEPS = {yb_steps_json};
+    var _ITEMS = {items_data};
 
-    function switchEditor(type) {{
-      document.getElementById('standard_editor').style.display = type === 'standard' ? '' : 'none';
-      document.getElementById('yabane_editor').style.display  = type === 'yabane'   ? '' : 'none';
+    // ── 矢羽ブロック ──
+    function _addYbStepRow(stepsBox, label) {{
+      var div = document.createElement('div');
+      div.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0';
+      var inp = document.createElement('input');
+      inp.type='text'; inp.className='yb-step-input';
+      inp.value=label||''; inp.placeholder='例：受注処理'; inp.style.cssText='flex:1';
+      var btn=document.createElement('button');
+      btn.type='button'; btn.className='btn sec';
+      btn.style.cssText='font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b';
+      btn.textContent='削除'; btn.onclick=function(){{this.parentNode.remove();}};
+      div.appendChild(inp); div.appendChild(btn); stepsBox.appendChild(div);
     }}
 
-    function addYbStep(label) {{
-      const box = document.getElementById('yb_steps_box');
-      const div = document.createElement('div');
-      div.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0';
-      const inp = document.createElement('input');
-      inp.type = 'text'; inp.className = 'yb-step-input';
-      inp.value = label || ''; inp.placeholder = '例：受注処理'; inp.style.cssText = 'flex:1';
-      const btn = document.createElement('button');
-      btn.type = 'button'; btn.className = 'btn sec';
-      btn.style.cssText = 'font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b';
-      btn.textContent = '削除'; btn.onclick = function() {{ this.parentNode.remove(); }};
-      div.appendChild(inp); div.appendChild(btn); box.appendChild(div);
+    function addYabaneItem(cfg) {{
+      cfg=cfg||{{label:'業務プロセス',departments:['部署A','部署B','部署C'],
+        steps:[{{label:'ステップ1'}},{{label:'ステップ2'}},{{label:'ステップ3'}}]}};
+      var box=document.getElementById('items_box');
+      var el=document.createElement('div'); el.className='yb-block';
+      el.style.cssText='border:2px solid #3b82f660;border-radius:8px;padding:12px;margin:8px 0;background:#0a1828';
+      // header
+      var hdr=document.createElement('div'); hdr.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:10px';
+      var badge=document.createElement('span');
+      badge.style.cssText='font-size:10px;font-weight:700;color:#3b82f6;background:#3b82f615;border:1px solid #3b82f640;border-radius:4px;padding:2px 8px;white-space:nowrap;flex-shrink:0';
+      badge.textContent='矢羽';
+      var lw=document.createElement('div'); lw.style.cssText='flex:1;min-width:0';
+      var ll=document.createElement('label'); ll.style.cssText='font-size:12px'; ll.textContent='セクション名';
+      var li=document.createElement('input'); li.className='yb-block-label'; li.value=cfg.label||'業務プロセス'; li.placeholder='例：業務プロセス';
+      lw.appendChild(ll); lw.appendChild(li);
+      var db=document.createElement('button'); db.type='button'; db.className='btn sec';
+      db.style.cssText='font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b;flex-shrink:0';
+      db.textContent='削除'; db.onclick=function(){{this.closest('.yb-block').remove();}};
+      hdr.appendChild(badge); hdr.appendChild(lw); hdr.appendChild(db); el.appendChild(hdr);
+      // body
+      var body=document.createElement('div'); body.style.cssText='display:flex;gap:12px;flex-wrap:wrap';
+      var dd=document.createElement('div'); dd.style.cssText='flex:1;min-width:160px';
+      var dl=document.createElement('label'); dl.style.cssText='font-size:12px'; dl.textContent='関係部署（横軸・1行に1つ）';
+      var dta=document.createElement('textarea'); dta.className='yb-block-depts'; dta.rows=4;
+      dta.style.cssText='font-family:inherit'; dta.placeholder='例：営業\n生産\n経理';
+      dta.value=(cfg.departments||[]).join('\n');
+      dd.appendChild(dl); dd.appendChild(dta);
+      var sd=document.createElement('div'); sd.style.cssText='flex:1;min-width:160px';
+      var sl=document.createElement('label'); sl.style.cssText='font-size:12px'; sl.textContent='初期ステップ';
+      var sb=document.createElement('div'); sb.className='yb-steps-box'; sb.style.cssText='margin:4px 0';
+      var sab=document.createElement('button'); sab.type='button'; sab.className='btn sec';
+      sab.style.cssText='font-size:11px;padding:4px 8px;margin-top:4px'; sab.textContent='＋ステップ追加';
+      sab.onclick=function(){{_addYbStepRow(this.previousElementSibling,'');}};
+      sd.appendChild(sl); sd.appendChild(sb); sd.appendChild(sab);
+      body.appendChild(dd); body.appendChild(sd); el.appendChild(body);
+      box.appendChild(el);
+      (cfg.steps||[]).forEach(function(s){{_addYbStepRow(sb,s.label||'');}});
     }}
 
     function rowHtml(it) {{
@@ -1550,46 +1550,44 @@ def hearing_template_form(con, tmpl=None) -> str:
     }}
 
     function serializeItems() {{
-      const tmplType = (document.querySelector('input[name="tmpl_type"]:checked') || {{}}).value || 'standard';
-      if (tmplType === 'yabane') {{
-        const depts = document.getElementById('yb_depts').value
-          .split('\\n').map(function(s){{return s.trim();}}).filter(Boolean);
-        const steps = Array.from(document.querySelectorAll('.yb-step-input'))
-          .map(function(i){{return i.value.trim();}}).filter(Boolean)
-          .map(function(l){{return {{label:l}};}});
-        document.getElementById('items_json').value = JSON.stringify(
-          {{template_type:'yabane', departments:depts, steps:steps}}
-        );
-        return true;
-      }}
-      const items = [];
-      document.querySelectorAll('#items_box .hitem').forEach(function(row) {{
-        const label = row.querySelector('.i-label').value.trim();
-        if (!label) return;
-        const type = row.querySelector('.i-type').value;
-        const multi = row.querySelector('.i-multi').value === '1';
-        const required = row.querySelector('.i-required').checked;
-        const options = type === 'choice'
-          ? row.querySelector('.i-options').value.split('\\n').map(function(s){{return s.trim();}}).filter(Boolean)
-          : [];
-        const hasBranch = row.querySelector('.i-has-branch').checked;
-        const parentIdxRaw = row.querySelector('.i-parent-idx').value;
-        const parentIdx = hasBranch && parentIdxRaw !== '' ? parseInt(parentIdxRaw) : null;
-        const parentValue = hasBranch ? (row.querySelector('.i-parent-value').value.trim() || null) : null;
-        items.push({{label:label, type:type, multi:type==='choice'?multi:false, required:required,
-          options:options, parent_idx:parentIdx, parent_value:parentValue}});
+      var items = [];
+      document.querySelectorAll('#items_box > .hitem, #items_box > .yb-block').forEach(function(el) {{
+        if (el.classList.contains('yb-block')) {{
+          var ybLabel = el.querySelector('.yb-block-label').value.trim() || '業務プロセス';
+          var depts = el.querySelector('.yb-block-depts').value
+            .split('\\n').map(function(s){{return s.trim();}}).filter(Boolean);
+          var steps = Array.from(el.querySelectorAll('.yb-step-input'))
+            .map(function(i){{return i.value.trim();}}).filter(Boolean)
+            .map(function(l){{return {{label:l}};}});
+          items.push({{label:ybLabel, type:'yabane', departments:depts, steps:steps}});
+        }} else {{
+          var stdLabel = el.querySelector('.i-label').value.trim();
+          if (!stdLabel) return;
+          var type = el.querySelector('.i-type').value;
+          var multi = el.querySelector('.i-multi').value === '1';
+          var required = el.querySelector('.i-required').checked;
+          var options = type==='choice'
+            ? el.querySelector('.i-options').value.split('\\n').map(function(s){{return s.trim();}}).filter(Boolean)
+            : [];
+          var hasBranch = el.querySelector('.i-has-branch').checked;
+          var parentIdxRaw = el.querySelector('.i-parent-idx').value;
+          var parentIdx = hasBranch && parentIdxRaw !== '' ? parseInt(parentIdxRaw) : null;
+          var parentValue = hasBranch ? (el.querySelector('.i-parent-value').value.trim() || null) : null;
+          items.push({{label:stdLabel, type:type, multi:type==='choice'?multi:false, required:required,
+            options:options, parent_idx:parentIdx, parent_value:parentValue}});
+        }}
       }});
       document.getElementById('items_json').value = JSON.stringify(items);
       return true;
     }}
 
     (function() {{
-      const initRadio = document.querySelector('input[name="tmpl_type"]:checked');
-      if (initRadio && initRadio.value === 'yabane') {{
-        _YB_STEPS.forEach(function(l) {{ addYbStep(l); }});
-      }} else {{
-        if (_ITEMS.length) {{ _ITEMS.forEach(addItem); }} else {{ addItem(); }}
-      }}
+      if (_ITEMS.length) {{
+        _ITEMS.forEach(function(it) {{
+          if (it.type === 'yabane') {{ addYabaneItem(it); }}
+          else {{ addItem(it); }}
+        }});
+      }} else {{ addItem(); }}
     }})();
     </script>"""
 
@@ -1643,140 +1641,6 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
     """ヒアリング入力画面：ヒアリング項目＋通常の活動履歴入力欄を同一画面に生成。"""
     prefill = prefill or {}
 
-    # Yabane template detection
-    try:
-        _raw_cfg = json.loads(template.get("items_json") or "[]")
-    except (ValueError, TypeError):
-        _raw_cfg = []
-    if isinstance(_raw_cfg, dict) and _raw_cfg.get("template_type") == "yabane":
-        _yb_depts = _raw_cfg.get("departments") or []
-        _yb_steps = _raw_cfg.get("steps") or [{"label": "ステップ1"}]
-        _depts_json = json.dumps(_yb_depts, ensure_ascii=False)
-        _dept_headers = "".join(
-            f'<th class="yb-dept-h">{_esc(d)}</th>' for d in _yb_depts
-        )
-        _step_rows = ""
-        for _s in _yb_steps:
-            _cells = "".join(
-                f'<td class="yb-data-cell">'
-                f'<textarea class="yb-cell-area" data-dept="{_esc(d)}"'
-                f' placeholder="{_esc(d)}での作業内容"></textarea></td>'
-                for d in _yb_depts
-            )
-            _step_rows += (
-                f'<tr class="yb-row">'
-                f'<td class="yb-step-cell">'
-                f'<input type="text" class="yb-step-name"'
-                f' value="{_esc(_s.get("label",""))}" placeholder="ステップ名"></td>'
-                f'{_cells}'
-                f'<td class="yb-del-cell">'
-                f'<button type="button" class="btn sec"'
-                f' style="font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b"'
-                f' onclick="this.closest(\'tr\').remove()">削除</button></td>'
-                f'</tr>'
-            )
-        return f"""
-    <style>
-    .yb-wrapper{{overflow-x:auto}}
-    .yb-table{{border-collapse:collapse;width:100%;min-width:500px}}
-    .yb-step-h{{background:#f0f4ff;color:#374151;font-weight:700;padding:10px 14px;border:1px solid #dde4f0;min-width:160px;text-align:center}}
-    .yb-dept-h{{background:#e8f0fe;color:#1d4ed8;font-weight:700;padding:10px 14px;border:1px solid #dde4f0;min-width:140px;text-align:center}}
-    .yb-step-cell{{background:linear-gradient(135deg,#2563eb,#1d4ed8);padding:0;vertical-align:middle;border:2px solid #1a56db;min-width:160px;position:relative}}
-    .yb-step-cell::after{{content:'';position:absolute;right:-9px;top:50%;transform:translateY(-50%);border:7px solid transparent;border-left-color:#1d4ed8;z-index:2}}
-    .yb-step-name{{background:transparent;border:none;color:#fff;font-weight:700;font-size:13px;text-align:center;width:100%;padding:12px 18px 12px 10px;min-height:50px;outline:none;cursor:text}}
-    .yb-step-name::placeholder{{color:rgba(255,255,255,.6)}}
-    .yb-data-cell{{padding:5px;border:1px solid #dde4f0;vertical-align:top;background:#fff}}
-    .yb-data-cell textarea{{width:100%;min-height:58px;resize:vertical;font-size:13px;margin:0;border:1px solid #d4dae4;border-radius:4px;padding:6px}}
-    .yb-del-cell{{padding:4px;border:1px solid #dde4f0;vertical-align:middle;text-align:center;width:48px}}
-    .hq-sticky{{position:sticky;top:0;z-index:50;background:#fff;border-bottom:1px solid #e2e6ee;box-shadow:0 2px 6px rgba(0,0,0,.06);padding:10px 20px;margin:-20px -16px 16px}}
-    .hq-sticky-inner{{max-width:960px;margin:0 auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:relative}}
-    </style>
-    <div class="hq-sticky">
-      <div class="hq-sticky-inner">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:15px;font-weight:700;color:#1d2430;margin-bottom:2px">ヒアリング入力（矢羽）</div>
-          <div style="font-size:12px;color:#6b7689">
-            <strong style="color:#3a4760">対象:</strong> {_esc(target_label)}
-            <span style="margin:0 6px;color:#d4dae4">|</span>
-            <strong style="color:#3a4760">テンプレート:</strong> {_esc(template.get('name',''))}
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="card" style="max-width:960px">
-      <form method="post" action="/hearing/submit" id="hearing_form">
-        <input type="hidden" name="target_type" value="{_esc(target_type)}">
-        <input type="hidden" name="target_id" value="{_esc(target_id)}">
-        <input type="hidden" name="template_id" value="{template['id']}">
-        <input type="hidden" name="yabane_data" id="yabane_data">
-        <div style="background:#f0f6ff;border-radius:8px;padding:14px 16px;margin-bottom:16px">
-          <p style="margin:0 0 10px;font-weight:600;color:#2f6fed">業務プロセス入力（矢羽）</p>
-          <div class="yb-wrapper">
-            <table class="yb-table">
-              <thead><tr>
-                <th class="yb-step-h">プロセス</th>
-                {_dept_headers}
-                <th style="width:48px;border:1px solid #dde4f0"></th>
-              </tr></thead>
-              <tbody id="yb_tbody">{_step_rows}</tbody>
-            </table>
-          </div>
-          <button type="button" class="btn sec" style="margin-top:10px" onclick="addYbRow('')">＋ステップ追加</button>
-        </div>
-        <div style="border:1px solid #e2e6ee;border-radius:8px;padding:14px 16px">
-          <p style="margin:0 0 8px;font-weight:600;color:#555">活動履歴として記録</p>
-          <div class="grid">
-            <div><label>ヒアリング日</label><input type="date" name="occurred_on" required></div>
-            <div><label>種別</label><select name="type">{_opt(sfa_db.get_master_list(con,'activity_types'), '面談')}</select></div>
-            <div><label>相手</label><input name="contact_name" placeholder="例：田中部長"></div>
-          </div>
-          <label>内容・決定事項</label><textarea name="body" rows="3"></textarea>
-          <div style="margin-top:10px;padding:12px;background:#f8f9fa;border-radius:6px">
-            <p style="margin:0 0 8px;font-size:.9em;font-weight:600;color:#555">商談の現状を更新（任意）</p>
-            <div class="grid">
-              <div><label>次回MS日</label><input type="date" name="next_milestone_date"></div>
-              <div><label>次回MSラベル</label><input name="next_milestone_label"></div>
-            </div>
-            <label>現状メモ</label><textarea name="update_note" rows="2"></textarea>
-          </div>
-        </div>
-        <div style="margin-top:16px">
-          <button class="btn" type="submit">保存（活動履歴＋ヒアリング結果を記録）</button>
-          <a class="btn sec" href="/hearings">キャンセル</a>
-        </div>
-      </form>
-    </div>
-    <script>
-    var _YB_DEPTS = {_depts_json};
-    function addYbRow(label) {{
-      var tbody = document.getElementById('yb_tbody');
-      var tr = document.createElement('tr'); tr.className = 'yb-row';
-      var stepTd = document.createElement('td'); stepTd.className = 'yb-step-cell';
-      var inp = document.createElement('input');
-      inp.type = 'text'; inp.className = 'yb-step-name';
-      inp.value = label || ''; inp.placeholder = 'ステップ名';
-      stepTd.appendChild(inp); tr.appendChild(stepTd);
-      _YB_DEPTS.forEach(function(dept) {{
-        var td = document.createElement('td'); td.className = 'yb-data-cell';
-        var ta = document.createElement('textarea'); ta.className = 'yb-cell-area';
-        ta.dataset.dept = dept; ta.placeholder = dept + 'での作業内容';
-        td.appendChild(ta); tr.appendChild(td);
-      }});
-      var delTd = document.createElement('td'); delTd.className = 'yb-del-cell';
-      delTd.innerHTML = '<button type="button" class="btn sec" style="font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b" onclick="this.closest(\'tr\').remove()">削除</button>';
-      tr.appendChild(delTd); tbody.appendChild(tr);
-    }}
-    document.getElementById('hearing_form').addEventListener('submit', function() {{
-      var steps = Array.from(document.querySelectorAll('.yb-row')).map(function(tr) {{
-        var label = tr.querySelector('.yb-step-name').value.trim();
-        var cells = {{}};
-        tr.querySelectorAll('.yb-cell-area').forEach(function(ta) {{ cells[ta.dataset.dept] = ta.value; }});
-        return {{label:label, cells:cells}};
-      }});
-      document.getElementById('yabane_data').value = JSON.stringify({{departments:_YB_DEPTS, steps:steps}});
-    }});
-    </script>"""
-
     items = template.get("items") or []
     has_branch = any(
         it.get("parent_idx") is not None and it.get("parent_value") is not None
@@ -1796,7 +1660,48 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         if parent_idx is not None and parent_value is not None:
             branch_attrs = f' data-parent-idx="{parent_idx}" data-parent-value="{_esc(parent_value)}"'
             branch_class = " hq-branch"
-        if it.get("type") == "choice":
+        if it.get("type") == "yabane":
+            _yb_depts = it.get("departments") or []
+            _yb_steps = it.get("steps") or [{"label": "ステップ1"}]
+            _depts_json = json.dumps(_yb_depts, ensure_ascii=False)
+            _dept_ths = "".join(
+                f'<th class="yb-dept-h">{_esc(d)}</th>' for d in _yb_depts
+            )
+            _yb_rows = ""
+            for _s in _yb_steps:
+                _cells = "".join(
+                    f'<td class="yb-data-cell"><textarea class="yb-cell-area" data-dept="{_esc(d)}"'
+                    f' placeholder="{_esc(d)}での作業内容"></textarea></td>'
+                    for d in _yb_depts
+                )
+                _yb_rows += (
+                    f'<tr class="yb-row">'
+                    f'<td class="yb-step-cell-td"><div class="yb-chevron-div">'
+                    f'<input type="text" class="yb-step-name"'
+                    f' value="{_esc(_s.get("label",""))}" placeholder="ステップ名"></div></td>'
+                    f'{_cells}'
+                    f'<td class="yb-del-cell"><button type="button" class="btn sec"'
+                    f' style="font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b"'
+                    f' onclick="this.closest(\'tr\').remove()">削除</button></td>'
+                    f'</tr>'
+                )
+            fields_html += (
+                f'<div class="hq-item" style="margin:14px 0">'
+                f'<label style="font-weight:700;color:#2f6fed;font-size:13px;margin-bottom:6px;display:block">{label}</label>'
+                f'<input type="hidden" name="answer_{i}" id="yb_answer_{i}">'
+                f'<div class="yb-wrapper" id="yb_wrapper_{i}"'
+                f' data-yb-idx="{i}" data-yb-depts=\'{_depts_json}\'>'
+                f'<table class="yb-table"><thead><tr>'
+                f'<th class="yb-step-h">プロセス</th>{_dept_ths}'
+                f'<th style="width:48px;border:1px solid #dde4f0"></th>'
+                f'</tr></thead>'
+                f'<tbody id="yb_tbody_{i}">{_yb_rows}</tbody>'
+                f'</table></div>'
+                f'<button type="button" class="btn sec" style="margin-top:8px"'
+                f' onclick="addYbRowForIdx({i})">＋ステップ追加</button>'
+                f'</div>'
+            )
+        elif it.get("type") == "choice":
             opts = it.get("options") or []
             if it.get("multi"):
                 cur = set(pv if isinstance(pv, list) else ([pv] if pv else []))
@@ -1867,6 +1772,33 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       position: relative;
     }}
+    /* ── 矢羽 ── */
+    .yb-wrapper{{overflow-x:auto;margin-top:4px}}
+    .yb-table{{border-collapse:collapse;width:100%;min-width:460px}}
+    .yb-step-h{{background:#e8eeff;color:#3730a3;font-weight:700;padding:9px 12px;border:1px solid #c7d2fe;width:170px;text-align:center;font-size:12px}}
+    .yb-dept-h{{background:#e8f0fe;color:#1d4ed8;font-weight:700;padding:9px 12px;border:1px solid #bfdbfe;min-width:130px;text-align:center;font-size:12px}}
+    .yb-step-cell-td{{padding:0;border:none;vertical-align:middle;width:170px}}
+    .yb-chevron-div{{
+      background:linear-gradient(160deg,#4f46e5,#2563eb);
+      clip-path:polygon(0 0,calc(100% - 14px) 0,100% 50%,calc(100% - 14px) 100%,0 100%);
+      padding:10px 28px 10px 14px;
+      min-height:54px;
+      display:flex;align-items:center;justify-content:center;
+    }}
+    .yb-step-name{{
+      background:transparent;border:none;
+      color:#fff;-webkit-text-fill-color:#fff;
+      font-weight:700;font-size:13px;text-align:center;
+      width:100%;outline:none;cursor:text;caret-color:#fff;padding:0;
+    }}
+    .yb-step-name::placeholder{{color:rgba(255,255,255,.5)}}
+    .yb-step-name:-webkit-autofill,.yb-step-name:-webkit-autofill:focus{{
+      -webkit-text-fill-color:#fff;
+      -webkit-box-shadow:0 0 0 1000px #3730a3 inset;
+    }}
+    .yb-data-cell{{padding:5px;border:1px solid #dde4f0;vertical-align:top;background:#fff}}
+    .yb-data-cell textarea{{width:100%;min-height:54px;resize:vertical;font-size:13px;margin:0;border:1px solid #d4dae4;border-radius:4px;padding:6px;color:#1e293b}}
+    .yb-del-cell{{padding:4px;border:1px solid #dde4f0;vertical-align:middle;text-align:center;width:48px}}
     </style>
     <div class="hq-sticky">
       <div class="hq-sticky-inner">
@@ -1915,6 +1847,45 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       </form>
     </div>
     <script>
+    // ── 矢羽入力 JS ──
+    function _appendYbRow(tbody, depts, label) {{
+      var tr = document.createElement('tr'); tr.className = 'yb-row';
+      var stepTd = document.createElement('td'); stepTd.className = 'yb-step-cell-td';
+      var chev = document.createElement('div'); chev.className = 'yb-chevron-div';
+      var inp = document.createElement('input');
+      inp.type='text'; inp.className='yb-step-name';
+      inp.value=label||''; inp.placeholder='ステップ名';
+      chev.appendChild(inp); stepTd.appendChild(chev); tr.appendChild(stepTd);
+      depts.forEach(function(dept) {{
+        var td=document.createElement('td'); td.className='yb-data-cell';
+        var ta=document.createElement('textarea'); ta.className='yb-cell-area';
+        ta.dataset.dept=dept; ta.placeholder=dept+'での作業内容';
+        td.appendChild(ta); tr.appendChild(td);
+      }});
+      var delTd=document.createElement('td'); delTd.className='yb-del-cell';
+      delTd.innerHTML='<button type="button" class="btn sec" style="font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b" onclick="this.closest(\'tr\').remove()">削除</button>';
+      tr.appendChild(delTd); tbody.appendChild(tr);
+    }}
+    function addYbRowForIdx(idx) {{
+      var wrapper=document.getElementById('yb_wrapper_'+idx);
+      var depts=JSON.parse(wrapper.getAttribute('data-yb-depts')||'[]');
+      _appendYbRow(document.getElementById('yb_tbody_'+idx), depts, '');
+    }}
+    document.getElementById('hearing_form').addEventListener('submit', function() {{
+      document.querySelectorAll('[data-yb-idx]').forEach(function(wrapper) {{
+        var idx=wrapper.getAttribute('data-yb-idx');
+        var depts=JSON.parse(wrapper.getAttribute('data-yb-depts')||'[]');
+        var steps=Array.from(wrapper.querySelectorAll('.yb-row')).map(function(tr) {{
+          var lbl=tr.querySelector('.yb-step-name').value.trim();
+          var cells={{}};
+          tr.querySelectorAll('.yb-cell-area').forEach(function(ta){{cells[ta.dataset.dept]=ta.value;}});
+          return {{label:lbl,cells:cells}};
+        }});
+        var hidden=document.getElementById('yb_answer_'+idx);
+        if(hidden) hidden.value=JSON.stringify({{departments:depts,steps:steps}});
+      }});
+    }});
+    // ── 分岐ロジック ──
     (function() {{
       var form = document.getElementById('hearing_form');
       if (!form) return;
@@ -1990,52 +1961,70 @@ def _format_answer(ans) -> str:
     return str(ans) if ans is not None else ""
 
 
-def hearing_result_page(con, result: dict) -> str:
-    """個別ヒアリング結果の表示。"""
-    answers = result.get("answers") or []
-    if len(answers) == 1 and answers[0].get("type") == "yabane":
-        yb = answers[0].get("answer") or {}
-        depts = yb.get("departments") or []
-        steps = yb.get("steps") or []
-        dept_ths = "".join(
-            f'<th style="background:#e8f0fe;color:#1d4ed8;font-weight:700;padding:8px 12px;'
-            f'border:1px solid #dde4f0;text-align:center;min-width:120px">{_esc(d)}</th>'
+def _yabane_result_table(yb: dict) -> str:
+    """矢羽回答を swim-lane テーブル HTML に変換。"""
+    depts = yb.get("departments") or []
+    steps = yb.get("steps") or []
+    dept_ths = "".join(
+        f'<th style="background:#e8eeff;color:#3730a3;font-weight:700;padding:8px 12px;'
+        f'border:1px solid #c7d2fe;text-align:center;min-width:120px;font-size:12px">{_esc(d)}</th>'
+        for d in depts
+    )
+    step_rows = ""
+    for s in steps:
+        cells = "".join(
+            f'<td style="padding:8px;border:1px solid #dde4f0;vertical-align:top;'
+            f'white-space:pre-wrap;font-size:13px;color:#1e293b">'
+            f'{_esc((s.get("cells") or {}).get(d, ""))}</td>'
             for d in depts
         )
-        step_rows = ""
-        for s in steps:
-            cells = "".join(
-                f'<td style="padding:8px;border:1px solid #dde4f0;vertical-align:top;'
-                f'white-space:pre-wrap;font-size:13px">'
-                f'{_esc((s.get("cells") or {}).get(d, ""))}</td>'
-                for d in depts
-            )
-            step_rows += (
-                f'<tr><td style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;'
-                f'font-weight:700;font-size:13px;padding:10px 14px;min-width:140px;'
-                f'border:2px solid #1a56db;vertical-align:middle">'
-                f'{_esc(s.get("label",""))}</td>{cells}</tr>'
-            )
-        result_html = (
-            f'<div style="overflow-x:auto;margin-top:12px">'
-            f'<table style="border-collapse:collapse;width:100%;min-width:400px">'
-            f'<thead><tr>'
-            f'<th style="background:#f0f4ff;color:#374151;font-weight:700;padding:8px 14px;'
-            f'border:1px solid #dde4f0;min-width:140px;text-align:center">プロセス</th>'
-            f'{dept_ths}</tr></thead>'
-            f'<tbody>{step_rows or "<tr><td colspan=99 class=muted>データなし</td></tr>"}</tbody>'
-            f'</table></div>'
+        step_rows += (
+            f'<tr>'
+            f'<td style="padding:0;border:none;width:160px;vertical-align:middle">'
+            f'<div style="background:linear-gradient(160deg,#4f46e5,#2563eb);'
+            f'clip-path:polygon(0 0,calc(100% - 12px) 0,100% 50%,calc(100% - 12px) 100%,0 100%);'
+            f'padding:10px 24px 10px 14px;min-height:48px;display:flex;align-items:center;'
+            f'justify-content:center;color:#fff;font-weight:700;font-size:13px;text-align:center">'
+            f'{_esc(s.get("label",""))}</div></td>'
+            f'{cells}</tr>'
         )
-    else:
-        result_html = (
-            f'<table style="margin-top:12px"><tr><th style="width:30%">項目</th><th>回答</th></tr>'
-            + "".join(
-                f'<tr><td style="white-space:nowrap;font-weight:600;vertical-align:top">{_esc(a.get("label"))}</td>'
-                f'<td style="white-space:pre-wrap">{_esc(_format_answer(a.get("answer")))}</td></tr>'
-                for a in answers
-            ) or '<tr><td colspan=2 class=muted>回答なし</td></tr>'
-            + '</table>'
-        )
+    return (
+        f'<div style="overflow-x:auto;margin-top:8px">'
+        f'<table style="border-collapse:collapse;width:100%;min-width:400px">'
+        f'<thead><tr>'
+        f'<th style="background:#e8eeff;color:#3730a3;font-weight:700;padding:8px 14px;'
+        f'border:1px solid #c7d2fe;width:160px;text-align:center;font-size:12px">プロセス</th>'
+        f'{dept_ths}</tr></thead>'
+        f'<tbody>{step_rows or "<tr><td colspan=99 class=muted>データなし</td></tr>"}</tbody>'
+        f'</table></div>'
+    )
+
+
+def hearing_result_page(con, result: dict) -> str:
+    """個別ヒアリング結果の表示（Q&A・矢羽混在対応）。"""
+    answers = result.get("answers") or []
+    result_html_parts = []
+    for a in answers:
+        if a.get("type") == "yabane":
+            result_html_parts.append(
+                f'<div style="margin:16px 0">'
+                f'<div style="font-size:12px;font-weight:700;color:#3730a3;margin-bottom:4px;'
+                f'padding:4px 0;border-bottom:1px solid #e0e7ff">{_esc(a.get("label") or "業務プロセス")}</div>'
+                f'{_yabane_result_table(a.get("answer") or {{}})}'
+                f'</div>'
+            )
+        else:
+            result_html_parts.append(
+                f'<table style="width:100%;border-collapse:collapse;margin:10px 0">'
+                f'<tr><td style="white-space:nowrap;font-weight:600;vertical-align:top;'
+                f'padding:7px 10px;width:30%;border-bottom:1px solid #f0f4ff">{_esc(a.get("label"))}</td>'
+                f'<td style="white-space:pre-wrap;padding:7px 10px;border-bottom:1px solid #f0f4ff">'
+                f'{_esc(_format_answer(a.get("answer")))}</td></tr>'
+                f'</table>'
+            )
+    if not result_html_parts:
+        result_html_parts = ['<p class="muted">回答なし</p>']
+    result_html = "\n".join(result_html_parts)
     other = sfa_db.list_hearing_results(con, result["deal_id"])
     history = ""
     if len(other) > 1:
@@ -2050,7 +2039,7 @@ def hearing_result_page(con, result: dict) -> str:
     <div class="card" style="max-width:960px">
       <h2>ヒアリング結果</h2>
       <p style="margin:0 0 4px"><strong>商談:</strong> <a href="/deal/{result['deal_id']}">{_esc(result.get('account_name') or '')} / {_esc(result.get('deal_name') or '')}</a></p>
-      <p class="muted" style="margin:0 0 4px"><strong>テンプレート:</strong> {_esc(result.get('template_name') or '')}　<strong>ヒアリング日:</strong> {_esc(result.get('conducted_on') or '—')}</p>
+      <p class="muted" style="margin:0 0 12px"><strong>テンプレート:</strong> {_esc(result.get('template_name') or '')}　<strong>ヒアリング日:</strong> {_esc(result.get('conducted_on') or '—')}</p>
       {result_html}
       {history}
       <div style="margin-top:16px;display:flex;gap:8px">
@@ -3057,25 +3046,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if not deal_id or not tmpl:
                         self._send(render("<div class=card>対象またはテンプレートが見つかりません</div>"), 404)
                         return
-                    # 回答を組み立て
-                    try:
-                        _raw_tmpl = json.loads(tmpl.get("items_json") or "[]")
-                    except (ValueError, TypeError):
-                        _raw_tmpl = []
-                    _is_yabane = isinstance(_raw_tmpl, dict) and _raw_tmpl.get("template_type") == "yabane"
-                    if _is_yabane:
-                        try:
-                            _yb = json.loads(f.get("yabane_data") or "{}")
-                        except (ValueError, TypeError):
-                            _yb = {}
-                        answers = [{"label": "__yabane__", "type": "yabane", "answer": _yb}]
-                    else:
-                        answers = []
-                        for i, it in enumerate(tmpl.get("items") or []):
-                            if it.get("type") == "choice" and it.get("multi"):
-                                ans = [v for v in f_list.get(f"answer_{i}", []) if v]
-                            else:
-                                ans = (f.get(f"answer_{i}", "") or "").strip()
+                    # 回答を組み立て（Q&A・矢羽混在対応）
+                    answers = []
+                    for i, it in enumerate(tmpl.get("items") or []):
+                        if it.get("type") == "yabane":
+                            try:
+                                yb_ans = json.loads(f.get(f"answer_{i}") or "{}")
+                            except (ValueError, TypeError):
+                                yb_ans = {}
+                            answers.append({"label": it.get("label") or "業務プロセス",
+                                            "type": "yabane", "answer": yb_ans})
+                        elif it.get("type") == "choice" and it.get("multi"):
+                            ans = [v for v in f_list.get(f"answer_{i}", []) if v]
+                            answers.append({"label": it.get("label"),
+                                            "type": it.get("type"), "answer": ans})
+                        else:
+                            ans = (f.get(f"answer_{i}", "") or "").strip()
                             answers.append({"label": it.get("label"),
                                             "type": it.get("type"), "answer": ans})
                     conducted_on = f.get("occurred_on") or None
