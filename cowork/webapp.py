@@ -1402,8 +1402,8 @@ def hearing_template_form(con, tmpl=None) -> str:
       var dd=document.createElement('div'); dd.style.cssText='flex:1;min-width:160px';
       var dl=document.createElement('label'); dl.style.cssText='font-size:12px'; dl.textContent='関係部署（横軸・1行に1つ）';
       var dta=document.createElement('textarea'); dta.className='yb-block-depts'; dta.rows=4;
-      dta.style.cssText='font-family:inherit'; dta.placeholder='例：営業\n生産\n経理';
-      dta.value=(cfg.departments||[]).join('\n');
+      dta.style.cssText='font-family:inherit'; dta.placeholder='例：営業\\n生産\\n経理';
+      dta.value=(cfg.departments||[]).join('\\n');
       dd.appendChild(dl); dd.appendChild(dta);
       var sd=document.createElement('div'); sd.style.cssText='flex:1;min-width:160px';
       var sl=document.createElement('label'); sl.style.cssText='font-size:12px'; sl.textContent='初期ステップ';
