@@ -2266,6 +2266,8 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         </select>
         <select id="bulk_value" name="value" style="width:auto"></select>
         <button class="btn sec" type="submit">選択した件を一括変更</button>
+        <button class="btn" type="button" onclick="bulkDelete()"
+          style="background:#c53030;border-color:#c53030;color:#fff;margin-left:8px">選択した件を削除</button>
       </div>
       </div>
       </form>
@@ -2288,6 +2290,21 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
       sel.innerHTML = opts.map(function(pair) {{
         return '<option value="' + pair[0] + '">' + pair[1] + '</option>';
       }}).join('');
+    }}
+    function bulkDelete() {{
+      var ids = Array.from(document.querySelectorAll('[name=ids]:checked')).map(c => c.value);
+      if (!ids.length) {{ alert('削除するリードを選択してください。'); return; }}
+      if (!confirm(ids.length + '件のリードを削除します。この操作は取り消せません。よろしいですか？')) return;
+      var form = document.createElement('form');
+      form.method = 'post';
+      form.action = '/leads/bulk_delete';
+      ids.forEach(function(id) {{
+        var inp = document.createElement('input');
+        inp.type = 'hidden'; inp.name = 'ids'; inp.value = id;
+        form.appendChild(inp);
+      }});
+      document.body.appendChild(form);
+      form.submit();
     }}
     document.getElementById('bulk_field').addEventListener('change', repopulateBulkValue);
     repopulateBulkValue();
@@ -3221,6 +3238,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                         (value or None, int(lead_id)),
                                     )
                             con.commit()
+                    self._redirect("/leads")
+
+                elif path == "/leads/bulk_delete":
+                    ids = f_list.get("ids", [])
+                    for lead_id in ids:
+                        if str(lead_id).isdigit():
+                            con.execute("DELETE FROM leads WHERE id=?", (int(lead_id),))
+                    if ids:
+                        con.commit()
                     self._redirect("/leads")
 
                 elif path.startswith("/leads/") and path.endswith("/set_pattern"):
