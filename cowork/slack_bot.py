@@ -520,6 +520,9 @@ def handle_mention(event: dict, con: sqlite3.Connection):
     _socket.setdefaulttimeout(15)  # urllib のハング対策
     print(f"[SlackBot] mention: channel={channel} thread={thread_ts}", flush=True)
 
+    # 前回完了以降のメッセージのみ使う場合にセット（同一スレッド追記対応）
+    since_ts = ""
+
     # 二重処理防止
     existing = get_pending_thread(con, thread_ts)
     print(f"[SlackBot] existing={existing and existing.get('state')}", flush=True)
@@ -543,9 +546,12 @@ def handle_mention(event: dict, con: sqlite3.Connection):
                 "やり直す場合は「キャンセル」と返信してください。")
             return
         elif state == "completed":
-            post_message(channel, thread_ts,
-                "✅ このスレッドはDB反映済みです。新しい活動は別スレッドでメンションしてください。")
-            return
+            # 完了済みスレッドへの再メンション → 前回完了以降の新規メッセージで新サイクル開始
+            since_ts = existing.get("bot_message_ts") or ""
+            con.execute("DELETE FROM slack_threads WHERE thread_ts=?", (thread_ts,))
+            con.commit()
+            print(f"[SlackBot] completed→re-trigger: thread={thread_ts} since_ts={since_ts}", flush=True)
+            # 以降は通常フローで再処理（since_ts 以降のメッセージのみ使用）
         elif state == "cancelled":
             # キャンセル済みは再処理を許可
             con.execute("DELETE FROM slack_threads WHERE thread_ts=?", (thread_ts,))
@@ -553,7 +559,7 @@ def handle_mention(event: dict, con: sqlite3.Connection):
         else:
             return
 
-    # スレッド全文取得（botメッセージと@メンション除去）
+    # スレッド全文取得（botメッセージ・@メンション除去、since_ts 以前の既処理メッセージも除外）
     print("[SlackBot] getting bot_uid...", flush=True)
     bot_uid = get_bot_user_id()
     print(f"[SlackBot] bot_uid={bot_uid}", flush=True)
@@ -562,6 +568,8 @@ def handle_mention(event: dict, con: sqlite3.Connection):
     parts = []
     for m in messages:
         if m.get("bot_id") or m.get("user") == bot_uid:
+            continue
+        if since_ts and m.get("ts", "") <= since_ts:
             continue
         text = re.sub(r"<@[A-Z0-9]+>", "", m.get("text", "")).strip()
         if text:
