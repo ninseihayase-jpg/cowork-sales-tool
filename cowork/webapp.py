@@ -1700,7 +1700,8 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
             _yb_steps = it.get("steps") or [{"label": "ステップ1"}]
             _depts_json = json.dumps(_yb_depts, ensure_ascii=False)
             _dept_ths = "".join(
-                f'<th class="yb-dept-h">{_esc(d)}</th>' for d in _yb_depts
+                f'<th class="yb-dept-h"><input class="yb-dept-input" value="{_esc(d)}" placeholder="部署名"></th>'
+                for d in _yb_depts
             )
             _yb_rows = ""
             for _s in _yb_steps:
@@ -1713,7 +1714,8 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                     f'<tr class="yb-row">'
                     f'<td class="yb-step-cell-td"><div class="yb-chevron-div">'
                     f'<input type="text" class="yb-step-name"'
-                    f' value="{_esc(_s.get("label",""))}" placeholder="ステップ名"></div></td>'
+                    f' value="{_esc(_s.get("label",""))}" placeholder="ステップ名"'
+                    f' onfocus="this.select()"></div></td>'
                     f'{_cells}'
                     f'<td class="yb-del-cell"><button type="button" class="btn sec"'
                     f' style="font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b"'
@@ -1811,10 +1813,12 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
     .yb-wrapper{{overflow-x:auto;margin-top:4px}}
     .yb-table{{border-collapse:collapse;width:100%;min-width:460px}}
     .yb-step-h{{background:#e8eeff;color:#3730a3;font-weight:700;padding:9px 12px;border:1px solid #c7d2fe;width:170px;text-align:center;font-size:12px}}
-    .yb-dept-h{{background:#e8f0fe;color:#1d4ed8;font-weight:700;padding:9px 12px;border:1px solid #bfdbfe;min-width:130px;text-align:center;font-size:12px}}
+    .yb-dept-h{{background:#e8f0fe;color:#1d4ed8;font-weight:700;padding:4px 8px;border:1px solid #bfdbfe;min-width:130px;text-align:center;font-size:12px}}
+    .yb-dept-input{{border:none;background:transparent;color:inherit;font-weight:700;font-size:12px;text-align:center;width:100%;padding:4px 2px;outline:none;cursor:text;font-family:inherit;min-width:0}}
+    .yb-dept-input:focus{{background:rgba(29,78,216,.08);border-radius:3px}}
     .yb-step-cell-td{{padding:0;border:none;vertical-align:middle;width:170px}}
     .yb-chevron-div{{
-      background:linear-gradient(160deg,#4f46e5,#2563eb);
+      background:linear-gradient(160deg,#1e3a8a,#1e4d8a);
       clip-path:polygon(0 0,calc(100% - 14px) 0,100% 50%,calc(100% - 14px) 100%,0 100%);
       padding:10px 28px 10px 14px;
       min-height:54px;
@@ -1829,7 +1833,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
     .yb-step-name::placeholder{{color:rgba(255,255,255,.5)}}
     .yb-step-name:-webkit-autofill,.yb-step-name:-webkit-autofill:focus{{
       -webkit-text-fill-color:#fff;
-      -webkit-box-shadow:0 0 0 1000px #3730a3 inset;
+      -webkit-box-shadow:0 0 0 1000px #1a3070 inset;
     }}
     .yb-data-cell{{padding:5px;border:1px solid #dde4f0;vertical-align:top;background:#fff}}
     .yb-data-cell textarea{{width:100%;min-height:54px;resize:vertical;font-size:13px;margin:0;border:1px solid #d4dae4;border-radius:4px;padding:6px;color:#1e293b}}
@@ -1890,6 +1894,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       var inp = document.createElement('input');
       inp.type='text'; inp.className='yb-step-name';
       inp.value=label||''; inp.placeholder='ステップ名';
+      inp.onfocus=function(){{this.select();}};
       chev.appendChild(inp); stepTd.appendChild(chev); tr.appendChild(stepTd);
       depts.forEach(function(dept) {{
         var td=document.createElement('td'); td.className='yb-data-cell';
@@ -1903,15 +1908,19 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       delBtn.textContent='削除'; delBtn.onclick=function(){{this.closest('tr').remove();}};
       delTd.appendChild(delBtn); tr.appendChild(delTd); tbody.appendChild(tr);
     }}
+    function _ybDepts(wrapper) {{
+      var inputs=wrapper.querySelectorAll('.yb-dept-input');
+      if (inputs.length) return Array.from(inputs).map(function(el){{return el.value||'';}});
+      return JSON.parse(wrapper.getAttribute('data-yb-depts')||'[]');
+    }}
     function addYbRowForIdx(idx) {{
       var wrapper=document.getElementById('yb_wrapper_'+idx);
-      var depts=JSON.parse(wrapper.getAttribute('data-yb-depts')||'[]');
-      _appendYbRow(document.getElementById('yb_tbody_'+idx), depts, '');
+      _appendYbRow(document.getElementById('yb_tbody_'+idx), _ybDepts(wrapper), '');
     }}
     document.getElementById('hearing_form').addEventListener('submit', function() {{
       document.querySelectorAll('[data-yb-idx]').forEach(function(wrapper) {{
         var idx=wrapper.getAttribute('data-yb-idx');
-        var depts=JSON.parse(wrapper.getAttribute('data-yb-depts')||'[]');
+        var depts=_ybDepts(wrapper);
         var steps=Array.from(wrapper.querySelectorAll('.yb-row')).map(function(tr) {{
           var lbl=tr.querySelector('.yb-step-name').value.trim();
           var cells={{}};
@@ -2007,7 +2016,7 @@ def _yabane_result_table(yb: dict) -> str:
         step_rows += (
             f'<tr>'
             f'<td style="padding:0;border:none;width:160px;vertical-align:middle">'
-            f'<div style="background:linear-gradient(160deg,#4f46e5,#2563eb);'
+            f'<div style="background:linear-gradient(160deg,#1e3a8a,#1e4d8a);'
             f'clip-path:polygon(0 0,calc(100% - 12px) 0,100% 50%,calc(100% - 12px) 100%,0 100%);'
             f'padding:10px 24px 10px 14px;min-height:48px;display:flex;align-items:center;'
             f'justify-content:center;color:#fff;font-weight:700;font-size:13px;text-align:center">'
