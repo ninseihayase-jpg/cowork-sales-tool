@@ -1714,7 +1714,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
             for _d in _yb_depts:
                 _cells = "".join(
                     f'<td class="yb-data-cell"><textarea class="yb-cell-area"'
-                    f' placeholder="作業内容">{_esc((_s.get("cells") or {{}}).get(_d, ""))}</textarea></td>'
+                    f' placeholder="作業内容">{_esc((_s.get("cells") or dict()).get(_d, ""))}</textarea></td>'
                     for _s in _yb_steps
                 )
                 _dept_rows_html += (
