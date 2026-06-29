@@ -1698,36 +1698,32 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         if it.get("type") == "yabane":
             _yb_depts = it.get("departments") or []
             _yb_steps = it.get("steps") or [{"label": "ステップ1"}]
-            # Step column headers (downward chevrons)
-            _step_col_ths = "".join(
-                f'<th class="yb-step-col-h">'
-                f'<div class="yb-chevron-down">'
-                f'<input class="yb-step-name" value="{_esc(_s.get("label",""))}"'
-                f' placeholder="ステップ名" onfocus="this.select()">'
-                f'</div>'
-                f'<button type="button" class="yb-del-col-btn" onclick="ybDelStepCol(this)">✕</button>'
+            # Department column headers (horizontal)
+            _dept_col_ths = "".join(
+                f'<th class="yb-dept-col-h">'
+                f'<input class="yb-dept-name" value="{_esc(_d)}" placeholder="部署名" onfocus="this.select()">'
+                f'<button type="button" class="yb-del-dept-col-btn" onclick="ybDelDeptCol(this)">✕</button>'
                 f'</th>'
-                for _s in _yb_steps
+                for _d in _yb_depts
             )
-            # Department rows (one row per dept, cells per step)
-            _dept_rows_html = ""
-            for _d in _yb_depts:
+            # Step rows (one row per step, right-chevron on the left)
+            _step_rows_html = ""
+            for _s in _yb_steps:
                 _cells = "".join(
                     f'<td class="yb-data-cell"><textarea class="yb-cell-area"'
                     f' placeholder="作業内容">{_esc((_s.get("cells") or dict()).get(_d, ""))}</textarea></td>'
-                    for _s in _yb_steps
+                    for _d in _yb_depts
                 )
-                _dept_rows_html += (
-                    f'<tr class="yb-dept-row">'
-                    f'<td class="yb-dept-name-td">'
-                    f'<input class="yb-dept-input" value="{_esc(_d)}" placeholder="部署名">'
+                _step_rows_html += (
+                    f'<tr class="yb-step-row">'
+                    f'<td class="yb-step-name-td">'
+                    f'<div class="yb-chevron-right">'
+                    f'<input class="yb-step-name" value="{_esc(_s.get("label",""))}"'
+                    f' placeholder="ステップ名" onfocus="this.select()">'
+                    f'</div>'
+                    f'<button type="button" class="yb-del-step-btn" onclick="ybDelStepRow(this)">✕</button>'
                     f'</td>'
                     f'{_cells}'
-                    f'<td class="yb-del-dept-td">'
-                    f'<button type="button" class="btn sec"'
-                    f' style="font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b"'
-                    f' onclick="ybDelDeptRow(this)">削除</button>'
-                    f'</td>'
                     f'</tr>'
                 )
             fields_html += (
@@ -1738,17 +1734,17 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                 f'<div style="overflow-x:auto">'
                 f'<table class="yb-table">'
                 f'<thead><tr>'
-                f'<th class="yb-corner-h">部署 ↓</th>'
-                f'{_step_col_ths}'
+                f'<th class="yb-corner-h">ステップ →</th>'
+                f'{_dept_col_ths}'
                 f'</tr></thead>'
-                f'<tbody id="yb_tbody_{i}">{_dept_rows_html}</tbody>'
+                f'<tbody id="yb_tbody_{i}">{_step_rows_html}</tbody>'
                 f'</table>'
                 f'</div>'
                 f'</div>'
                 f'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
-                f'<button type="button" class="btn sec" onclick="ybAddDeptRow({i})">＋部署追加</button>'
+                f'<button type="button" class="btn sec" onclick="ybAddStepRow({i})">＋ステップ追加</button>'
                 f'<button type="button" class="btn sec" style="border-color:#3b82f660;color:#3b82f6"'
-                f' onclick="ybAddStepCol({i})">＋ステップ追加</button>'
+                f' onclick="ybAddDeptCol({i})">＋部署追加</button>'
                 f'</div>'
                 f'</div>'
             )
@@ -1823,22 +1819,26 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       position: relative;
     }}
-    /* ── 矢羽（縦向き: ステップ=列ヘッダ、部署=行） ── */
+    /* ── 矢羽（ステップ=行/縦軸左、部署=列ヘッダ/横軸） ── */
     .yb-wrapper{{overflow-x:auto;margin-top:4px}}
     .yb-table{{border-collapse:collapse;min-width:300px}}
     .yb-corner-h{{background:#e8eeff;color:#3730a3;font-weight:700;padding:8px 10px;border:1px solid #c7d2fe;text-align:center;font-size:11px;white-space:nowrap;min-width:80px}}
-    .yb-step-col-h{{background:transparent;border:1px solid #c7d2fe;padding:0;text-align:center;vertical-align:bottom;min-width:120px}}
-    .yb-chevron-down{{
-      background:linear-gradient(180deg,#1e3a8a,#1e4d8a);
-      clip-path:polygon(0 0,100% 0,100% calc(100% - 14px),50% 100%,0 calc(100% - 14px));
-      padding:8px 10px 22px;
-      min-height:64px;
-      display:flex;align-items:flex-start;justify-content:center;
+    .yb-dept-col-h{{background:#e8eeff;border:1px solid #c7d2fe;padding:5px 6px;text-align:center;vertical-align:middle;min-width:120px}}
+    .yb-dept-name{{border:none;background:transparent;color:#3730a3;font-weight:700;font-size:12px;text-align:center;width:calc(100% - 24px);padding:2px 4px;outline:none;cursor:text;font-family:inherit}}
+    .yb-dept-name:focus{{background:rgba(55,48,163,.08);border-radius:3px}}
+    .yb-del-dept-col-btn{{font-size:10px;padding:1px 4px;background:#fde8e8;color:#c0392b;border:none;cursor:pointer;border-radius:2px;margin-left:4px;vertical-align:middle}}
+    .yb-step-name-td{{padding:0;border:1px solid #c7d2fe;vertical-align:bottom;min-width:90px;max-width:140px}}
+    .yb-chevron-right{{
+      background:linear-gradient(90deg,#1e3a8a,#1e4d8a);
+      clip-path:polygon(0 0,calc(100% - 14px) 0,100% 50%,calc(100% - 14px) 100%,0 100%);
+      padding:10px 24px 10px 10px;
+      min-height:40px;
+      display:flex;align-items:center;
     }}
     .yb-step-name{{
       background:transparent;border:none;
       color:#fff;-webkit-text-fill-color:#fff;
-      font-weight:700;font-size:13px;text-align:center;
+      font-weight:700;font-size:13px;text-align:left;
       width:100%;outline:none;cursor:text;caret-color:#fff;padding:0;
     }}
     .yb-step-name::placeholder{{color:rgba(255,255,255,.5)}}
@@ -1846,13 +1846,9 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       -webkit-text-fill-color:#fff;
       -webkit-box-shadow:0 0 0 1000px #1a3070 inset;
     }}
-    .yb-del-col-btn{{display:block;width:100%;font-size:11px;padding:3px 0;background:#fde8e8;color:#c0392b;border:none;border-top:1px solid #fdd;cursor:pointer}}
-    .yb-dept-name-td{{padding:4px 8px;border:1px solid #dde4f0;vertical-align:middle;background:#f0f6ff;white-space:nowrap}}
-    .yb-dept-input{{border:none;background:transparent;color:#1d4ed8;font-weight:600;font-size:12px;text-align:center;width:100%;padding:2px 4px;outline:none;cursor:text;font-family:inherit;min-width:60px}}
-    .yb-dept-input:focus{{background:rgba(29,78,216,.08);border-radius:3px}}
+    .yb-del-step-btn{{display:block;width:100%;font-size:11px;padding:3px 0;background:#fde8e8;color:#c0392b;border:none;border-top:1px solid #fdd;cursor:pointer}}
     .yb-data-cell{{padding:5px;border:1px solid #dde4f0;vertical-align:top;background:#fff}}
     .yb-data-cell textarea{{width:100%;min-height:54px;resize:vertical;font-size:13px;margin:0;border:1px solid #d4dae4;border-radius:4px;padding:6px;color:#1e293b}}
-    .yb-del-dept-td{{padding:4px;border:1px solid #dde4f0;vertical-align:middle;text-align:center;width:40px}}
     </style>
     <div class="hq-sticky">
       <div class="hq-sticky-inner">
@@ -1901,70 +1897,68 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       </form>
     </div>
     <script>
-    // ── 矢羽入力 JS（縦向き: ステップ=列、部署=行） ──
-    function ybDelStepCol(btn) {{
-      var th=btn.closest('.yb-step-col-h');
+    // ── 矢羽入力 JS（ステップ=行/縦軸左、部署=列ヘッダ/横軸） ──
+    function ybDelStepRow(btn) {{ btn.closest('.yb-step-row').remove(); }}
+    function ybDelDeptCol(btn) {{
+      var th=btn.closest('.yb-dept-col-h');
       var table=th.closest('table');
-      var colIdx=Array.from(th.closest('tr').querySelectorAll('.yb-step-col-h')).indexOf(th);
+      var colIdx=Array.from(th.closest('tr').querySelectorAll('.yb-dept-col-h')).indexOf(th);
       th.remove();
-      table.querySelectorAll('.yb-dept-row').forEach(function(tr) {{
+      table.querySelectorAll('.yb-step-row').forEach(function(tr) {{
         var cells=tr.querySelectorAll('.yb-data-cell');
         if(cells[colIdx]) cells[colIdx].remove();
       }});
     }}
-    function ybDelDeptRow(btn) {{ btn.closest('.yb-dept-row').remove(); }}
-    function ybAddStepCol(idx) {{
+    function ybAddStepRow(idx) {{
       var wrapper=document.getElementById('yb_wrapper_'+idx);
       var table=wrapper.querySelector('.yb-table');
-      var hdrRow=table.querySelector('thead tr');
-      var th=document.createElement('th'); th.className='yb-step-col-h';
-      var chev=document.createElement('div'); chev.className='yb-chevron-down';
-      var inp=document.createElement('input'); inp.className='yb-step-name';
-      inp.placeholder='ステップ名'; inp.onfocus=function(){{this.select();}};
-      chev.appendChild(inp);
-      var db=document.createElement('button'); db.type='button'; db.className='yb-del-col-btn';
-      db.textContent='✕'; db.onclick=function(){{ybDelStepCol(this);}};
-      th.appendChild(chev); th.appendChild(db); hdrRow.appendChild(th);
-      table.querySelectorAll('.yb-dept-row').forEach(function(tr) {{
-        var td=document.createElement('td'); td.className='yb-data-cell';
-        var ta=document.createElement('textarea'); ta.className='yb-cell-area';
-        td.appendChild(ta); tr.insertBefore(td, tr.querySelector('.yb-del-dept-td'));
-      }});
-    }}
-    function ybAddDeptRow(idx) {{
-      var wrapper=document.getElementById('yb_wrapper_'+idx);
-      var table=wrapper.querySelector('.yb-table');
-      var nCols=table.querySelectorAll('thead .yb-step-col-h').length;
-      var tr=document.createElement('tr'); tr.className='yb-dept-row';
-      var dtd=document.createElement('td'); dtd.className='yb-dept-name-td';
-      var di=document.createElement('input'); di.className='yb-dept-input'; di.placeholder='部署名';
-      dtd.appendChild(di); tr.appendChild(dtd);
-      for(var s=0;s<nCols;s++){{
+      var nCols=table.querySelectorAll('thead .yb-dept-col-h').length;
+      var tr=document.createElement('tr'); tr.className='yb-step-row';
+      var stTd=document.createElement('td'); stTd.className='yb-step-name-td';
+      var chev=document.createElement('div'); chev.className='yb-chevron-right';
+      var stInp=document.createElement('input'); stInp.className='yb-step-name';
+      stInp.placeholder='ステップ名'; stInp.onfocus=function(){{this.select();}};
+      chev.appendChild(stInp); stTd.appendChild(chev);
+      var db=document.createElement('button'); db.type='button'; db.className='yb-del-step-btn';
+      db.textContent='✕'; db.onclick=function(){{ybDelStepRow(this);}};
+      stTd.appendChild(db); tr.appendChild(stTd);
+      for(var d=0;d<nCols;d++){{
         var td=document.createElement('td'); td.className='yb-data-cell';
         var ta=document.createElement('textarea'); ta.className='yb-cell-area';
         td.appendChild(ta); tr.appendChild(td);
       }}
-      var dt=document.createElement('td'); dt.className='yb-del-dept-td';
-      var dBtn=document.createElement('button'); dBtn.type='button'; dBtn.className='btn sec';
-      dBtn.style.cssText='font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b';
-      dBtn.textContent='削除'; dBtn.onclick=function(){{ybDelDeptRow(this);}};
-      dt.appendChild(dBtn); tr.appendChild(dt);
       table.querySelector('tbody').appendChild(tr);
+    }}
+    function ybAddDeptCol(idx) {{
+      var wrapper=document.getElementById('yb_wrapper_'+idx);
+      var table=wrapper.querySelector('.yb-table');
+      var hdrRow=table.querySelector('thead tr');
+      var th=document.createElement('th'); th.className='yb-dept-col-h';
+      var inp=document.createElement('input'); inp.className='yb-dept-name';
+      inp.placeholder='部署名'; inp.onfocus=function(){{this.select();}};
+      var db=document.createElement('button'); db.type='button'; db.className='yb-del-dept-col-btn';
+      db.textContent='✕'; db.onclick=function(){{ybDelDeptCol(this);}};
+      th.appendChild(inp); th.appendChild(db); hdrRow.appendChild(th);
+      table.querySelectorAll('.yb-step-row').forEach(function(tr) {{
+        var td=document.createElement('td'); td.className='yb-data-cell';
+        var ta=document.createElement('textarea'); ta.className='yb-cell-area';
+        td.appendChild(ta); tr.appendChild(td);
+      }});
     }}
     document.getElementById('hearing_form').addEventListener('submit', function() {{
       document.querySelectorAll('[data-yb-idx]').forEach(function(wrapper) {{
         var idx=wrapper.getAttribute('data-yb-idx');
         var table=wrapper.querySelector('.yb-table');
-        var stepInps=Array.from(table.querySelectorAll('thead .yb-step-name'));
-        var deptRows=Array.from(table.querySelectorAll('tbody .yb-dept-row'));
-        var depts=deptRows.map(function(tr){{return tr.querySelector('.yb-dept-input').value||'';}});
-        var steps=stepInps.map(function(inp,si){{
+        var deptInps=Array.from(table.querySelectorAll('thead .yb-dept-name'));
+        var depts=deptInps.map(function(i){{return i.value.trim();}});
+        var steps=[];
+        table.querySelectorAll('.yb-step-row').forEach(function(tr) {{
+          var stepName=tr.querySelector('.yb-step-name').value.trim();
           var cells={{}};
-          deptRows.forEach(function(tr,di){{
-            var allCells=tr.querySelectorAll('.yb-cell-area');
-            cells[depts[di]]=allCells[si]?allCells[si].value:'';
+          tr.querySelectorAll('.yb-cell-area').forEach(function(ta,di){{
+            if(depts[di]!==undefined) cells[depts[di]]=ta.value;
           }});
-          return {{label:inp.value.trim(),cells:cells}};
+          steps.push({{label:stepName,cells:cells}});
         }});
         var hidden=document.getElementById('yb_answer_'+idx);
         if(hidden) hidden.value=JSON.stringify({{departments:depts,steps:steps}});
