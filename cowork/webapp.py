@@ -1353,6 +1353,12 @@ def hearing_template_form(con, tmpl=None) -> str:
           <button type="button" class="btn sec" onclick="addItem()">＋Q&amp;A項目を追加</button>
           <button type="button" class="btn sec" style="border-color:#3b82f660;color:#3b82f6"
             onclick="addYabaneItem(null)">＋矢羽セクションを追加</button>
+          <button type="button" class="btn sec" style="border-color:#7c3aed60;color:#7c3aed"
+            onclick="addRadarItem(null)">＋レーダーチャートを追加</button>
+          <button type="button" class="btn sec" style="border-color:#05966960;color:#059669"
+            onclick="addTimelineItem(null)">＋タイムラインを追加</button>
+          <button type="button" class="btn sec" style="border-color:#d9770660;color:#d97706"
+            onclick="addScorecardItem(null)">＋スコアカードを追加</button>
         </div>
         <input type="hidden" name="items_json" id="items_json">
         <div style="margin-top:16px;display:flex;gap:8px">
@@ -1420,6 +1426,77 @@ def hearing_template_form(con, tmpl=None) -> str:
       body.appendChild(dd); body.appendChild(sd); el.appendChild(body);
       box.appendChild(el);
       (cfg.steps||[]).forEach(function(s){{_addYbStepRow(sb,s.label||'');}});
+    }}
+
+    function _makeBlockHeader(el, blockClass, badgeText, badgeColor, labelClass, defaultLabel) {{
+      var hdr=document.createElement('div'); hdr.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:10px';
+      var dh=document.createElement('span'); dh.className='drag-handle'; dh.title='ドラッグで並び替え';
+      dh.style.cssText='cursor:grab;color:#555;font-size:18px;user-select:none;line-height:1;flex-shrink:0';
+      dh.textContent='⠿';
+      var badge=document.createElement('span');
+      badge.style.cssText='font-size:10px;font-weight:700;color:'+badgeColor+';background:'+badgeColor+'15;border:1px solid '+badgeColor+'40;border-radius:4px;padding:2px 8px;white-space:nowrap;flex-shrink:0';
+      badge.textContent=badgeText;
+      var lw=document.createElement('div'); lw.style.cssText='flex:1;min-width:0';
+      var ll=document.createElement('label'); ll.style.cssText='font-size:12px'; ll.textContent='セクション名';
+      var li=document.createElement('input'); li.className=labelClass; li.value=defaultLabel; li.placeholder='例：'+defaultLabel;
+      lw.appendChild(ll); lw.appendChild(li);
+      var db=document.createElement('button'); db.type='button'; db.className='btn sec';
+      db.style.cssText='font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b;flex-shrink:0';
+      db.textContent='削除'; db.onclick=function(){{this.closest('.'+blockClass).remove();}};
+      hdr.appendChild(dh); hdr.appendChild(badge); hdr.appendChild(lw); hdr.appendChild(db); el.appendChild(hdr);
+    }}
+
+    function addRadarItem(cfg) {{
+      cfg=cfg||{{label:'DX成熟度評価',axes:['戦略','組織','プロセス','テクノロジー','データ']}};
+      var box=document.getElementById('items_box');
+      var el=document.createElement('div'); el.className='ra-block'; el.setAttribute('draggable','true');
+      el.style.cssText='border:2px solid #7c3aed60;border-radius:8px;padding:12px;margin:8px 0;background:#0a1828';
+      _makeBlockHeader(el,'ra-block','レーダー','#7c3aed','ra-block-label',cfg.label||'DX成熟度評価');
+      var axDiv=document.createElement('div');
+      var axL=document.createElement('label'); axL.style.cssText='font-size:12px'; axL.textContent='評価軸（1行に1つ、3〜8軸推奨）';
+      var axTa=document.createElement('textarea'); axTa.className='ra-block-axes'; axTa.rows=5;
+      axTa.style.cssText='font-family:inherit'; axTa.placeholder='例：戦略\\n組織\\nプロセス\\nテクノロジー\\nデータ';
+      axTa.value=(cfg.axes||[]).join('\\n');
+      axDiv.appendChild(axL); axDiv.appendChild(axTa); el.appendChild(axDiv);
+      box.appendChild(el);
+    }}
+
+    function addTimelineItem(cfg) {{
+      cfg=cfg||{{label:'導入スケジュール',milestones:['要件定義','設計・開発','テスト','本稼働']}};
+      var box=document.getElementById('items_box');
+      var el=document.createElement('div'); el.className='tl-block'; el.setAttribute('draggable','true');
+      el.style.cssText='border:2px solid #05966940;border-radius:8px;padding:12px;margin:8px 0;background:#0a1828';
+      _makeBlockHeader(el,'tl-block','タイムライン','#059669','tl-block-label',cfg.label||'導入スケジュール');
+      var msDiv=document.createElement('div');
+      var msL=document.createElement('label'); msL.style.cssText='font-size:12px'; msL.textContent='初期マイルストーン（1行に1つ）';
+      var msTa=document.createElement('textarea'); msTa.className='tl-block-milestones'; msTa.rows=4;
+      msTa.style.cssText='font-family:inherit'; msTa.placeholder='例：要件定義\\n設計・開発\\nテスト\\n本稼働';
+      msTa.value=(cfg.milestones||[]).join('\\n');
+      msDiv.appendChild(msL); msDiv.appendChild(msTa); el.appendChild(msDiv);
+      box.appendChild(el);
+    }}
+
+    function addScorecardItem(cfg) {{
+      cfg=cfg||{{label:'競合比較',criteria:['コスト','機能性','サポート','実績'],items:['自社','競合A']}};
+      var box=document.getElementById('items_box');
+      var el=document.createElement('div'); el.className='sc-block'; el.setAttribute('draggable','true');
+      el.style.cssText='border:2px solid #d9770640;border-radius:8px;padding:12px;margin:8px 0;background:#0a1828';
+      _makeBlockHeader(el,'sc-block','スコアカード','#d97706','sc-block-label',cfg.label||'競合比較');
+      var body=document.createElement('div'); body.style.cssText='display:flex;gap:12px;flex-wrap:wrap';
+      var crDiv=document.createElement('div'); crDiv.style.cssText='flex:1;min-width:160px';
+      var crL=document.createElement('label'); crL.style.cssText='font-size:12px'; crL.textContent='評価軸（列・1行に1つ）';
+      var crTa=document.createElement('textarea'); crTa.className='sc-block-criteria'; crTa.rows=4;
+      crTa.style.cssText='font-family:inherit'; crTa.placeholder='例：コスト\\n機能性\\nサポート\\n実績';
+      crTa.value=(cfg.criteria||[]).join('\\n');
+      crDiv.appendChild(crL); crDiv.appendChild(crTa);
+      var itDiv=document.createElement('div'); itDiv.style.cssText='flex:1;min-width:160px';
+      var itL=document.createElement('label'); itL.style.cssText='font-size:12px'; itL.textContent='初期対象（行・1行に1つ）';
+      var itTa=document.createElement('textarea'); itTa.className='sc-block-items'; itTa.rows=4;
+      itTa.style.cssText='font-family:inherit'; itTa.placeholder='例：自社\\n競合A\\n競合B';
+      itTa.value=(cfg.items||[]).join('\\n');
+      itDiv.appendChild(itL); itDiv.appendChild(itTa);
+      body.appendChild(crDiv); body.appendChild(itDiv); el.appendChild(body);
+      box.appendChild(el);
     }}
 
     function rowHtml(it) {{
@@ -1557,7 +1634,7 @@ def hearing_template_form(con, tmpl=None) -> str:
 
     function serializeItems() {{
       var items = [];
-      document.querySelectorAll('#items_box > .hitem, #items_box > .yb-block').forEach(function(el) {{
+      document.querySelectorAll('#items_box > .hitem, #items_box > .yb-block, #items_box > .ra-block, #items_box > .tl-block, #items_box > .sc-block').forEach(function(el) {{
         if (el.classList.contains('yb-block')) {{
           var ybLabel = el.querySelector('.yb-block-label').value.trim() || '業務プロセス';
           var depts = el.querySelector('.yb-block-depts').value
@@ -1566,6 +1643,19 @@ def hearing_template_form(con, tmpl=None) -> str:
             .map(function(i){{return i.value.trim();}}).filter(Boolean)
             .map(function(l){{return {{label:l}};}});
           items.push({{label:ybLabel, type:'yabane', departments:depts, steps:steps}});
+        }} else if (el.classList.contains('ra-block')) {{
+          var raLabel=el.querySelector('.ra-block-label').value.trim()||'DX成熟度評価';
+          var axes=el.querySelector('.ra-block-axes').value.split('\\n').map(function(s){{return s.trim();}}).filter(Boolean);
+          items.push({{label:raLabel, type:'radar', axes:axes}});
+        }} else if (el.classList.contains('tl-block')) {{
+          var tlLabel=el.querySelector('.tl-block-label').value.trim()||'導入スケジュール';
+          var milestones=el.querySelector('.tl-block-milestones').value.split('\\n').map(function(s){{return s.trim();}}).filter(Boolean);
+          items.push({{label:tlLabel, type:'timeline', milestones:milestones}});
+        }} else if (el.classList.contains('sc-block')) {{
+          var scLabel=el.querySelector('.sc-block-label').value.trim()||'競合比較';
+          var criteria=el.querySelector('.sc-block-criteria').value.split('\\n').map(function(s){{return s.trim();}}).filter(Boolean);
+          var scItems=el.querySelector('.sc-block-items').value.split('\\n').map(function(s){{return s.trim();}}).filter(Boolean);
+          items.push({{label:scLabel, type:'scorecard', criteria:criteria, items:scItems}});
         }} else {{
           var stdLabel = el.querySelector('.i-label').value.trim();
           if (!stdLabel) return;
@@ -1591,6 +1681,9 @@ def hearing_template_form(con, tmpl=None) -> str:
       if (_ITEMS.length) {{
         _ITEMS.forEach(function(it) {{
           if (it.type === 'yabane') {{ addYabaneItem(it); }}
+          else if (it.type === 'radar') {{ addRadarItem(it); }}
+          else if (it.type === 'timeline') {{ addTimelineItem(it); }}
+          else if (it.type === 'scorecard') {{ addScorecardItem(it); }}
           else {{ addItem(it); }}
         }});
       }} else {{ addItem(); }}
@@ -1605,7 +1698,7 @@ def hearing_template_form(con, tmpl=None) -> str:
         if (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.tagName==='BUTTON') {{
           e.preventDefault(); return;
         }}
-        var item = t.closest('.hitem,.yb-block');
+        var item = t.closest('.hitem,.yb-block,.ra-block,.tl-block,.sc-block');
         if (!item) return;
         _drag = item;
         setTimeout(function(){{item.style.opacity='0.4';}}, 0);
@@ -1617,7 +1710,7 @@ def hearing_template_form(con, tmpl=None) -> str:
       box.addEventListener('dragover', function(e) {{
         e.preventDefault();
         if (!_drag) return;
-        var over = e.target.closest('.hitem,.yb-block');
+        var over = e.target.closest('.hitem,.yb-block,.ra-block,.tl-block,.sc-block');
         if (!over||over===_drag) return;
         var rect = over.getBoundingClientRect();
         if (e.clientY < rect.top + rect.height/2) box.insertBefore(_drag, over);
@@ -1695,7 +1788,113 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         if parent_idx is not None and parent_value is not None:
             branch_attrs = f' data-parent-idx="{parent_idx}" data-parent-value="{_esc(parent_value)}"'
             branch_class = " hq-branch"
-        if it.get("type") == "yabane":
+        if it.get("type") == "radar":
+            _ra_axes = it.get("axes") or ["軸1", "軸2", "軸3", "軸4", "軸5"]
+            _ra_rows_html = "".join(
+                f'<div class="ra-axis-row">'
+                f'<input class="ra-axis-label-inp" value="{_esc(_ax)}" placeholder="軸名" onfocus="this.select()">'
+                f'<input type="range" class="ra-score-range" min="0" max="5" step="1" value="3"'
+                f' oninput="raUpdateScore(this)">'
+                f'<span class="ra-score-val">3</span>'
+                f'</div>'
+                for _ax in _ra_axes
+            )
+            fields_html += (
+                f'<div class="hq-item{branch_class}" style="margin:14px 0"{branch_attrs}>'
+                f'<label style="font-weight:700;color:#7c3aed;font-size:13px;margin-bottom:6px;display:block">{label}</label>'
+                f'<input type="hidden" name="answer_{i}" id="ra_answer_{i}">'
+                f'<div class="ra-wrapper" id="ra_wrapper_{i}" data-ra-idx="{i}">'
+                f'<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">'
+                f'<div class="ra-inputs" style="flex:1;min-width:200px">{_ra_rows_html}</div>'
+                f'<div style="flex:0 0 200px;min-width:180px;display:flex;flex-direction:column;align-items:center">'
+                f'<svg class="ra-svg" width="200" height="200" style="display:block"></svg>'
+                f'</div>'
+                f'</div>'
+                f'</div>'
+                f'</div>'
+            )
+        elif it.get("type") == "timeline":
+            _tl_milestones = it.get("milestones") or []
+            _tl_events_html = "".join(
+                f'<div class="tl-event">'
+                f'<div class="tl-dot"></div>'
+                f'<div class="tl-event-body">'
+                f'<div class="tl-event-header">'
+                f'<input type="month" class="tl-date">'
+                f'<input class="tl-event-label" value="{_esc(_ms)}" placeholder="マイルストーン名" onfocus="this.select()">'
+                f'<button type="button" class="tl-del-btn" onclick="tlDelEvent(this)">✕</button>'
+                f'</div>'
+                f'<textarea class="tl-note" rows="2" placeholder="詳細・メモ"></textarea>'
+                f'</div>'
+                f'</div>'
+                for _ms in _tl_milestones
+            )
+            fields_html += (
+                f'<div class="hq-item{branch_class}" style="margin:14px 0"{branch_attrs}>'
+                f'<label style="font-weight:700;color:#059669;font-size:13px;margin-bottom:6px;display:block">{label}</label>'
+                f'<input type="hidden" name="answer_{i}" id="tl_answer_{i}">'
+                f'<div class="tl-wrapper" id="tl_wrapper_{i}" data-tl-idx="{i}">'
+                f'<div class="tl-track" id="tl_track_{i}">{_tl_events_html}</div>'
+                f'<div style="margin-top:10px">'
+                f'<button type="button" class="btn sec" style="border-color:#05966960;color:#059669"'
+                f' onclick="tlAddEvent({i})">＋マイルストーン追加</button>'
+                f'</div>'
+                f'</div>'
+                f'</div>'
+            )
+        elif it.get("type") == "scorecard":
+            _sc_criteria = it.get("criteria") or []
+            _sc_items_list = it.get("items") or []
+            _sc_crit_ths = "".join(
+                f'<th class="sc-crit-h">'
+                f'<input class="sc-crit-name" value="{_esc(_c)}" placeholder="評価軸" onfocus="this.select()">'
+                f'<button type="button" class="sc-del-crit-btn" onclick="scDelCrit(this)">✕</button>'
+                f'</th>'
+                for _c in _sc_criteria
+            )
+            _sc_item_rows = ""
+            for _it_name in _sc_items_list:
+                _sc_score_cells = "".join(
+                    f'<td class="sc-score-td">'
+                    f'<input type="number" class="sc-score-inp" min="1" max="5" placeholder="—"'
+                    f' oninput="scUpdateTotal(this)">'
+                    f'</td>'
+                    for _ in _sc_criteria
+                )
+                _sc_item_rows += (
+                    f'<tr class="sc-item-row">'
+                    f'<td class="sc-item-name-td">'
+                    f'<input class="sc-item-name" value="{_esc(_it_name)}" placeholder="対象名" onfocus="this.select()">'
+                    f'<button type="button" class="sc-del-item-btn" onclick="scDelItem(this)">✕</button>'
+                    f'</td>'
+                    f'{_sc_score_cells}'
+                    f'<td class="sc-total-td">—</td>'
+                    f'</tr>'
+                )
+            fields_html += (
+                f'<div class="hq-item{branch_class}" style="margin:14px 0"{branch_attrs}>'
+                f'<label style="font-weight:700;color:#d97706;font-size:13px;margin-bottom:6px;display:block">{label}</label>'
+                f'<input type="hidden" name="answer_{i}" id="sc_answer_{i}">'
+                f'<div class="sc-wrapper" id="sc_wrapper_{i}" data-sc-idx="{i}">'
+                f'<div style="overflow-x:auto">'
+                f'<table class="sc-table">'
+                f'<thead><tr>'
+                f'<th class="sc-corner-h">対象 ↓</th>'
+                f'{_sc_crit_ths}'
+                f'<th class="sc-total-h">合計</th>'
+                f'</tr></thead>'
+                f'<tbody id="sc_tbody_{i}">{_sc_item_rows}</tbody>'
+                f'</table>'
+                f'</div>'
+                f'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+                f'<button type="button" class="btn sec" onclick="scAddItem({i})">＋対象追加</button>'
+                f'<button type="button" class="btn sec" style="border-color:#d9770660;color:#d97706"'
+                f' onclick="scAddCrit({i})">＋評価軸追加</button>'
+                f'</div>'
+                f'</div>'
+                f'</div>'
+            )
+        elif it.get("type") == "yabane":
             _yb_depts = it.get("departments") or []
             _yb_steps = it.get("steps") or [{"label": "ステップ1"}]
             # Department column headers (horizontal)
@@ -1819,6 +2018,43 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       position: relative;
     }}
+    /* ── レーダーチャート ── */
+    .ra-wrapper{{margin-top:4px}}
+    .ra-axis-row{{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #e8ecf0}}
+    .ra-axis-label-inp{{border:none;background:transparent;color:#1e293b;font-weight:600;font-size:13px;width:120px;padding:2px 4px;outline:none;cursor:text;font-family:inherit}}
+    .ra-axis-label-inp:focus{{background:rgba(37,99,235,.07);border-radius:3px}}
+    .ra-score-range{{flex:1;accent-color:#2563eb;cursor:pointer;height:4px}}
+    .ra-score-val{{font-weight:700;font-size:14px;color:#2563eb;min-width:18px;text-align:right}}
+    .ra-svg text{{font-family:inherit}}
+    /* ── タイムライン ── */
+    .tl-wrapper{{margin-top:4px}}
+    .tl-track{{position:relative;padding-left:24px}}
+    .tl-track::before{{content:'';position:absolute;left:8px;top:0;bottom:0;width:2px;background:#d1fae5}}
+    .tl-event{{position:relative;margin-bottom:12px}}
+    .tl-dot{{position:absolute;left:-20px;top:14px;width:10px;height:10px;border-radius:50%;background:#059669;border:2px solid #fff;box-shadow:0 0 0 2px #059669}}
+    .tl-event-body{{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 10px}}
+    .tl-event-header{{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}}
+    .tl-date{{border:1px solid #d4dae4;border-radius:4px;padding:4px 6px;font-size:12px;color:#1e293b;font-family:inherit}}
+    .tl-event-label{{flex:1;min-width:120px;border:none;background:transparent;font-weight:600;font-size:13px;color:#065f46;outline:none;cursor:text;padding:2px 4px}}
+    .tl-event-label:focus{{background:rgba(5,150,105,.07);border-radius:3px}}
+    .tl-del-btn{{font-size:10px;padding:2px 6px;background:#fde8e8;color:#c0392b;border:none;cursor:pointer;border-radius:3px;flex-shrink:0}}
+    .tl-note{{width:100%;resize:vertical;font-size:12px;border:1px solid #bbf7d0;border-radius:4px;padding:5px;color:#1e293b;background:#fff;font-family:inherit}}
+    /* ── スコアカード ── */
+    .sc-wrapper{{overflow-x:auto;margin-top:4px}}
+    .sc-table{{border-collapse:collapse;min-width:300px}}
+    .sc-corner-h{{background:#fef3c7;color:#92400e;font-weight:700;padding:8px 10px;border:1px solid #fde68a;text-align:center;font-size:11px;white-space:nowrap;min-width:100px}}
+    .sc-crit-h{{background:#fef3c7;border:1px solid #fde68a;padding:5px 6px;text-align:center;vertical-align:middle;min-width:90px}}
+    .sc-crit-name{{border:none;background:transparent;color:#92400e;font-weight:700;font-size:12px;text-align:center;width:calc(100% - 20px);padding:2px 4px;outline:none;cursor:text;font-family:inherit}}
+    .sc-crit-name:focus{{background:rgba(146,64,14,.07);border-radius:3px}}
+    .sc-del-crit-btn{{font-size:10px;padding:1px 4px;background:#fde8e8;color:#c0392b;border:none;cursor:pointer;border-radius:2px;margin-left:4px;vertical-align:middle}}
+    .sc-total-h{{background:#fef3c7;border:1px solid #fde68a;padding:6px;text-align:center;font-size:11px;color:#92400e;font-weight:700;white-space:nowrap;min-width:44px}}
+    .sc-item-name-td{{padding:4px 8px;border:1px solid #fde68a;vertical-align:middle;background:#fffbeb;white-space:nowrap}}
+    .sc-item-name{{border:none;background:transparent;color:#d97706;font-weight:600;font-size:13px;padding:2px 4px;outline:none;cursor:text;font-family:inherit;width:calc(100% - 20px)}}
+    .sc-item-name:focus{{background:rgba(217,119,6,.07);border-radius:3px}}
+    .sc-del-item-btn{{font-size:10px;padding:1px 4px;background:#fde8e8;color:#c0392b;border:none;cursor:pointer;border-radius:2px;margin-left:4px;vertical-align:middle}}
+    .sc-score-td{{padding:4px;border:1px solid #fde68a;text-align:center;background:#fff}}
+    .sc-score-inp{{width:52px;text-align:center;border:1px solid #d4dae4;border-radius:4px;padding:4px;font-size:13px;font-family:inherit}}
+    .sc-total-td{{padding:4px 8px;border:1px solid #fde68a;text-align:center;font-weight:700;font-size:13px;color:#d97706;background:#fffbeb;white-space:nowrap}}
     /* ── 矢羽（ステップ=行/縦軸左、部署=列ヘッダ/横軸） ── */
     .yb-wrapper{{overflow-x:auto;margin-top:4px}}
     .yb-table{{border-collapse:collapse;min-width:300px}}
@@ -1897,6 +2133,117 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       </form>
     </div>
     <script>
+    // ── レーダーチャート JS ──
+    function _svgEsc(s){{return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}}
+    function raRedraw(wrapper) {{
+      var rows=Array.from(wrapper.querySelectorAll('.ra-axis-row'));
+      var n=rows.length; if(n<3) return;
+      var svg=wrapper.querySelector('.ra-svg');
+      var cx=100,cy=100,R=72;
+      var html='';
+      for(var g=1;g<=5;g++){{
+        var gr=R*g/5;
+        html+='<circle cx="'+cx+'" cy="'+cy+'" r="'+gr+'" fill="none" stroke="#e2e8f0" stroke-width="1"/>';
+      }}
+      var angles=[],scores=[];
+      for(var i=0;i<n;i++){{
+        angles.push(-Math.PI/2+i*2*Math.PI/n);
+        scores.push(parseFloat(rows[i].querySelector('.ra-score-range').value)||0);
+      }}
+      for(var i=0;i<n;i++){{
+        var ax=cx+R*Math.cos(angles[i]), ay=cy+R*Math.sin(angles[i]);
+        html+='<line x1="'+cx+'" y1="'+cy+'" x2="'+ax+'" y2="'+ay+'" stroke="#cbd5e1" stroke-width="1"/>';
+        var lx=cx+(R+15)*Math.cos(angles[i]), ly=cy+(R+15)*Math.sin(angles[i]);
+        var anc=lx<cx-8?'end':lx>cx+8?'start':'middle';
+        var lbl=rows[i].querySelector('.ra-axis-label-inp')?rows[i].querySelector('.ra-axis-label-inp').value:'';
+        html+='<text x="'+lx+'" y="'+(ly+4)+'" text-anchor="'+anc+'" font-size="10" fill="#475569">'+_svgEsc(lbl)+'</text>';
+      }}
+      var poly='';
+      for(var i=0;i<n;i++){{
+        var pr=R*scores[i]/5;
+        poly+=(cx+pr*Math.cos(angles[i]))+','+(cy+pr*Math.sin(angles[i]))+' ';
+      }}
+      html+='<polygon points="'+poly.trim()+'" fill="rgba(124,58,237,.2)" stroke="#7c3aed" stroke-width="2"/>';
+      for(var i=0;i<n;i++){{
+        var pr=R*scores[i]/5;
+        html+='<circle cx="'+(cx+pr*Math.cos(angles[i]))+'" cy="'+(cy+pr*Math.sin(angles[i]))+'" r="4" fill="#7c3aed"/>';
+      }}
+      svg.innerHTML=html;
+    }}
+    function raUpdateScore(rangeEl) {{
+      rangeEl.nextElementSibling.textContent=rangeEl.value;
+      raRedraw(rangeEl.closest('[data-ra-idx]'));
+    }}
+    // ── タイムライン JS ──
+    function tlDelEvent(btn){{btn.closest('.tl-event').remove();}}
+    function tlAddEvent(idx){{
+      var track=document.getElementById('tl_track_'+idx);
+      var ev=document.createElement('div'); ev.className='tl-event';
+      ev.innerHTML='<div class="tl-dot"></div>'
+        +'<div class="tl-event-body">'
+        +'<div class="tl-event-header">'
+        +'<input type="month" class="tl-date">'
+        +'<input class="tl-event-label" placeholder="マイルストーン名" onfocus="this.select()">'
+        +'<button type="button" class="tl-del-btn" onclick="tlDelEvent(this)">✕</button>'
+        +'</div>'
+        +'<textarea class="tl-note" rows="2" placeholder="詳細・メモ"></textarea>'
+        +'</div>';
+      track.appendChild(ev);
+    }}
+    // ── スコアカード JS ──
+    function scUpdateTotal(inp){{
+      var row=inp.closest('.sc-item-row');
+      var sum=0;
+      row.querySelectorAll('.sc-score-inp').forEach(function(i){{var v=parseFloat(i.value); if(!isNaN(v))sum+=v;}});
+      row.querySelector('.sc-total-td').textContent=sum||'—';
+    }}
+    function scDelItem(btn){{btn.closest('.sc-item-row').remove();}}
+    function scDelCrit(btn){{
+      var th=btn.closest('.sc-crit-h');
+      var table=th.closest('table');
+      var colIdx=Array.from(th.closest('tr').querySelectorAll('.sc-crit-h')).indexOf(th);
+      th.remove();
+      table.querySelectorAll('.sc-item-row').forEach(function(tr){{
+        var cells=tr.querySelectorAll('.sc-score-td');
+        if(cells[colIdx]) cells[colIdx].remove();
+      }});
+    }}
+    function scAddItem(idx){{
+      var wrapper=document.getElementById('sc_wrapper_'+idx);
+      var nCols=wrapper.querySelectorAll('thead .sc-crit-h').length;
+      var tr=document.createElement('tr'); tr.className='sc-item-row';
+      var ntd=document.createElement('td'); ntd.className='sc-item-name-td';
+      var ni=document.createElement('input'); ni.className='sc-item-name'; ni.placeholder='対象名'; ni.onfocus=function(){{this.select();}};
+      var db=document.createElement('button'); db.type='button'; db.className='sc-del-item-btn';
+      db.textContent='✕'; db.onclick=function(){{scDelItem(this);}};
+      ntd.appendChild(ni); ntd.appendChild(db); tr.appendChild(ntd);
+      for(var c=0;c<nCols;c++){{
+        var td=document.createElement('td'); td.className='sc-score-td';
+        var inp=document.createElement('input'); inp.type='number'; inp.className='sc-score-inp';
+        inp.min=1; inp.max=5; inp.placeholder='—'; inp.oninput=function(){{scUpdateTotal(this);}};
+        td.appendChild(inp); tr.appendChild(td);
+      }}
+      var ttd=document.createElement('td'); ttd.className='sc-total-td'; ttd.textContent='—';
+      tr.appendChild(ttd);
+      wrapper.querySelector('tbody').appendChild(tr);
+    }}
+    function scAddCrit(idx){{
+      var wrapper=document.getElementById('sc_wrapper_'+idx);
+      var hdrRow=wrapper.querySelector('thead tr');
+      var totalTh=hdrRow.querySelector('.sc-total-h');
+      var th=document.createElement('th'); th.className='sc-crit-h';
+      var inp=document.createElement('input'); inp.className='sc-crit-name'; inp.placeholder='評価軸'; inp.onfocus=function(){{this.select();}};
+      var db=document.createElement('button'); db.type='button'; db.className='sc-del-crit-btn';
+      db.textContent='✕'; db.onclick=function(){{scDelCrit(this);}};
+      th.appendChild(inp); th.appendChild(db); hdrRow.insertBefore(th,totalTh);
+      wrapper.querySelectorAll('.sc-item-row').forEach(function(tr){{
+        var totalTd=tr.querySelector('.sc-total-td');
+        var td=document.createElement('td'); td.className='sc-score-td';
+        var sinp=document.createElement('input'); sinp.type='number'; sinp.className='sc-score-inp';
+        sinp.min=1; sinp.max=5; sinp.placeholder='—'; sinp.oninput=function(){{scUpdateTotal(this);}};
+        td.appendChild(sinp); tr.insertBefore(td,totalTd);
+      }});
+    }}
     // ── 矢羽入力 JS（ステップ=行/縦軸左、部署=列ヘッダ/横軸） ──
     function ybDelStepRow(btn) {{ btn.closest('.yb-step-row').remove(); }}
     function ybDelDeptCol(btn) {{
@@ -1946,6 +2293,49 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       }});
     }}
     document.getElementById('hearing_form').addEventListener('submit', function() {{
+      // レーダーチャート直列化
+      document.querySelectorAll('[data-ra-idx]').forEach(function(wrapper) {{
+        var idx=wrapper.getAttribute('data-ra-idx');
+        var axes=[];
+        wrapper.querySelectorAll('.ra-axis-row').forEach(function(row) {{
+          axes.push({{
+            label:row.querySelector('.ra-axis-label-inp').value.trim(),
+            score:parseFloat(row.querySelector('.ra-score-range').value)||0
+          }});
+        }});
+        var h=document.getElementById('ra_answer_'+idx);
+        if(h) h.value=JSON.stringify({{axes:axes}});
+      }});
+      // タイムライン直列化
+      document.querySelectorAll('[data-tl-idx]').forEach(function(wrapper) {{
+        var idx=wrapper.getAttribute('data-tl-idx');
+        var events=[];
+        wrapper.querySelectorAll('.tl-event').forEach(function(ev) {{
+          events.push({{
+            label:ev.querySelector('.tl-event-label').value.trim(),
+            date:ev.querySelector('.tl-date').value,
+            note:ev.querySelector('.tl-note').value.trim()
+          }});
+        }});
+        var h=document.getElementById('tl_answer_'+idx);
+        if(h) h.value=JSON.stringify({{events:events}});
+      }});
+      // スコアカード直列化
+      document.querySelectorAll('[data-sc-idx]').forEach(function(wrapper) {{
+        var idx=wrapper.getAttribute('data-sc-idx');
+        var crits=Array.from(wrapper.querySelectorAll('thead .sc-crit-name')).map(function(i){{return i.value.trim();}});
+        var items=[];
+        wrapper.querySelectorAll('.sc-item-row').forEach(function(tr) {{
+          var name=tr.querySelector('.sc-item-name').value.trim();
+          var scores={{}};
+          tr.querySelectorAll('.sc-score-inp').forEach(function(inp,di) {{
+            if(crits[di]!==undefined){{var v=parseFloat(inp.value); scores[crits[di]]=isNaN(v)?null:v;}}
+          }});
+          items.push({{label:name,scores:scores}});
+        }});
+        var h=document.getElementById('sc_answer_'+idx);
+        if(h) h.value=JSON.stringify({{criteria:crits,items:items}});
+      }});
       document.querySelectorAll('[data-yb-idx]').forEach(function(wrapper) {{
         var idx=wrapper.getAttribute('data-yb-idx');
         var table=wrapper.querySelector('.yb-table');
@@ -1964,6 +2354,8 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         if(hidden) hidden.value=JSON.stringify({{departments:depts,steps:steps}});
       }});
     }});
+    // レーダーチャート初期描画
+    document.querySelectorAll('[data-ra-idx]').forEach(function(w){{raRedraw(w);}});
     // ── 分岐ロジック ──
     (function() {{
       var form = document.getElementById('hearing_form');
@@ -2029,6 +2421,124 @@ def _format_answer(ans) -> str:
     return str(ans) if ans is not None else ""
 
 
+def _radar_result_html(ra: dict) -> str:
+    axes = ra.get("axes") or []
+    if not axes:
+        return '<p class="muted">データなし</p>'
+    n = len(axes)
+    import math
+    cx, cy, R = 100, 100, 72
+    circles = "".join(
+        f'<circle cx="{cx}" cy="{cy}" r="{R*g//5}" fill="none" stroke="#e2e8f0" stroke-width="1"/>'
+        for g in range(1, 6)
+    )
+    axis_lines = ""
+    poly_pts = ""
+    dots = ""
+    for i, ax in enumerate(axes):
+        angle = -math.pi / 2 + i * 2 * math.pi / n
+        ax_x = cx + R * math.cos(angle)
+        ax_y = cy + R * math.sin(angle)
+        axis_lines += f'<line x1="{cx}" y1="{cy}" x2="{ax_x:.1f}" y2="{ax_y:.1f}" stroke="#cbd5e1" stroke-width="1"/>'
+        lx = cx + (R + 16) * math.cos(angle)
+        ly = cy + (R + 16) * math.sin(angle)
+        anc = "end" if lx < cx - 8 else ("start" if lx > cx + 8 else "middle")
+        axis_lines += (f'<text x="{lx:.1f}" y="{ly+4:.1f}" text-anchor="{anc}"'
+                       f' font-size="10" fill="#475569">{_esc(ax.get("label",""))}</text>')
+        score = ax.get("score") or 0
+        pr = R * score / 5
+        poly_pts += f'{cx+pr*math.cos(angle):.1f},{cy+pr*math.sin(angle):.1f} '
+        dots += (f'<circle cx="{cx+pr*math.cos(angle):.1f}" cy="{cy+pr*math.sin(angle):.1f}"'
+                 f' r="4" fill="#7c3aed"/>')
+    poly = f'<polygon points="{poly_pts.strip()}" fill="rgba(124,58,237,.2)" stroke="#7c3aed" stroke-width="2"/>'
+    svg = (f'<svg width="200" height="200" style="display:block;margin:0 auto">'
+           f'{circles}{axis_lines}{poly}{dots}</svg>')
+    rows = "".join(
+        f'<tr>'
+        f'<td style="padding:5px 10px;font-weight:600;font-size:13px;border-bottom:1px solid #ede9fe">{_esc(ax.get("label",""))}</td>'
+        f'<td style="padding:5px 10px;border-bottom:1px solid #ede9fe">'
+        f'<div style="display:flex;align-items:center;gap:8px">'
+        f'<div style="flex:1;height:8px;background:#ede9fe;border-radius:4px;overflow:hidden">'
+        f'<div style="width:{(ax.get("score") or 0)*20}%;height:100%;background:#7c3aed;border-radius:4px"></div>'
+        f'</div>'
+        f'<span style="font-weight:700;color:#7c3aed;min-width:20px">{ax.get("score") or 0}</span>'
+        f'</div>'
+        f'</td>'
+        f'</tr>'
+        for ax in axes
+    )
+    table = (f'<table style="width:100%;border-collapse:collapse;margin-top:8px;max-width:360px">'
+             f'<thead><tr>'
+             f'<th style="background:#f5f3ff;color:#7c3aed;padding:5px 10px;font-size:11px;text-align:left;border-bottom:1px solid #ede9fe">軸</th>'
+             f'<th style="background:#f5f3ff;color:#7c3aed;padding:5px 10px;font-size:11px;text-align:left;border-bottom:1px solid #ede9fe">スコア（/5）</th>'
+             f'</tr></thead><tbody>{rows}</tbody></table>')
+    return f'<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">{svg}{table}</div>'
+
+
+def _timeline_result_html(tl: dict) -> str:
+    events = tl.get("events") or []
+    if not events:
+        return '<p class="muted">データなし</p>'
+    items_html = ""
+    for ev in events:
+        date_str = ev.get("date") or ""
+        ev_label = _esc(ev.get("label") or "")
+        ev_note = _esc(ev.get("note") or "")
+        _date_badge = (f'<span style="font-size:11px;font-weight:700;color:#059669;background:#d1fae5;'
+                       f'padding:1px 8px;border-radius:3px">{_esc(date_str)}</span>') if date_str else ""
+        _note_p = (f'<p style="font-size:12px;color:#374151;margin:0;white-space:pre-wrap">{ev_note}</p>'
+                   ) if ev_note else ""
+        items_html += (
+            f'<div style="position:relative;padding-left:24px;margin-bottom:12px">'
+            f'<div style="position:absolute;left:4px;top:6px;width:10px;height:10px;border-radius:50%;background:#059669;border:2px solid #fff;box-shadow:0 0 0 2px #059669"></div>'
+            f'<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 12px">'
+            f'<div style="display:flex;gap:10px;align-items:center;margin-bottom:4px;flex-wrap:wrap">'
+            f'{_date_badge}'
+            f'<span style="font-weight:700;font-size:13px;color:#065f46">{ev_label}</span>'
+            f'</div>'
+            f'{_note_p}'
+            f'</div>'
+            f'</div>'
+        )
+    return (f'<div style="position:relative;padding-left:8px">'
+            f'<div style="position:absolute;left:12px;top:0;bottom:0;width:2px;background:#d1fae5"></div>'
+            f'{items_html}</div>')
+
+
+def _scorecard_result_html(sc: dict) -> str:
+    criteria = sc.get("criteria") or []
+    items = sc.get("items") or []
+    if not criteria or not items:
+        return '<p class="muted">データなし</p>'
+    crit_ths = "".join(
+        f'<th style="background:#fef3c7;color:#92400e;padding:6px 10px;font-size:11px;font-weight:700;border:1px solid #fde68a;text-align:center">{_esc(c)}</th>'
+        for c in criteria
+    )
+    rows_html = ""
+    for it in items:
+        scores = it.get("scores") or {}
+        total = sum(v for v in scores.values() if isinstance(v, (int, float)))
+        score_tds = "".join(
+            f'<td style="padding:6px 10px;border:1px solid #fde68a;text-align:center;font-size:13px;font-weight:700;color:#d97706">'
+            f'{scores.get(c, "—")}</td>'
+            for c in criteria
+        )
+        rows_html += (
+            f'<tr>'
+            f'<td style="padding:6px 10px;border:1px solid #fde68a;font-weight:600;background:#fffbeb;color:#d97706">{_esc(it.get("label",""))}</td>'
+            f'{score_tds}'
+            f'<td style="padding:6px 10px;border:1px solid #fde68a;text-align:center;font-weight:700;color:#92400e;background:#fef3c7">{total or "—"}</td>'
+            f'</tr>'
+        )
+    return (f'<div style="overflow-x:auto">'
+            f'<table style="border-collapse:collapse;min-width:300px">'
+            f'<thead><tr>'
+            f'<th style="background:#fef3c7;color:#92400e;padding:6px 10px;font-size:11px;font-weight:700;border:1px solid #fde68a">対象</th>'
+            f'{crit_ths}'
+            f'<th style="background:#fef3c7;color:#92400e;padding:6px 10px;font-size:11px;font-weight:700;border:1px solid #fde68a;text-align:center">合計</th>'
+            f'</tr></thead><tbody>{rows_html}</tbody></table></div>')
+
+
 def _yabane_result_table(yb: dict) -> str:
     """矢羽回答を swim-lane テーブル HTML に変換。"""
     depts = yb.get("departments") or []
@@ -2073,12 +2583,37 @@ def hearing_result_page(con, result: dict) -> str:
     answers = result.get("answers") or []
     result_html_parts = []
     for a in answers:
-        if a.get("type") == "yabane":
+        _atype = a.get("type")
+        if _atype == "yabane":
             result_html_parts.append(
                 f'<div style="margin:16px 0">'
                 f'<div style="font-size:12px;font-weight:700;color:#3730a3;margin-bottom:4px;'
                 f'padding:4px 0;border-bottom:1px solid #e0e7ff">{_esc(a.get("label") or "業務プロセス")}</div>'
                 f'{_yabane_result_table(a.get("answer") or {{}})}'
+                f'</div>'
+            )
+        elif _atype == "radar":
+            result_html_parts.append(
+                f'<div style="margin:16px 0">'
+                f'<div style="font-size:12px;font-weight:700;color:#7c3aed;margin-bottom:8px;'
+                f'padding:4px 0;border-bottom:1px solid #ede9fe">{_esc(a.get("label") or "レーダーチャート")}</div>'
+                f'{_radar_result_html(a.get("answer") or {{}})}'
+                f'</div>'
+            )
+        elif _atype == "timeline":
+            result_html_parts.append(
+                f'<div style="margin:16px 0">'
+                f'<div style="font-size:12px;font-weight:700;color:#059669;margin-bottom:8px;'
+                f'padding:4px 0;border-bottom:1px solid #bbf7d0">{_esc(a.get("label") or "タイムライン")}</div>'
+                f'{_timeline_result_html(a.get("answer") or {{}})}'
+                f'</div>'
+            )
+        elif _atype == "scorecard":
+            result_html_parts.append(
+                f'<div style="margin:16px 0">'
+                f'<div style="font-size:12px;font-weight:700;color:#d97706;margin-bottom:8px;'
+                f'padding:4px 0;border-bottom:1px solid #fde68a">{_esc(a.get("label") or "スコアカード")}</div>'
+                f'{_scorecard_result_html(a.get("answer") or {{}})}'
                 f'</div>'
             )
         else:
