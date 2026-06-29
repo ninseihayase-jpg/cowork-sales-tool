@@ -1829,11 +1829,11 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
     .yb-del-dept-col-btn{{font-size:10px;padding:1px 4px;background:#fde8e8;color:#c0392b;border:none;cursor:pointer;border-radius:2px;margin-left:4px;vertical-align:middle}}
     .yb-step-name-td{{padding:0;border:1px solid #c7d2fe;vertical-align:bottom;min-width:90px;max-width:140px}}
     .yb-chevron-right{{
-      background:linear-gradient(90deg,#1e3a8a,#1e4d8a);
-      clip-path:polygon(0 0,calc(100% - 14px) 0,100% 50%,calc(100% - 14px) 100%,0 100%);
-      padding:10px 24px 10px 10px;
-      min-height:40px;
-      display:flex;align-items:center;
+      background:linear-gradient(180deg,#1e3a8a,#1e4d8a);
+      clip-path:polygon(0 0,100% 0,100% calc(100% - 14px),50% 100%,0 calc(100% - 14px));
+      padding:10px 10px 26px;
+      min-height:56px;
+      display:flex;align-items:flex-start;
     }}
     .yb-step-name{{
       background:transparent;border:none;
