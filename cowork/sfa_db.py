@@ -579,8 +579,8 @@ def get_hearing_template(con, id: int) -> dict | None:
     return d
 
 
-def save_hearing_template(con, *, id=None, name, description=None, items: list[dict]) -> int:
-    items_json = _json.dumps(items or [], ensure_ascii=False)
+def save_hearing_template(con, *, id=None, name, description=None, items) -> int:
+    items_json = _json.dumps(items if items is not None else [], ensure_ascii=False)
     if id:
         con.execute(
             "UPDATE hearing_templates SET name=?, description=?, items_json=? WHERE id=?",

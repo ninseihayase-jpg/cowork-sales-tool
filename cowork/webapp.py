@@ -1335,9 +1335,26 @@ def hearing_templates_page(con) -> str:
 def hearing_template_form(con, tmpl=None) -> str:
     tid = tmpl["id"] if tmpl else None
     action = f"/hearing-templates/{tid}/save" if tid else "/hearing-templates/save"
-    title = "テンプレート編集" if tid else "テンプレート追加"
-    items = (tmpl.get("items") if tmpl else None) or []
+    title = "テンプレート編集" if tmpl else "テンプレート追加"
+    raw_items_json = tmpl.get("items_json") if tmpl else None
+    try:
+        raw_items = json.loads(raw_items_json or "[]")
+    except (ValueError, TypeError):
+        raw_items = []
+    is_yabane = isinstance(raw_items, dict) and raw_items.get("template_type") == "yabane"
+    items = raw_items if isinstance(raw_items, list) else []
     items_data = json.dumps(items, ensure_ascii=False)
+    yabane_cfg = raw_items if is_yabane else {}
+    _default_steps = [{"label": "ステップ1"}, {"label": "ステップ2"}, {"label": "ステップ3"}]
+    yb_depts_val = _esc("\n".join(yabane_cfg.get("departments") or ["部署A", "部署B", "部署C"]))
+    yb_steps_json = json.dumps(
+        [s.get("label", "") for s in (yabane_cfg.get("steps") or _default_steps)],
+        ensure_ascii=False,
+    )
+    std_display = "none" if is_yabane else ""
+    yb_display = "" if is_yabane else "none"
+    std_checked = "" if is_yabane else " checked"
+    yb_checked = " checked" if is_yabane else ""
     return f"""
     <div class="card" style="max-width:820px">
       <h2>{title}</h2>
@@ -1346,9 +1363,30 @@ def hearing_template_form(con, tmpl=None) -> str:
         <input name="name" required value="{_esc(tmpl.get('name') if tmpl else '')}">
         <label>説明（任意）</label>
         <input name="description" value="{_esc(tmpl.get('description') if tmpl else '')}">
-        <label style="margin-top:14px">ヒアリング項目</label>
-        <div id="items_box"></div>
-        <button type="button" class="btn sec" style="margin-top:8px" onclick="addItem()">＋項目を追加</button>
+        <label style="margin-top:14px">テンプレート種別</label>
+        <div style="display:flex;gap:20px;margin:6px 0 14px">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer">
+            <input type="radio" name="tmpl_type" value="standard"{std_checked}
+              onchange="switchEditor(this.value)">標準（Q&amp;A形式）</label>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer">
+            <input type="radio" name="tmpl_type" value="yabane"{yb_checked}
+              onchange="switchEditor(this.value)">矢羽（業務プロセス表）</label>
+        </div>
+        <div id="standard_editor" style="display:{std_display}">
+          <label>ヒアリング項目</label>
+          <div id="items_box"></div>
+          <button type="button" class="btn sec" style="margin-top:8px" onclick="addItem()">＋項目を追加</button>
+        </div>
+        <div id="yabane_editor" style="display:{yb_display}">
+          <label>関係部署（横軸・1行に1つ）</label>
+          <textarea id="yb_depts" rows="4" style="font-family:inherit"
+            placeholder="例：営業&#10;生産&#10;経理">{yb_depts_val}</textarea>
+          <label style="margin-top:10px">初期ステップ（縦軸）</label>
+          <div id="yb_steps_box" style="margin:6px 0"></div>
+          <button type="button" class="btn sec" style="margin-top:6px" onclick="addYbStep('')">＋ステップ追加</button>
+          <p class="muted" style="font-size:12px;margin-top:8px">
+            ヒアリング入力画面でもステップを追加できます。ここでは初期枠を設定します。</p>
+        </div>
         <input type="hidden" name="items_json" id="items_json">
         <div style="margin-top:16px;display:flex;gap:8px">
           <button class="btn" type="submit">保存</button>
@@ -1358,6 +1396,26 @@ def hearing_template_form(con, tmpl=None) -> str:
     </div>
     <script>
     const _ITEMS = {items_data};
+    const _YB_STEPS = {yb_steps_json};
+
+    function switchEditor(type) {{
+      document.getElementById('standard_editor').style.display = type === 'standard' ? '' : 'none';
+      document.getElementById('yabane_editor').style.display  = type === 'yabane'   ? '' : 'none';
+    }}
+
+    function addYbStep(label) {{
+      const box = document.getElementById('yb_steps_box');
+      const div = document.createElement('div');
+      div.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0';
+      const inp = document.createElement('input');
+      inp.type = 'text'; inp.className = 'yb-step-input';
+      inp.value = label || ''; inp.placeholder = '例：受注処理'; inp.style.cssText = 'flex:1';
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'btn sec';
+      btn.style.cssText = 'font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b';
+      btn.textContent = '削除'; btn.onclick = function() {{ this.parentNode.remove(); }};
+      div.appendChild(inp); div.appendChild(btn); box.appendChild(div);
+    }}
 
     function rowHtml(it) {{
       it = it || {{label:'',type:'text',multi:false,required:false,options:[],parent_idx:null,parent_value:null}};
@@ -1370,7 +1428,8 @@ def hearing_template_form(con, tmpl=None) -> str:
             <input class="i-label" value="${{(it.label||'').replace(/"/g,'&quot;')}}" placeholder="例：現状の課題"></div>
           <div style="flex:1;min-width:120px"><label style="font-size:12px">回答形式</label>
             <select class="i-type" onchange="syncRow(this)">
-              <option value="text"${{it.type==='text'?' selected':''}}>自由記述</option>
+              <option value="text"${{it.type==='text'?' selected':''}}>自由記述（テキスト）</option>
+              <option value="number"${{it.type==='number'?' selected':''}}>自由記述（数値のみ）</option>
               <option value="choice"${{it.type==='choice'?' selected':''}}>選択肢</option>
             </select></div>
           <div class="i-multi-wrap" style="min-width:120px;${{it.type==='choice'?'':'display:none'}}">
@@ -1491,28 +1550,47 @@ def hearing_template_form(con, tmpl=None) -> str:
     }}
 
     function serializeItems() {{
+      const tmplType = (document.querySelector('input[name="tmpl_type"]:checked') || {{}}).value || 'standard';
+      if (tmplType === 'yabane') {{
+        const depts = document.getElementById('yb_depts').value
+          .split('\\n').map(function(s){{return s.trim();}}).filter(Boolean);
+        const steps = Array.from(document.querySelectorAll('.yb-step-input'))
+          .map(function(i){{return i.value.trim();}}).filter(Boolean)
+          .map(function(l){{return {{label:l}};}});
+        document.getElementById('items_json').value = JSON.stringify(
+          {{template_type:'yabane', departments:depts, steps:steps}}
+        );
+        return true;
+      }}
       const items = [];
-      document.querySelectorAll('#items_box .hitem').forEach(row => {{
+      document.querySelectorAll('#items_box .hitem').forEach(function(row) {{
         const label = row.querySelector('.i-label').value.trim();
         if (!label) return;
         const type = row.querySelector('.i-type').value;
         const multi = row.querySelector('.i-multi').value === '1';
         const required = row.querySelector('.i-required').checked;
         const options = type === 'choice'
-          ? row.querySelector('.i-options').value.split('\\n').map(s => s.trim()).filter(Boolean)
+          ? row.querySelector('.i-options').value.split('\\n').map(function(s){{return s.trim();}}).filter(Boolean)
           : [];
         const hasBranch = row.querySelector('.i-has-branch').checked;
         const parentIdxRaw = row.querySelector('.i-parent-idx').value;
         const parentIdx = hasBranch && parentIdxRaw !== '' ? parseInt(parentIdxRaw) : null;
         const parentValue = hasBranch ? (row.querySelector('.i-parent-value').value.trim() || null) : null;
-        items.push({{label, type, multi: type==='choice' ? multi : false, required, options,
-          parent_idx: parentIdx, parent_value: parentValue}});
+        items.push({{label:label, type:type, multi:type==='choice'?multi:false, required:required,
+          options:options, parent_idx:parentIdx, parent_value:parentValue}});
       }});
       document.getElementById('items_json').value = JSON.stringify(items);
       return true;
     }}
 
-    if (_ITEMS.length) _ITEMS.forEach(addItem); else addItem();
+    (function() {{
+      const initRadio = document.querySelector('input[name="tmpl_type"]:checked');
+      if (initRadio && initRadio.value === 'yabane') {{
+        _YB_STEPS.forEach(function(l) {{ addYbStep(l); }});
+      }} else {{
+        if (_ITEMS.length) {{ _ITEMS.forEach(addItem); }} else {{ addItem(); }}
+      }}
+    }})();
     </script>"""
 
 
@@ -1564,7 +1642,146 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                        prefill=None, prev_date=None) -> str:
     """ヒアリング入力画面：ヒアリング項目＋通常の活動履歴入力欄を同一画面に生成。"""
     prefill = prefill or {}
+
+    # Yabane template detection
+    try:
+        _raw_cfg = json.loads(template.get("items_json") or "[]")
+    except (ValueError, TypeError):
+        _raw_cfg = []
+    if isinstance(_raw_cfg, dict) and _raw_cfg.get("template_type") == "yabane":
+        _yb_depts = _raw_cfg.get("departments") or []
+        _yb_steps = _raw_cfg.get("steps") or [{"label": "ステップ1"}]
+        _depts_json = json.dumps(_yb_depts, ensure_ascii=False)
+        _dept_headers = "".join(
+            f'<th class="yb-dept-h">{_esc(d)}</th>' for d in _yb_depts
+        )
+        _step_rows = ""
+        for _s in _yb_steps:
+            _cells = "".join(
+                f'<td class="yb-data-cell">'
+                f'<textarea class="yb-cell-area" data-dept="{_esc(d)}"'
+                f' placeholder="{_esc(d)}での作業内容"></textarea></td>'
+                for d in _yb_depts
+            )
+            _step_rows += (
+                f'<tr class="yb-row">'
+                f'<td class="yb-step-cell">'
+                f'<input type="text" class="yb-step-name"'
+                f' value="{_esc(_s.get("label",""))}" placeholder="ステップ名"></td>'
+                f'{_cells}'
+                f'<td class="yb-del-cell">'
+                f'<button type="button" class="btn sec"'
+                f' style="font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b"'
+                f' onclick="this.closest(\'tr\').remove()">削除</button></td>'
+                f'</tr>'
+            )
+        return f"""
+    <style>
+    .yb-wrapper{{overflow-x:auto}}
+    .yb-table{{border-collapse:collapse;width:100%;min-width:500px}}
+    .yb-step-h{{background:#f0f4ff;color:#374151;font-weight:700;padding:10px 14px;border:1px solid #dde4f0;min-width:160px;text-align:center}}
+    .yb-dept-h{{background:#e8f0fe;color:#1d4ed8;font-weight:700;padding:10px 14px;border:1px solid #dde4f0;min-width:140px;text-align:center}}
+    .yb-step-cell{{background:linear-gradient(135deg,#2563eb,#1d4ed8);padding:0;vertical-align:middle;border:2px solid #1a56db;min-width:160px;position:relative}}
+    .yb-step-cell::after{{content:'';position:absolute;right:-9px;top:50%;transform:translateY(-50%);border:7px solid transparent;border-left-color:#1d4ed8;z-index:2}}
+    .yb-step-name{{background:transparent;border:none;color:#fff;font-weight:700;font-size:13px;text-align:center;width:100%;padding:12px 18px 12px 10px;min-height:50px;outline:none;cursor:text}}
+    .yb-step-name::placeholder{{color:rgba(255,255,255,.6)}}
+    .yb-data-cell{{padding:5px;border:1px solid #dde4f0;vertical-align:top;background:#fff}}
+    .yb-data-cell textarea{{width:100%;min-height:58px;resize:vertical;font-size:13px;margin:0;border:1px solid #d4dae4;border-radius:4px;padding:6px}}
+    .yb-del-cell{{padding:4px;border:1px solid #dde4f0;vertical-align:middle;text-align:center;width:48px}}
+    .hq-sticky{{position:sticky;top:0;z-index:50;background:#fff;border-bottom:1px solid #e2e6ee;box-shadow:0 2px 6px rgba(0,0,0,.06);padding:10px 20px;margin:-20px -16px 16px}}
+    .hq-sticky-inner{{max-width:960px;margin:0 auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:relative}}
+    </style>
+    <div class="hq-sticky">
+      <div class="hq-sticky-inner">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:15px;font-weight:700;color:#1d2430;margin-bottom:2px">ヒアリング入力（矢羽）</div>
+          <div style="font-size:12px;color:#6b7689">
+            <strong style="color:#3a4760">対象:</strong> {_esc(target_label)}
+            <span style="margin:0 6px;color:#d4dae4">|</span>
+            <strong style="color:#3a4760">テンプレート:</strong> {_esc(template.get('name',''))}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="max-width:960px">
+      <form method="post" action="/hearing/submit" id="hearing_form">
+        <input type="hidden" name="target_type" value="{_esc(target_type)}">
+        <input type="hidden" name="target_id" value="{_esc(target_id)}">
+        <input type="hidden" name="template_id" value="{template['id']}">
+        <input type="hidden" name="yabane_data" id="yabane_data">
+        <div style="background:#f0f6ff;border-radius:8px;padding:14px 16px;margin-bottom:16px">
+          <p style="margin:0 0 10px;font-weight:600;color:#2f6fed">業務プロセス入力（矢羽）</p>
+          <div class="yb-wrapper">
+            <table class="yb-table">
+              <thead><tr>
+                <th class="yb-step-h">プロセス</th>
+                {_dept_headers}
+                <th style="width:48px;border:1px solid #dde4f0"></th>
+              </tr></thead>
+              <tbody id="yb_tbody">{_step_rows}</tbody>
+            </table>
+          </div>
+          <button type="button" class="btn sec" style="margin-top:10px" onclick="addYbRow('')">＋ステップ追加</button>
+        </div>
+        <div style="border:1px solid #e2e6ee;border-radius:8px;padding:14px 16px">
+          <p style="margin:0 0 8px;font-weight:600;color:#555">活動履歴として記録</p>
+          <div class="grid">
+            <div><label>ヒアリング日</label><input type="date" name="occurred_on" required></div>
+            <div><label>種別</label><select name="type">{_opt(sfa_db.get_master_list(con,'activity_types'), '面談')}</select></div>
+            <div><label>相手</label><input name="contact_name" placeholder="例：田中部長"></div>
+          </div>
+          <label>内容・決定事項</label><textarea name="body" rows="3"></textarea>
+          <div style="margin-top:10px;padding:12px;background:#f8f9fa;border-radius:6px">
+            <p style="margin:0 0 8px;font-size:.9em;font-weight:600;color:#555">商談の現状を更新（任意）</p>
+            <div class="grid">
+              <div><label>次回MS日</label><input type="date" name="next_milestone_date"></div>
+              <div><label>次回MSラベル</label><input name="next_milestone_label"></div>
+            </div>
+            <label>現状メモ</label><textarea name="update_note" rows="2"></textarea>
+          </div>
+        </div>
+        <div style="margin-top:16px">
+          <button class="btn" type="submit">保存（活動履歴＋ヒアリング結果を記録）</button>
+          <a class="btn sec" href="/hearings">キャンセル</a>
+        </div>
+      </form>
+    </div>
+    <script>
+    var _YB_DEPTS = {_depts_json};
+    function addYbRow(label) {{
+      var tbody = document.getElementById('yb_tbody');
+      var tr = document.createElement('tr'); tr.className = 'yb-row';
+      var stepTd = document.createElement('td'); stepTd.className = 'yb-step-cell';
+      var inp = document.createElement('input');
+      inp.type = 'text'; inp.className = 'yb-step-name';
+      inp.value = label || ''; inp.placeholder = 'ステップ名';
+      stepTd.appendChild(inp); tr.appendChild(stepTd);
+      _YB_DEPTS.forEach(function(dept) {{
+        var td = document.createElement('td'); td.className = 'yb-data-cell';
+        var ta = document.createElement('textarea'); ta.className = 'yb-cell-area';
+        ta.dataset.dept = dept; ta.placeholder = dept + 'での作業内容';
+        td.appendChild(ta); tr.appendChild(td);
+      }});
+      var delTd = document.createElement('td'); delTd.className = 'yb-del-cell';
+      delTd.innerHTML = '<button type="button" class="btn sec" style="font-size:11px;padding:4px 6px;background:#fde8e8;color:#c0392b" onclick="this.closest(\'tr\').remove()">削除</button>';
+      tr.appendChild(delTd); tbody.appendChild(tr);
+    }}
+    document.getElementById('hearing_form').addEventListener('submit', function() {{
+      var steps = Array.from(document.querySelectorAll('.yb-row')).map(function(tr) {{
+        var label = tr.querySelector('.yb-step-name').value.trim();
+        var cells = {{}};
+        tr.querySelectorAll('.yb-cell-area').forEach(function(ta) {{ cells[ta.dataset.dept] = ta.value; }});
+        return {{label:label, cells:cells}};
+      }});
+      document.getElementById('yabane_data').value = JSON.stringify({{departments:_YB_DEPTS, steps:steps}});
+    }});
+    </script>"""
+
     items = template.get("items") or []
+    has_branch = any(
+        it.get("parent_idx") is not None and it.get("parent_value") is not None
+        for it in items
+    )
     fields_html = ""
     for i, it in enumerate(items):
         label = _esc(it.get("label"))
@@ -1600,33 +1817,71 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                 )
                 fields_html += (f'<div class="hq-item{branch_class}"{branch_attrs} style="margin:10px 0">'
                                 f'<label>{label}{req}</label><div>{radios}</div></div>')
+        elif it.get("type") == "number":
+            val = _esc(str(pv) if pv is not None else "")
+            fields_html += (f'<div class="hq-item{branch_class}"{branch_attrs} style="margin:10px 0">'
+                            f'<label>{label}{req}</label>'
+                            f'<input type="number" name="answer_{i}" value="{val}" step="any"'
+                            f' inputmode="numeric" style="max-width:200px"{req_attr}></div>')
         else:
             val = _esc(pv if isinstance(pv, str) else "")
             fields_html += (f'<div class="hq-item{branch_class}"{branch_attrs} style="margin:10px 0">'
                             f'<label>{label}{req}</label>'
                             f'<textarea name="answer_{i}" rows="2"{req_attr}>{val}</textarea></div>')
 
-    today = ""  # 既定は空（ユーザーが選択）
     prev_note = (f'<p class="muted" style="font-size:12px;margin:0 0 10px">'
                  f'前回ヒアリング（{_esc(prev_date)}）の内容を引用しています。保存すると新しい履歴として追加されます。</p>'
                  if prefill and prev_date else "")
+    guide_html = (
+        '<div style="position:relative;margin-left:auto;font-size:12px"'
+        ' onmouseenter="this.querySelector(\'.hq-guide-popup\').style.display=\'block\'"'
+        ' onmouseleave="this.querySelector(\'.hq-guide-popup\').style.display=\'none\'">'
+        '<div style="cursor:default;color:#2f6fed;font-weight:600;padding:4px 10px;'
+        'background:#e8f0fe;border-radius:6px;white-space:nowrap;user-select:none">📋 入力ガイド</div>'
+        '<div class="hq-guide-popup" style="display:none;position:absolute;right:0;top:calc(100% + 4px);'
+        'z-index:200;background:#fff;border:1px solid #d0e4ff;border-radius:8px;padding:12px 16px;'
+        'width:340px;box-shadow:0 4px 16px rgba(0,0,0,.12);line-height:1.75;color:#3a4760">'
+        '<p style="margin:0 0 8px;font-weight:700;color:#2f6fed;font-size:13px">このシートの使い方</p>'
+        '<ul style="margin:0;padding-left:18px;font-size:12px">'
+        '<li><strong>グレーの項目</strong>は<em>分岐（条件付き）質問</em>です。上の質問の回答によって活性化します。</li>'
+        '<li>グレーの項目も<strong>直接入力・選択できます</strong>（入力すると分岐元の回答が自動でセットされます）。</li>'
+        '<li>分岐元の回答を変えるとグレー項目の入力は<strong>自動でクリア</strong>されます。</li>'
+        '<li><span style="color:#c0392b">*</span> 印は必須項目です。</li>'
+        '</ul>'
+        '</div>'
+        '</div>'
+    ) if has_branch else ""
     return f"""
     <style>
-    .hq-branch {{
-      transition: opacity .25s, filter .25s;
+    .hq-branch {{ transition: opacity .25s, filter .25s; }}
+    .hq-branch.hq-inactive {{ opacity: .38; filter: grayscale(.35); }}
+    .hq-branch.hq-inactive > label:first-child {{ color: #aaa; }}
+    .hq-sticky {{
+      position: sticky; top: 0; z-index: 50;
+      background: #fff; border-bottom: 1px solid #e2e6ee;
+      box-shadow: 0 2px 6px rgba(0,0,0,.06);
+      padding: 10px 20px 10px; margin: -20px -16px 16px;
     }}
-    .hq-branch.hq-inactive {{
-      opacity: .35;
-      filter: grayscale(.4);
-    }}
-    .hq-branch.hq-inactive label {{
-      color: #888;
+    .hq-sticky-inner {{
+      max-width: 760px; margin: 0 auto;
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      position: relative;
     }}
     </style>
+    <div class="hq-sticky">
+      <div class="hq-sticky-inner">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:15px;font-weight:700;color:#1d2430;margin-bottom:2px">ヒアリング入力</div>
+          <div style="font-size:12px;color:#6b7689;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+            <strong style="color:#3a4760">対象:</strong> {_esc(target_label)}
+            <span style="margin:0 6px;color:#d4dae4">|</span>
+            <strong style="color:#3a4760">テンプレート:</strong> {_esc(template.get('name', ''))}
+          </div>
+        </div>
+        {guide_html}
+      </div>
+    </div>
     <div class="card" style="max-width:760px">
-      <h2>ヒアリング入力</h2>
-      <p style="margin:0 0 4px"><strong>対象:</strong> {_esc(target_label)}</p>
-      <p class="muted" style="margin:0 0 14px"><strong>テンプレート:</strong> {_esc(template.get('name'))}</p>
       {prev_note}
       <form method="post" action="/hearing/submit" id="hearing_form">
         <input type="hidden" name="target_type" value="{_esc(target_type)}">
@@ -1641,7 +1896,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         <div style="border:1px solid #e2e6ee;border-radius:8px;padding:14px 16px">
           <p style="margin:0 0 8px;font-weight:600;color:#555">活動履歴として記録</p>
           <div class="grid">
-            <div><label>ヒアリング日</label><input type="date" name="occurred_on" value="{today}" required></div>
+            <div><label>ヒアリング日</label><input type="date" name="occurred_on" required></div>
             <div><label>種別</label><select name="type">{_opt(sfa_db.get_master_list(con,'activity_types'), '面談')}</select></div>
             <div><label>相手</label><input name="contact_name" placeholder="例：田中部長"></div>
           </div>
@@ -1663,13 +1918,27 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
     (function() {{
       var form = document.getElementById('hearing_form');
       if (!form) return;
+      var _initialLoad = true;
 
       function getParentValue(parentIdx) {{
         var name = 'answer_' + parentIdx;
         var checked = form.querySelectorAll('[name="' + name + '"]:checked');
         if (checked.length) return checked[0].value;
-        var ta = form.querySelector('textarea[name="' + name + '"]');
-        return ta ? ta.value.trim() : '';
+        // radio/checkbox は :checked がなければ未回答
+        var firstInp = form.querySelector('[name="' + name + '"]');
+        if (firstInp && (firstInp.type === 'radio' || firstInp.type === 'checkbox')) return '';
+        // textarea / number input
+        var inp = form.querySelector('textarea[name="' + name + '"],input[type="number"][name="' + name + '"]');
+        return inp ? inp.value.trim() : '';
+      }}
+
+      function clearDiv(div) {{
+        div.querySelectorAll('input[type="radio"],input[type="checkbox"]').forEach(function(inp) {{
+          inp.checked = false;
+        }});
+        div.querySelectorAll('textarea,input[type="number"],input[type="text"]').forEach(function(inp) {{
+          inp.value = '';
+        }});
       }}
 
       function updateBranch() {{
@@ -1677,20 +1946,22 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
           var pIdx = div.dataset.parentIdx;
           var pVal = div.dataset.parentValue;
           if (pIdx === undefined || pVal === undefined) return;
-          var cur = getParentValue(parseInt(pIdx));
-          div.classList.toggle('hq-inactive', cur !== pVal);
+          var shouldInactive = getParentValue(parseInt(pIdx)) !== pVal;
+          var wasActive = !div.classList.contains('hq-inactive');
+          div.classList.toggle('hq-inactive', shouldInactive);
+          if (!_initialLoad && shouldInactive && wasActive) clearDiv(div);
         }});
+        _initialLoad = false;
       }}
 
-      // 子の回答が選択されたとき、親のトリガー値を自動設定（ラジオ→ラジオのみ）
-      function autoSetParent(changedInput) {{
-        var branchDiv = changedInput.closest('.hq-branch');
+      function autoSetParent(changedEl) {{
+        var branchDiv = changedEl.closest('.hq-branch');
         if (!branchDiv) return;
         var pIdx = branchDiv.dataset.parentIdx;
         var pVal = branchDiv.dataset.parentValue;
         if (pIdx === undefined || pVal === undefined) return;
         var parentName = 'answer_' + pIdx;
-        var parentRadio = form.querySelector('[name="' + parentName + '"][value="' + pVal + '"]');
+        var parentRadio = form.querySelector('[name="' + parentName + '"][value="' + CSS.escape(pVal) + '"]');
         if (parentRadio && parentRadio.type === 'radio' && !parentRadio.checked) {{
           parentRadio.checked = true;
           updateBranch();
@@ -1699,12 +1970,13 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
 
       form.addEventListener('change', function(e) {{
         updateBranch();
-        if (e.target.type === 'radio' || e.target.type === 'checkbox') {{
-          autoSetParent(e.target);
-        }}
+        if (e.target.type === 'radio' || e.target.type === 'checkbox') autoSetParent(e.target);
       }});
       form.addEventListener('input', function(e) {{
-        if (e.target.tagName === 'TEXTAREA') updateBranch();
+        if (e.target.tagName === 'TEXTAREA' || e.target.type === 'number') {{
+          updateBranch();
+          autoSetParent(e.target);
+        }}
       }});
 
       updateBranch();
@@ -1720,11 +1992,50 @@ def _format_answer(ans) -> str:
 
 def hearing_result_page(con, result: dict) -> str:
     """個別ヒアリング結果の表示。"""
-    rows = "".join(
-        f'<tr><td style="white-space:nowrap;font-weight:600;vertical-align:top">{_esc(a.get("label"))}</td>'
-        f'<td style="white-space:pre-wrap">{_esc(_format_answer(a.get("answer")))}</td></tr>'
-        for a in (result.get("answers") or [])
-    ) or '<tr><td colspan=2 class=muted>回答なし</td></tr>'
+    answers = result.get("answers") or []
+    if len(answers) == 1 and answers[0].get("type") == "yabane":
+        yb = answers[0].get("answer") or {}
+        depts = yb.get("departments") or []
+        steps = yb.get("steps") or []
+        dept_ths = "".join(
+            f'<th style="background:#e8f0fe;color:#1d4ed8;font-weight:700;padding:8px 12px;'
+            f'border:1px solid #dde4f0;text-align:center;min-width:120px">{_esc(d)}</th>'
+            for d in depts
+        )
+        step_rows = ""
+        for s in steps:
+            cells = "".join(
+                f'<td style="padding:8px;border:1px solid #dde4f0;vertical-align:top;'
+                f'white-space:pre-wrap;font-size:13px">'
+                f'{_esc((s.get("cells") or {}).get(d, ""))}</td>'
+                for d in depts
+            )
+            step_rows += (
+                f'<tr><td style="background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;'
+                f'font-weight:700;font-size:13px;padding:10px 14px;min-width:140px;'
+                f'border:2px solid #1a56db;vertical-align:middle">'
+                f'{_esc(s.get("label",""))}</td>{cells}</tr>'
+            )
+        result_html = (
+            f'<div style="overflow-x:auto;margin-top:12px">'
+            f'<table style="border-collapse:collapse;width:100%;min-width:400px">'
+            f'<thead><tr>'
+            f'<th style="background:#f0f4ff;color:#374151;font-weight:700;padding:8px 14px;'
+            f'border:1px solid #dde4f0;min-width:140px;text-align:center">プロセス</th>'
+            f'{dept_ths}</tr></thead>'
+            f'<tbody>{step_rows or "<tr><td colspan=99 class=muted>データなし</td></tr>"}</tbody>'
+            f'</table></div>'
+        )
+    else:
+        result_html = (
+            f'<table style="margin-top:12px"><tr><th style="width:30%">項目</th><th>回答</th></tr>'
+            + "".join(
+                f'<tr><td style="white-space:nowrap;font-weight:600;vertical-align:top">{_esc(a.get("label"))}</td>'
+                f'<td style="white-space:pre-wrap">{_esc(_format_answer(a.get("answer")))}</td></tr>'
+                for a in answers
+            ) or '<tr><td colspan=2 class=muted>回答なし</td></tr>'
+            + '</table>'
+        )
     other = sfa_db.list_hearing_results(con, result["deal_id"])
     history = ""
     if len(other) > 1:
@@ -1736,11 +2047,11 @@ def hearing_result_page(con, result: dict) -> str:
         )
         history = f'<p class="muted" style="margin-top:12px;font-size:12px">この商談のヒアリング履歴: {links}</p>'
     return f"""
-    <div class="card" style="max-width:760px">
+    <div class="card" style="max-width:960px">
       <h2>ヒアリング結果</h2>
       <p style="margin:0 0 4px"><strong>商談:</strong> <a href="/deal/{result['deal_id']}">{_esc(result.get('account_name') or '')} / {_esc(result.get('deal_name') or '')}</a></p>
       <p class="muted" style="margin:0 0 4px"><strong>テンプレート:</strong> {_esc(result.get('template_name') or '')}　<strong>ヒアリング日:</strong> {_esc(result.get('conducted_on') or '—')}</p>
-      <table style="margin-top:12px"><tr><th style="width:30%">項目</th><th>回答</th></tr>{rows}</table>
+      {result_html}
       {history}
       <div style="margin-top:16px;display:flex;gap:8px">
         <a class="btn sec" href="/deal/{result['deal_id']}">商談へ戻る</a>
@@ -2701,7 +3012,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         path.startswith("/hearing-templates/") and path.endswith("/save")):
                     try:
                         items = json.loads(f.get("items_json") or "[]")
-                        if not isinstance(items, list):
+                        if not isinstance(items, (list, dict)):
                             items = []
                     except (ValueError, TypeError):
                         items = []
@@ -2747,14 +3058,26 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render("<div class=card>対象またはテンプレートが見つかりません</div>"), 404)
                         return
                     # 回答を組み立て
-                    answers = []
-                    for i, it in enumerate(tmpl.get("items") or []):
-                        if it.get("type") == "choice" and it.get("multi"):
-                            ans = [v for v in f_list.get(f"answer_{i}", []) if v]
-                        else:
-                            ans = (f.get(f"answer_{i}", "") or "").strip()
-                        answers.append({"label": it.get("label"),
-                                        "type": it.get("type"), "answer": ans})
+                    try:
+                        _raw_tmpl = json.loads(tmpl.get("items_json") or "[]")
+                    except (ValueError, TypeError):
+                        _raw_tmpl = []
+                    _is_yabane = isinstance(_raw_tmpl, dict) and _raw_tmpl.get("template_type") == "yabane"
+                    if _is_yabane:
+                        try:
+                            _yb = json.loads(f.get("yabane_data") or "{}")
+                        except (ValueError, TypeError):
+                            _yb = {}
+                        answers = [{"label": "__yabane__", "type": "yabane", "answer": _yb}]
+                    else:
+                        answers = []
+                        for i, it in enumerate(tmpl.get("items") or []):
+                            if it.get("type") == "choice" and it.get("multi"):
+                                ans = [v for v in f_list.get(f"answer_{i}", []) if v]
+                            else:
+                                ans = (f.get(f"answer_{i}", "") or "").strip()
+                            answers.append({"label": it.get("label"),
+                                            "type": it.get("type"), "answer": ans})
                     conducted_on = f.get("occurred_on") or None
                     # 活動履歴を1件追加
                     act_id = sfa_db.add_activity(
