@@ -1358,9 +1358,11 @@ def hearing_template_form(con, tmpl=None) -> str:
     </div>
     <script>
     const _ITEMS = {items_data};
+
     function rowHtml(it) {{
-      it = it || {{label:'',type:'text',multi:false,required:false,options:[]}};
+      it = it || {{label:'',type:'text',multi:false,required:false,options:[],parent_idx:null,parent_value:null}};
       const opts = (it.options || []).join('\\n');
+      const hasBranch = it.parent_idx !== null && it.parent_idx !== undefined;
       return `
       <div class="hitem" style="border:1px solid #d4dae4;border-radius:8px;padding:12px;margin:8px 0;background:#fafbfc">
         <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
@@ -1380,24 +1382,114 @@ def hearing_template_form(con, tmpl=None) -> str:
           <div style="display:flex;align-items:center;gap:4px;padding-bottom:6px">
             <input type="checkbox" class="i-required" ${{it.required?'checked':''}} style="width:14px;height:14px">
             <label style="font-size:12px;margin:0">必須</label></div>
-          <button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b" onclick="this.closest('.hitem').remove()">削除</button>
+          <button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b"
+            onclick="this.closest('.hitem').remove(); refreshBranchSelectors()">削除</button>
         </div>
         <div class="i-opts-wrap" style="margin-top:8px;${{it.type==='choice'?'':'display:none'}}">
           <label style="font-size:12px">選択肢（1行に1つ）</label>
-          <textarea class="i-options" rows="3" placeholder="選択肢1&#10;選択肢2">${{opts}}</textarea>
+          <textarea class="i-options" rows="3" placeholder="選択肢1&#10;選択肢2"
+            oninput="refreshBranchSelectors()">${{opts}}</textarea>
+        </div>
+        <div style="margin-top:10px;border-top:1px solid #e8ecf0;padding-top:8px">
+          <label style="font-size:12px;cursor:pointer;user-select:none">
+            <input type="checkbox" class="i-has-branch" ${{hasBranch?'checked':''}}
+              onchange="toggleBranchSection(this); refreshBranchSelectors()" style="width:13px;height:13px;margin-right:4px">
+            <span style="color:#666">この質問は別の質問の回答を条件に表示する（分岐）</span>
+          </label>
+          <div class="i-branch-section" style="margin-top:8px;display:${{hasBranch?'flex':'none'}};gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div style="flex:2;min-width:180px">
+              <label style="font-size:12px">分岐元の質問（選択肢型のみ）</label>
+              <select class="i-parent-idx" data-init="${{hasBranch ? it.parent_idx : ''}}"
+                onchange="onParentIdxChange(this)">
+                <option value="">— 選択 —</option>
+              </select>
+            </div>
+            <div style="flex:1;min-width:140px">
+              <label style="font-size:12px">この回答のときに表示</label>
+              <select class="i-parent-value" data-init="${{hasBranch ? (it.parent_value||'') : ''}}">
+                <option value="">— 選択 —</option>
+              </select>
+            </div>
+          </div>
         </div>
       </div>`;
     }}
+
+    function toggleBranchSection(cb) {{
+      const sec = cb.closest('.hitem').querySelector('.i-branch-section');
+      sec.style.display = cb.checked ? 'flex' : 'none';
+    }}
+
     function syncRow(sel) {{
       const row = sel.closest('.hitem');
       const isChoice = sel.value === 'choice';
       row.querySelector('.i-multi-wrap').style.display = isChoice ? '' : 'none';
       row.querySelector('.i-opts-wrap').style.display = isChoice ? '' : 'none';
     }}
+
+    function refreshBranchSelectors() {{
+      // 全hitemの情報を収集
+      const rows = Array.from(document.querySelectorAll('#items_box .hitem'));
+      const choiceItems = rows.map((row, idx) => {{
+        const label = row.querySelector('.i-label').value.trim() || `Q${{idx+1}}`;
+        const type  = row.querySelector('.i-type').value;
+        const opts  = type==='choice'
+          ? row.querySelector('.i-options').value.split('\\n').map(s=>s.trim()).filter(Boolean)
+          : [];
+        return {{idx, label, type, opts}};
+      }});
+
+      rows.forEach((row, currentIdx) => {{
+        const parentIdxSel  = row.querySelector('.i-parent-idx');
+        const parentValSel  = row.querySelector('.i-parent-value');
+        if (!parentIdxSel) return;
+
+        const prevIdxVal  = parentIdxSel.value || parentIdxSel.dataset.init || '';
+        const prevValVal  = parentValSel.value  || parentValSel.dataset.init  || '';
+
+        // 分岐元ドロップダウンを再構築
+        parentIdxSel.innerHTML = '<option value="">— 選択 —</option>';
+        choiceItems.forEach(c => {{
+          if (c.idx === currentIdx || c.type !== 'choice') return;
+          const opt = document.createElement('option');
+          opt.value = c.idx;
+          opt.textContent = `Q${{c.idx+1}}: ${{c.label}}`;
+          if (String(c.idx) === String(prevIdxVal)) opt.selected = true;
+          parentIdxSel.appendChild(opt);
+        }});
+        parentIdxSel.dataset.init = '';
+
+        // 条件値ドロップダウンを再構築
+        const selIdx = parseInt(parentIdxSel.value);
+        parentValSel.innerHTML = '<option value="">— 選択 —</option>';
+        if (!isNaN(selIdx)) {{
+          const parent = choiceItems.find(c => c.idx === selIdx);
+          if (parent) {{
+            parent.opts.forEach(opt => {{
+              const o = document.createElement('option');
+              o.value = opt;
+              o.textContent = opt;
+              if (opt === prevValVal) o.selected = true;
+              parentValSel.appendChild(o);
+            }});
+          }}
+        }}
+        parentValSel.dataset.init = '';
+      }});
+    }}
+
+    function onParentIdxChange(sel) {{
+      const row = sel.closest('.hitem');
+      row.querySelector('.i-parent-value').dataset.init = '';
+      refreshBranchSelectors();
+    }}
+
     function addItem(it) {{
       const box = document.getElementById('items_box');
       box.insertAdjacentHTML('beforeend', rowHtml(it));
+      refreshBranchSelectors();
     }}
+
     function serializeItems() {{
       const items = [];
       document.querySelectorAll('#items_box .hitem').forEach(row => {{
@@ -1409,11 +1501,17 @@ def hearing_template_form(con, tmpl=None) -> str:
         const options = type === 'choice'
           ? row.querySelector('.i-options').value.split('\\n').map(s => s.trim()).filter(Boolean)
           : [];
-        items.push({{label, type, multi: type==='choice' ? multi : false, required, options}});
+        const hasBranch = row.querySelector('.i-has-branch').checked;
+        const parentIdxRaw = row.querySelector('.i-parent-idx').value;
+        const parentIdx = hasBranch && parentIdxRaw !== '' ? parseInt(parentIdxRaw) : null;
+        const parentValue = hasBranch ? (row.querySelector('.i-parent-value').value.trim() || null) : null;
+        items.push({{label, type, multi: type==='choice' ? multi : false, required, options,
+          parent_idx: parentIdx, parent_value: parentValue}});
       }});
       document.getElementById('items_json').value = JSON.stringify(items);
       return true;
     }}
+
     if (_ITEMS.length) _ITEMS.forEach(addItem); else addItem();
     </script>"""
 
@@ -1473,6 +1571,14 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         req = " <span style='color:#c0392b'>*</span>" if it.get("required") else ""
         req_attr = " required" if it.get("required") else ""
         pv = prefill.get(it.get("label"))
+        # 分岐設定: data属性でJSに渡す
+        parent_idx = it.get("parent_idx")
+        parent_value = it.get("parent_value")
+        branch_attrs = ""
+        branch_class = ""
+        if parent_idx is not None and parent_value is not None:
+            branch_attrs = f' data-parent-idx="{parent_idx}" data-parent-value="{_esc(parent_value)}"'
+            branch_class = " hq-branch"
         if it.get("type") == "choice":
             opts = it.get("options") or []
             if it.get("multi"):
@@ -1483,7 +1589,8 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                     f'{" checked" if o in cur else ""} style="width:14px;height:14px">{_esc(o)}</label>'
                     for o in opts
                 )
-                fields_html += f'<div style="margin:10px 0"><label>{label}{req}</label><div>{boxes}</div></div>'
+                fields_html += (f'<div class="hq-item{branch_class}"{branch_attrs} style="margin:10px 0">'
+                                f'<label>{label}{req}</label><div>{boxes}</div></div>')
             else:
                 radios = "".join(
                     f'<label style="display:inline-flex;align-items:center;gap:6px;margin:2px 12px 2px 0;font-weight:400">'
@@ -1491,10 +1598,12 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                     f'{" checked" if pv == o else ""}{req_attr} style="width:14px;height:14px">{_esc(o)}</label>'
                     for o in opts
                 )
-                fields_html += f'<div style="margin:10px 0"><label>{label}{req}</label><div>{radios}</div></div>'
+                fields_html += (f'<div class="hq-item{branch_class}"{branch_attrs} style="margin:10px 0">'
+                                f'<label>{label}{req}</label><div>{radios}</div></div>')
         else:
             val = _esc(pv if isinstance(pv, str) else "")
-            fields_html += (f'<div style="margin:10px 0"><label>{label}{req}</label>'
+            fields_html += (f'<div class="hq-item{branch_class}"{branch_attrs} style="margin:10px 0">'
+                            f'<label>{label}{req}</label>'
                             f'<textarea name="answer_{i}" rows="2"{req_attr}>{val}</textarea></div>')
 
     today = ""  # 既定は空（ユーザーが選択）
@@ -1502,12 +1611,24 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                  f'前回ヒアリング（{_esc(prev_date)}）の内容を引用しています。保存すると新しい履歴として追加されます。</p>'
                  if prefill and prev_date else "")
     return f"""
+    <style>
+    .hq-branch {{
+      transition: opacity .25s, filter .25s;
+    }}
+    .hq-branch.hq-inactive {{
+      opacity: .35;
+      filter: grayscale(.4);
+    }}
+    .hq-branch.hq-inactive label {{
+      color: #888;
+    }}
+    </style>
     <div class="card" style="max-width:760px">
       <h2>ヒアリング入力</h2>
       <p style="margin:0 0 4px"><strong>対象:</strong> {_esc(target_label)}</p>
       <p class="muted" style="margin:0 0 14px"><strong>テンプレート:</strong> {_esc(template.get('name'))}</p>
       {prev_note}
-      <form method="post" action="/hearing/submit">
+      <form method="post" action="/hearing/submit" id="hearing_form">
         <input type="hidden" name="target_type" value="{_esc(target_type)}">
         <input type="hidden" name="target_id" value="{_esc(target_id)}">
         <input type="hidden" name="template_id" value="{template['id']}">
@@ -1537,7 +1658,58 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         <div style="margin-top:16px"><button class="btn" type="submit">保存（活動履歴＋ヒアリング結果を記録）</button>
         <a class="btn sec" href="/hearings">キャンセル</a></div>
       </form>
-    </div>"""
+    </div>
+    <script>
+    (function() {{
+      var form = document.getElementById('hearing_form');
+      if (!form) return;
+
+      function getParentValue(parentIdx) {{
+        var name = 'answer_' + parentIdx;
+        var checked = form.querySelectorAll('[name="' + name + '"]:checked');
+        if (checked.length) return checked[0].value;
+        var ta = form.querySelector('textarea[name="' + name + '"]');
+        return ta ? ta.value.trim() : '';
+      }}
+
+      function updateBranch() {{
+        form.querySelectorAll('.hq-branch').forEach(function(div) {{
+          var pIdx = div.dataset.parentIdx;
+          var pVal = div.dataset.parentValue;
+          if (pIdx === undefined || pVal === undefined) return;
+          var cur = getParentValue(parseInt(pIdx));
+          div.classList.toggle('hq-inactive', cur !== pVal);
+        }});
+      }}
+
+      // 子の回答が選択されたとき、親のトリガー値を自動設定（ラジオ→ラジオのみ）
+      function autoSetParent(changedInput) {{
+        var branchDiv = changedInput.closest('.hq-branch');
+        if (!branchDiv) return;
+        var pIdx = branchDiv.dataset.parentIdx;
+        var pVal = branchDiv.dataset.parentValue;
+        if (pIdx === undefined || pVal === undefined) return;
+        var parentName = 'answer_' + pIdx;
+        var parentRadio = form.querySelector('[name="' + parentName + '"][value="' + pVal + '"]');
+        if (parentRadio && parentRadio.type === 'radio' && !parentRadio.checked) {{
+          parentRadio.checked = true;
+          updateBranch();
+        }}
+      }}
+
+      form.addEventListener('change', function(e) {{
+        updateBranch();
+        if (e.target.type === 'radio' || e.target.type === 'checkbox') {{
+          autoSetParent(e.target);
+        }}
+      }});
+      form.addEventListener('input', function(e) {{
+        if (e.target.tagName === 'TEXTAREA') updateBranch();
+      }});
+
+      updateBranch();
+    }})();
+    </script>"""
 
 
 def _format_answer(ans) -> str:
@@ -2074,6 +2246,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 "SELECT * FROM meeting_notes ORDER BY note_date ASC, created_at ASC LIMIT 100"
                             ).fetchall()
                         self._send_cors_json(json.dumps([dict(r) for r in notes], ensure_ascii=False, default=str).encode())
+                elif path == "/api/theme_deal_map":
+                    # ダッシュボード用: theme_id → SFA deal_id マッピング
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        rows = con.execute(
+                            "SELECT id, theme_id FROM deals WHERE theme_id IS NOT NULL"
+                        ).fetchall()
+                        result = {str(row["theme_id"]): row["id"] for row in rows}
+                        self._send_cors_json(json.dumps(result, ensure_ascii=False).encode())
                 elif path == "/api/memo/list_all":
                     # スプシ出力用: 全メモ + deals/accounts JOIN
                     qs = self._qs()
