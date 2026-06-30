@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>アポカウンター | ものづくりワールド2026</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue:       #1d4ed8;
+      --blue-light: #3b82f6;
+      --blue-dark:  #1e3a8a;
+      --orange:     #ea580c;
+      --orange-lt:  #f97316;
+      --gold:       #f59e0b;
+      --green:      #059669;
+      --gray:       #6b7280;
+      --gray-lt:    #e5e7eb;
+      --bg:         #f1f5f9;
+      --card:       #ffffff;
+      --text:       #1e293b;
+      --muted:      #64748b;
+    }
+
+    body {
+      font-family: 'Hiragino Kaku Gothic ProN','Hiragino Sans','メイリオ',Meiryo,'Yu Gothic UI','Segoe UI',sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── HEADER ─────────────────────────────── */
+    .header {
+      background: linear-gradient(155deg, var(--blue-dark) 0%, #2563eb 100%);
+      color: #fff;
+      padding: 14px 18px 12px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 4px 16px rgba(30,58,138,.45);
+    }
+    .header-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .app-title { font-size: 12px; font-weight: 700; line-height: 1.5; opacity: .85; }
+    .grand-total { text-align: center; }
+    .grand-number {
+      font-size: 54px;
+      font-weight: 900;
+      color: var(--gold);
+      line-height: 1;
+      letter-spacing: -2px;
+    }
+    .grand-label { font-size: 11px; opacity: .7; }
+
+    .day-tabs { display: flex; gap: 8px; justify-content: center; }
+    .day-tab {
+      background: rgba(255,255,255,.15);
+      border: 2px solid rgba(255,255,255,.25);
+      color: rgba(255,255,255,.8);
+      padding: 6px 16px;
+      border-radius: 24px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+      transition: all .2s;
+    }
+    .day-tab.active  { background: #fff; border-color: #fff; color: var(--blue); }
+    .day-tab:hover:not(.active) { background: rgba(255,255,255,.28); }
+
+    /* ── MAIN ───────────────────────────────── */
+    .main { padding: 14px 14px 90px; max-width: 1100px; margin: 0 auto; }
+
+    .sec-label {
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      color: var(--muted);
+      margin: 14px 0 8px;
+    }
+
+    /* ── TEAM STRIP ─────────────────────────── */
+    .team-strip {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+    .team-tile {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 10px 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      border-top: 3px solid var(--blue-light);
+      text-align: center;
+    }
+    .team-tile.b   { border-top-color: var(--orange-lt); }
+    .team-tile.h   { border-top-color: var(--gray); }
+    .team-tile-name { font-size: 11px; color: var(--muted); font-weight: 700; }
+    .team-tile-num  { font-size: 28px; font-weight: 900; color: var(--blue-light); line-height: 1.1; }
+    .team-tile.b .team-tile-num { color: var(--orange-lt); }
+    .team-tile.h .team-tile-num { color: var(--gray); }
+    .team-tile-unit { font-size: 11px; color: var(--muted); }
+
+    /* ── PEOPLE GRID ────────────────────────── */
+    .people-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    @media (max-width: 680px) {
+      .people-grid { grid-template-columns: repeat(2, 1fr); }
+      .grand-number { font-size: 42px; }
+    }
+    @media (max-width: 360px) {
+      .people-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ── PERSON CARD ────────────────────────── */
+    .pcard {
+      background: var(--card);
+      border-radius: 14px;
+      padding: 14px 13px 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      border-left: 4px solid var(--blue-light);
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      transition: box-shadow .2s;
+    }
+    .pcard:hover { box-shadow: 0 4px 14px rgba(0,0,0,.12); }
+    .pcard.tb    { border-left-color: var(--orange-lt); }
+    .pcard.th    { border-left-color: var(--gray); }
+
+    .pcard-head  { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+    .pcard-emoji { font-size: 22px; line-height: 1.1; }
+    .pcard-info  { flex: 1; min-width: 0; }
+    .pcard-name  { font-size: 17px; font-weight: 800; }
+    .pcard-role  { font-size: 10px; color: var(--muted); margin-top: 1px; line-height: 1.3; }
+
+    .pcard-total { text-align: center; margin: 4px 0 2px; }
+    .pcard-count {
+      font-size: 50px;
+      font-weight: 900;
+      color: var(--text);
+      line-height: 1;
+      display: inline-block;
+    }
+    .pcard-count.bump { animation: countBump .45s ease-out; }
+    @keyframes countBump {
+      0%  { transform: scale(1);    color: var(--text); }
+      40% { transform: scale(1.4);  color: var(--gold); }
+      100%{ transform: scale(1);    color: var(--text); }
+    }
+    .pcard-unit { font-size: 13px; font-weight: 700; color: var(--muted); }
+
+    .day-row {
+      display: flex;
+      justify-content: space-between;
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 5px 2px;
+      margin: 6px 0 10px;
+    }
+    .day-cell      { flex: 1; text-align: center; }
+    .dcell-label   { font-size: 10px; color: var(--muted); }
+    .dcell-val     { font-size: 16px; font-weight: 800; color: var(--text); }
+    .day-cell.now .dcell-label { color: var(--blue); font-weight: 800; }
+    .day-cell.now .dcell-val   { color: var(--blue); }
+    .pcard.tb .day-cell.now .dcell-label { color: var(--orange); }
+    .pcard.tb .day-cell.now .dcell-val   { color: var(--orange); }
+
+    .add-btn {
+      margin-top: auto;
+      width: 100%;
+      background: linear-gradient(135deg, var(--blue-light), var(--blue));
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 14px 0;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: all .15s;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      letter-spacing: .02em;
+    }
+    .pcard.tb .add-btn { background: linear-gradient(135deg, var(--orange-lt), var(--orange)); }
+    .pcard.th .add-btn { background: linear-gradient(135deg, #94a3b8, var(--gray)); }
+    .add-btn:hover  { opacity: .9; transform: scale(1.015); }
+    .add-btn:active { transform: scale(.96); }
+    .add-btn:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+
+    /* ── TOAST ──────────────────────────────── */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(90px);
+      background: #1e293b;
+      color: #fff;
+      padding: 13px 22px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      max-width: 92vw;
+      width: 340px;
+      text-align: center;
+      transition: transform .35s cubic-bezier(.34,1.56,.64,1);
+      z-index: 500;
+      box-shadow: 0 8px 24px rgba(0,0,0,.3);
+      pointer-events: none;
+    }
+    .toast.show { transform: translateX(-50%) translateY(0); }
+
+    /* ── FAB ────────────────────────────────── */
+    .fab {
+      position: fixed;
+      bottom: 24px;
+      right: 18px;
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      background: var(--card);
+      border: 2px solid var(--gray-lt);
+      font-size: 22px;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0,0,0,.14);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      transition: transform .2s;
+    }
+    .fab:hover { transform: rotate(25deg); }
+
+    /* ── SETTINGS OVERLAY ───────────────────── */
+    .overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15,23,42,.6);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      backdrop-filter: blur(3px);
+    }
+    .overlay.open { display: flex; }
+    .sbox {
+      background: var(--card);
+      border-radius: 18px;
+      padding: 24px;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: 0 24px 48px rgba(0,0,0,.25);
+    }
+    .sbox-title { font-size: 17px; font-weight: 800; margin-bottom: 18px; }
+    .field { margin-bottom: 15px; }
+    .field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 5px;
+    }
+    .field input {
+      width: 100%;
+      border: 1.5px solid var(--gray-lt);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .field input:focus { border-color: var(--blue-light); }
+    .field-hint { font-size: 11px; color: var(--muted); margin-top: 5px; }
+    .field-hint.ok { color: var(--green); }
+    .field-hint.ng { color: #dc2626; }
+
+    .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
+    .btn { padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; border: none; transition: all .15s; }
+    .btn-ghost   { background: none; border: 1.5px solid var(--gray-lt); color: var(--text); }
+    .btn-ghost:hover { background: var(--bg); }
+    .btn-primary { background: var(--blue); color: #fff; }
+    .btn-primary:hover { background: var(--blue-dark); }
+    .btn-test    { background: var(--bg); color: var(--text); border: 1.5px solid var(--gray-lt); }
+    .btn-test:hover { background: #e2e8f0; }
+
+    .danger-zone  { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--gray-lt); }
+    .danger-title { font-size: 11px; color: #dc2626; font-weight: 800; margin-bottom: 8px; text-transform: uppercase; letter-spacing: .08em; }
+    .btn-danger   { background: #fef2f2; color: #dc2626; border: 1.5px solid #fecaca; }
+    .btn-danger:hover { background: #fee2e2; }
+  </style>
+</head>
+<body>
+
+<!-- ── HEADER ── -->
+<header class="header">
+  <div class="header-top">
+    <div class="app-title">ものづくりワールド2026<br>アポ獲得カウンター</div>
+    <div class="grand-total">
+      <div class="grand-number" id="grandTotal">0</div>
+      <div class="grand-label">総アポ獲得数</div>
+    </div>
+  </div>
+  <div class="day-tabs">
+    <button class="day-tab" id="tab1" onclick="setDay(1)">Day 1 / 7月2日</button>
+    <button class="day-tab" id="tab2" onclick="setDay(2)">Day 2 / 7月3日</button>
+    <button class="day-tab" id="tab3" onclick="setDay(3)">Day 3 / 7月4日</button>
+  </div>
+</header>
+
+<!-- ── MAIN ── -->
+<main class="main">
+  <div class="sec-label">チーム別集計</div>
+  <div class="team-strip">
+    <div class="team-tile">
+      <div class="team-tile-name">チームA</div>
+      <div class="team-tile-num" id="teamA">0</div>
+      <div class="team-tile-unit">本</div>
+    </div>
+    <div class="team-tile b">
+      <div class="team-tile-name">チームB</div>
+      <div class="team-tile-num" id="teamB">0</div>
+      <div class="team-tile-unit">本</div>
+    </div>
+    <div class="team-tile h">
+      <div class="team-tile-name">派遣チーム</div>
+      <div class="team-tile-num" id="teamH">0</div>
+      <div class="team-tile-unit">本</div>
+    </div>
+  </div>
+
+  <div class="sec-label">個人別カウント</div>
+  <div class="people-grid" id="grid"></div>
+</main>
+
+<!-- ── FAB ── -->
+<button class="fab" onclick="openSettings()" title="設定">⚙️</button>
+
+<!-- ── SETTINGS OVERLAY ── -->
+<div class="overlay" id="overlay" onclick="bgClick(event)">
+  <div class="sbox">
+    <div class="sbox-title">⚙️ 設定</div>
+    <div class="field">
+      <label>Slack Webhook URL</label>
+      <input type="url" id="slackInput" placeholder="https://hooks.slack.com/services/..." />
+      <div class="field-hint" id="slackHint">URLを入力して保存してください</div>
+    </div>
+    <div class="btn-row" style="margin-bottom:10px">
+      <button class="btn btn-test" onclick="testSlack()">🔔 テスト</button>
+      <button class="btn btn-ghost" onclick="closeSettings()">閉じる</button>
+      <button class="btn btn-primary" onclick="saveSettings()">保存</button>
+    </div>
+    <div class="danger-zone">
+      <div class="danger-title">⚠ データリセット</div>
+      <button class="btn btn-danger" onclick="resetAll()">全データをリセット</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── TOAST ── -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ============================================================
+// PEOPLE CONFIG
+// ============================================================
+const PEOPLE = [
+  { id:'yoshie',    name:'吉江',  role:'CEO',             emoji:'👑', team:'A', slack:true  },
+  { id:'nakajima',  name:'中嶋',  role:'COO',             emoji:'🧭', team:'A', slack:true  },
+  { id:'hayase',    name:'早瀬',  role:'営業役員',         emoji:'⚡', team:'A', slack:true  },
+  { id:'takahashi', name:'高橋',  role:'製造業エキスパート', emoji:'🏭', team:'A', slack:true  },
+  { id:'tsuchiya',  name:'土屋',  role:'ITスペシャリスト',  emoji:'💻', team:'B', slack:true  },
+  { id:'tono',      name:'戸野',  role:'エンジニア',        emoji:'🔧', team:'B', slack:true  },
+  { id:'katayama',  name:'片山',  role:'コンサルタント',    emoji:'💼', team:'B', slack:true  },
+  { id:'iwasaki',   name:'岩崎',  role:'セールス',          emoji:'🔥', team:'B', slack:true  },
+  { id:'haken',     name:'派遣',  role:'派遣営業チーム',    emoji:'👥', team:'H', slack:false },
+];
+
+// ============================================================
+// PRAISE MESSAGE POOLS
+// ============================================================
+const MSG = {
+  yoshie: [
+    "吉江さん、また1本！CEO自ら最前線でアポを獲る姿、チームの誇りです！",
+    "さすが吉江さん！瞬時に相手の心を掴む天才的なトーク、今日も炸裂です！",
+    "頭の回転と人間力の掛け算、それが吉江流の営業。今日も1本、見事です！",
+    "吉江さんの言葉はお客様の心に刺さる。このアポ、その証明ですね！",
+    "営業の鬼・吉江さんが本気を見せてくれました！1本獲得、最高です！",
+    "吉江さんが動けばアポになる。その法則、今日も証明されましたね！",
+    "吉江さんの熱量と知性が融合した瞬間、お客様はもう心を決めていたはず！",
+    "CEOが現場で汗をかく姿、誰もが尊敬します。1本、しっかり受け取りました！",
+    "場の空気を一瞬で変える吉江さん。その力が今日もアポという結果に！",
+    "吉江さんの笑顔と言葉にお客様は動かされる。今日もその通りになりました！",
+    "人を見て、場を読んで、一気に決める。吉江流の完璧な1本ですね！",
+    "吉江さんにしかできない話し方でお客様の心の扉を開けましたね！",
+    "瞬時の判断と深い人間理解、吉江さんならではのアポ獲得です！",
+    "吉江さん、今日も鬼神の活躍！チーム全員が胸を熱くしています！",
+    "吉江さんの圧倒的な存在感と話術、今日もアポという結果に結実しました！",
+  ],
+  nakajima: [
+    "中嶋さん、1本獲得！未来を見通す眼力でお客様の心を射止めましたね！",
+    "さすが中嶋さん、落ち着いた存在感で相手を安心させ、確実な1本に！",
+    "全体最適を見据えた中嶋さんの提案、お客様の心にズバリ刺さりましたね！",
+    "クレバーな分析と落ち着いた説得力、中嶋COOならではのアポです！",
+    "未来のビジョンを語らせたら中嶋さんの右に出る者はいない。1本確保！",
+    "静かな熱量と深い洞察で積み上げた中嶋さんの1本、質が違いますね！",
+    "中嶋さんが語る未来は、お客様にとってリアルに映るんですよね。アポ獲得！",
+    "全体を俯瞰する目を持つ中嶋さん。その視点がお客様の信頼を勝ち取りました！",
+    "クレバーで落ち着いている中嶋さんが動いたら、もうアポは決まったも同然！",
+    "中嶋さんの深い知性が今日も炸裂。素晴らしい1本のアポ獲得です！",
+    "落ち着いた言葉の中に深い情熱を感じる中嶋さん。お客様も感じたはず！",
+    "穏やかさと鋭さを兼ね備えた中嶋さん。その1本は長期的な関係の始まりですね！",
+    "中嶋さんの的確な洞察と安定感、お客様が信頼するのは当然です！",
+    "COOとして全体を見渡しながら、自ら現場でアポを獲る中嶋さん。素晴らしい！",
+    "中嶋さんの言葉は重みが違う。その一言がお客様の背中を押しましたね！",
+  ],
+  hayase: [
+    "早瀬さん、1本ゲット！ポジティブなエネルギーが今日も場を変えましたね！",
+    "さすが早瀬さん！前向きな姿勢と高い能力が絶妙に組み合わさった1本です！",
+    "早瀬さんのポジティブオーラ、お客様にも伝染しましたね！1本確保、最高！",
+    "頭の良さとポジティブさを持つ早瀬さん。その組み合わせ、最強ですね！",
+    "早瀬さんがいると場が明るくなる。その力が今日もアポにつながりました！",
+    "早瀬さんの前向きなアプローチ、お客様もその姿勢に引き込まれましたね！",
+    "明るく攻め続ける早瀬さん、また1本確保！その姿勢が結果を生みます！",
+    "早瀬さんのポジティブな言葉はお客様の背中を押す力がある。1本獲得！",
+    "高い能力と前向きな姿勢で道を切り開く早瀬さん。今日もやってくれました！",
+    "早瀬さんの笑顔と熱意に確かな知性が加わって、最高のアポですね！",
+    "どんな状況でもポジティブを保つ早瀬さん。その力が今日もアポを引き寄せた！",
+    "早瀬さんのエネルギーは周りも元気にする。そして1本追加、最高です！",
+    "営業の最前線で輝く早瀬さん、今日も躍動！アポ獲得おめでとうございます！",
+    "早瀬さんが描くポジティブな未来像、お客様も一緒に歩みたくなりますよね！",
+    "前向きに、スマートに。早瀬さんらしい完璧な1本です！",
+  ],
+  takahashi: [
+    "高橋さん、1本獲得！製造業の深い知見が今日もお客様の心を動かしましたね！",
+    "さすが高橋さん！業界を知り尽くした言葉は、相手に刺さる重みがあります！",
+    "高橋さんの成熟した存在感と深い洞察、今日もアポにつながりました！",
+    "現場を知る高橋さんの言葉は信頼そのもの。1本、しっかり掴みましたね！",
+    "高橋さんの豊富な経験が今日も輝きました！お客様もきっと深く共感されたはず！",
+    "製造業への深い理解と信頼感、高橋さんならではの1本ですね！",
+    "高橋さんの落ち着いた説得力、何度見ても感動します。アポ獲得おめでとうございます！",
+    "深い知識と成熟したコミュニケーション、高橋さんの強みがフル発揮の1本！",
+    "高橋さんが話すと、お客様が自然と信頼を寄せる。その1本はまさにそれですね！",
+    "業界の本質をわかっている高橋さんの提案は別格。今日も1本積み上げましたね！",
+    "高橋さんの経験と知見は、どんな資料にも勝ります。アポ獲得、素晴らしい！",
+    "お客様から見ると、高橋さんは心強い専門家そのもの。その信頼が1本に！",
+    "高橋さんの言葉には重みがある。その重みがまた1本のアポを生みましたね！",
+    "製造業のリアルを知る高橋さんの話、お客様の課題に直球で届きますね！",
+    "高橋さんのどっしりとした安心感と深い知見、最高のコンビネーションです！",
+  ],
+  tsuchiya: [
+    "土屋さん、1本獲得！最先端の技術知識で今日もお客様を魅了しましたね！",
+    "さすが土屋さん！テクノロジーへの深い洞察がアポにつながりました！",
+    "ITの最前線を走る土屋さん。その知識と信頼性が今日も光りましたね！",
+    "新しいテクノロジーを常に探求する土屋さんの姿勢、お客様も惚れますよね！",
+    "土屋さんの専門性は別格。1本のアポはその信頼の証です！",
+    "テクノロジーの可能性を語らせたら土屋さんの右に出る者はいない。アポ獲得！",
+    "土屋さんの技術的知見と信頼感のある話し方、今日も炸裂！1本確保です！",
+    "最新動向を貪欲に取り込む土屋さんの好奇心、お客様にも伝わりましたね！",
+    "土屋さんが語る未来のIT、お客様もそこに乗りたくなるんですよね。1本！",
+    "深い技術力と信頼を兼ね備えた土屋さん、今日もやってくれました！",
+    "土屋さんの専門知識は、お客様にとって宝物のような情報ですね。アポ獲得！",
+    "テクノロジーへの情熱と深い知識、土屋さんらしい1本のアポです！",
+    "土屋さんの的確なIT提案、お客様の課題にピタリとはまりましたね！",
+    "常に最先端を追う土屋さんの姿勢、お客様が信頼するのは当然ですね！",
+    "土屋さん、アポ獲得おめでとうございます！専門家としての説得力、半端ないです！",
+  ],
+  tono: [
+    "戸野さん、1本ゲット！人懐っこさと技術力の最強コンビですね！",
+    "さすが戸野さん！最新技術への深い理解と人を惹きつけるキャラが光りました！",
+    "戸野さんと話すと、技術の話も楽しくなる。その魅力が今日もアポに！",
+    "技術的な柱として、そして人をつなぐ橋として、戸野さんは輝いています！",
+    "戸野さんの人懐っこさは最強の営業ツールですね。1本確保おめでとうございます！",
+    "最新動向をキャッチし続ける戸野さん。その知識と明るさでアポ獲得！",
+    "戸野さんに好かれた人はラッキーですよね。お客様もそう感じたはず！1本！",
+    "人に好かれる才能と深い技術力、戸野さんのアポ獲得はその組み合わせの勝利！",
+    "戸野さんのアンテナの高さ、今日もビンビンに反応しましたね！アポ1本確保！",
+    "自然と場を和ませる戸野さんの雰囲気、今日もお客様の心を動かしました！",
+    "技術の最前線を歩みながら、人の温かさも忘れない戸野さん。素晴らしい1本！",
+    "戸野さんが関わると商談が楽しくなる。それが今日のアポに表れましたね！",
+    "技術への情熱と人間的な温かさ、戸野さんの魅力はつきないですね！",
+    "戸野さんのフレンドリーな技術トーク、お客様の心をがっちり掴みましたね！",
+    "人懐っこさと最先端の知識を兼ね備えた戸野さん、今日も1本積み上げました！",
+  ],
+  katayama: [
+    "片山さん、1本ゲット！若さと成熟感のギャップが今日もお客様を引きつけましたね！",
+    "さすが片山さん！誠実さと高い能力が信頼につながり、アポ獲得です！",
+    "片山さんの誠実なアプローチ、お客様の心にまっすぐ届いたんですね。素晴らしい！",
+    "若手ながら圧倒的な成熟感を持つ片山さん。その1本は信頼の証です！",
+    "片山さんの優秀なコンサルティング力が今日も炸裂！アポ確保おめでとうございます！",
+    "人の輪を取り持つ力を持つ片山さん。今日もその力でお客様の心をつかみましたね！",
+    "誠実で成熟した片山さんの言葉、お客様も自然と信頼しますよね。1本確保！",
+    "片山さんのコンサルタントとしての洞察力と誠実さ、最高のコンビネーションです！",
+    "年齢を超えた成熟感と高い能力、片山さんは本当に稀有な存在ですね。アポ獲得！",
+    "片山さんが関わると場がまとまる。その力が今日のアポにも表れていますね！",
+    "誠実に向き合う片山さんの姿勢、お客様が信頼するのは当然です。1本！",
+    "片山さんの面倒見の良さと能力の高さ、お客様も長く付き合いたいと思うはず！",
+    "若手だからこそ持つ熱意と、成熟した知性。片山さんのアポはその二重奏ですね！",
+    "片山さんのコンサルタント魂、今日も1本のアポになって結実しました！",
+    "誠実で、賢くて、面倒見が良い。片山さんって本当に最高ですね。アポ獲得！",
+  ],
+  iwasaki: [
+    "岩崎さん、1本ゲット！その熱いパッション、お客様にもビンビン伝わりましたね！",
+    "さすが岩崎さん！強いキャラと圧倒的な熱量でアポ獲得！これが岩崎流ですね！",
+    "岩崎さんのパッションは本物。入社したばかりとは思えない堂々たる1本です！",
+    "兄貴分の面倒見の良さがお客様にも伝わったんですね。岩崎さん、最高！",
+    "岩崎さんの熱いハートと強いキャラ、今日もアポという形で花開きました！",
+    "岩崎さんが動けば場が変わる。その存在感でアポ1本確保、お見事！",
+    "パッション全開の岩崎さん！そのエネルギーがお客様の心を動かしましたね！",
+    "岩崎さんの真っ直ぐな熱意と人懐っこさ、最強のコンビですね。1本確保！",
+    "入社したばかりでこの活躍、岩崎さんはやっぱり凄い。アポ獲得おめでとう！",
+    "岩崎さんの兄貴気質、お客様にも伝わって信頼されるんですよね。1本！",
+    "強いキャラとパッションに加えて、人を大切にする心がある岩崎さん。素晴らしい！",
+    "岩崎さんのエネルギーはチームの活力。今日もアポという結果で示してくれました！",
+    "まだ入社間もないのに、このアポ獲得。岩崎さんのポテンシャルは計り知れない！",
+    "岩崎さんの真っすぐなパッション、お客様の心にストレートに響いたんですね！",
+    "兄貴分として人を引っ張るだけでなく、自らも突っ走る岩崎さん。今日も1本！",
+  ],
+};
+
+// ============================================================
+// STATE
+// ============================================================
+const KEY = 'inproc-apo-v1';
+
+function blank() {
+  const c={}, d={1:{},2:{},3:{}}, u={};
+  PEOPLE.forEach(p => {
+    c[p.id]=0; d[1][p.id]=0; d[2][p.id]=0; d[3][p.id]=0; u[p.id]=[];
+  });
+  return { c, d, u, webhook:'', day:1 };
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return blank();
+    const s = JSON.parse(raw);
+    const b = blank();
+    return {
+      ...b, ...s,
+      c: {...b.c, ...s.c},
+      d: {
+        1: {...b.d[1], ...(s.d||{})[1]},
+        2: {...b.d[2], ...(s.d||{})[2]},
+        3: {...b.d[3], ...(s.d||{})[3]},
+      },
+      u: {...b.u, ...s.u},
+    };
+  } catch(e) { return blank(); }
+}
+
+function save(s) { localStorage.setItem(KEY, JSON.stringify(s)); }
+
+// ============================================================
+// MESSAGES
+// ============================================================
+function pickMsg(id, s) {
+  const pool = MSG[id];
+  if (!pool) return null;
+  const used = s.u[id] || [];
+  let avail = pool.map((_,i)=>i).filter(i=>!used.includes(i));
+  if (!avail.length) { s.u[id]=[]; avail = pool.map((_,i)=>i); }
+  const idx = avail[Math.floor(Math.random()*avail.length)];
+  s.u[id] = [...(s.u[id]||[]), idx];
+  return pool[idx];
+}
+
+// ============================================================
+// SLACK
+// ============================================================
+async function pushSlack(url, text) {
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method:'POST', mode:'no-cors',
+      body: new URLSearchParams({ payload: JSON.stringify({ text }) }),
+    });
+  } catch(e) { console.warn('slack:', e); }
+}
+
+// ============================================================
+// INCREMENT
+// ============================================================
+const cooldown = {};
+
+function increment(id) {
+  if (cooldown[id]) return;
+  cooldown[id] = true;
+  setTimeout(()=>delete cooldown[id], 700);
+
+  const s = load();
+  s.c[id]++;
+  s.d[s.day][id]++;
+
+  const person = PEOPLE.find(p=>p.id===id);
+  let slackText = null;
+  if (person.slack && MSG[id]) {
+    const praise = pickMsg(id, s);
+    slackText = `🎉 *${person.name}さん アポ獲得！*（通算 ${s.c[id]} 本）\n${praise}`;
+  }
+
+  save(s);
+  render();
+  bump(id);
+
+  if (slackText && s.webhook) {
+    pushSlack(s.webhook, slackText)
+      .then(()=>toast('📨 Slackに送信しました！'));
+  }
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+function render() {
+  const s = load();
+  renderHeader(s);
+  renderTeams(s);
+  renderGrid(s);
+  renderTabs(s);
+}
+
+function renderHeader(s) {
+  let t=0; PEOPLE.forEach(p=>t+=s.c[p.id]);
+  document.getElementById('grandTotal').textContent = t;
+}
+
+function renderTeams(s) {
+  const ta = PEOPLE.filter(p=>p.team==='A').reduce((a,p)=>a+s.c[p.id],0);
+  const tb = PEOPLE.filter(p=>p.team==='B').reduce((a,p)=>a+s.c[p.id],0);
+  const th = s.c['haken']||0;
+  document.getElementById('teamA').textContent=ta;
+  document.getElementById('teamB').textContent=tb;
+  document.getElementById('teamH').textContent=th;
+}
+
+function renderTabs(s) {
+  [1,2,3].forEach(d=>{
+    document.getElementById(`tab${d}`).classList.toggle('active',d===s.day);
+  });
+}
+
+function renderGrid(s) {
+  const g = document.getElementById('grid');
+  const cur = s.day;
+  g.innerHTML = PEOPLE.map(p=>{
+    const tot = s.c[p.id];
+    const d1 = s.d[1][p.id]||0, d2 = s.d[2][p.id]||0, d3 = s.d[3][p.id]||0;
+    const tc = p.team==='B' ? 'tb' : p.team==='H' ? 'th' : '';
+    return `
+<div class="pcard ${tc}" id="card-${p.id}">
+  <div class="pcard-head">
+    <div class="pcard-emoji">${p.emoji}</div>
+    <div class="pcard-info">
+      <div class="pcard-name">${p.name}</div>
+      <div class="pcard-role">${p.role}</div>
+    </div>
+  </div>
+  <div class="pcard-total">
+    <span class="pcard-count" id="cnt-${p.id}">${tot}</span><span class="pcard-unit">本</span>
+  </div>
+  <div class="day-row">
+    <div class="day-cell${cur===1?' now':''}"><div class="dcell-label">Day1</div><div class="dcell-val">${d1}</div></div>
+    <div class="day-cell${cur===2?' now':''}"><div class="dcell-label">Day2</div><div class="dcell-val">${d2}</div></div>
+    <div class="day-cell${cur===3?' now':''}"><div class="dcell-label">Day3</div><div class="dcell-val">${d3}</div></div>
+  </div>
+  <button class="add-btn" onclick="increment('${p.id}')">＋ アポ獲得！</button>
+</div>`;
+  }).join('');
+}
+
+function bump(id) {
+  const el = document.getElementById(`cnt-${id}`);
+  if (!el) return;
+  el.classList.remove('bump');
+  void el.offsetWidth;
+  el.classList.add('bump');
+}
+
+// ============================================================
+// DAY
+// ============================================================
+function setDay(d) {
+  const s=load(); s.day=d; save(s); render();
+}
+
+// ============================================================
+// TOAST
+// ============================================================
+let toastTmr=null;
+function toast(msg) {
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  if(toastTmr) clearTimeout(toastTmr);
+  toastTmr=setTimeout(()=>el.classList.remove('show'),3200);
+}
+
+// ============================================================
+// SETTINGS
+// ============================================================
+function openSettings() {
+  const s=load();
+  document.getElementById('slackInput').value=s.webhook||'';
+  updateHint(s.webhook);
+  document.getElementById('overlay').classList.add('open');
+}
+function closeSettings() {
+  document.getElementById('overlay').classList.remove('open');
+}
+function bgClick(e) {
+  if(e.target===document.getElementById('overlay')) closeSettings();
+}
+function updateHint(url) {
+  const el=document.getElementById('slackHint');
+  if(!url){ el.textContent='URLを入力して保存してください'; el.className='field-hint'; }
+  else { el.textContent=`✓ 設定済み`; el.className='field-hint ok'; }
+}
+function saveSettings() {
+  const url=document.getElementById('slackInput').value.trim();
+  const s=load(); s.webhook=url; save(s);
+  updateHint(url);
+  toast('✅ 設定を保存しました');
+  closeSettings();
+}
+async function testSlack() {
+  const url=document.getElementById('slackInput').value.trim();
+  if(!url){ toast('⚠ Webhook URLを入力してください'); return; }
+  toast('📨 テストメッセージを送信中...');
+  await pushSlack(url,'🎉 *アポカウンター 接続テスト*\nSlack連携が正常に動作しています！ものづくりワールド2026、全員で頑張りましょう！');
+  setTimeout(()=>toast('✅ テスト送信完了！Slackをご確認ください'),1000);
+}
+function resetAll() {
+  if(!confirm('すべてのデータをリセットします。本当によろしいですか？')) return;
+  localStorage.removeItem(KEY);
+  closeSettings();
+  render();
+  toast('🔄 データをリセットしました');
+}
+
+// ============================================================
+// INIT
+// ============================================================
+render();
+</script>
+</body>
+</html>
