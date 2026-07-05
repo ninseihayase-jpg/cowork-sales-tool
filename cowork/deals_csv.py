@@ -24,23 +24,23 @@ _KIND_LABEL_ACCOUNT = "アカウント"
 # CSV行 → sfa_db.upsert_deal() にそのまま渡せるフィールド名
 DEAL_CSV_FIELDS = [
     "deal_name", "stage", "business_type_l1", "business_type_l2", "lead_pattern",
-    "owner", "value_lumpsum", "value_lumpsum_monthly", "value_recurring",
+    "owner", "sub_owner", "value_lumpsum", "value_lumpsum_monthly", "value_recurring",
     "client_budget", "next_milestone_date", "next_milestone_label",
     "importance", "goal", "note",
 ]
 
 TEMPLATE_HEADERS = [
     "種別", "会社名", "業界", "企業規模", "商談名", "ステージ", "事業種別L1", "事業種別L2",
-    "リード経路", "担当者", "単発総額(万円)", "単発月額(万円)", "継続月額(万円)",
+    "リード経路", "担当者", "サブ担当", "単発総額(万円)", "単発月額(万円)", "継続月額(万円)",
     "クライアント予算", "次回MS日", "次回MS内容", "重要度", "ゴール", "メモ",
 ]
 
 TEMPLATE_EXAMPLE_ROWS = [
     ["商談", "株式会社サンプル商事", "商社・卸売", "1000億未満", "コスト削減提案",
-     "初回アポ実施", "コスト削減", "コスト診断(無償)", "Exh.", "吉江",
+     "初回アポ実施", "コスト削減", "コスト診断(無償)", "Exh.", "吉江", "中島",
      "500", "", "", "300万円程度", "2026-08-01", "初回訪問", "高", "コスト15%削減", "展示会で名刺交換"],
     ["アカウント", "株式会社サンプル製作所", "製造業(電機・電子・精密)", "500億未満",
-     "", "", "", "", "", "", "", "", "", "", "", "", "", "", "今期は商談化見送り、アカウントのみ登録"],
+     "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "今期は商談化見送り、アカウントのみ登録"],
 ]
 
 
@@ -109,6 +109,9 @@ def parse_deals_csv(csv_text: str, *, stages=None, biz_l1=None, owners=None, lea
             owner = g("担当者", "owner")
             if owner not in valid_owners:
                 owner = None
+            sub_owner = g("サブ担当", "sub_owner")
+            if sub_owner not in valid_owners:
+                sub_owner = None
             pattern = g("リード経路", "lead_pattern")
             if pattern not in valid_patterns:
                 pattern = None
@@ -130,6 +133,7 @@ def parse_deals_csv(csv_text: str, *, stages=None, biz_l1=None, owners=None, lea
                 "business_type_l2": biz2,
                 "lead_pattern": pattern,
                 "owner": owner,
+                "sub_owner": sub_owner,
                 "value_lumpsum": _to_float(g("単発総額(万円)", "単発総額", "value_lumpsum")),
                 "value_lumpsum_monthly": _to_float(g("単発月額(万円)", "単発月額", "value_lumpsum_monthly")),
                 "value_recurring": _to_float(g("継続月額(万円)", "継続月額", "value_recurring")),
@@ -161,8 +165,21 @@ def _estimate_fields(rows: list[dict], industries: list[str], company_sizes: lis
     return rows
 
 
-def import_deals(con, csv_text: str, industries=None, company_sizes=None) -> tuple[int, int, int]:
-    """CSVを取り込み、(商談追加件数, アカウント追加件数, スキップ件数) を返す。"""
+def _deal_duplicate_exists(con, account_id: int, deal_fields: dict) -> bool:
+    """同一アカウント・同一内容（DEAL_CSV_FIELDS全項目が完全一致）の商談が既に
+    存在するか判定する。CSVの誤った複数回投入による重複作成を防ぐために使う。
+    """
+    conditions = ["account_id IS ?"]
+    params = [account_id]
+    for k in DEAL_CSV_FIELDS:
+        conditions.append(f"{k} IS ?")
+        params.append(deal_fields.get(k))
+    sql = f"SELECT 1 FROM deals WHERE {' AND '.join(conditions)} LIMIT 1"
+    return con.execute(sql, params).fetchone() is not None
+
+
+def import_deals(con, csv_text: str, industries=None, company_sizes=None) -> tuple[int, int, int, int]:
+    """CSVを取り込み、(商談追加件数, アカウント追加件数, 重複スキップ件数, エラースキップ件数) を返す。"""
     stages = sfa_db.get_master_list(con, "deal_stages")
     biz_l1 = sfa_db.get_master_list(con, "business_type_l1")
     owners = sfa_db.get_master_list(con, "owners")
@@ -172,7 +189,7 @@ def import_deals(con, csv_text: str, industries=None, company_sizes=None) -> tup
     if industries and company_sizes and os.environ.get("ANTHROPIC_API_KEY"):
         rows = _estimate_fields(rows, industries, company_sizes)
 
-    ok_deals = ok_accounts = skip = 0
+    ok_deals = ok_accounts = dup_skip = skip = 0
     # 行ごとにcommitすると大量件数（数千行）で著しく遅くなり、
     # サーバー側のリクエストタイムアウト（例: Renderの502）を招くため、
     # 1件ずつ処理はしつつcommitはループ終了後に1回だけ行う。
@@ -190,12 +207,15 @@ def import_deals(con, csv_text: str, industries=None, company_sizes=None) -> tup
             if r["kind"] == KIND_ACCOUNT:
                 continue
             deal_fields = {k: r.get(k) for k in DEAL_CSV_FIELDS}
+            if _deal_duplicate_exists(con, account_id, deal_fields):
+                dup_skip += 1
+                continue
             sfa_db.upsert_deal(con, account_id=account_id, status="open", commit=False, **deal_fields)
             ok_deals += 1
         except Exception:
             skip += 1
     con.commit()
-    return ok_deals, ok_accounts, skip
+    return ok_deals, ok_accounts, dup_skip, skip
 
 
 def build_template_csv() -> bytes:
@@ -254,7 +274,7 @@ def build_ai_prompt(con) -> str:
 - **事業種別L2**: 事業種別L1に対応する値のみ有効（一致しないと空欄になる）。対応表:
 {biz_l2_lines}
 - **リード経路**: 次のいずれかと完全一致: {" / ".join(patterns)}
-- **担当者**: 次のいずれかと完全一致: {" / ".join(owners)}
+- **担当者・サブ担当**: いずれも次のいずれかと完全一致（サブ担当は空欄可）: {" / ".join(owners)}
 - **重要度**: {" / ".join(sfa_db.IMPORTANCE_OPTIONS)} のいずれか
 - **単発総額(万円) / 単発月額(万円) / 継続月額(万円)**: 数値のみ（万円単位）。不明なら空欄。
 - **次回MS日**: YYYY-MM-DD形式。

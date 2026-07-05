@@ -871,6 +871,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     deal_bulk_options = {
         "stage": [["", "（変更なし）"]] + [[s, s] for s in stages],
         "owner": [["", "（変更なし）"]] + [[o, o] for o in owners],
+        "sub_owner": [["", "（変更なし）"]] + [[o, o] for o in owners],
         "business_type_l1": [["", "（変更なし）"]] + [[v, v] for v in biz_l1_list],
     }
     deal_bulk_options_json = json.dumps(deal_bulk_options, ensure_ascii=False)
@@ -888,6 +889,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
             ms = f'<span class="muted">{_esc(d["next_milestone_label"])}</span>'
         sel_stage = _deal_inline_select(d["id"], "stage", stages, d.get("stage") or "")
         sel_owner = _deal_inline_select(d["id"], "owner", owners, d.get("owner") or "")
+        sel_sub_owner = _deal_inline_select(d["id"], "sub_owner", owners, d.get("sub_owner") or "")
         sel_biz_l1 = _deal_inline_select(d["id"], "business_type_l1", biz_l1_list, d.get("business_type_l1") or "")
         biz_l2_values = sfa_db.BUSINESS_TYPE_L2_BY_L1.get(d.get("business_type_l1") or "", [])
         sel_biz_l2 = _deal_inline_select(d["id"], "business_type_l2", biz_l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{d['id']}")
@@ -912,6 +914,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
             f'<td>{_esc(d.get("deal_name"))}</td>'
             f'<td>{sel_stage}</td>'
             f'<td>{sel_owner}</td>'
+            f'<td>{sel_sub_owner}</td>'
             f'<td>{sel_biz_l1}</td>'
             f'<td>{sel_biz_l2}</td>'
             f'<td>{inp_client_budget}</td>'
@@ -939,17 +942,18 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     <table style="min-width:900px"><tr>
       <th style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択"
             onchange="document.querySelectorAll('#deal_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-      <th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>担当</th>
+      <th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>主担当</th><th>サブ担当</th>
       <th>種別L1</th><th>種別L2</th>
       <th>予算<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span></th>
       <th>提案総額<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span></th>
       <th>次回MS</th><th class="right">連携</th></tr>
-    {''.join(rows) or '<tr><td colspan=12 class=muted>商談がありません。</td></tr>'}
+    {''.join(rows) or '<tr><td colspan=13 class=muted>商談がありません。</td></tr>'}
     </table></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
       <select id="deal_bulk_field" name="field" style="width:auto">
         <option value="stage">ステージ</option>
-        <option value="owner">担当</option>
+        <option value="owner">主担当</option>
+        <option value="sub_owner">サブ担当</option>
         <option value="business_type_l1">事業種別L1</option>
       </select>
       <select id="deal_bulk_value" name="value" style="width:auto"></select>
@@ -1075,7 +1079,7 @@ def accounts_page(con) -> str:
 def account_detail(con, acc: dict) -> str:
     """アカウント詳細ページ（関連商談含む）。"""
     deals = [dict(r) for r in con.execute(
-        "SELECT id, deal_name, stage, owner, status FROM deals WHERE account_id=? ORDER BY id DESC",
+        "SELECT id, deal_name, stage, owner, sub_owner, status FROM deals WHERE account_id=? ORDER BY id DESC",
         (acc["id"],)
     )]
     deal_rows = "".join(
@@ -1083,10 +1087,11 @@ def account_detail(con, acc: dict) -> str:
         f'<td><a href="/deal/{d["id"]}">{_esc(d["deal_name"])}</a></td>'
         f'<td>{_esc(d.get("stage")) or "<span class=muted>―</span>"}</td>'
         f'<td>{_esc(d.get("owner")) or "<span class=muted>―</span>"}</td>'
+        f'<td>{_esc(d.get("sub_owner")) or "<span class=muted>―</span>"}</td>'
         f'<td><span class="muted">{_esc(d.get("status") or "open")}</span></td>'
         f'</tr>'
         for d in deals
-    ) or '<tr><td colspan=4 class=muted>関連商談がありません</td></tr>'
+    ) or '<tr><td colspan=5 class=muted>関連商談がありません</td></tr>'
     note_html = (
         f'<p style="margin-top:8px;white-space:pre-wrap;font-size:13px">{_esc(acc.get("note"))}</p>'
         if acc.get("note") else ""
@@ -1115,7 +1120,7 @@ def account_detail(con, acc: dict) -> str:
     </div>
     <div class="card">
       <h2>関連商談 ({len(deals)})</h2>
-      <table><tr><th>案件名</th><th>ステージ</th><th>担当</th><th>状態</th></tr>
+      <table><tr><th>案件名</th><th>ステージ</th><th>主担当</th><th>サブ担当</th><th>状態</th></tr>
       {deal_rows}
       </table>
       <p style="margin-top:12px">
@@ -1275,8 +1280,10 @@ def deal_form(con, deal=None) -> str:
           <input name="deal_name" required value="{_esc(deal.get('deal_name'))}"></div>
         <div><label>ステージ</label>
           <select name="stage">{_opt(sfa_db.get_master_list(con,'deal_stages'), deal.get('stage'))}</select></div>
-        <div><label>担当</label>
+        <div><label>主担当</label>
           <select name="owner">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('owner'))}</select></div>
+        <div><label>サブ担当</label>
+          <select name="sub_owner">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('sub_owner'))}</select></div>
         <div><label>事業種別L1</label>
           <select name="business_type_l1" id="biz_l1" onchange="updateL2()">{_opt(sfa_db.get_master_list(con,'business_type_l1'), deal.get('business_type_l1'))}</select></div>
         <div><label>事業種別L2</label>
@@ -1869,9 +1876,18 @@ def hearing_new_page(con, preselect: str | None = None) -> str:
 
 
 def hearing_input_page(con, *, target_type, target_id, template, target_label,
-                       prefill=None, prev_date=None) -> str:
-    """ヒアリング入力画面：ヒアリング項目＋通常の活動履歴入力欄を同一画面に生成。"""
+                       prefill=None, prev_date=None, draft=None,
+                       edit_result_id=None, edit_conducted_on=None) -> str:
+    """ヒアリング入力画面：ヒアリング項目＋通常の活動履歴入力欄を同一画面に生成。
+
+    draft: get_hearing_draft()の返り値（30秒ごとの自動保存下書き）。存在する場合、
+    前回確定結果のprefillよりも優先して復元する（より新しい入力中データのため）。
+    edit_result_id: 指定時は既存ヒアリング結果の修正モード。新規の活動履歴は作らず、
+    対象のhearing_resultsの内容だけを上書きする。
+    """
     prefill = prefill or {}
+    draft_data = (draft or {}).get("form_data") or {}
+    draft_updated_at = (draft or {}).get("updated_at")
 
     items = template.get("items") or []
     has_branch = any(
@@ -1884,6 +1900,15 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         req = " <span style='color:#c0392b'>*</span>" if it.get("required") else ""
         req_attr = " required" if it.get("required") else ""
         pv = prefill.get(it.get("label"))
+        if f"answer_{i}" in draft_data:
+            _draft_raw = draft_data[f"answer_{i}"]
+            if it.get("type") == "yabane":
+                try:
+                    pv = json.loads(_draft_raw) if isinstance(_draft_raw, str) else _draft_raw
+                except (ValueError, TypeError):
+                    pass
+            else:
+                pv = _draft_raw
         # 分岐設定: data属性でJSに渡す
         parent_idx = it.get("parent_idx")
         parent_value = it.get("parent_value")
@@ -2101,7 +2126,15 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
 
     prev_note = (f'<p class="muted" style="font-size:12px;margin:0 0 10px">'
                  f'前回ヒアリング（{_esc(prev_date)}）の内容を引用しています。保存すると新しい履歴として追加されます。</p>'
-                 if prefill and prev_date else "")
+                 if prefill and prev_date and not draft_data else "")
+    draft_note = (
+        f'<p class="muted" style="font-size:12px;margin:0 0 10px;color:#b45309">'
+        f'⚠ 自動保存された下書き（{_esc((draft_updated_at or "")[:16])} 時点）を復元しました。'
+        f'内容を確認し、問題なければそのまま保存してください。'
+        f'<br>※レーダーチャート／タイムライン／スコアカード形式の項目は自動保存の対象データは残りますが、'
+        f'画面への自動復元は未対応です。該当項目があれば再入力してください。</p>'
+        if draft_data else ""
+    )
     guide_html = (
         '<div style="position:relative;margin-left:auto;font-size:12px"'
         ' onmouseenter="this.querySelector(\'.hq-guide-popup\').style.display=\'block\'"'
@@ -2209,16 +2242,25 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
     </div>
     <div class="card" style="max-width:760px">
       {prev_note}
+      {draft_note}
+      <p id="hq_autosave_status" class="muted" style="font-size:11px;margin:0 0 8px"></p>
       <form method="post" action="/hearing/submit" id="hearing_form">
         <input type="hidden" name="target_type" value="{_esc(target_type)}">
         <input type="hidden" name="target_id" value="{_esc(target_id)}">
         <input type="hidden" name="template_id" value="{template['id']}">
+        {f'<input type="hidden" name="edit_result_id" value="{edit_result_id}">' if edit_result_id else ""}
 
         <div style="background:#f0f6ff;border-radius:8px;padding:14px 16px;margin-bottom:16px">
           <p style="margin:0 0 6px;font-weight:600;color:#2f6fed">ヒアリング項目</p>
           {fields_html or '<p class="muted">このテンプレートには項目がありません。</p>'}
         </div>
 
+        {f'''<div style="border:1px solid #e2e6ee;border-radius:8px;padding:14px 16px">
+          <p style="margin:0 0 8px;font-weight:600;color:#555">ヒアリング実施日</p>
+          <input type="date" name="occurred_on" value="{_esc(edit_conducted_on)}" required style="max-width:200px">
+        </div>
+        <div style="margin-top:16px"><button class="btn" type="submit">更新（この内容でヒアリング結果を修正）</button>
+        <a class="btn sec" href="/hearing/result/{edit_result_id}">キャンセル</a></div>''' if edit_result_id else f'''
         <div style="border:1px solid #e2e6ee;border-radius:8px;padding:14px 16px">
           <p style="margin:0 0 8px;font-weight:600;color:#555">活動履歴として記録</p>
           <div class="grid">
@@ -2237,7 +2279,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
           </div>
         </div>
         <div style="margin-top:16px"><button class="btn" type="submit">保存（活動履歴＋ヒアリング結果を記録）</button>
-        <a class="btn sec" href="/hearings">キャンセル</a></div>
+        <a class="btn sec" href="/hearings">キャンセル</a></div>'''}
       </form>
     </div>
     <script>
@@ -2385,7 +2427,9 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       if (!steps.length) steps=[''];
       steps.forEach(function(s){{ ybAddRow(idx, s, ''); }});
     }}
-    document.getElementById('hearing_form').addEventListener('submit', function() {{
+    // 各特殊項目のUI状態を隠しinput(answer_N)へ直列化する。
+    // submit時・30秒ごとの自動保存時の両方から呼ぶ。
+    function serializeAllAnswers() {{
       // レーダーチャート直列化
       document.querySelectorAll('[data-ra-idx]').forEach(function(wrapper) {{
         var idx=wrapper.getAttribute('data-ra-idx');
@@ -2446,7 +2490,35 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         var hidden=document.getElementById('yb_answer_'+idx);
         if(hidden) hidden.value=JSON.stringify({{rows:rows}});
       }});
+    }}
+    document.getElementById('hearing_form').addEventListener('submit', function() {{
+      serializeAllAnswers();
+      if (window._hqAutosaveTimer) clearInterval(window._hqAutosaveTimer);
     }});
+    // ── 30秒ごとの自動保存（下書き） ──
+    (function() {{
+      var form = document.getElementById('hearing_form');
+      var statusEl = document.getElementById('hq_autosave_status');
+      function autoSave() {{
+        serializeAllAnswers();
+        var data = new URLSearchParams(new FormData(form));
+        fetch('/hearing/autosave', {{
+          method: 'POST',
+          headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+          body: data.toString()
+        }}).then(function(r) {{ return r.json(); }}).then(function(res) {{
+          if (statusEl) {{
+            var now = new Date();
+            var hh = String(now.getHours()).padStart(2,'0');
+            var mm = String(now.getMinutes()).padStart(2,'0');
+            statusEl.textContent = res.ok ? ('下書きを自動保存しました（' + hh + ':' + mm + '）') : '自動保存に失敗しました';
+          }}
+        }}).catch(function() {{
+          if (statusEl) statusEl.textContent = '自動保存に失敗しました（通信エラー）';
+        }});
+      }}
+      window._hqAutosaveTimer = setInterval(autoSave, 30000);
+    }})();
     // レーダーチャート初期描画
     document.querySelectorAll('[data-ra-idx]').forEach(function(w){{raRedraw(w);}});
     // ── 分岐ロジック ──
@@ -2455,16 +2527,18 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       if (!form) return;
       var _initialLoad = true;
 
-      function getParentValue(parentIdx) {{
+      function getParentValues(parentIdx) {{
+        // 複数選択（チェックボックス）では複数チェックされ得るため、配列で全件返す
+        // （以前はchecked[0]のみ見ており、2つ目以降の親子関係が機能しなかった）。
         var name = 'answer_' + parentIdx;
         var checked = form.querySelectorAll('[name="' + name + '"]:checked');
-        if (checked.length) return checked[0].value;
+        if (checked.length) return Array.from(checked).map(function(c) {{ return c.value; }});
         // radio/checkbox は :checked がなければ未回答
         var firstInp = form.querySelector('[name="' + name + '"]');
-        if (firstInp && (firstInp.type === 'radio' || firstInp.type === 'checkbox')) return '';
+        if (firstInp && (firstInp.type === 'radio' || firstInp.type === 'checkbox')) return [];
         // textarea / number input
         var inp = form.querySelector('textarea[name="' + name + '"],input[type="number"][name="' + name + '"]');
-        return inp ? inp.value.trim() : '';
+        return inp ? [inp.value.trim()] : [];
       }}
 
       function updateBranch() {{
@@ -2472,7 +2546,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
           var pIdx = div.dataset.parentIdx;
           var pVal = div.dataset.parentValue;
           if (pIdx === undefined || pVal === undefined) return;
-          var shouldInactive = getParentValue(parseInt(pIdx)) !== pVal;
+          var shouldInactive = getParentValues(parseInt(pIdx)).indexOf(pVal) === -1;
           div.classList.toggle('hq-inactive', shouldInactive);
         }});
         _initialLoad = false;
@@ -2485,9 +2559,9 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         var pVal = branchDiv.dataset.parentValue;
         if (pIdx === undefined || pVal === undefined) return;
         var parentName = 'answer_' + pIdx;
-        var parentRadio = form.querySelector('[name="' + parentName + '"][value="' + CSS.escape(pVal) + '"]');
-        if (parentRadio && parentRadio.type === 'radio' && !parentRadio.checked) {{
-          parentRadio.checked = true;
+        var parentInput = form.querySelector('[name="' + parentName + '"][value="' + CSS.escape(pVal) + '"]');
+        if (parentInput && (parentInput.type === 'radio' || parentInput.type === 'checkbox') && !parentInput.checked) {{
+          parentInput.checked = true;
           updateBranch();
         }}
       }}
@@ -2765,9 +2839,14 @@ def hearing_result_page(con, result: dict) -> str:
       <p class="muted" style="margin:0 0 12px"><strong>テンプレート:</strong> {_esc(result.get('template_name') or '')}　<strong>ヒアリング日:</strong> {_esc(result.get('conducted_on') or '—')}</p>
       {result_html}
       {history}
-      <div style="margin-top:16px;display:flex;gap:8px">
+      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
         <a class="btn sec" href="/deal/{result['deal_id']}">商談へ戻る</a>
         <a class="btn sec" href="/hearings">ヒアリング一覧</a>
+        {f'<a class="btn sec" href="/hearing/result/{result["id"]}/edit">編集</a>' if result.get('template_id') else ''}
+        <form method="post" action="/hearing/result/{result['id']}/delete" style="display:inline;margin:0">
+          <button class="btn" style="background:#c53030;border-color:#c53030;color:#fff"
+            onclick="return confirm('このヒアリング結果を削除しますか？この操作は取り消せません。')">削除</button>
+        </form>
       </div>
     </div>"""
 
@@ -2782,13 +2861,15 @@ def hearings_page(con, template_id: int | None = None) -> str:
             f'{_esc(a.get("label"))}: {_esc(_format_answer_for_export(a))}'
             for a in (r.get("answers") or [])[:2]
         )
+        _nav = f"location.href='/hearing/result/{r['id']}'"
         rows += (
-            f'<tr style="cursor:pointer" onclick="location.href=\'/hearing/result/{r["id"]}\'">'
-            f'<td>{_esc(r.get("conducted_on") or "—")}</td>'
-            f'<td><a href="/deal/{r["deal_id"]}">{_esc(r.get("account_name") or "")}</a></td>'
-            f'<td>{_esc(r.get("deal_name") or "")}</td>'
-            f'<td>{_esc(r.get("template_name") or "")}</td>'
-            f'<td class="muted" style="font-size:12px">{preview}</td>'
+            f'<tr>'
+            f'<td style="width:32px"><input type="checkbox" name="ids" value="{r["id"]}"></td>'
+            f'<td style="cursor:pointer" onclick="{_nav}">{_esc(r.get("conducted_on") or "—")}</td>'
+            f'<td style="cursor:pointer" onclick="{_nav}"><a href="/deal/{r["deal_id"]}" onclick="event.stopPropagation()">{_esc(r.get("account_name") or "")}</a></td>'
+            f'<td style="cursor:pointer" onclick="{_nav}">{_esc(r.get("deal_name") or "")}</td>'
+            f'<td style="cursor:pointer" onclick="{_nav}">{_esc(r.get("template_name") or "")}</td>'
+            f'<td class="muted" style="font-size:12px;cursor:pointer" onclick="{_nav}">{preview}</td>'
             f'</tr>'
         )
     header_actions = []
@@ -2814,11 +2895,27 @@ def hearings_page(con, template_id: int | None = None) -> str:
         </span>
       </h2>
       <p class="muted" style="margin-bottom:14px">{desc}</p>
+      <form id="hearing_bulk_form" method="post" action="/hearings/bulk_delete">
       <table>
-        <tr><th>ヒアリング日</th><th>アカウント</th><th>案件名</th><th>テンプレート</th><th>回答プレビュー</th></tr>
-        {rows or '<tr><td colspan=5 class="muted">まだヒアリング結果がありません。</td></tr>'}
+        <tr><th style="width:32px"><input type="checkbox" id="hearing_chk_all" title="全選択"
+              onchange="document.querySelectorAll('#hearing_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
+            <th>ヒアリング日</th><th>アカウント</th><th>案件名</th><th>テンプレート</th><th>回答プレビュー</th></tr>
+        {rows or '<tr><td colspan=6 class="muted">まだヒアリング結果がありません。</td></tr>'}
       </table>
-    </div>"""
+      {f'''<div style="margin-top:10px">
+        <button class="btn" type="button" onclick="hearingBulkDelete()"
+          style="background:#c53030;border-color:#c53030;color:#fff">選択した件を削除</button>
+      </div>''' if results else ''}
+      </form>
+    </div>
+    <script>
+    function hearingBulkDelete() {{
+      var ids = Array.from(document.querySelectorAll('#hearing_bulk_form [name=ids]:checked')).map(function(c){{return c.value;}});
+      if (!ids.length) {{ alert('削除するヒアリング結果を選択してください。'); return; }}
+      if (!confirm(ids.length + '件のヒアリング結果を削除します。この操作は取り消せません。よろしいですか？')) return;
+      document.getElementById('hearing_bulk_form').submit();
+    }}
+    </script>"""
 
 
 def build_hearings_xlsx(con) -> bytes:
@@ -3293,7 +3390,7 @@ def deals_import_page(con, result: str = "") -> str:
           {biz_l2_html}
         </div>
         <div><strong>リード経路</strong>: {_chips(patterns_list)}</div>
-        <div><strong>担当者</strong>: {_chips(owners_list)}</div>
+        <div><strong>担当者・サブ担当</strong>: {_chips(owners_list)}</div>
         <div><strong>重要度</strong>: {_chips(sfa_db.IMPORTANCE_OPTIONS)}</div>
         <div><strong>企業規模</strong>: {_chips(sizes_list)}</div>
         <div><strong>業界</strong>（参考。自由入力欄のためこの一覧以外の表記も取り込めます）: {_chips(industries_list)}</div>
@@ -3627,10 +3724,36 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         if not label:
                             self._send(render("<div class=card>対象が見つかりません</div>"), 404)
                         else:
+                            draft = sfa_db.get_hearing_draft(
+                                con, target_type=ttype, target_id=tval_id, template_id=tmpl["id"],
+                            )
                             self._send(render(hearing_input_page(
                                 con, target_type=ttype, target_id=tval_id, template=tmpl,
                                 target_label=label, prefill=prefill, prev_date=prev_date,
+                                draft=draft,
                             )))
+                elif path.startswith("/hearing/result/") and path.endswith("/edit"):
+                    try:
+                        rid = int(path.split("/")[3])
+                    except (ValueError, IndexError):
+                        rid = 0
+                    r = sfa_db.get_hearing_result(con, rid) if rid else None
+                    tmpl = sfa_db.get_hearing_template(con, r["template_id"]) if r and r.get("template_id") else None
+                    if not r or not tmpl:
+                        self._send(render("<div class=card>編集対象が見つかりません"
+                                          "（テンプレートが削除されている可能性があります）。"
+                                          "<a href='/hearings'>一覧へ戻る</a></div>"), 404)
+                    else:
+                        label = f"{r.get('account_name') or ''} / {r.get('deal_name') or ''}"
+                        prefill = {a.get("label"): a.get("answer") for a in (r.get("answers") or [])}
+                        draft = sfa_db.get_hearing_draft(
+                            con, target_type="hearing_edit", target_id=rid, template_id=tmpl["id"],
+                        )
+                        self._send(render(hearing_input_page(
+                            con, target_type="deal", target_id=r["deal_id"], template=tmpl,
+                            target_label=label, prefill=prefill, prev_date=None, draft=draft,
+                            edit_result_id=rid, edit_conducted_on=r.get("conducted_on"),
+                        )))
                 elif path.startswith("/hearing/result/"):
                     try:
                         rid = int(path.split("/")[3])
@@ -3788,7 +3911,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── 商談一括編集 ──
                 elif path == "/deals/bulk_edit":
-                    _DEAL_ALLOWED = {"stage", "owner", "business_type_l1"}
+                    _DEAL_ALLOWED = {"stage", "owner", "sub_owner", "business_type_l1"}
                     ids = f_list.get("ids", [])
                     field = f.get("field", "")
                     value = f.get("value", "")
@@ -3853,6 +3976,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         business_type_l2=f.get("business_type_l2") or None,
                         lead_pattern=f.get("lead_pattern") or None,
                         owner=f.get("owner") or None,
+                        sub_owner=f.get("sub_owner") or None,
                         value_lumpsum=num("value_lumpsum"),
                         value_lumpsum_monthly=num("value_lumpsum_monthly"),
                         value_recurring=num("value_recurring"),
@@ -3903,6 +4027,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 business_type_l2=deal.get("business_type_l2"),
                                 lead_pattern=deal.get("lead_pattern"),
                                 owner=deal.get("owner"),
+                                sub_owner=deal.get("sub_owner"),
                                 value_lumpsum=deal.get("value_lumpsum"),
                                 value_lumpsum_monthly=deal.get("value_lumpsum_monthly"),
                                 value_recurring=deal.get("value_recurring"),
@@ -3917,7 +4042,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── 商談インライン編集 ──
                 elif path.startswith("/deal/") and path.endswith("/field"):
-                    _DEAL_ALLOWED_FIELDS = {"stage", "owner", "business_type_l1", "business_type_l2", "client_budget", "value_lumpsum"}
+                    _DEAL_ALLOWED_FIELDS = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2", "client_budget", "value_lumpsum"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -4016,6 +4141,46 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._redirect("/hearing-templates")
                     except (ValueError, IndexError):
                         self._send(render("<div class=card>不正なリクエスト</div>"), 400)
+                elif path.startswith("/hearing/result/") and path.endswith("/delete"):
+                    parts = path.split("/")
+                    if len(parts) == 5 and parts[4] == "delete" and parts[3].isdigit():
+                        rid = int(parts[3])
+                        r = sfa_db.get_hearing_result(con, rid)
+                        sfa_db.delete_hearing_result(con, rid)
+                        self._redirect(f"/deal/{r['deal_id']}" if r else "/hearings")
+                    else:
+                        self._redirect("/hearings")
+
+                elif path == "/hearings/bulk_delete":
+                    ids = f_list.get("ids", [])
+                    for rid in ids:
+                        if str(rid).isdigit():
+                            sfa_db.delete_hearing_result(con, int(rid))
+                    self._redirect("/hearings")
+
+                elif path == "/hearing/autosave":
+                    try:
+                        ttype = f.get("target_type", "")
+                        tval_id = int(f.get("target_id") or 0)
+                        tmpl_id = int(f.get("template_id") or 0)
+                        edit_rid = f.get("edit_result_id", "")
+                        if edit_rid:
+                            # 修正モードの下書きは、新規ヒアリングの下書きと衝突しないよう別名前空間に保存
+                            ttype, tval_id = "hearing_edit", int(edit_rid)
+                        if not (ttype and tval_id and tmpl_id):
+                            raise ValueError("missing target/template")
+                        form_data = {k: (v[0] if len(v) == 1 else v) for k, v in f_list.items()}
+                        sfa_db.save_hearing_draft(
+                            con, target_type=ttype, target_id=tval_id, template_id=tmpl_id,
+                            form_data=form_data,
+                        )
+                        self._send_cors_json(json.dumps({"ok": True}).encode())
+                    except Exception as exc:  # noqa: BLE001
+                        self._send_cors_json(
+                            json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False).encode(),
+                            status=400,
+                        )
+
                 elif path == "/hearing/submit":
                     try:
                         ttype = f.get("target_type", "")
@@ -4059,6 +4224,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             answers.append({"label": it.get("label"),
                                             "type": it.get("type"), "answer": ans})
                     conducted_on = f.get("occurred_on") or None
+
+                    # 修正モード: 新規の活動履歴は作らず、既存hearing_resultsを上書きするだけ
+                    edit_rid_raw = f.get("edit_result_id", "")
+                    if edit_rid_raw:
+                        try:
+                            edit_rid = int(edit_rid_raw)
+                        except ValueError:
+                            self._send(render("<div class=card>不正なリクエスト</div>"), 400)
+                            return
+                        sfa_db.update_hearing_result(con, edit_rid, conducted_on=conducted_on, answers=answers)
+                        sfa_db.delete_hearing_draft(
+                            con, target_type="hearing_edit", target_id=edit_rid, template_id=tmpl_id,
+                        )
+                        self._redirect(f"/hearing/result/{edit_rid}")
+                        return
+
                     # 活動履歴を1件追加
                     act_id = sfa_db.add_activity(
                         con, deal_id=deal_id,
@@ -4073,6 +4254,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         template_name=tmpl.get("name"), conducted_on=conducted_on,
                         answers=answers, activity_id=act_id,
                     )
+                    # 確定保存できたので自動保存の下書きは不要（元のtarget_type/idで保存されているため）
+                    sfa_db.delete_hearing_draft(con, target_type=ttype, target_id=tval_id, template_id=tmpl_id)
                     # 商談の現状メモ・次回MSを更新（入力があった場合のみ）
                     update_note = (f.get("update_note") or "").strip()
                     ms_date = (f.get("next_milestone_date") or "").strip()
@@ -4087,6 +4270,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 business_type_l1=deal.get("business_type_l1"),
                                 business_type_l2=deal.get("business_type_l2"),
                                 lead_pattern=deal.get("lead_pattern"), owner=deal.get("owner"),
+                                sub_owner=deal.get("sub_owner"),
                                 value_lumpsum=deal.get("value_lumpsum"),
                                 value_lumpsum_monthly=deal.get("value_lumpsum_monthly"),
                                 value_recurring=deal.get("value_recurring"),
@@ -4194,14 +4378,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/deals/import":
                     try:
                         csv_text = _decode_uploaded_csv(f.get("csv_file")) or f.get("csv_text", "")
-                        ok_deals, ok_accounts, skip = deals_csv.import_deals(
+                        ok_deals, ok_accounts, dup_skip, skip = deals_csv.import_deals(
                             con, csv_text,
                             industries=sfa_db.get_master_list(con, "industries"),
                             company_sizes=sfa_db.get_master_list(con, "company_sizes"),
                         )
                         msg = f"取込完了: 商談{ok_deals}件・アカウント{ok_accounts}件を追加。"
+                        if dup_skip:
+                            msg += f" 重複スキップ {dup_skip}件（同一内容の商談が既存）。"
                         if skip:
-                            msg += f" スキップ {skip}件。"
+                            msg += f" エラースキップ {skip}件。"
                         self._send(render(deals_import_page(con), flash=msg))
                     except Exception as exc:
                         self._send(render(deals_import_page(con), flash=f"取込エラー: {exc}"))

@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS deals (
     business_type_l2 TEXT,
     lead_pattern TEXT,
     owner TEXT,
+    sub_owner TEXT,                   -- サブ担当
     value_lumpsum REAL,               -- 単発総額（万円）
     value_lumpsum_monthly REAL,       -- 単発月額（万円）
     value_recurring REAL,             -- 継続月額（万円）
@@ -237,6 +238,17 @@ CREATE TABLE IF NOT EXISTS hearing_results (
     created_at    TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_hearing_results_deal ON hearing_results(deal_id);
+
+-- 初回ヒアリング: 自動保存下書き（30秒ごとに上書き保存し、確定保存時に削除する）
+CREATE TABLE IF NOT EXISTS hearing_drafts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_type   TEXT NOT NULL,
+    target_id     INTEGER NOT NULL,
+    template_id   INTEGER NOT NULL,
+    form_json     TEXT NOT NULL DEFAULT '{}',
+    updated_at    TEXT DEFAULT (datetime('now')),
+    UNIQUE(target_type, target_id, template_id)
+);
 """
 
 
@@ -273,6 +285,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             ("reduction_rate", "REAL"),
             ("fee_rate", "REAL"),
             ("diagnosis_cost", "REAL"),
+            ("sub_owner", "TEXT"),
         ]:
             if col not in deal_cols:
                 con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")
@@ -326,7 +339,8 @@ def list_deals(con, status: str | None = "open", owner: str | None = None,
         q += " AND d.status = ?"
         params.append(status)
     if owner:
-        q += " AND d.owner = ?"
+        q += " AND (d.owner = ? OR d.sub_owner = ?)"
+        params.append(owner)
         params.append(owner)
     if stage:
         q += " AND d.stage = ?"
@@ -399,7 +413,7 @@ def upsert_account_merge(con, *, name: str, industry=None, company_size=None, co
 
 DEAL_FIELDS = [
     "account_id", "theme_id", "deal_name", "stage", "business_type_l1", "business_type_l2",
-    "lead_pattern", "owner", "value_lumpsum", "value_lumpsum_monthly", "value_recurring",
+    "lead_pattern", "owner", "sub_owner", "value_lumpsum", "value_lumpsum_monthly", "value_recurring",
     "client_budget", "next_milestone_date", "next_milestone_label", "note", "goal",
     "importance", "status",
     "cost_stage", "approach_value", "approach_rate", "reduction_rate", "fee_rate", "diagnosis_cost",
@@ -651,6 +665,42 @@ def add_hearing_result(con, *, deal_id, template_id=None, template_name=None,
     return cur.lastrowid
 
 
+def save_hearing_draft(con, *, target_type: str, target_id: int, template_id: int, form_data: dict) -> None:
+    """ヒアリング入力中の自動保存下書きを保存（同一対象・同一テンプレなら上書き）。"""
+    con.execute(
+        "INSERT INTO hearing_drafts (target_type, target_id, template_id, form_json, updated_at) "
+        "VALUES (?,?,?,?,datetime('now')) "
+        "ON CONFLICT(target_type, target_id, template_id) DO UPDATE SET "
+        "form_json=excluded.form_json, updated_at=excluded.updated_at",
+        (target_type, int(target_id), int(template_id),
+         _json.dumps(form_data or {}, ensure_ascii=False)),
+    )
+    con.commit()
+
+
+def get_hearing_draft(con, *, target_type: str, target_id: int, template_id: int) -> dict | None:
+    r = con.execute(
+        "SELECT * FROM hearing_drafts WHERE target_type=? AND target_id=? AND template_id=?",
+        (target_type, int(target_id), int(template_id)),
+    ).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    try:
+        d["form_data"] = _json.loads(d.get("form_json") or "{}")
+    except (ValueError, TypeError):
+        d["form_data"] = {}
+    return d
+
+
+def delete_hearing_draft(con, *, target_type: str, target_id: int, template_id: int) -> None:
+    con.execute(
+        "DELETE FROM hearing_drafts WHERE target_type=? AND target_id=? AND template_id=?",
+        (target_type, int(target_id), int(template_id)),
+    )
+    con.commit()
+
+
 def _hydrate_hearing_result(r: dict) -> dict:
     try:
         r["answers"] = _json.loads(r.get("answers_json") or "[]")
@@ -677,6 +727,20 @@ def get_hearing_result(con, id: int) -> dict | None:
         (int(id),),
     ).fetchone()
     return _hydrate_hearing_result(dict(r)) if r else None
+
+
+def update_hearing_result(con, id: int, *, conducted_on=None, answers: list[dict]) -> None:
+    """既存ヒアリング結果の内容を修正する（新規行は作らず上書き）。"""
+    con.execute(
+        "UPDATE hearing_results SET conducted_on=?, answers_json=? WHERE id=?",
+        (conducted_on, _json.dumps(answers or [], ensure_ascii=False), int(id)),
+    )
+    con.commit()
+
+
+def delete_hearing_result(con, id: int) -> None:
+    con.execute("DELETE FROM hearing_results WHERE id=?", (int(id),))
+    con.commit()
 
 
 def list_all_hearing_results(con, template_id: int | None = None) -> list[dict]:
