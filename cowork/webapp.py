@@ -3391,20 +3391,44 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             return d.get(key, [])
 
         def _form_multi(self) -> dict:
-            """multipart/form-data対応。ファイルはバイト列で返す。"""
-            import cgi, io
+            """multipart/form-data対応。ファイルは(filename, バイト列)のタプルで返す。
+
+            Python 3.13でcgiモジュールが削除された（PEP 594）ため、標準ライブラリのみで
+            簡易的なmultipartパーサを自前実装している。
+            """
             ctype = self.headers.get("Content-Type", "")
             n = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(n)
-            environ = {"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype, "CONTENT_LENGTH": str(n)}
-            fs = cgi.FieldStorage(fp=io.BytesIO(body), environ=environ, keep_blank_values=True)
+
+            m = re.search(r'boundary="?([^";]+)"?', ctype)
+            if not m:
+                return {}
+            boundary = ("--" + m.group(1)).encode("utf-8")
+
             result = {}
-            for key in fs.keys():
-                item = fs[key]
-                if hasattr(item, "file") and item.filename:
-                    result[key] = (item.filename, item.file.read())
+            for part in body.split(boundary):
+                part = part.strip(b"\r\n")
+                if not part or part == b"--":
+                    continue
+                if b"\r\n\r\n" not in part:
+                    continue
+                header_blob, content = part.split(b"\r\n\r\n", 1)
+                content = content[:-2] if content.endswith(b"\r\n") else content
+                headers = {}
+                for line in header_blob.decode("utf-8", errors="replace").split("\r\n"):
+                    if ":" in line:
+                        k, v = line.split(":", 1)
+                        headers[k.strip().lower()] = v.strip()
+                disposition = headers.get("content-disposition", "")
+                name_m = re.search(r'name="([^"]*)"', disposition)
+                if not name_m:
+                    continue
+                field_name = name_m.group(1)
+                filename_m = re.search(r'filename="([^"]*)"', disposition)
+                if filename_m:
+                    result[field_name] = (filename_m.group(1), content)
                 else:
-                    result[key] = item.value
+                    result[field_name] = content.decode("utf-8", errors="replace")
             return result
 
         def _qs(self) -> dict:
