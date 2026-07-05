@@ -14,6 +14,9 @@
               + 基礎レポートリンク（SharePoint格納のため自動取得はできない。
                 手動で追記する前提のプレースホルダ行を残す）
 
+投稿順序: next_milestone_labelにHH:MM表記があるものは時間の早い順に投稿する。
+         時間表記がないものは末尾にまとめる。
+
 実行:
   python scripts/daily_appt_slack_notify.py          # 通常実行（翌日分）
   TARGET_DATE=2026-07-07 python scripts/daily_appt_slack_notify.py  # 日付指定（手動実行・テスト用）
@@ -122,6 +125,13 @@ def build_parent_text(deal: dict, date_str: str) -> str:
     return f"{title}\n{link}"
 
 
+def time_sort_key(deal: dict) -> tuple[int, str]:
+    m = re.search(r"(\d{2}):(\d{2})", deal.get("next_milestone_label") or "")
+    if not m:
+        return (1, "")  # 時間表記なしは後ろへ
+    return (0, f"{m.group(1)}:{m.group(2)}")
+
+
 def build_thread_text(deal: dict) -> str:
     note = (deal.get("note") or "").strip() or "（メモなし）"
     return (
@@ -165,6 +175,8 @@ def main():
     if not targets:
         print("[INFO] 対象商談がないため終了します。")
         return
+
+    targets.sort(key=time_sort_key)
 
     posted = 0
     for deal in targets:
