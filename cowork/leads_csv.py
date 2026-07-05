@@ -176,9 +176,12 @@ def import_leads(con, csv_text: str, industries=None, company_sizes=None) -> tup
     if industries and company_sizes and os.environ.get("ANTHROPIC_API_KEY"):
         rows = _estimate_fields(rows, industries, company_sizes)
     ok = skip = 0
+    # 行ごとにcommitすると大量件数（数百〜数千行）で著しく遅くなり、
+    # サーバー側のリクエストタイムアウト（例: Renderの502）を招くため、
+    # 1件ずつ処理はしつつcommitはループ終了後に1回だけ行う。
     for r in rows:
         try:
-            sfa_db.upsert_lead(con, **r)
+            sfa_db.upsert_lead(con, commit=False, **r)
             # アカウント自動追加・補完
             company = r.get("company", "")
             if company:
@@ -186,10 +189,12 @@ def import_leads(con, csv_text: str, industries=None, company_sizes=None) -> tup
                     con, name=company,
                     industry=r.get("industry"),
                     company_size=r.get("company_size"),
+                    commit=False,
                 )
             ok += 1
         except Exception:
             skip += 1
+    con.commit()
     return ok, skip
 
 

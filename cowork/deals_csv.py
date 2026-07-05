@@ -173,6 +173,9 @@ def import_deals(con, csv_text: str, industries=None, company_sizes=None) -> tup
         rows = _estimate_fields(rows, industries, company_sizes)
 
     ok_deals = ok_accounts = skip = 0
+    # 行ごとにcommitすると大量件数（数千行）で著しく遅くなり、
+    # サーバー側のリクエストタイムアウト（例: Renderの502）を招くため、
+    # 1件ずつ処理はしつつcommitはループ終了後に1回だけ行う。
     for r in rows:
         try:
             is_new_account = con.execute(
@@ -180,16 +183,18 @@ def import_deals(con, csv_text: str, industries=None, company_sizes=None) -> tup
             ).fetchone() is None
             account_id = sfa_db.upsert_account_merge(
                 con, name=r["company"], industry=r.get("industry"), company_size=r.get("company_size"),
+                commit=False,
             )
             if is_new_account:
                 ok_accounts += 1
             if r["kind"] == KIND_ACCOUNT:
                 continue
             deal_fields = {k: r.get(k) for k in DEAL_CSV_FIELDS}
-            sfa_db.upsert_deal(con, account_id=account_id, status="open", **deal_fields)
+            sfa_db.upsert_deal(con, account_id=account_id, status="open", commit=False, **deal_fields)
             ok_deals += 1
         except Exception:
             skip += 1
+    con.commit()
     return ok_deals, ok_accounts, skip
 
 

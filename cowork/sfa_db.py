@@ -351,32 +351,35 @@ def list_activities(con, deal_id: int) -> list[dict]:
 
 
 # ---- 更新系 ----
-def upsert_account(con, *, id=None, name, industry=None, company_size=None, note=None) -> int:
+def upsert_account(con, *, id=None, name, industry=None, company_size=None, note=None, commit: bool = True) -> int:
     if id:
         con.execute(
             "UPDATE accounts SET name=?, industry=?, company_size=?, note=?, updated_at=datetime('now') WHERE id=?",
             (name, industry, company_size, note, id),
         )
-        con.commit()
+        if commit:
+            con.commit()
         return int(id)
     cur = con.execute(
         "INSERT INTO accounts (name, industry, company_size, note) VALUES (?,?,?,?)",
         (name, industry, company_size, note),
     )
-    con.commit()
+    if commit:
+        con.commit()
     return cur.lastrowid
 
 
-def upsert_account_merge(con, *, name: str, industry=None, company_size=None) -> int:
+def upsert_account_merge(con, *, name: str, industry=None, company_size=None, commit: bool = True) -> int:
     """アカウントを名前で検索し、無ければ新規作成、あれば空欄項目のみ埋める。
 
     リード/商談のCSV一括取込で、同名アカウントの重複作成を防ぐために使う。
+    commit=False指定時は呼び出し側が後でまとめてcommitする（大量件数の一括取込を高速化するため）。
     """
     existing = con.execute(
         "SELECT id, industry, company_size FROM accounts WHERE name=?", (name,)
     ).fetchone()
     if existing is None:
-        return upsert_account(con, name=name, industry=industry, company_size=company_size)
+        return upsert_account(con, name=name, industry=industry, company_size=company_size, commit=commit)
     acc_row = dict(existing)
     updates = {}
     if industry and not acc_row.get("industry"):
@@ -389,7 +392,8 @@ def upsert_account_merge(con, *, name: str, industry=None, company_size=None) ->
             f"UPDATE accounts SET {set_clause}, updated_at=datetime('now') WHERE id=?",
             (*updates.values(), acc_row["id"]),
         )
-        con.commit()
+        if commit:
+            con.commit()
     return acc_row["id"]
 
 
@@ -402,19 +406,21 @@ DEAL_FIELDS = [
 ]
 
 
-def upsert_deal(con, *, id=None, **fields) -> int:
+def upsert_deal(con, *, id=None, commit: bool = True, **fields) -> int:
     data = {k: fields.get(k) for k in DEAL_FIELDS}
     if id:
         # theme_id は sync_deal が直接 SQL で管理するため、NULL で上書きしない
         update_keys = [k for k in DEAL_FIELDS if not (k == "theme_id" and data[k] is None)]
         sets = ", ".join(f"{k}=?" for k in update_keys) + ", updated_at=datetime('now')"
         con.execute(f"UPDATE deals SET {sets} WHERE id=?", [data[k] for k in update_keys] + [id])
-        con.commit()
+        if commit:
+            con.commit()
         return int(id)
     cols = ", ".join(DEAL_FIELDS)
     ph = ", ".join("?" for _ in DEAL_FIELDS)
     cur = con.execute(f"INSERT INTO deals ({cols}) VALUES ({ph})", [data[k] for k in DEAL_FIELDS])
-    con.commit()
+    if commit:
+        con.commit()
     return cur.lastrowid
 
 
@@ -505,17 +511,19 @@ def get_lead(con, lead_id: int) -> dict | None:
     return dict(r) if r else None
 
 
-def upsert_lead(con, *, id=None, **fields) -> int:
+def upsert_lead(con, *, id=None, commit: bool = True, **fields) -> int:
     data = {k: fields.get(k) for k in LEAD_FIELDS}
     if id:
         sets = ", ".join(f"{k}=?" for k in LEAD_FIELDS) + ", updated_at=datetime('now')"
         con.execute(f"UPDATE leads SET {sets} WHERE id=?", [data[k] for k in LEAD_FIELDS] + [id])
-        con.commit()
+        if commit:
+            con.commit()
         return int(id)
     cols = ", ".join(LEAD_FIELDS)
     ph = ", ".join("?" for _ in LEAD_FIELDS)
     cur = con.execute(f"INSERT INTO leads ({cols}) VALUES ({ph})", [data[k] for k in LEAD_FIELDS])
-    con.commit()
+    if commit:
+        con.commit()
     return cur.lastrowid
 
 
