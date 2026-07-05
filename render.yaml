@@ -59,6 +59,24 @@ services:
       - key: SLACK_BOT_TOKEN
         sync: false
 
+  # ── 翌日アポSlack自動スレ立て（日次 06:00 JST）────────────────────────
+  - type: cron
+    name: sfa-daily-appt-notify
+    env: python
+    region: singapore
+    schedule: "0 21 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scripts/daily_appt_slack_notify.py
+    envVars:
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SALES_CHANNEL_ID
+        value: C0AT55W40ET
+      - key: SFA_TOOL_URL
+        value: https://sfa-crm.onrender.com
+      - key: SFA_API_TOKEN
+        sync: false
+
   # ── 商談スプシエクスポート（日次 09:00 JST） ────────────────────────
   - type: cron
     name: sfa-daily-export

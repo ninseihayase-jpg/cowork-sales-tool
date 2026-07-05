@@ -4620,6 +4620,29 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con.commit()
                         self._send_cors_json(json.dumps({"ok": True}, ensure_ascii=False).encode())
 
+                # ── 翌日アポSlack通知の重複防止マーカー ──
+                elif path == "/api/deals/mark_notified":
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            data = f
+                        deal_id = data.get("deal_id")
+                        notified_date = data.get("date")
+                        if deal_id and notified_date:
+                            con.execute(
+                                "UPDATE deals SET slack_notified_date=? WHERE id=?",
+                                (notified_date, int(deal_id)),
+                            )
+                            con.commit()
+                            self._send_cors_json(json.dumps({"ok": True}, ensure_ascii=False).encode())
+                        else:
+                            self._send_cors_json(b'{"error":"deal_id and date required"}', status=400)
+
                 # ── Slack Events API ──
                 elif path == "/slack/events":
                     import threading as _threading

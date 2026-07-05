@@ -286,6 +286,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             ("fee_rate", "REAL"),
             ("diagnosis_cost", "REAL"),
             ("sub_owner", "TEXT"),
+            ("slack_notified_date", "TEXT"),
         ]:
             if col not in deal_cols:
                 con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")
