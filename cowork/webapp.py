@@ -1028,24 +1028,48 @@ def accounts_page(con) -> str:
     }
     rows_html = "".join(
         f'<tr>'
+        f'<td style="width:32px"><input type="checkbox" name="ids" value="{a["id"]}"></td>'
         f'<td><a href="/account/{a["id"]}">{_esc(a["name"])}</a></td>'
         f'<td>{_esc(a.get("industry")) or "<span class=muted>―</span>"}</td>'
         f'<td>{_esc(a.get("company_size")) or "<span class=muted>―</span>"}</td>'
         f'<td class="right muted">{deal_counts.get(a["id"], 0)}</td>'
         f'</tr>'
         for a in accounts
-    ) or '<tr><td colspan=4 class=muted>アカウントがありません。</td></tr>'
+    ) or '<tr><td colspan=5 class=muted>アカウントがありません。</td></tr>'
+    deal_counts_json = json.dumps(deal_counts, ensure_ascii=False)
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center">
         <span>アカウント一覧 ({len(accounts)})</span>
         <a class="btn" href="/account/new">＋手動追加</a>
       </h2>
+      <form id="acc_bulk_form" method="post" action="/accounts/bulk_delete">
+      <div style="overflow-x:auto">
       <table>
-        <tr><th>企業名</th><th>業界</th><th>企業規模</th><th class="right">商談数</th></tr>
+        <tr><th style="width:32px"><input type="checkbox" id="acc_chk_all" title="全選択"
+              onchange="document.querySelectorAll('#acc_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
+            <th>企業名</th><th>業界</th><th>企業規模</th><th class="right">商談数</th></tr>
         {rows_html}
       </table>
-    </div>"""
+      <div style="margin-top:10px">
+        <button class="btn" type="button" onclick="accBulkDelete()"
+          style="background:#c53030;border-color:#c53030;color:#fff">選択した件を削除</button>
+      </div>
+      </div>
+      </form>
+    </div>
+    <script>
+    const ACC_DEAL_COUNTS = {deal_counts_json};
+    function accBulkDelete() {{
+      var ids = Array.from(document.querySelectorAll('#acc_bulk_form [name=ids]:checked')).map(function(c){{return c.value;}});
+      if (!ids.length) {{ alert('削除するアカウントを選択してください。'); return; }}
+      var dealTotal = ids.reduce(function(sum, id){{ return sum + (ACC_DEAL_COUNTS[id] || 0); }}, 0);
+      var msg = ids.length + '件のアカウントを削除します。この操作は取り消せません。';
+      if (dealTotal > 0) msg += '\\n※紐づく商談も合計' + dealTotal + '件まとめて削除されます。';
+      if (!confirm(msg)) return;
+      document.getElementById('acc_bulk_form').submit();
+    }}
+    </script>"""
 
 
 def account_detail(con, acc: dict) -> str:
@@ -1067,11 +1091,21 @@ def account_detail(con, acc: dict) -> str:
         f'<p style="margin-top:8px;white-space:pre-wrap;font-size:13px">{_esc(acc.get("note"))}</p>'
         if acc.get("note") else ""
     )
+    _del_msg = f"このアカウントを削除しますか？"
+    if deals:
+        _del_msg += f" 紐づく商談{len(deals)}件も一緒に削除されます。"
+    _del_msg += " この操作は取り消せません。"
     return f"""
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">{_esc(acc["name"])}</h2>
-        <a class="btn sec" href="/account/{acc['id']}/edit" style="font-size:12px;padding:5px 10px">編集</a>
+        <span style="display:flex;gap:8px">
+          <a class="btn sec" href="/account/{acc['id']}/edit" style="font-size:12px;padding:5px 10px">編集</a>
+          <form method="post" action="/account/{acc['id']}/delete" style="display:inline;margin:0">
+            <button class="btn" style="background:#c53030;border-color:#c53030;color:#fff;font-size:12px;padding:5px 10px"
+              onclick="return confirm('{_del_msg}')">削除</button>
+          </form>
+        </span>
       </div>
       <div class="grid" style="margin-top:12px">
         <div><label>業界</label><p style="margin:2px 0">{_esc(acc.get("industry")) or "―"}</p></div>
@@ -3711,6 +3745,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         note=f.get("note") or None,
                     )
                     self._redirect(f"/account/{saved_acc_id}")
+
+                elif path.startswith("/account/") and path.endswith("/delete"):
+                    parts = path.split("/")
+                    if len(parts) == 4 and parts[3] == "delete" and parts[2].isdigit():
+                        con.execute("DELETE FROM accounts WHERE id=?", (int(parts[2]),))
+                        con.commit()
+                    self._redirect("/accounts")
+
+                elif path == "/accounts/bulk_delete":
+                    ids = f_list.get("ids", [])
+                    for acc_id in ids:
+                        if str(acc_id).isdigit():
+                            con.execute("DELETE FROM accounts WHERE id=?", (int(acc_id),))
+                    if ids:
+                        con.commit()
+                    self._redirect("/accounts")
 
                 # ── 商談一括編集 ──
                 elif path == "/deals/bulk_edit":
