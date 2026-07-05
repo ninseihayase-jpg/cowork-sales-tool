@@ -81,3 +81,29 @@ def sync_deal(client: ThemeDBClient, con, deal_id: int, user_id: str = DEFAULT_U
     con.execute("UPDATE deals SET theme_id=? WHERE id=?", (next_id, deal_id))
     con.commit()
     return {"action": "insert", "theme_id": next_id}
+
+
+def sync_all_pending(client: ThemeDBClient, db_path: str, user_id: str = DEFAULT_USER_ID) -> dict:
+    """theme_id未設定の全商談をテーマDBへ同期する。
+
+    CSV一括取込は1リクエストで数百件を同期しようとするとHTTP呼び出しの
+    積み重ねでタイムアウトしかねないため、バックグラウンドスレッドから
+    呼ぶ想定（この関数内でDB接続を新規に張るのはスレッド間でsqlite3接続を
+    共有しないため）。sync_deal自体はtheme_id有無で更新/新規を振り分ける
+    冪等な処理なので、何度呼び直しても重複作成されない。
+    """
+    con = sfa_db.connect(db_path)
+    try:
+        ids = [r["id"] for r in con.execute("SELECT id FROM deals WHERE theme_id IS NULL").fetchall()]
+        ok = failed = 0
+        for deal_id in ids:
+            try:
+                sync_deal(client, con, deal_id, user_id=user_id)
+                ok += 1
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                print(f"[theme_link] sync_all_pending: deal {deal_id} failed: {exc}", flush=True)
+        print(f"[theme_link] sync_all_pending 完了: 対象{len(ids)}件 成功{ok}件 失敗{failed}件", flush=True)
+        return {"total": len(ids), "ok": ok, "failed": failed}
+    finally:
+        con.close()

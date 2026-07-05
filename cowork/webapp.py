@@ -832,6 +832,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     # デフォルトでclosedを除外（NULLもopenとして扱う）。"all"は全件表示
     effective_status = None if status_filter == "all" else (status_filter or "open")
     deals = sfa_db.list_deals(con, status=effective_status, owner=owner, stage=stage_filter)
+    pending_sync = con.execute("SELECT COUNT(*) c FROM deals WHERE theme_id IS NULL").fetchone()["c"]
     owners = sfa_db.get_master_list(con, "owners")
     stages = sfa_db.get_master_list(con, "deal_stages")
     biz_l1_list = sfa_db.get_master_list(con, "business_type_l1")
@@ -928,10 +929,18 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         f'<td>{_esc(a.get("industry"))}</td><td>{_esc(a.get("company_size"))}</td></tr>'
         for a in accounts
     )
+    sync_btn = (
+        f'<form method="post" action="/deals/sync_pending" style="display:inline">'
+        f'<button class="btn sec" style="font-size:12px" '
+        f'onclick="return confirm(\'テーマDB未同期の商談{pending_sync}件をバックグラウンドで同期します。よろしいですか？\')">'
+        f'⏳ テーマDB未同期 {pending_sync}件を同期</button></form>'
+        if pending_sync else ""
+    )
     return f"""
     <div class="card"><h2 style="display:flex;justify-content:space-between;align-items:center">
       <span>商談 ({len(deals)})</span>
       <span style="display:flex;gap:8px">
+        {sync_btn}
         <a class="btn sec" href="/deals/import">CSV取込</a>
         <a class="btn" href="/deal/new">＋商談追加</a>
       </span>
@@ -4388,9 +4397,32 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             msg += f" 重複スキップ {dup_skip}件（同一内容の商談が既存）。"
                         if skip:
                             msg += f" エラースキップ {skip}件。"
+                        if ok_deals and theme_client is not None:
+                            import threading as _threading
+                            _threading.Thread(
+                                target=theme_link.sync_all_pending, args=(theme_client, db_path),
+                                daemon=True,
+                            ).start()
+                            msg += " テーマDBへの同期をバックグラウンドで開始しました。"
                         self._send(render(deals_import_page(con), flash=msg))
                     except Exception as exc:
                         self._send(render(deals_import_page(con), flash=f"取込エラー: {exc}"))
+
+                elif path == "/deals/sync_pending":
+                    if theme_client is None:
+                        self._send(render(home_page(con), flash="テーマDB連携が無効です（THEME_API_TOKEN未設定）。"))
+                    else:
+                        pending = con.execute("SELECT COUNT(*) c FROM deals WHERE theme_id IS NULL").fetchone()["c"]
+                        import threading as _threading
+                        _threading.Thread(
+                            target=theme_link.sync_all_pending, args=(theme_client, db_path),
+                            daemon=True,
+                        ).start()
+                        self._send(render(
+                            home_page(con),
+                            flash=f"テーマDB未同期の商談{pending}件の同期をバックグラウンドで開始しました。"
+                                  f"数分後に商談一覧の「連携」列で確認できます。",
+                        ))
 
                 elif path == "/leads/bulk_source":
                     ids = f_list.get("ids", [])
