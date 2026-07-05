@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import sfa_db
 from . import leads_csv
+from . import deals_csv
 from .theme_db import ThemeDBClient
 from . import theme_link
 
@@ -872,7 +873,10 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     return f"""
     <div class="card"><h2 style="display:flex;justify-content:space-between;align-items:center">
       <span>商談 ({len(deals)})</span>
-      <a class="btn" href="/deal/new">＋商談追加</a>
+      <span style="display:flex;gap:8px">
+        <a class="btn sec" href="/deals/import">CSV取込</a>
+        <a class="btn" href="/deal/new">＋商談追加</a>
+      </span>
     </h2>
     {filter_row}
     <form id="deal_bulk_form" method="post" action="/deals/bulk_edit">
@@ -3065,6 +3069,42 @@ def leads_import_page(result: str = "") -> str:
     </form></div>"""
 
 
+def deals_import_page(result: str = "") -> str:
+    result_html = f'<div class="flash">{html.escape(result)}</div>' if result else ""
+    header_line = ",".join(deals_csv.TEMPLATE_HEADERS)
+    example_lines = "\n".join(",".join(row) for row in deals_csv.TEMPLATE_EXAMPLE_ROWS)
+    return f"""
+    <div class="card"><h2>商談一括取込</h2>
+    {result_html}
+
+    <p class="muted">
+      1行 = 1商談 または 1アカウント。<strong>種別</strong>列に「商談」「アカウント」のどちらかを指定します
+      （省略した場合、商談名があれば商談、無ければアカウントとして扱います）。<br>
+      会社名が未登録の場合、商談・アカウントどちらの取込でも<strong>アカウントを自動作成</strong>します
+      （既存アカウントは業界・企業規模が空欄の項目のみ補完し、上書きはしません）。
+    </p>
+    <p style="margin:10px 0">
+      <a class="btn sec" href="/deals/import/template.csv">📥 テンプレートCSVをダウンロード</a>
+    </p>
+    <p class="muted">運用ルール: 入力は必ずこのテンプレートに列を揃えて作成してください（列の追加・削除・並び替えは不可、値のみ入力）。</p>
+
+    <hr style="margin:20px 0">
+    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📋 CSVペースト取込</h3>
+    <p class="muted">下記フォーマットのCSVを貼り付けてください（1行目はヘッダ行、空行はスキップ）。</p>
+    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">{html.escape(header_line)}
+{html.escape(example_lines)}</pre>
+    <p class="muted" style="margin-top:4px">
+      ステージ / 事業種別L1 / 事業種別L2 / リード経路 / 担当者は、マスタ編集で登録済みの値のみ有効です（値が一致しない場合は空欄で取り込まれます）。
+    </p>
+    <form method="post" action="/deals/import">
+      <label>CSVデータ（ペースト）</label>
+      <textarea name="csv_text" rows="8"
+        style="font-family:monospace;font-size:12px" required></textarea>
+      <p><button class="btn">取込実行</button>
+         <a class="btn sec" href="/deals">キャンセル</a></p>
+    </form></div>"""
+
+
 
 
 # ── HTTPハンドラ ───────────────────────────────────────────────────────────────
@@ -3320,6 +3360,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     qs = self._qs()
                     def qs1(k): return (qs.get(k, [None])[0] or None)
                     self._send(render(home_page(con, owner=qs1("owner"), status_filter=qs1("status"), stage_filter=qs1("stage"))))
+                elif path == "/deals/import":
+                    self._send(render(deals_import_page()))
+                elif path == "/deals/import/template.csv":
+                    body = deals_csv.build_template_csv()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header("Content-Disposition", 'attachment; filename="deals_import_template.csv"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                 elif path == "/masters":
                     self._send(render(masters_page(con)))
                 elif path == "/activity/new":
@@ -3733,9 +3783,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/leads/save":
                     existing_id = int(f["id"]) if f.get("id") else None
                     existing_deal_id = None
+                    existing_pitch_theme_id = None
                     if existing_id:
                         existing = sfa_db.get_lead(con, existing_id)
                         existing_deal_id = existing.get("deal_id") if existing else None
+                        existing_pitch_theme_id = existing.get("pitch_theme_id") if existing else None
                     company_name = f.get("company") or "(未設定)"
                     industry = f.get("industry") or None
                     company_size = f.get("company_size") or None
@@ -3749,6 +3801,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         email=f.get("email") or None,
                         phone=f.get("phone") or None,
                         source=f.get("source") or "other",
+                        pitch_theme_id=existing_pitch_theme_id,
                         lead_status=f.get("lead_status") or "new",
                         notes=f.get("notes") or None,
                         assigned_to=f.get("assigned_to") or None,
@@ -3800,15 +3853,32 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             self._send(render(leads_import_page(), flash=f"取込エラー: {exc}"))
 
                 elif path == "/leads/import":
-                    ok, skip = leads_csv.import_leads(
-                        con, f.get("csv_text", ""),
-                        industries=sfa_db.get_master_list(con, "industries"),
-                        company_sizes=sfa_db.get_master_list(con, "company_sizes"),
-                    )
-                    self._send(render(
-                        leads_import_page(),
-                        flash=f"取込完了: {ok}件追加。" + (f"スキップ {skip}件。" if skip else ""),
-                    ))
+                    try:
+                        ok, skip = leads_csv.import_leads(
+                            con, f.get("csv_text", ""),
+                            industries=sfa_db.get_master_list(con, "industries"),
+                            company_sizes=sfa_db.get_master_list(con, "company_sizes"),
+                        )
+                        self._send(render(
+                            leads_import_page(),
+                            flash=f"取込完了: {ok}件追加。" + (f"スキップ {skip}件。" if skip else ""),
+                        ))
+                    except Exception as exc:
+                        self._send(render(leads_import_page(), flash=f"取込エラー: {exc}"))
+
+                elif path == "/deals/import":
+                    try:
+                        ok_deals, ok_accounts, skip = deals_csv.import_deals(
+                            con, f.get("csv_text", ""),
+                            industries=sfa_db.get_master_list(con, "industries"),
+                            company_sizes=sfa_db.get_master_list(con, "company_sizes"),
+                        )
+                        msg = f"取込完了: 商談{ok_deals}件・アカウント{ok_accounts}件を追加。"
+                        if skip:
+                            msg += f" スキップ {skip}件。"
+                        self._send(render(deals_import_page(), flash=msg))
+                    except Exception as exc:
+                        self._send(render(deals_import_page(), flash=f"取込エラー: {exc}"))
 
                 elif path == "/leads/bulk_source":
                     ids = f_list.get("ids", [])

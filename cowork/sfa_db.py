@@ -367,6 +367,32 @@ def upsert_account(con, *, id=None, name, industry=None, company_size=None, note
     return cur.lastrowid
 
 
+def upsert_account_merge(con, *, name: str, industry=None, company_size=None) -> int:
+    """アカウントを名前で検索し、無ければ新規作成、あれば空欄項目のみ埋める。
+
+    リード/商談のCSV一括取込で、同名アカウントの重複作成を防ぐために使う。
+    """
+    existing = con.execute(
+        "SELECT id, industry, company_size FROM accounts WHERE name=?", (name,)
+    ).fetchone()
+    if existing is None:
+        return upsert_account(con, name=name, industry=industry, company_size=company_size)
+    acc_row = dict(existing)
+    updates = {}
+    if industry and not acc_row.get("industry"):
+        updates["industry"] = industry
+    if company_size and not acc_row.get("company_size"):
+        updates["company_size"] = company_size
+    if updates:
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        con.execute(
+            f"UPDATE accounts SET {set_clause}, updated_at=datetime('now') WHERE id=?",
+            (*updates.values(), acc_row["id"]),
+        )
+        con.commit()
+    return acc_row["id"]
+
+
 DEAL_FIELDS = [
     "account_id", "theme_id", "deal_name", "stage", "business_type_l1", "business_type_l2",
     "lead_pattern", "owner", "value_lumpsum", "value_lumpsum_monthly", "value_recurring",
@@ -442,7 +468,7 @@ def toggle_pitch_theme(con, theme_id: int) -> None:
 
 LEAD_FIELDS = [
     "name", "company", "industry", "company_size", "title", "email", "phone", "source",
-    "lead_status", "notes", "assigned_to", "deal_id",
+    "pitch_theme_id", "lead_status", "notes", "assigned_to", "deal_id",
 ]
 
 

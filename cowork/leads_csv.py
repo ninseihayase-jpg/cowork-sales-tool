@@ -12,6 +12,7 @@ import os
 import urllib.request
 
 from . import sfa_db
+from .csv_utils import normalize_csv_text
 
 _VALID_SOURCES = set(sfa_db.LEAD_SOURCES)
 _VALID_STATUSES = set(sfa_db.LEAD_STATUSES)
@@ -22,38 +23,42 @@ def parse_leads_csv(csv_text: str, themes_by_name: dict) -> list[dict]:
 
     themes_by_name: {テーマ名 -> pitch_theme_id} のマッピング
     """
-    reader = csv.DictReader(io.StringIO(csv_text.strip()))
+    reader = csv.DictReader(io.StringIO(normalize_csv_text(csv_text)))
     results = []
-    for row in reader:
-        name = (row.get("名前") or row.get("name") or "").strip()
-        company = (row.get("会社名") or row.get("company") or "").strip()
-        if not name or not company:
-            continue
+    try:
+        for row in reader:
+            name = (row.get("名前") or row.get("name") or "").strip()
+            company = (row.get("会社名") or row.get("company") or "").strip()
+            if not name or not company:
+                continue
 
-        source = (row.get("獲得経路") or row.get("source") or "other").strip()
-        if source not in _VALID_SOURCES:
-            source = "other"
+            source = (row.get("獲得経路") or row.get("source") or "other").strip()
+            if source not in _VALID_SOURCES:
+                source = "other"
 
-        status = (row.get("ステータス") or row.get("status") or "new").strip()
-        if status not in _VALID_STATUSES:
-            status = "new"
+            status = (row.get("ステータス") or row.get("status") or "new").strip()
+            if status not in _VALID_STATUSES:
+                status = "new"
 
-        theme_name = (row.get("ピッチテーマ") or row.get("pitch_theme") or "").strip()
-        theme_id = themes_by_name.get(theme_name) if theme_name else None
+            theme_name = (row.get("ピッチテーマ") or row.get("pitch_theme") or "").strip()
+            theme_id = themes_by_name.get(theme_name) if theme_name else None
 
-        results.append({
-            "name": name,
-            "company": company,
-            "title": (row.get("役職") or row.get("title") or "").strip() or None,
-            "email": (row.get("メール") or row.get("email") or "").strip() or None,
-            "phone": (row.get("電話") or row.get("phone") or "").strip() or None,
-            "source": source,
-            "pitch_theme_id": theme_id,
-            "lead_status": status,
-            "notes": (row.get("メモ") or row.get("notes") or "").strip() or None,
-            "assigned_to": (row.get("担当者") or row.get("assigned_to") or "").strip() or None,
-            "deal_id": None,
-        })
+            results.append({
+                "name": name,
+                "company": company,
+                "title": (row.get("役職") or row.get("title") or "").strip() or None,
+                "email": (row.get("メール") or row.get("email") or "").strip() or None,
+                "phone": (row.get("電話") or row.get("phone") or "").strip() or None,
+                "source": source,
+                "pitch_theme_id": theme_id,
+                "lead_status": status,
+                "notes": (row.get("メモ") or row.get("notes") or "").strip() or None,
+                "assigned_to": (row.get("担当者") or row.get("assigned_to") or "").strip() or None,
+                "deal_id": None,
+            })
+    except csv.Error:
+        # 一部の行が壊れていても、それまでに読めた行は取り込む
+        pass
     return results
 
 
@@ -144,30 +149,11 @@ def import_leads(con, csv_text: str, industries=None, company_sizes=None) -> tup
             # アカウント自動追加・補完
             company = r.get("company", "")
             if company:
-                existing = con.execute(
-                    "SELECT id, industry, company_size FROM accounts WHERE name=?",
-                    (company,)
-                ).fetchone()
-                if existing is None:
-                    sfa_db.upsert_account(
-                        con, name=company,
-                        industry=r.get("industry"),
-                        company_size=r.get("company_size"),
-                    )
-                else:
-                    acc_row = dict(existing)
-                    updates = {}
-                    if r.get("industry") and not acc_row.get("industry"):
-                        updates["industry"] = r["industry"]
-                    if r.get("company_size") and not acc_row.get("company_size"):
-                        updates["company_size"] = r["company_size"]
-                    if updates:
-                        set_clause = ", ".join(f"{k}=?" for k in updates)
-                        con.execute(
-                            f"UPDATE accounts SET {set_clause}, updated_at=datetime('now') WHERE id=?",
-                            (*updates.values(), acc_row["id"]),
-                        )
-                        con.commit()
+                sfa_db.upsert_account_merge(
+                    con, name=company,
+                    industry=r.get("industry"),
+                    company_size=r.get("company_size"),
+                )
             ok += 1
         except Exception:
             skip += 1
