@@ -70,6 +70,51 @@ def _opt_l2(l1: str | None, selected: str | None) -> str:
     return "".join(opts)
 
 
+def _decode_uploaded_csv(file_item) -> str | None:
+    """CSV一括取込のファイルアップロード欄（multipart）から取得したバイト列をデコードする。
+
+    Excel(日本語Windows)で「CSV(カンマ区切り)」保存するとShift-JIS(cp932)になることが多いため、
+    UTF-8(BOM可)で失敗した場合はcp932にフォールバックする。
+    """
+    if not file_item or not isinstance(file_item, tuple):
+        return None
+    _filename, data = file_item
+    if not data:
+        return None
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp932", errors="replace")
+
+
+def _chips(values) -> str:
+    """CSV一括取込ページ向け: 選択肢一覧をチップ表示するHTMLを生成。"""
+    return "".join(
+        f'<span style="display:inline-block;background:#eef1f6;border-radius:4px;'
+        f'padding:2px 8px;margin:2px 4px 2px 0;font-size:12px">{html.escape(v)}</span>'
+        for v in values
+    ) or '<span class="muted">(未設定)</span>'
+
+
+def _ai_prompt_block(prompt_text: str, download_url: str) -> str:
+    """CSV一括取込ページ向け: AI代行入力の指示文セクションを生成。"""
+    return f"""
+    <details style="margin:12px 0;background:#f3f0ff;border-radius:6px;padding:10px 14px">
+      <summary style="cursor:pointer;font-weight:600;color:#5b21b6">
+        🤖 AIにCSVを代行入力してもらう場合の指示文（コピーしてAIに貼り付け）
+      </summary>
+      <p class="muted" style="margin:10px 0 6px">
+        調査済みの情報などを渡してAIにCSVを作らせる場合は、下記の指示文をそのままAIへの依頼文の先頭に貼り付けてください
+        （選択肢は現在のマスタ設定を反映して自動生成されています）。
+      </p>
+      <p style="margin:0 0 8px">
+        <a class="btn sec" href="{download_url}">📥 指示文をMarkdown(.md)でダウンロード</a>
+      </p>
+      <textarea readonly rows="14" onclick="this.select()"
+        style="font-family:monospace;font-size:11px;background:#fff">{html.escape(prompt_text)}</textarea>
+    </details>"""
+
+
 PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Inproc Salesforce</title>
@@ -1306,14 +1351,21 @@ def convert_lead_to_deal(con, lead: dict) -> int:
 
 def hearing_templates_page(con) -> str:
     tmpls = sfa_db.list_hearing_templates(con)
+    counts = sfa_db.count_hearing_results_by_template(con)
     rows = ""
     for t in tmpls:
         n_items = len(t.get("items") or [])
+        n_results = counts.get(t["id"], 0)
+        count_cell = (
+            f'<a href="/hearings?template_id={t["id"]}" title="このテンプレートの実施済みヒアリング一覧へ">{n_results}件</a>'
+            if n_results else '<span class="muted">0件</span>'
+        )
         rows += (
             f'<tr>'
             f'<td><a href="/hearing-templates/{t["id"]}/edit"><strong>{_esc(t["name"])}</strong></a></td>'
             f'<td class="muted">{_esc(t.get("description") or "—")}</td>'
             f'<td style="text-align:center">{n_items}</td>'
+            f'<td style="text-align:center">{count_cell}</td>'
             f'<td><form method="post" action="/hearing-templates/{t["id"]}/delete" style="display:inline">'
             f'<button class="btn sec" style="font-size:11px;padding:4px 8px" '
             f'onclick="return confirm(\'削除しますか？（既存のヒアリング結果は残ります）\')">削除</button></form></td>'
@@ -1330,8 +1382,8 @@ def hearing_templates_page(con) -> str:
       </h2>
       <p class="muted" style="margin-bottom:14px">初回商談で使う定型ヒアリング項目を定義します。自由記述／選択肢（単一・複数）を項目ごとに指定できます。</p>
       <table>
-        <tr><th>テンプレート名</th><th>説明</th><th>項目数</th><th></th></tr>
-        {rows or '<tr><td colspan=4 class="muted">テンプレートがありません。</td></tr>'}
+        <tr><th>テンプレート名</th><th>説明</th><th>項目数</th><th>実施数</th><th></th></tr>
+        {rows or '<tr><td colspan=5 class="muted">テンプレートがありません。</td></tr>'}
       </table>
     </div>"""
 
@@ -1901,53 +1953,63 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         elif it.get("type") == "yabane":
             _yb_depts = it.get("departments") or []
             _yb_steps = it.get("steps") or [{"label": "ステップ1"}]
-            # Department column headers (horizontal)
-            _dept_col_ths = "".join(
-                f'<th class="yb-dept-col-h">'
-                f'<input class="yb-dept-name" value="{_esc(_d)}" placeholder="部署名" onfocus="this.select()">'
-                f'<button type="button" class="yb-del-dept-col-btn" onclick="ybDelDeptCol(this)">✕</button>'
-                f'</th>'
-                for _d in _yb_depts
-            )
-            # Step rows (one row per step, right-chevron on the left)
-            _step_rows_html = ""
-            for _s in _yb_steps:
-                _cells = "".join(
-                    f'<td class="yb-data-cell"><textarea class="yb-cell-area"'
-                    f' placeholder="作業内容">{_esc((_s.get("cells") or dict()).get(_d, ""))}</textarea></td>'
-                    for _d in _yb_depts
-                )
-                _step_rows_html += (
-                    f'<tr class="yb-step-row">'
-                    f'<td class="yb-step-name-td">'
-                    f'<div class="yb-chevron-right">'
-                    f'<input class="yb-step-name" value="{_esc(_s.get("label",""))}"'
-                    f' placeholder="ステップ名" onfocus="this.select()">'
-                    f'</div>'
-                    f'<button type="button" class="yb-del-step-btn" onclick="ybDelStepRow(this)">✕</button>'
-                    f'</td>'
-                    f'{_cells}'
+            _yb_prev = pv if isinstance(pv, dict) else None
+            if _yb_prev is not None:
+                _yb_rows = _yabane_rows_from_answer(_yb_prev)
+            else:
+                _yb_rows = [
+                    {"step": _s.get("label", ""), "dept": _d, "content": "", "output": "",
+                     "issue": "", "target": "", "target_number": ""}
+                    for _s in _yb_steps for _d in (_yb_depts or [""])
+                ]
+            if not _yb_rows:
+                _yb_rows = [{"step": "", "dept": "", "content": "", "output": "",
+                            "issue": "", "target": "", "target_number": ""}]
+
+            def _yb_row_html(_r):
+                return (
+                    f'<tr class="yb-row">'
+                    f'<td class="yb-step-cell"><input class="yb-row-step" value="{_esc(_r.get("step",""))}"'
+                    f' placeholder="ステップ名"></td>'
+                    f'<td class="yb-dept-cell"><input class="yb-row-dept" value="{_esc(_r.get("dept",""))}"'
+                    f' placeholder="部署名"></td>'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-content"'
+                    f' placeholder="作業内容">{_esc(_r.get("content",""))}</textarea></td>'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-output"'
+                    f' placeholder="アウトプット">{_esc(_r.get("output",""))}</textarea></td>'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-issue"'
+                    f' placeholder="現行課題">{_esc(_r.get("issue",""))}</textarea></td>'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-target"'
+                    f' placeholder="目指す姿">{_esc(_r.get("target",""))}</textarea></td>'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-target-number"'
+                    f' placeholder="目標数値（作業時間等）">{_esc(_r.get("target_number",""))}</textarea></td>'
+                    f'<td class="yb-del-cell"><button type="button" class="yb-del-row-btn"'
+                    f' onclick="ybDelRow(this)">✕</button></td>'
                     f'</tr>'
                 )
+
+            _yb_rows_html = "".join(_yb_row_html(_r) for _r in _yb_rows)
             fields_html += (
                 f'<div class="hq-item" style="margin:14px 0">'
                 f'<label style="font-weight:700;color:#2f6fed;font-size:13px;margin-bottom:6px;display:block">{label}</label>'
                 f'<input type="hidden" name="answer_{i}" id="yb_answer_{i}">'
                 f'<div class="yb-wrapper" id="yb_wrapper_{i}" data-yb-idx="{i}">'
-                f'<div style="overflow-x:auto">'
                 f'<table class="yb-table">'
                 f'<thead><tr>'
-                f'<th class="yb-corner-h">ステップ →</th>'
-                f'{_dept_col_ths}'
+                f'<th class="yb-step-h">ステップ</th><th class="yb-dept-h">部署</th>'
+                f'<th class="yb-wide-h">作業内容</th><th class="yb-wide-h">アウトプット</th>'
+                f'<th class="yb-wide-h">現行課題</th><th class="yb-wide-h">目指す姿</th>'
+                f'<th class="yb-wide-h">目標数値</th><th class="yb-del-h"></th>'
                 f'</tr></thead>'
-                f'<tbody id="yb_tbody_{i}">{_step_rows_html}</tbody>'
+                f'<tbody id="yb_tbody_{i}">{_yb_rows_html}</tbody>'
                 f'</table>'
                 f'</div>'
-                f'</div>'
                 f'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
-                f'<button type="button" class="btn sec" onclick="ybAddStepRow({i})">＋ステップ追加</button>'
+                f'<button type="button" class="btn sec" onclick="ybAddRow({i})">＋行追加</button>'
                 f'<button type="button" class="btn sec" style="border-color:#3b82f660;color:#3b82f6"'
-                f' onclick="ybAddDeptCol({i})">＋部署追加</button>'
+                f' onclick="ybAddStepBlock({i})">＋ステップ追加（全部署ぶん）</button>'
+                f'<button type="button" class="btn sec" style="border-color:#3b82f660;color:#3b82f6"'
+                f' onclick="ybAddDeptBlock({i})">＋部署追加（全ステップぶん）</button>'
                 f'</div>'
                 f'</div>'
             )
@@ -2059,36 +2121,25 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
     .sc-score-td{{padding:4px;border:1px solid #fde68a;text-align:center;background:#fff}}
     .sc-score-inp{{width:52px;text-align:center;border:1px solid #d4dae4;border-radius:4px;padding:4px;font-size:13px;font-family:inherit}}
     .sc-total-td{{padding:4px 8px;border:1px solid #fde68a;text-align:center;font-weight:700;font-size:13px;color:#d97706;background:#fffbeb;white-space:nowrap}}
-    /* ── 矢羽（ステップ=行/縦軸左、部署=列ヘッダ/横軸） ── */
-    .yb-wrapper{{overflow-x:auto;margin-top:4px}}
-    .yb-table{{border-collapse:collapse;min-width:300px}}
-    .yb-corner-h{{background:#e8eeff;color:#3730a3;font-weight:700;padding:8px 10px;border:1px solid #c7d2fe;text-align:center;font-size:11px;white-space:nowrap;min-width:80px}}
-    .yb-dept-col-h{{background:#e8eeff;border:1px solid #c7d2fe;padding:5px 6px;text-align:center;vertical-align:middle;min-width:120px}}
-    .yb-dept-name{{border:none;background:transparent;color:#3730a3;font-weight:700;font-size:12px;text-align:center;width:calc(100% - 24px);padding:2px 4px;outline:none;cursor:text;font-family:inherit}}
-    .yb-dept-name:focus{{background:rgba(55,48,163,.08);border-radius:3px}}
-    .yb-del-dept-col-btn{{font-size:10px;padding:1px 4px;background:#fde8e8;color:#c0392b;border:none;cursor:pointer;border-radius:2px;margin-left:4px;vertical-align:middle}}
-    .yb-step-name-td{{padding:0;border:1px solid #c7d2fe;vertical-align:bottom;min-width:90px;max-width:140px}}
-    .yb-chevron-right{{
-      background:linear-gradient(180deg,#2563eb,#3b82f6);
-      clip-path:polygon(0 0,100% 0,100% calc(100% - 14px),50% 100%,0 calc(100% - 14px));
-      padding:10px 10px 26px;
-      min-height:56px;
-      display:flex;align-items:flex-start;
+    /* ── 矢羽（1業務1行のフラット表。ステップ列は横スクロール時に固定） ── */
+    .yb-wrapper{{overflow-x:auto;margin-top:4px;max-width:100%}}
+    .yb-table{{border-collapse:collapse;min-width:900px}}
+    .yb-step-h,.yb-dept-h,.yb-wide-h,.yb-del-h{{
+      background:#e8eeff;color:#3730a3;font-weight:700;padding:8px 10px;
+      border:1px solid #c7d2fe;text-align:center;font-size:11px;white-space:nowrap;
     }}
-    .yb-step-name{{
-      background:transparent;border:none;
-      color:#fff;-webkit-text-fill-color:#fff;
-      font-weight:700;font-size:13px;text-align:left;
-      width:100%;outline:none;cursor:text;caret-color:#fff;padding:0;
-    }}
-    .yb-step-name::placeholder{{color:rgba(255,255,255,.5)}}
-    .yb-step-name:-webkit-autofill,.yb-step-name:-webkit-autofill:focus{{
-      -webkit-text-fill-color:#fff;
-      -webkit-box-shadow:0 0 0 1000px #1a3070 inset;
-    }}
-    .yb-del-step-btn{{display:block;width:100%;font-size:11px;padding:3px 0;background:#fde8e8;color:#c0392b;border:none;border-top:1px solid #fdd;cursor:pointer}}
-    .yb-data-cell{{padding:5px;border:1px solid #dde4f0;vertical-align:top;background:#fff}}
-    .yb-data-cell textarea{{width:100%;min-height:54px;resize:vertical;font-size:13px;margin:0;border:1px solid #d4dae4;border-radius:4px;padding:6px;color:#1e293b}}
+    .yb-step-h{{position:sticky;left:0;z-index:2;min-width:120px}}
+    .yb-dept-h{{min-width:120px}}
+    .yb-wide-h{{min-width:240px}}
+    .yb-del-h{{min-width:32px}}
+    .yb-step-cell{{position:sticky;left:0;z-index:1;background:#eef2ff;border:1px solid #c7d2fe;padding:5px;vertical-align:top}}
+    .yb-dept-cell{{border:1px solid #dde4f0;padding:5px;vertical-align:top;background:#fff;min-width:120px}}
+    .yb-wide-cell{{border:1px solid #dde4f0;padding:5px;vertical-align:top;background:#fff;min-width:240px}}
+    .yb-del-cell{{border:1px solid #dde4f0;padding:0;text-align:center;vertical-align:middle}}
+    .yb-row-step,.yb-row-dept{{width:100%;border:1px solid #d4dae4;border-radius:4px;padding:6px;font-size:13px;font-family:inherit}}
+    .yb-row-step{{font-weight:700;color:#3730a3}}
+    .yb-wide-cell textarea{{width:100%;min-height:54px;resize:vertical;font-size:13px;margin:0;border:1px solid #d4dae4;border-radius:4px;padding:6px;color:#1e293b;font-family:inherit}}
+    .yb-del-row-btn{{font-size:11px;padding:6px 8px;background:#fde8e8;color:#c0392b;border:none;cursor:pointer;height:100%}}
     </style>
     <div class="hq-sticky">
       <div class="hq-sticky-inner">
@@ -2248,53 +2299,38 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         td.appendChild(sinp); tr.insertBefore(td,totalTd);
       }});
     }}
-    // ── 矢羽入力 JS（ステップ=行/縦軸左、部署=列ヘッダ/横軸） ──
-    function ybDelStepRow(btn) {{ btn.closest('.yb-step-row').remove(); }}
-    function ybDelDeptCol(btn) {{
-      var th=btn.closest('.yb-dept-col-h');
-      var table=th.closest('table');
-      var colIdx=Array.from(th.closest('tr').querySelectorAll('.yb-dept-col-h')).indexOf(th);
-      th.remove();
-      table.querySelectorAll('.yb-step-row').forEach(function(tr) {{
-        var cells=tr.querySelectorAll('.yb-data-cell');
-        if(cells[colIdx]) cells[colIdx].remove();
-      }});
+    // ── 矢羽入力 JS（1業務1行のフラット表） ──
+    function ybDelRow(btn) {{ btn.closest('.yb-row').remove(); }}
+    function _ybRowHtml(step, dept) {{
+      function esc(s) {{ return (s||'').replace(/"/g,'&quot;'); }}
+      return '<tr class="yb-row">' +
+        '<td class="yb-step-cell"><input class="yb-row-step" value="'+esc(step)+'" placeholder="ステップ名"></td>' +
+        '<td class="yb-dept-cell"><input class="yb-row-dept" value="'+esc(dept)+'" placeholder="部署名"></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-content" placeholder="作業内容"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-output" placeholder="アウトプット"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-issue" placeholder="現行課題"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-target" placeholder="目指す姿"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-target-number" placeholder="目標数値（作業時間等）"></textarea></td>' +
+        '<td class="yb-del-cell"><button type="button" class="yb-del-row-btn" onclick="ybDelRow(this)">✕</button></td>' +
+      '</tr>';
     }}
-    function ybAddStepRow(idx) {{
-      var wrapper=document.getElementById('yb_wrapper_'+idx);
-      var table=wrapper.querySelector('.yb-table');
-      var nCols=table.querySelectorAll('thead .yb-dept-col-h').length;
-      var tr=document.createElement('tr'); tr.className='yb-step-row';
-      var stTd=document.createElement('td'); stTd.className='yb-step-name-td';
-      var chev=document.createElement('div'); chev.className='yb-chevron-right';
-      var stInp=document.createElement('input'); stInp.className='yb-step-name';
-      stInp.placeholder='ステップ名'; stInp.onfocus=function(){{this.select();}};
-      chev.appendChild(stInp); stTd.appendChild(chev);
-      var db=document.createElement('button'); db.type='button'; db.className='yb-del-step-btn';
-      db.textContent='✕'; db.onclick=function(){{ybDelStepRow(this);}};
-      stTd.appendChild(db); tr.appendChild(stTd);
-      for(var d=0;d<nCols;d++){{
-        var td=document.createElement('td'); td.className='yb-data-cell';
-        var ta=document.createElement('textarea'); ta.className='yb-cell-area';
-        td.appendChild(ta); tr.appendChild(td);
-      }}
-      table.querySelector('tbody').appendChild(tr);
+    function ybAddRow(idx, step, dept) {{
+      var tbody=document.getElementById('yb_tbody_'+idx);
+      tbody.insertAdjacentHTML('beforeend', _ybRowHtml(step||'', dept||''));
     }}
-    function ybAddDeptCol(idx) {{
-      var wrapper=document.getElementById('yb_wrapper_'+idx);
-      var table=wrapper.querySelector('.yb-table');
-      var hdrRow=table.querySelector('thead tr');
-      var th=document.createElement('th'); th.className='yb-dept-col-h';
-      var inp=document.createElement('input'); inp.className='yb-dept-name';
-      inp.placeholder='部署名'; inp.onfocus=function(){{this.select();}};
-      var db=document.createElement('button'); db.type='button'; db.className='yb-del-dept-col-btn';
-      db.textContent='✕'; db.onclick=function(){{ybDelDeptCol(this);}};
-      th.appendChild(inp); th.appendChild(db); hdrRow.appendChild(th);
-      table.querySelectorAll('.yb-step-row').forEach(function(tr) {{
-        var td=document.createElement('td'); td.className='yb-data-cell';
-        var ta=document.createElement('textarea'); ta.className='yb-cell-area';
-        td.appendChild(ta); tr.appendChild(td);
-      }});
+    function ybAddStepBlock(idx) {{
+      var tbody=document.getElementById('yb_tbody_'+idx);
+      var depts=Array.from(new Set(Array.from(tbody.querySelectorAll('.yb-row-dept'))
+        .map(function(i){{return i.value.trim();}}).filter(Boolean)));
+      if (!depts.length) depts=[''];
+      depts.forEach(function(d){{ ybAddRow(idx, '', d); }});
+    }}
+    function ybAddDeptBlock(idx) {{
+      var tbody=document.getElementById('yb_tbody_'+idx);
+      var steps=Array.from(new Set(Array.from(tbody.querySelectorAll('.yb-row-step'))
+        .map(function(i){{return i.value.trim();}}).filter(Boolean)));
+      if (!steps.length) steps=[''];
+      steps.forEach(function(s){{ ybAddRow(idx, s, ''); }});
     }}
     document.getElementById('hearing_form').addEventListener('submit', function() {{
       // レーダーチャート直列化
@@ -2342,20 +2378,20 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       }});
       document.querySelectorAll('[data-yb-idx]').forEach(function(wrapper) {{
         var idx=wrapper.getAttribute('data-yb-idx');
-        var table=wrapper.querySelector('.yb-table');
-        var deptInps=Array.from(table.querySelectorAll('thead .yb-dept-name'));
-        var depts=deptInps.map(function(i){{return i.value.trim();}});
-        var steps=[];
-        table.querySelectorAll('.yb-step-row').forEach(function(tr) {{
-          var stepName=tr.querySelector('.yb-step-name').value.trim();
-          var cells={{}};
-          tr.querySelectorAll('.yb-cell-area').forEach(function(ta,di){{
-            if(depts[di]!==undefined) cells[depts[di]]=ta.value;
+        var rows=[];
+        wrapper.querySelectorAll('.yb-row').forEach(function(tr) {{
+          rows.push({{
+            step: tr.querySelector('.yb-row-step').value.trim(),
+            dept: tr.querySelector('.yb-row-dept').value.trim(),
+            content: tr.querySelector('.yb-row-content').value,
+            output: tr.querySelector('.yb-row-output').value,
+            issue: tr.querySelector('.yb-row-issue').value,
+            target: tr.querySelector('.yb-row-target').value,
+            target_number: tr.querySelector('.yb-row-target-number').value
           }});
-          steps.push({{label:stepName,cells:cells}});
         }});
         var hidden=document.getElementById('yb_answer_'+idx);
-        if(hidden) hidden.value=JSON.stringify({{departments:depts,steps:steps}});
+        if(hidden) hidden.value=JSON.stringify({{rows:rows}});
       }});
     }});
     // レーダーチャート初期描画
@@ -2423,6 +2459,37 @@ def _format_answer(ans) -> str:
     if isinstance(ans, list):
         return "、".join(str(a) for a in ans)
     return str(ans) if ans is not None else ""
+
+
+def _yabane_rows_from_answer(ans: dict) -> list:
+    """矢羽回答から行リストを取得する。新形式(rows)優先、旧形式(departments/steps[].cells)は変換。"""
+    rows = ans.get("rows")
+    if rows is not None:
+        return rows
+    converted = []
+    for s in (ans.get("steps") or []):
+        for d in (ans.get("departments") or []):
+            content = (s.get("cells") or {}).get(d, "")
+            if content:
+                converted.append({"step": s.get("label", ""), "dept": d, "content": content})
+    return converted
+
+
+def _format_answer_for_export(a: dict) -> str:
+    """一覧プレビュー・CSV/xlsx出力向け: 矢羽など特殊タイプも読める文字列に整形する。"""
+    ans = a.get("answer")
+    if a.get("type") == "yabane" and isinstance(ans, dict):
+        parts = []
+        for r in _yabane_rows_from_answer(ans):
+            frags = [f"{r.get('step','')}/{r.get('dept','')}"]
+            for key, fkey in (("content", "作業内容"), ("output", "アウトプット"), ("issue", "現行課題"),
+                              ("target", "目指す姿"), ("target_number", "目標数値")):
+                v = r.get(key)
+                if v:
+                    frags.append(f"{fkey}:{v}")
+            parts.append(" ".join(frags))
+        return "；".join(parts)
+    return _format_answer(ans)
 
 
 def _radar_result_html(ra: dict) -> str:
@@ -2544,40 +2611,36 @@ def _scorecard_result_html(sc: dict) -> str:
 
 
 def _yabane_result_table(yb: dict) -> str:
-    """矢羽回答を swim-lane テーブル HTML に変換。"""
-    depts = yb.get("departments") or []
-    steps = yb.get("steps") or []
-    dept_ths = "".join(
-        f'<th style="background:#e8eeff;color:#3730a3;font-weight:700;padding:8px 12px;'
-        f'border:1px solid #c7d2fe;text-align:center;min-width:120px;font-size:12px">{_esc(d)}</th>'
-        for d in depts
+    """矢羽回答をフラット表（1業務1行）のHTMLに変換。旧形式（departments/steps[].cells）も自動変換して表示する。"""
+    rows = _yabane_rows_from_answer(yb)
+    if not rows:
+        return '<p class="muted">データなし</p>'
+    headers = ["ステップ", "部署", "作業内容", "アウトプット", "現行課題", "目指す姿", "目標数値"]
+    ths = "".join(
+        f'<th style="{"position:sticky;left:0;z-index:1;" if idx == 0 else ""}'
+        f'background:#e8eeff;color:#3730a3;font-weight:700;padding:8px 10px;'
+        f'border:1px solid #c7d2fe;white-space:nowrap;font-size:12px">{h}</th>'
+        for idx, h in enumerate(headers)
     )
-    step_rows = ""
-    for s in steps:
-        cells = "".join(
-            f'<td style="padding:8px;border:1px solid #dde4f0;vertical-align:top;'
-            f'white-space:pre-wrap;font-size:13px;color:#1e293b">'
-            f'{_esc((s.get("cells") or {}).get(d, ""))}</td>'
-            for d in depts
+    body_rows = ""
+    for r in rows:
+        tds = (
+            f'<td style="position:sticky;left:0;background:#eef2ff;font-weight:700;color:#3730a3;'
+            f'padding:8px 10px;border:1px solid #c7d2fe;white-space:nowrap">{_esc(r.get("step",""))}</td>'
+            f'<td style="padding:8px 10px;border:1px solid #dde4f0;white-space:nowrap;'
+            f'font-weight:600;color:#3730a3">{_esc(r.get("dept",""))}</td>'
         )
-        step_rows += (
-            f'<tr>'
-            f'<td style="padding:0;border:none;width:160px;vertical-align:middle">'
-            f'<div style="background:linear-gradient(160deg,#1e3a8a,#1e4d8a);'
-            f'clip-path:polygon(0 0,calc(100% - 12px) 0,100% 50%,calc(100% - 12px) 100%,0 100%);'
-            f'padding:10px 24px 10px 14px;min-height:48px;display:flex;align-items:center;'
-            f'justify-content:center;color:#fff;font-weight:700;font-size:13px;text-align:center">'
-            f'{_esc(s.get("label",""))}</div></td>'
-            f'{cells}</tr>'
-        )
+        for key in ("content", "output", "issue", "target", "target_number"):
+            tds += (
+                f'<td style="padding:8px;border:1px solid #dde4f0;vertical-align:top;'
+                f'white-space:pre-wrap;font-size:13px;color:#1e293b;min-width:200px">{_esc(r.get(key, ""))}</td>'
+            )
+        body_rows += f'<tr>{tds}</tr>'
     return (
         f'<div style="overflow-x:auto;margin-top:8px">'
-        f'<table style="border-collapse:collapse;width:100%;min-width:400px">'
-        f'<thead><tr>'
-        f'<th style="background:#e8eeff;color:#3730a3;font-weight:700;padding:8px 14px;'
-        f'border:1px solid #c7d2fe;width:160px;text-align:center;font-size:12px">プロセス</th>'
-        f'{dept_ths}</tr></thead>'
-        f'<tbody>{step_rows or "<tr><td colspan=99 class=muted>データなし</td></tr>"}</tbody>'
+        f'<table style="border-collapse:collapse;width:100%;min-width:900px">'
+        f'<thead><tr>{ths}</tr></thead>'
+        f'<tbody>{body_rows}</tbody>'
         f'</table></div>'
     )
 
@@ -2656,13 +2719,14 @@ def hearing_result_page(con, result: dict) -> str:
     </div>"""
 
 
-def hearings_page(con) -> str:
-    """ヒアリングタブ：実施済み一覧 + xlsx一括DL。"""
-    results = sfa_db.list_all_hearing_results(con)
+def hearings_page(con, template_id: int | None = None) -> str:
+    """ヒアリングタブ：実施済み一覧 + xlsx一括DL。template_id指定時はそのテンプレートのみに絞り込む。"""
+    results = sfa_db.list_all_hearing_results(con, template_id=template_id)
+    tmpl = sfa_db.get_hearing_template(con, template_id) if template_id else None
     rows = ""
     for r in results:
         preview = "　".join(
-            f'{_esc(a.get("label"))}: {_esc(_format_answer(a.get("answer")))}'
+            f'{_esc(a.get("label"))}: {_esc(_format_answer_for_export(a))}'
             for a in (r.get("answers") or [])[:2]
         )
         rows += (
@@ -2674,19 +2738,29 @@ def hearings_page(con) -> str:
             f'<td class="muted" style="font-size:12px">{preview}</td>'
             f'</tr>'
         )
-    export_btn = ('<a class="btn sec" href="/hearings/export">📥 xlsx一括ダウンロード</a>'
-                  if results else '')
+    header_actions = []
+    if template_id and tmpl:
+        header_actions.append('<a class="btn sec" href="/hearings">全テンプレート表示に戻る</a>')
+        if results:
+            header_actions.append(
+                f'<a class="btn sec" href="/hearings/export.csv?template_id={template_id}">📥 このテンプレートのみCSVダウンロード</a>'
+            )
+    elif results:
+        header_actions.append('<a class="btn sec" href="/hearings/export">📥 xlsx一括ダウンロード</a>')
+    header_actions.append('<a class="btn sec" href="/hearing-templates">テンプレート管理</a>')
+    header_actions.append('<a class="btn" href="/hearing/new">＋新規ヒアリング</a>')
+    title = f"ヒアリング（{_esc(tmpl['name'])}）" if tmpl else "ヒアリング"
+    desc = ("このテンプレートで実施されたヒアリングのみ表示しています。"
+            if tmpl else "実施済みのヒアリング結果一覧です。xlsxはテンプレートごとにシートが分かれます。")
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <span>ヒアリング</span>
-        <span style="display:flex;gap:8px">
-          {export_btn}
-          <a class="btn sec" href="/hearing-templates">テンプレート管理</a>
-          <a class="btn" href="/hearing/new">＋新規ヒアリング</a>
+        <span>{title}</span>
+        <span style="display:flex;gap:8px;flex-wrap:wrap">
+          {"".join(header_actions)}
         </span>
       </h2>
-      <p class="muted" style="margin-bottom:14px">実施済みのヒアリング結果一覧です。xlsxはテンプレートごとにシートが分かれます。</p>
+      <p class="muted" style="margin-bottom:14px">{desc}</p>
       <table>
         <tr><th>ヒアリング日</th><th>アカウント</th><th>案件名</th><th>テンプレート</th><th>回答プレビュー</th></tr>
         {rows or '<tr><td colspan=5 class="muted">まだヒアリング結果がありません。</td></tr>'}
@@ -2735,7 +2809,7 @@ def build_hearings_xlsx(con) -> bytes:
         ws = wb.create_sheet(safe_sheet_name(tmpl_name, used_names))
         ws.append(["商談ID", "アカウント", "案件名", "ヒアリング日"] + labels)
         for r in items:
-            amap = {a.get("label"): _format_answer(a.get("answer")) for a in (r.get("answers") or [])}
+            amap = {a.get("label"): _format_answer_for_export(a) for a in (r.get("answers") or [])}
             ws.append([
                 r.get("deal_id"), r.get("account_name") or "", r.get("deal_name") or "",
                 r.get("conducted_on") or "",
@@ -2744,6 +2818,30 @@ def build_hearings_xlsx(con) -> bytes:
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def build_hearing_results_csv(con, template_id: int) -> bytes:
+    """指定テンプレートのヒアリング結果のみをCSVにまとめる（テンプレート管理画面の絞り込みDL用）。"""
+    import csv
+    import io
+    results = sfa_db.list_all_hearing_results(con, template_id=template_id)
+    labels: list = []
+    for r in results:
+        for a in (r.get("answers") or []):
+            lbl = a.get("label")
+            if lbl and lbl not in labels:
+                labels.append(lbl)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["商談ID", "アカウント", "案件名", "ヒアリング日"] + labels)
+    for r in results:
+        amap = {a.get("label"): _format_answer_for_export(a) for a in (r.get("answers") or [])}
+        writer.writerow([
+            r.get("deal_id"), r.get("account_name") or "", r.get("deal_name") or "",
+            r.get("conducted_on") or "",
+        ] + [amap.get(lbl, "") for lbl in labels])
+    return ("﻿" + buf.getvalue()).encode("utf-8")
 
 
 def leads_page(con, *, status=None, source=None, q=None) -> str:
@@ -3036,8 +3134,33 @@ def lead_form(con, lead=None) -> str:
     {activities_html}"""
 
 
-def leads_import_page(result: str = "") -> str:
+def leads_import_page(con, result: str = "") -> str:
     result_html = f'<div class="flash">{html.escape(result)}</div>' if result else ""
+    header_line = ",".join(leads_csv.TEMPLATE_HEADERS)
+    example_lines = "\n".join(",".join(row) for row in leads_csv.TEMPLATE_EXAMPLE_ROWS)
+
+    owners_list = sfa_db.get_master_list(con, "owners")
+    industries_list = sfa_db.get_master_list(con, "industries")
+    sizes_list = sfa_db.get_master_list(con, "company_sizes")
+    theme_names = [t["name"] for t in sfa_db.list_pitch_themes(con, active_only=True)]
+    source_chips = _chips([f"{s}({sfa_db.LEAD_SOURCE_LABELS[s]})" for s in sfa_db.LEAD_SOURCES])
+    status_chips = _chips([f"{s}({sfa_db.LEAD_STATUS_LABELS[s]})" for s in sfa_db.LEAD_STATUSES])
+
+    choices_html = f"""
+    <details style="margin:12px 0;background:#f8f9fb;border-radius:6px;padding:10px 14px" open>
+      <summary style="cursor:pointer;font-weight:600;color:#3a4760">
+        📋 入力選択肢一覧（この中から選んでください。表記が完全一致しないと空欄で取り込まれます）
+      </summary>
+      <div style="margin-top:10px;font-size:13px;line-height:1.9">
+        <div><strong>業界</strong>: {_chips(industries_list)}</div>
+        <div><strong>企業規模</strong>: {_chips(sizes_list)}</div>
+        <div><strong>獲得経路</strong>（コードで入力。一致しない場合は自動的に other）: {source_chips}</div>
+        <div><strong>ステータス</strong>（コードで入力。一致しない場合は自動的に new）: {status_chips}</div>
+        <div><strong>ピッチテーマ</strong>: {_chips(theme_names)}</div>
+        <div><strong>担当者</strong>: {_chips(owners_list)}</div>
+      </div>
+    </details>"""
+
     return f"""
     <div class="card"><h2>リード一括取込</h2>
     {result_html}
@@ -3053,26 +3176,73 @@ def leads_import_page(result: str = "") -> str:
     </form>
 
     <hr style="margin:20px 0">
-    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📋 CSVペースト取込</h3>
-    <p class="muted">下記フォーマットのCSVを貼り付けてください（1行目はヘッダ行、空行はスキップ）。</p>
-    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">名前,会社名,役職,メール,電話,獲得経路,ステータス,メモ,担当者
-田中 太郎,株式会社○○,営業部長,tanaka@example.com,090-xxx-xxxx,exhibition,new,展示会で名刺交換,</pre>
-    <p class="muted" style="margin-top:4px">
-      獲得経路: exhibition（展示会）/ referral（紹介）/ inbound（インバウンド）/ other
+    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📋 CSVファイルアップロード／ペースト取込</h3>
+    <p style="margin:10px 0">
+      <a class="btn sec" href="/leads/import/template.csv">📥 テンプレートCSVをダウンロード</a>
     </p>
-    <form method="post" action="/leads/import">
-      <label>CSVデータ（ペースト）</label>
+    <p class="muted">運用ルール: 入力は必ずこのテンプレートに列を揃えて作成してください（列の追加・削除・並び替えは不可、値のみ入力）。</p>
+
+    {_ai_prompt_block(leads_csv.build_ai_prompt(con), "/leads/import/ai_prompt.md")}
+
+    {choices_html}
+
+    <p class="muted" style="margin-top:12px">下記フォーマットのCSVをアップロードするか、直接貼り付けてください（1行目はヘッダ行、空行はスキップ）。</p>
+    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">{html.escape(header_line)}
+{html.escape(example_lines)}</pre>
+    <p class="muted" style="margin-top:4px">
+      業界 / 企業規模 / 担当者 / ピッチテーマは、上の「入力選択肢一覧」と完全一致した場合のみ取り込まれます
+      （一致しない場合は空欄になります）。業界・企業規模が空欄の行はAIが会社名から自動推定します
+      （ANTHROPIC_API_KEY設定時）。
+    </p>
+    <form method="post" action="/leads/import" enctype="multipart/form-data">
+      <label>CSVファイル（テンプレートに沿ったファイルをそのままアップロード）</label>
+      <input type="file" name="csv_file" accept=".csv" style="padding:4px">
+      <label style="margin-top:12px">またはCSVデータを直接ペースト</label>
       <textarea name="csv_text" rows="8"
-        style="font-family:monospace;font-size:12px" required></textarea>
+        style="font-family:monospace;font-size:12px"></textarea>
+      <p class="muted" style="margin-top:4px">両方入力した場合はアップロードしたファイルを優先します。</p>
       <p><button class="btn">取込実行</button>
          <a class="btn sec" href="/leads">キャンセル</a></p>
     </form></div>"""
 
 
-def deals_import_page(result: str = "") -> str:
+def deals_import_page(con, result: str = "") -> str:
     result_html = f'<div class="flash">{html.escape(result)}</div>' if result else ""
     header_line = ",".join(deals_csv.TEMPLATE_HEADERS)
     example_lines = "\n".join(",".join(row) for row in deals_csv.TEMPLATE_EXAMPLE_ROWS)
+
+    stages = sfa_db.get_master_list(con, "deal_stages")
+    biz_l1_list = sfa_db.get_master_list(con, "business_type_l1")
+    owners_list = sfa_db.get_master_list(con, "owners")
+    patterns_list = sfa_db.get_master_list(con, "lead_patterns")
+    sizes_list = sfa_db.get_master_list(con, "company_sizes")
+    industries_list = sfa_db.get_master_list(con, "industries")
+
+    biz_l2_html = "".join(
+        f'<div style="margin:4px 0 4px 12px">└ <strong>{html.escape(l1)}</strong>: '
+        f'{_chips(sfa_db.BUSINESS_TYPE_L2_BY_L1.get(l1, []))}</div>'
+        for l1 in biz_l1_list
+    )
+
+    choices_html = f"""
+    <details style="margin:12px 0;background:#f8f9fb;border-radius:6px;padding:10px 14px" open>
+      <summary style="cursor:pointer;font-weight:600;color:#3a4760">
+        📋 入力選択肢一覧（この中から選んでください。表記が完全一致しないと空欄で取り込まれます）
+      </summary>
+      <div style="margin-top:10px;font-size:13px;line-height:1.9">
+        <div><strong>種別</strong>: {_chips(["商談", "アカウント"])}</div>
+        <div><strong>ステージ</strong>: {_chips(stages)}</div>
+        <div><strong>事業種別L1 / L2</strong>: {_chips(biz_l1_list)}
+          {biz_l2_html}
+        </div>
+        <div><strong>リード経路</strong>: {_chips(patterns_list)}</div>
+        <div><strong>担当者</strong>: {_chips(owners_list)}</div>
+        <div><strong>重要度</strong>: {_chips(sfa_db.IMPORTANCE_OPTIONS)}</div>
+        <div><strong>企業規模</strong>: {_chips(sizes_list)}</div>
+        <div><strong>業界</strong>（参考。自由入力欄のためこの一覧以外の表記も取り込めます）: {_chips(industries_list)}</div>
+      </div>
+    </details>"""
+
     return f"""
     <div class="card"><h2>商談一括取込</h2>
     {result_html}
@@ -3088,18 +3258,28 @@ def deals_import_page(result: str = "") -> str:
     </p>
     <p class="muted">運用ルール: 入力は必ずこのテンプレートに列を揃えて作成してください（列の追加・削除・並び替えは不可、値のみ入力）。</p>
 
+    {_ai_prompt_block(deals_csv.build_ai_prompt(con), "/deals/import/ai_prompt.md")}
+
+    {choices_html}
+
     <hr style="margin:20px 0">
-    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📋 CSVペースト取込</h3>
-    <p class="muted">下記フォーマットのCSVを貼り付けてください（1行目はヘッダ行、空行はスキップ）。</p>
+    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📋 CSVファイルアップロード／ペースト取込</h3>
+    <p class="muted">下記フォーマットのCSVをアップロードするか、直接貼り付けてください（1行目はヘッダ行、空行はスキップ）。</p>
     <pre style="background:#f4f6f9;padding:10px;border-radius:6px">{html.escape(header_line)}
 {html.escape(example_lines)}</pre>
     <p class="muted" style="margin-top:4px">
-      ステージ / 事業種別L1 / 事業種別L2 / リード経路 / 担当者は、マスタ編集で登録済みの値のみ有効です（値が一致しない場合は空欄で取り込まれます）。
+      ステージ / 事業種別L1 / 事業種別L2（L1に対応する値のみ） / リード経路 / 担当者 / 重要度 / 企業規模は、
+      上の「入力選択肢一覧」と完全一致した場合のみ取り込まれます（一致しない場合は空欄になります）。<br>
+      業界は自由入力欄のためどんな文字列でも取り込めます。事前に業界・企業規模を調査済みであれば、
+      その場でCSVに直接入力してください（AI推定より確実です）。
     </p>
-    <form method="post" action="/deals/import">
-      <label>CSVデータ（ペースト）</label>
+    <form method="post" action="/deals/import" enctype="multipart/form-data">
+      <label>CSVファイル（テンプレートに沿ったファイルをそのままアップロード）</label>
+      <input type="file" name="csv_file" accept=".csv" style="padding:4px">
+      <label style="margin-top:12px">またはCSVデータを直接ペースト</label>
       <textarea name="csv_text" rows="8"
-        style="font-family:monospace;font-size:12px" required></textarea>
+        style="font-family:monospace;font-size:12px"></textarea>
+      <p class="muted" style="margin-top:4px">両方入力した場合はアップロードしたファイルを優先します。</p>
       <p><button class="btn">取込実行</button>
          <a class="btn sec" href="/deals">キャンセル</a></p>
     </form></div>"""
@@ -3290,8 +3470,30 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         print(f"[hearings/export] {_ex}", flush=True)
                         import traceback as _tb; _tb.print_exc()
                         self._send(render("<div class=card>エクスポートに失敗しました</div>"), 500)
+                elif path == "/hearings/export.csv":
+                    qs = self._qs()
+                    try:
+                        tid = int(qs.get("template_id", ["0"])[0] or 0)
+                    except ValueError:
+                        tid = 0
+                    if not tid:
+                        self._send(render("<div class=card>テンプレートが指定されていません</div>"), 400)
+                    else:
+                        data = build_hearing_results_csv(con, tid)
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/csv; charset=utf-8")
+                        self.send_header("Content-Disposition", f'attachment; filename="hearing_results_{tid}.csv"')
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
                 elif path == "/hearings":
-                    self._send(render(hearings_page(con)))
+                    qs = self._qs()
+                    tid_raw = qs.get("template_id", [None])[0]
+                    try:
+                        tid = int(tid_raw) if tid_raw else None
+                    except ValueError:
+                        tid = None
+                    self._send(render(hearings_page(con, template_id=tid)))
                 elif path == "/hearing-templates/new":
                     self._send(render(hearing_template_form(con)))
                 elif path == "/hearing-templates":
@@ -3361,12 +3563,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     def qs1(k): return (qs.get(k, [None])[0] or None)
                     self._send(render(home_page(con, owner=qs1("owner"), status_filter=qs1("status"), stage_filter=qs1("stage"))))
                 elif path == "/deals/import":
-                    self._send(render(deals_import_page()))
+                    self._send(render(deals_import_page(con)))
                 elif path == "/deals/import/template.csv":
                     body = deals_csv.build_template_csv()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/csv; charset=utf-8")
                     self.send_header("Content-Disposition", 'attachment; filename="deals_import_template.csv"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif path == "/deals/import/ai_prompt.md":
+                    body = deals_csv.build_ai_prompt(con).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                    self.send_header("Content-Disposition", 'attachment; filename="deals_import_ai_prompt.md"')
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
@@ -3390,7 +3600,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/leads/new":
                     self._send(render(lead_form(con)))
                 elif path == "/leads/import":
-                    self._send(render(leads_import_page()))
+                    self._send(render(leads_import_page(con)))
+                elif path == "/leads/import/template.csv":
+                    body = leads_csv.build_template_csv()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header("Content-Disposition", 'attachment; filename="leads_import_template.csv"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif path == "/leads/import/ai_prompt.md":
+                    body = leads_csv.build_ai_prompt(con).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                    self.send_header("Content-Disposition", 'attachment; filename="leads_import_ai_prompt.md"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                 elif path.startswith("/leads/"):
                     try:
                         lid = int(path.split("/")[2])
@@ -3837,7 +4063,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/leads/upload_meishi":
                     file_item = f.get("meishi_file")
                     if not file_item or not isinstance(file_item, tuple):
-                        self._send(render(leads_import_page(), flash="ファイルが選択されていません。"))
+                        self._send(render(leads_import_page(con), flash="ファイルが選択されていません。"))
                     else:
                         filename, data = file_item
                         try:
@@ -3846,39 +4072,41 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             msg = f"取込完了: {added}件追加、{skipped}件スキップ。"
                             if errors:
                                 msg += " エラー: " + "; ".join(errors[:3])
-                            self._send(render(leads_import_page(result=msg)))
+                            self._send(render(leads_import_page(con, result=msg)))
                         except ImportError:
-                            self._send(render(leads_import_page(), flash="meishi_importモジュールが見つかりません。"))
+                            self._send(render(leads_import_page(con), flash="meishi_importモジュールが見つかりません。"))
                         except Exception as exc:
-                            self._send(render(leads_import_page(), flash=f"取込エラー: {exc}"))
+                            self._send(render(leads_import_page(con), flash=f"取込エラー: {exc}"))
 
                 elif path == "/leads/import":
                     try:
+                        csv_text = _decode_uploaded_csv(f.get("csv_file")) or f.get("csv_text", "")
                         ok, skip = leads_csv.import_leads(
-                            con, f.get("csv_text", ""),
+                            con, csv_text,
                             industries=sfa_db.get_master_list(con, "industries"),
                             company_sizes=sfa_db.get_master_list(con, "company_sizes"),
                         )
                         self._send(render(
-                            leads_import_page(),
+                            leads_import_page(con),
                             flash=f"取込完了: {ok}件追加。" + (f"スキップ {skip}件。" if skip else ""),
                         ))
                     except Exception as exc:
-                        self._send(render(leads_import_page(), flash=f"取込エラー: {exc}"))
+                        self._send(render(leads_import_page(con), flash=f"取込エラー: {exc}"))
 
                 elif path == "/deals/import":
                     try:
+                        csv_text = _decode_uploaded_csv(f.get("csv_file")) or f.get("csv_text", "")
                         ok_deals, ok_accounts, skip = deals_csv.import_deals(
-                            con, f.get("csv_text", ""),
+                            con, csv_text,
                             industries=sfa_db.get_master_list(con, "industries"),
                             company_sizes=sfa_db.get_master_list(con, "company_sizes"),
                         )
                         msg = f"取込完了: 商談{ok_deals}件・アカウント{ok_accounts}件を追加。"
                         if skip:
                             msg += f" スキップ {skip}件。"
-                        self._send(render(deals_import_page(), flash=msg))
+                        self._send(render(deals_import_page(con), flash=msg))
                     except Exception as exc:
-                        self._send(render(deals_import_page(), flash=f"取込エラー: {exc}"))
+                        self._send(render(deals_import_page(con), flash=f"取込エラー: {exc}"))
 
                 elif path == "/leads/bulk_source":
                     ids = f_list.get("ids", [])

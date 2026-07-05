@@ -54,16 +54,20 @@ def _to_float(v: str):
         return None
 
 
-def parse_deals_csv(csv_text: str, *, stages=None, biz_l1=None, owners=None, lead_patterns=None) -> list[dict]:
+def parse_deals_csv(csv_text: str, *, stages=None, biz_l1=None, owners=None, lead_patterns=None,
+                     company_sizes=None) -> list[dict]:
     """CSVテキストを商談/アカウント辞書リストに変換する。
 
     各要素は {"kind": "deal"|"account", "company": ..., ...} の形。
     マスタ選択肢外の値は空欄（None）にフォールバックする（リード一括取込と同様の方針）。
+    企業規模はアカウント編集画面がプルダウン（マスタ値限定）のため検証対象。
+    業界は自由入力欄のため検証しない。
     """
     valid_stages = set(stages or sfa_db.DEAL_STAGES)
     valid_biz_l1 = set(biz_l1 or sfa_db.BUSINESS_TYPE_L1)
     valid_owners = set(owners or sfa_db.OWNERS)
     valid_patterns = set(lead_patterns or sfa_db.LEAD_PATTERNS)
+    valid_sizes = set(company_sizes or sfa_db.COMPANY_SIZES)
 
     reader = csv.DictReader(io.StringIO(normalize_csv_text(csv_text)))
     results = []
@@ -98,6 +102,10 @@ def parse_deals_csv(csv_text: str, *, stages=None, biz_l1=None, owners=None, lea
             biz1 = g("事業種別L1", "business_type_l1")
             if biz1 not in valid_biz_l1:
                 biz1 = None
+            biz2 = g("事業種別L2", "business_type_l2")
+            valid_biz2 = set(sfa_db.BUSINESS_TYPE_L2_BY_L1.get(biz1, [])) if biz1 else set()
+            if biz2 not in valid_biz2:
+                biz2 = None
             owner = g("担当者", "owner")
             if owner not in valid_owners:
                 owner = None
@@ -107,16 +115,19 @@ def parse_deals_csv(csv_text: str, *, stages=None, biz_l1=None, owners=None, lea
             importance = g("重要度", "importance")
             if importance not in sfa_db.IMPORTANCE_OPTIONS:
                 importance = None
+            company_size = g("企業規模", "company_size")
+            if company_size not in valid_sizes:
+                company_size = None
 
             results.append({
                 "kind": kind,
                 "company": company,
                 "industry": g("業界", "industry") or None,
-                "company_size": g("企業規模", "company_size") or None,
+                "company_size": company_size,
                 "deal_name": deal_name or None,
                 "stage": stage,
                 "business_type_l1": biz1,
-                "business_type_l2": g("事業種別L2", "business_type_l2") or None,
+                "business_type_l2": biz2,
                 "lead_pattern": pattern,
                 "owner": owner,
                 "value_lumpsum": _to_float(g("単発総額(万円)", "単発総額", "value_lumpsum")),
@@ -156,18 +167,23 @@ def import_deals(con, csv_text: str, industries=None, company_sizes=None) -> tup
     biz_l1 = sfa_db.get_master_list(con, "business_type_l1")
     owners = sfa_db.get_master_list(con, "owners")
     patterns = sfa_db.get_master_list(con, "lead_patterns")
-    rows = parse_deals_csv(csv_text, stages=stages, biz_l1=biz_l1, owners=owners, lead_patterns=patterns)
+    rows = parse_deals_csv(csv_text, stages=stages, biz_l1=biz_l1, owners=owners, lead_patterns=patterns,
+                           company_sizes=company_sizes)
     if industries and company_sizes and os.environ.get("ANTHROPIC_API_KEY"):
         rows = _estimate_fields(rows, industries, company_sizes)
 
     ok_deals = ok_accounts = skip = 0
     for r in rows:
         try:
+            is_new_account = con.execute(
+                "SELECT 1 FROM accounts WHERE name=?", (r["company"],)
+            ).fetchone() is None
             account_id = sfa_db.upsert_account_merge(
                 con, name=r["company"], industry=r.get("industry"), company_size=r.get("company_size"),
             )
-            if r["kind"] == KIND_ACCOUNT:
+            if is_new_account:
                 ok_accounts += 1
+            if r["kind"] == KIND_ACCOUNT:
                 continue
             deal_fields = {k: r.get(k) for k in DEAL_CSV_FIELDS}
             sfa_db.upsert_deal(con, account_id=account_id, status="open", **deal_fields)
@@ -180,6 +196,9 @@ def import_deals(con, csv_text: str, industries=None, company_sizes=None) -> tup
 def build_template_csv() -> bytes:
     """商談一括取込用テンプレートCSV（サンプル行付き）をバイト列で返す。
 
+    列構造をシンプルに保つため、選択肢一覧はここには含めない
+    （人が読む場合は /deals/import ページの一覧、AIに入力させる場合は
+    build_ai_prompt() の指示文を使う）。
     先頭にUTF-8 BOMを付与し、Excelで開いた際の文字化けを防ぐ。
     """
     buf = io.StringIO()
@@ -188,3 +207,57 @@ def build_template_csv() -> bytes:
     for row in TEMPLATE_EXAMPLE_ROWS:
         writer.writerow(row)
     return ("﻿" + buf.getvalue()).encode("utf-8")
+
+
+def build_ai_prompt(con) -> str:
+    """AIにCSVを代行入力させる際に渡す指示文をMarkdown形式で生成する。
+
+    選択肢はマスタ編集の現在値をそのまま反映する（取込時の検証条件と常に一致させるため）。
+    """
+    stages = sfa_db.get_master_list(con, "deal_stages")
+    biz_l1 = sfa_db.get_master_list(con, "business_type_l1")
+    owners = sfa_db.get_master_list(con, "owners")
+    patterns = sfa_db.get_master_list(con, "lead_patterns")
+    sizes = sfa_db.get_master_list(con, "company_sizes")
+    industries = sfa_db.get_master_list(con, "industries")
+
+    biz_l2_lines = "\n".join(
+        f"  - **{l1}**: {' / '.join(sfa_db.BUSINESS_TYPE_L2_BY_L1.get(l1, [])) or '(なし)'}"
+        for l1 in biz_l1
+    )
+
+    return f"""# 商談CSV一括取込 入力指示（AI用）
+
+以下のCSVテンプレートに、商談・アカウントのデータを入力してください。
+1行目のヘッダ（列名・列順）は変更しないでください。1行 = 1商談 または 1アカウントです。
+
+## ヘッダ
+
+```
+{",".join(TEMPLATE_HEADERS)}
+```
+
+## 列ごとの入力ルール
+
+- **種別**: 「商談」または「アカウント」のどちらかを必ず入れる。
+- **会社名**: 必須。空欄の行は取込時に無視される。
+- **業界**: 自由記述可。分かる範囲で次から選ぶことを推奨: {" / ".join(industries)}
+- **企業規模**: 次のいずれかと完全一致させること（一致しないと空欄で取り込まれる）: {" / ".join(sizes)}
+- **商談名**: 種別が「商談」の行は必須（無いと取込対象外になる）。
+- **ステージ**: 次のいずれかと完全一致: {" / ".join(stages)}
+- **事業種別L1**: 次のいずれかと完全一致: {" / ".join(biz_l1)}
+- **事業種別L2**: 事業種別L1に対応する値のみ有効（一致しないと空欄になる）。対応表:
+{biz_l2_lines}
+- **リード経路**: 次のいずれかと完全一致: {" / ".join(patterns)}
+- **担当者**: 次のいずれかと完全一致: {" / ".join(owners)}
+- **重要度**: {" / ".join(sfa_db.IMPORTANCE_OPTIONS)} のいずれか
+- **単発総額(万円) / 単発月額(万円) / 継続月額(万円)**: 数値のみ（万円単位）。不明なら空欄。
+- **次回MS日**: YYYY-MM-DD形式。
+- **クライアント予算 / 次回MS内容 / ゴール / メモ**: 自由記述。
+
+## 出力形式のルール
+
+- CSV形式（カンマ区切り、値にカンマを含む場合は `""` で囲む）で出力すること。
+- 上記の選択肢一覧に無い値は絶対に作らないこと。分からない・調査できていない項目は空欄のままにすること。
+- 上記以外の列を追加したり、列の順番を変えたりしないこと。
+"""

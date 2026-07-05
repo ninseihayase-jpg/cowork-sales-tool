@@ -23,7 +23,7 @@ BUSINESS_TYPE_L2_BY_L1 = {
     "他":            ["調達BPO(スポット)", "未定"],
 }
 LEAD_PATTERNS = ["Connection", "Exh.", "Partner", "Advisor", "PE", "Under", "SNS", "HP", "na"]
-COMPANY_SIZES = ["500億未満", "1000億未満", "5000億未満", "5000億以上"]
+COMPANY_SIZES = ["500億未満", "1000億未満", "3000億未満", "5000億未満", "5000億以上"]
 ACTIVITY_TYPES = ["面談", "電話", "メール", "メモ"]
 IMPORTANCE_OPTIONS = ["高", "中", "低"]
 OWNERS = ["吉江", "中島", "早瀬", "岩崎", "高橋", "土屋", "戸田", "片山", "杉山", "山端", "堀籠"]
@@ -671,16 +671,31 @@ def get_hearing_result(con, id: int) -> dict | None:
     return _hydrate_hearing_result(dict(r)) if r else None
 
 
-def list_all_hearing_results(con) -> list[dict]:
-    """全ヒアリング結果（商談・アカウント名つき）。一覧/エクスポート用。"""
-    rows = [dict(r) for r in con.execute(
-        "SELECT hr.*, d.deal_name, a.name AS account_name "
-        "FROM hearing_results hr "
-        "LEFT JOIN deals d ON d.id = hr.deal_id "
-        "LEFT JOIN accounts a ON a.id = d.account_id "
-        "ORDER BY hr.conducted_on DESC, hr.id DESC"
-    )]
+def list_all_hearing_results(con, template_id: int | None = None) -> list[dict]:
+    """全ヒアリング結果（商談・アカウント名つき）。一覧/エクスポート用。
+
+    template_id指定時はそのテンプレートの結果のみに絞り込む。
+    """
+    sql = ("SELECT hr.*, d.deal_name, a.name AS account_name "
+           "FROM hearing_results hr "
+           "LEFT JOIN deals d ON d.id = hr.deal_id "
+           "LEFT JOIN accounts a ON a.id = d.account_id ")
+    params: list = []
+    if template_id:
+        sql += "WHERE hr.template_id=? "
+        params.append(int(template_id))
+    sql += "ORDER BY hr.conducted_on DESC, hr.id DESC"
+    rows = [dict(r) for r in con.execute(sql, params)]
     return [_hydrate_hearing_result(r) for r in rows]
+
+
+def count_hearing_results_by_template(con) -> dict:
+    """テンプレートID→実施件数 のマッピングを返す。"""
+    rows = con.execute(
+        "SELECT template_id, COUNT(*) AS cnt FROM hearing_results "
+        "WHERE template_id IS NOT NULL GROUP BY template_id"
+    ).fetchall()
+    return {r["template_id"]: r["cnt"] for r in rows}
 
 
 def count_hearing_results(con, deal_id: int) -> int:
