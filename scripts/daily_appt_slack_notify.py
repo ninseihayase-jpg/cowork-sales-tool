@@ -17,6 +17,7 @@
 実行:
   python scripts/daily_appt_slack_notify.py          # 通常実行（翌日分）
   TARGET_DATE=2026-07-07 python scripts/daily_appt_slack_notify.py  # 日付指定（手動実行・テスト用）
+  DEAL_ID=123 python scripts/daily_appt_slack_notify.py             # 1件だけテスト投稿（next_milestone_date無視）
 
 環境変数:
   SLACK_BOT_TOKEN    - SlackアプリのBot User OAuth Token (xoxb-...)
@@ -24,6 +25,8 @@
   SFA_TOOL_URL       - SFAツールのベースURL（省略時 https://sfa-crm.onrender.com）
   SFA_API_TOKEN      - /api/deals 用トークン
   TARGET_DATE        - 省略時はJST翌日。手動実行・テスト時に日付を固定したい場合に指定（YYYY-MM-DD）
+  DEAL_ID            - 指定すると、その商談IDだけを対象に投稿する（日付条件・通知済みガードを無視した単発テスト用）。
+                        本番の日次実行では絶対に指定しないこと。
 
 冪等性:
   投稿済みの商談は deals.slack_notified_date（= 投稿対象日）に記録し、
@@ -133,19 +136,29 @@ def main():
         print("[ERROR] SALES_CHANNEL_ID が設定されていません。")
         sys.exit(1)
 
-    date_str = target_date_str()
-    print(f"[INFO] 対象日: {date_str}")
-
+    deal_id_override = os.environ.get("DEAL_ID", "").strip()
     deals = fetch_open_deals()
-    targets = [
-        d for d in deals
-        if d.get("next_milestone_date") == date_str and d.get("slack_notified_date") != date_str
-    ]
-    skipped = sum(
-        1 for d in deals
-        if d.get("next_milestone_date") == date_str and d.get("slack_notified_date") == date_str
-    )
-    print(f"[INFO] 対象商談: {len(targets)}件（既に通知済みでスキップ: {skipped}件）")
+
+    if deal_id_override:
+        deal = next((d for d in deals if str(d.get("id")) == deal_id_override), None)
+        if not deal:
+            print(f"[ERROR] deal_id={deal_id_override} が見つかりません（status=openの商談のみ対象）。")
+            sys.exit(1)
+        date_str = deal.get("next_milestone_date") or target_date_str()
+        print(f"[TEST] DEAL_ID={deal_id_override} 単発テスト投稿（date_str={date_str}）")
+        targets = [deal]
+    else:
+        date_str = target_date_str()
+        print(f"[INFO] 対象日: {date_str}")
+        targets = [
+            d for d in deals
+            if d.get("next_milestone_date") == date_str and d.get("slack_notified_date") != date_str
+        ]
+        skipped = sum(
+            1 for d in deals
+            if d.get("next_milestone_date") == date_str and d.get("slack_notified_date") == date_str
+        )
+        print(f"[INFO] 対象商談: {len(targets)}件（既に通知済みでスキップ: {skipped}件）")
 
     if not targets:
         print("[INFO] 対象商談がないため終了します。")
