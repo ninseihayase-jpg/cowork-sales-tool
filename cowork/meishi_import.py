@@ -82,16 +82,22 @@ def _read_xlsx_bytes(data: bytes) -> list[list[str]]:
             cells: list[str] = []
             for c in row.findall("x:c", ns):
                 t = c.get("t", "")
-                v = c.find("x:v", ns)
-                if v is not None and v.text is not None:
-                    if t == "s":
-                        # 共有文字列インデックス
+                if t == "s":
+                    # 共有文字列インデックス
+                    v = c.find("x:v", ns)
+                    if v is not None and v.text is not None:
                         idx = int(v.text)
                         cells.append(strings[idx] if idx < len(strings) else "")
                     else:
-                        cells.append(v.text)
+                        cells.append("")
+                elif t == "inlineStr":
+                    # インライン文字列（<is><t>...</t></is>）
+                    is_el = c.find("x:is", ns)
+                    t_el = is_el.find("x:t", ns) if is_el is not None else None
+                    cells.append(t_el.text if t_el is not None and t_el.text is not None else "")
                 else:
-                    cells.append("")
+                    v = c.find("x:v", ns)
+                    cells.append(v.text if v is not None and v.text is not None else "")
             rows.append(cells)
 
     return rows
@@ -102,6 +108,12 @@ def _cell(row: list[str], col: int) -> str:
     if col < len(row):
         return (row[col] or "").strip()
     return ""
+
+
+# SFA側のCSVテンプレート（リード/商談一括取込）に特徴的な列名。
+# 名刺xlsxアップロードにテンプレート形式のファイルが誤って投げられた場合に検出する
+# （名刺用の固定列インデックスをそのまま適用すると列がズレて壊れたリードが大量生成されるため）。
+_SFA_TEMPLATE_MARKERS = {"企業規模", "獲得経路", "ステータス", "事業種別L1", "ピッチテーマ", "種別"}
 
 
 def parse_meishi_xlsx(data: bytes) -> list[dict]:
@@ -123,6 +135,13 @@ def parse_meishi_xlsx(data: bytes) -> list[dict]:
     rows = _read_xlsx_bytes(data)
     if not rows:
         return []
+
+    header = {(c or "").strip() for c in rows[0]}
+    if len(header & _SFA_TEMPLATE_MARKERS) >= 2:
+        raise ValueError(
+            "このファイルは名刺エクスポート形式ではなく、SFAのCSVテンプレート形式のようです。"
+            "上の「CSVファイルアップロード」欄からアップロードし直してください。"
+        )
 
     leads: list[dict] = []
 
@@ -276,6 +295,11 @@ def import_meishi_file(con, data: bytes, filename: str) -> tuple[int, int, list[
 
     try:
         leads = parse_meishi_xlsx(data)
+    except zipfile.BadZipFile:
+        return 0, 0, [
+            "この欄は名刺管理アプリがエクスポートしたxlsx専用です。"
+            "CSVファイルは下の「CSVファイルアップロード」欄からアップロードしてください。"
+        ]
     except Exception as exc:  # noqa: BLE001
         logger.exception("名刺xlsxの解析に失敗しました: %s", filename)
         return 0, 0, [f"ファイル解析エラー: {exc}"]

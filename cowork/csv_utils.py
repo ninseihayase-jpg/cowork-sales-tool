@@ -14,3 +14,22 @@ def normalize_csv_text(text: str) -> str:
     if text.startswith("﻿"):
         text = text[1:]
     return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def xlsx_to_csv_text(data: bytes) -> str:
+    """xlsxバイト列を先頭シートのCSVテキストに変換する。
+
+    openpyxlのセル座標ベースのAPI（iter_rows）を使うため、空欄セルがあっても
+    列がズレない（手組みのXMLパーサでは空欄セルの扱いを誤ると列がズレる）。
+    """
+    import csv
+    import io
+    import openpyxl
+
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    ws = wb[wb.sheetnames[0]]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    for row in ws.iter_rows(values_only=True):
+        writer.writerow(["" if v is None else v for v in row])
+    return buf.getvalue()

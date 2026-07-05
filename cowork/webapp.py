@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import sfa_db
 from . import leads_csv
 from . import deals_csv
+from . import csv_utils
 from .theme_db import ThemeDBClient
 from . import theme_link
 
@@ -71,16 +72,25 @@ def _opt_l2(l1: str | None, selected: str | None) -> str:
 
 
 def _decode_uploaded_csv(file_item) -> str | None:
-    """CSV一括取込のファイルアップロード欄（multipart）から取得したバイト列をデコードする。
+    """CSV一括取込のファイルアップロード欄（multipart）から取得したバイト列をCSVテキストにする。
 
-    Excel(日本語Windows)で「CSV(カンマ区切り)」保存するとShift-JIS(cp932)になることが多いため、
-    UTF-8(BOM可)で失敗した場合はcp932にフォールバックする。
+    - .xlsx/.xlsは csv_utils.xlsx_to_csv_text() でセル座標ベースに変換する
+      （名刺xlsxアップロードは別の固定列レイアウト専用なので、テンプレート形式の
+      xlsxをそちらに誤ってアップロードすると列がズレて壊れる。こちらの欄で
+      xlsxも直接受け付けることで、その事故を防ぐ）。
+    - .csv等のテキストファイルはUTF-8(BOM可)を試し、失敗したらcp932にフォールバック
+      （Excel日本語Windowsの「CSV(カンマ区切り)」保存はShift-JISになることが多いため）。
     """
     if not file_item or not isinstance(file_item, tuple):
         return None
-    _filename, data = file_item
+    filename, data = file_item
     if not data:
         return None
+    if (filename or "").lower().endswith((".xlsx", ".xls")):
+        try:
+            return csv_utils.xlsx_to_csv_text(data)
+        except Exception:
+            return None
     try:
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -1427,22 +1437,32 @@ def hearing_template_form(con, tmpl=None) -> str:
     var _ITEMS = {items_data};
 
     // ── 矢羽ブロック ──
-    function _addYbStepRow(stepsBox, label) {{
+    function _addYbPairRow(pairsBox, step, dept) {{
       var div = document.createElement('div');
       div.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0';
-      var inp = document.createElement('input');
-      inp.type='text'; inp.className='yb-step-input';
-      inp.value=label||''; inp.placeholder='例：受注処理'; inp.style.cssText='flex:1';
+      var stepInp = document.createElement('input');
+      stepInp.type='text'; stepInp.className='yb-pair-step';
+      stepInp.value=step||''; stepInp.placeholder='ステップ（例：受注）'; stepInp.style.cssText='flex:1';
+      var deptInp = document.createElement('input');
+      deptInp.type='text'; deptInp.className='yb-pair-dept';
+      deptInp.value=dept||''; deptInp.placeholder='部署（例：営業）'; deptInp.style.cssText='flex:1';
       var btn=document.createElement('button');
       btn.type='button'; btn.className='btn sec';
       btn.style.cssText='font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b';
-      btn.textContent='削除'; btn.onclick=function(){{this.parentNode.remove();}};
-      div.appendChild(inp); div.appendChild(btn); stepsBox.appendChild(div);
+      btn.textContent='削除'; btn.onclick=function(){{div.remove();}};
+      div.appendChild(stepInp); div.appendChild(deptInp); div.appendChild(btn); pairsBox.appendChild(div);
     }}
 
     function addYabaneItem(cfg) {{
-      cfg=cfg||{{label:'業務プロセス',departments:['部署A','部署B','部署C'],
-        steps:[{{label:'ステップ1'}},{{label:'ステップ2'}},{{label:'ステップ3'}}]}};
+      cfg=cfg||{{label:'業務プロセス',rows:[{{step:'ステップ1',dept:'部署1'}},{{step:'ステップ2',dept:'部署2'}}]}};
+      // 旧形式（departments/steps）で保存された既存テンプレートを開いた場合の変換
+      var rows = cfg.rows;
+      if (!rows) {{
+        var depts = cfg.departments || [];
+        var steps = cfg.steps || [];
+        rows = steps.map(function(s, i) {{ return {{step: s.label || '', dept: depts[i] || ''}}; }});
+        if (!rows.length) rows = [{{step:'ステップ1',dept:'部署1'}}];
+      }}
       var box=document.getElementById('items_box');
       var el=document.createElement('div'); el.className='yb-block';
       el.setAttribute('draggable','true');
@@ -1464,24 +1484,17 @@ def hearing_template_form(con, tmpl=None) -> str:
       db.style.cssText='font-size:11px;padding:4px 8px;background:#fde8e8;color:#c0392b;flex-shrink:0';
       db.textContent='削除'; db.onclick=function(){{this.closest('.yb-block').remove();}};
       hdr.appendChild(dh); hdr.appendChild(badge); hdr.appendChild(lw); hdr.appendChild(db); el.appendChild(hdr);
-      // body
-      var body=document.createElement('div'); body.style.cssText='display:flex;gap:12px;flex-wrap:wrap';
-      var dd=document.createElement('div'); dd.style.cssText='flex:1;min-width:160px';
-      var dl=document.createElement('label'); dl.style.cssText='font-size:12px'; dl.textContent='関係部署（横軸・1行に1つ）';
-      var dta=document.createElement('textarea'); dta.className='yb-block-depts'; dta.rows=4;
-      dta.style.cssText='font-family:inherit'; dta.placeholder='例：営業\\n生産\\n経理';
-      dta.value=(cfg.departments||[]).join('\\n');
-      dd.appendChild(dl); dd.appendChild(dta);
-      var sd=document.createElement('div'); sd.style.cssText='flex:1;min-width:160px';
-      var sl=document.createElement('label'); sl.style.cssText='font-size:12px'; sl.textContent='初期ステップ';
-      var sb=document.createElement('div'); sb.className='yb-steps-box'; sb.style.cssText='margin:4px 0';
-      var sab=document.createElement('button'); sab.type='button'; sab.className='btn sec';
-      sab.style.cssText='font-size:11px;padding:4px 8px;margin-top:4px'; sab.textContent='＋ステップ追加';
-      sab.onclick=function(){{_addYbStepRow(this.previousElementSibling,'');}};
-      sd.appendChild(sl); sd.appendChild(sb); sd.appendChild(sab);
-      body.appendChild(dd); body.appendChild(sd); el.appendChild(body);
+      // body: ステップ・部署をペアで並べて入力
+      var pl=document.createElement('label'); pl.style.cssText='font-size:12px'; pl.textContent='初期のステップ・部署（1行=1ステップ1部署。ヒアリング入力画面はこの並びをそのまま行として表示します）';
+      el.appendChild(pl);
+      var pairsBox=document.createElement('div'); pairsBox.className='yb-block-pairs'; pairsBox.style.cssText='margin:4px 0';
+      el.appendChild(pairsBox);
+      var addBtn=document.createElement('button'); addBtn.type='button'; addBtn.className='btn sec';
+      addBtn.style.cssText='font-size:11px;padding:4px 8px;margin-top:4px'; addBtn.textContent='＋行追加';
+      addBtn.onclick=function(){{_addYbPairRow(pairsBox,'','');}};
+      el.appendChild(addBtn);
       box.appendChild(el);
-      (cfg.steps||[]).forEach(function(s){{_addYbStepRow(sb,s.label||'');}});
+      rows.forEach(function(r){{_addYbPairRow(pairsBox, r.step||'', r.dept||'');}});
     }}
 
     function _makeBlockHeader(el, blockClass, badgeText, badgeColor, labelClass, defaultLabel) {{
@@ -1693,12 +1706,13 @@ def hearing_template_form(con, tmpl=None) -> str:
       document.querySelectorAll('#items_box > .hitem, #items_box > .yb-block, #items_box > .ra-block, #items_box > .tl-block, #items_box > .sc-block').forEach(function(el) {{
         if (el.classList.contains('yb-block')) {{
           var ybLabel = el.querySelector('.yb-block-label').value.trim() || '業務プロセス';
-          var depts = el.querySelector('.yb-block-depts').value
-            .split('\\n').map(function(s){{return s.trim();}}).filter(Boolean);
-          var steps = Array.from(el.querySelectorAll('.yb-step-input'))
-            .map(function(i){{return i.value.trim();}}).filter(Boolean)
-            .map(function(l){{return {{label:l}};}});
-          items.push({{label:ybLabel, type:'yabane', departments:depts, steps:steps}});
+          var ybRows = [];
+          el.querySelectorAll('.yb-block-pairs > div').forEach(function(row) {{
+            var step = row.querySelector('.yb-pair-step').value.trim();
+            var dept = row.querySelector('.yb-pair-dept').value.trim();
+            if (step || dept) ybRows.push({{step:step, dept:dept}});
+          }});
+          items.push({{label:ybLabel, type:'yabane', rows:ybRows}});
         }} else if (el.classList.contains('ra-block')) {{
           var raLabel=el.querySelector('.ra-block-label').value.trim()||'DX成熟度評価';
           var axes=el.querySelector('.ra-block-axes').value.split('\\n').map(function(s){{return s.trim();}}).filter(Boolean);
@@ -1951,16 +1965,21 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                 f'</div>'
             )
         elif it.get("type") == "yabane":
-            _yb_depts = it.get("departments") or []
-            _yb_steps = it.get("steps") or [{"label": "ステップ1"}]
+            _yb_pairs = it.get("rows")
+            if _yb_pairs is None:
+                # 旧形式（departments/steps）のテンプレートからの変換: 1ステップ1行、部署は空欄
+                _yb_pairs = [{"step": _s.get("label", ""), "dept": ""}
+                            for _s in (it.get("steps") or [{"label": "ステップ1"}])]
             _yb_prev = pv if isinstance(pv, dict) else None
             if _yb_prev is not None:
                 _yb_rows = _yabane_rows_from_answer(_yb_prev)
             else:
+                # テンプレートで定義した「ステップ・部署」の並びをそのまま行にする
+                # （掛け算はしない。1テンプレ行 = 1ヒアリング行）。
                 _yb_rows = [
-                    {"step": _s.get("label", ""), "dept": _d, "content": "", "output": "",
+                    {"step": _p.get("step", ""), "dept": _p.get("dept", ""), "content": "", "output": "",
                      "issue": "", "target": "", "target_number": ""}
-                    for _s in _yb_steps for _d in (_yb_depts or [""])
+                    for _p in (_yb_pairs or [{"step": "", "dept": ""}])
                 ]
             if not _yb_rows:
                 _yb_rows = [{"step": "", "dept": "", "content": "", "output": "",
@@ -3166,8 +3185,9 @@ def leads_import_page(con, result: str = "") -> str:
     {result_html}
 
     <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📇 名刺データ（xlsx）アップロード</h3>
-    <p class="muted">名刺管理アプリ（Eight / CAMCARD / Sansan等）からエクスポートしたxlsxをアップロードします。<br>
-    会社名・業界などはAIがWebリサーチで補強します（ANTHROPIC_API_KEY 設定時）。</p>
+    <p class="muted">名刺管理アプリ（Eight / CAMCARD / Sansan等）からエクスポートしたxlsxを<strong>そのまま</strong>アップロードします（列構成は名刺アプリ側の固定形式）。<br>
+    会社名・業界などはAIがWebリサーチで補強します（ANTHROPIC_API_KEY 設定時）。<br>
+    <strong>下記テンプレートに沿って作成したCSV/xlsxはこちらではなく、下の「CSVファイルアップロード」欄を使ってください。</strong></p>
     <form method="post" action="/leads/upload_meishi" enctype="multipart/form-data" style="margin-bottom:20px">
       <label>名刺xlsxファイル</label>
       <input type="file" name="meishi_file" accept=".xlsx,.xls,.csv" required style="padding:4px">
@@ -3176,34 +3196,37 @@ def leads_import_page(con, result: str = "") -> str:
     </form>
 
     <hr style="margin:20px 0">
-    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📋 CSVファイルアップロード／ペースト取込</h3>
+    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📋 CSVファイルアップロード／ペースト取込（こちらがメインの取込方法です）</h3>
     <p style="margin:10px 0">
       <a class="btn sec" href="/leads/import/template.csv">📥 テンプレートCSVをダウンロード</a>
     </p>
     <p class="muted">運用ルール: 入力は必ずこのテンプレートに列を揃えて作成してください（列の追加・削除・並び替えは不可、値のみ入力）。</p>
 
-    {_ai_prompt_block(leads_csv.build_ai_prompt(con), "/leads/import/ai_prompt.md")}
-
-    {choices_html}
-
-    <p class="muted" style="margin-top:12px">下記フォーマットのCSVをアップロードするか、直接貼り付けてください（1行目はヘッダ行、空行はスキップ）。</p>
-    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">{html.escape(header_line)}
-{html.escape(example_lines)}</pre>
-    <p class="muted" style="margin-top:4px">
-      業界 / 企業規模 / 担当者 / ピッチテーマは、上の「入力選択肢一覧」と完全一致した場合のみ取り込まれます
-      （一致しない場合は空欄になります）。業界・企業規模が空欄の行はAIが会社名から自動推定します
-      （ANTHROPIC_API_KEY設定時）。
-    </p>
-    <form method="post" action="/leads/import" enctype="multipart/form-data">
-      <label>CSVファイル（テンプレートに沿ったファイルをそのままアップロード）</label>
-      <input type="file" name="csv_file" accept=".csv" style="padding:4px">
+    <form method="post" action="/leads/import" enctype="multipart/form-data"
+          style="background:#f0f7ff;border:1px solid #cfe0fb;border-radius:8px;padding:14px;margin:14px 0">
+      <label>👇 CSVファイル（テンプレートに沿ったファイルをそのままアップロード。xlsxも可）</label>
+      <input type="file" name="csv_file" accept=".csv,.xlsx,.xls" style="padding:4px">
       <label style="margin-top:12px">またはCSVデータを直接ペースト</label>
       <textarea name="csv_text" rows="8"
         style="font-family:monospace;font-size:12px"></textarea>
       <p class="muted" style="margin-top:4px">両方入力した場合はアップロードしたファイルを優先します。</p>
       <p><button class="btn">取込実行</button>
          <a class="btn sec" href="/leads">キャンセル</a></p>
-    </form></div>"""
+    </form>
+
+    <p class="muted" style="margin-top:12px">CSVフォーマット（1行目はヘッダ行、空行はスキップ）:</p>
+    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">{html.escape(header_line)}
+{html.escape(example_lines)}</pre>
+    <p class="muted" style="margin-top:4px">
+      業界 / 企業規模 / 担当者 / ピッチテーマは、下の「入力選択肢一覧」と完全一致した場合のみ取り込まれます
+      （一致しない場合は空欄になります）。業界・企業規模が空欄の行はAIが会社名から自動推定します
+      （ANTHROPIC_API_KEY設定時）。
+    </p>
+
+    {_ai_prompt_block(leads_csv.build_ai_prompt(con), "/leads/import/ai_prompt.md")}
+
+    {choices_html}
+    </div>"""
 
 
 def deals_import_page(con, result: str = "") -> str:
@@ -3258,31 +3281,32 @@ def deals_import_page(con, result: str = "") -> str:
     </p>
     <p class="muted">運用ルール: 入力は必ずこのテンプレートに列を揃えて作成してください（列の追加・削除・並び替えは不可、値のみ入力）。</p>
 
-    {_ai_prompt_block(deals_csv.build_ai_prompt(con), "/deals/import/ai_prompt.md")}
-
-    {choices_html}
-
-    <hr style="margin:20px 0">
-    <h3 style="margin:0 0 8px;font-size:14px;color:#3a4760">📋 CSVファイルアップロード／ペースト取込</h3>
-    <p class="muted">下記フォーマットのCSVをアップロードするか、直接貼り付けてください（1行目はヘッダ行、空行はスキップ）。</p>
-    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">{html.escape(header_line)}
-{html.escape(example_lines)}</pre>
-    <p class="muted" style="margin-top:4px">
-      ステージ / 事業種別L1 / 事業種別L2（L1に対応する値のみ） / リード経路 / 担当者 / 重要度 / 企業規模は、
-      上の「入力選択肢一覧」と完全一致した場合のみ取り込まれます（一致しない場合は空欄になります）。<br>
-      業界は自由入力欄のためどんな文字列でも取り込めます。事前に業界・企業規模を調査済みであれば、
-      その場でCSVに直接入力してください（AI推定より確実です）。
-    </p>
-    <form method="post" action="/deals/import" enctype="multipart/form-data">
-      <label>CSVファイル（テンプレートに沿ったファイルをそのままアップロード）</label>
-      <input type="file" name="csv_file" accept=".csv" style="padding:4px">
+    <form method="post" action="/deals/import" enctype="multipart/form-data"
+          style="background:#f0f7ff;border:1px solid #cfe0fb;border-radius:8px;padding:14px;margin:14px 0">
+      <label>👇 CSVファイル（テンプレートに沿ったファイルをそのままアップロード。xlsxも可）</label>
+      <input type="file" name="csv_file" accept=".csv,.xlsx,.xls" style="padding:4px">
       <label style="margin-top:12px">またはCSVデータを直接ペースト</label>
       <textarea name="csv_text" rows="8"
         style="font-family:monospace;font-size:12px"></textarea>
       <p class="muted" style="margin-top:4px">両方入力した場合はアップロードしたファイルを優先します。</p>
       <p><button class="btn">取込実行</button>
          <a class="btn sec" href="/deals">キャンセル</a></p>
-    </form></div>"""
+    </form>
+
+    <p class="muted" style="margin-top:12px">CSVフォーマット（1行目はヘッダ行、空行はスキップ）:</p>
+    <pre style="background:#f4f6f9;padding:10px;border-radius:6px">{html.escape(header_line)}
+{html.escape(example_lines)}</pre>
+    <p class="muted" style="margin-top:4px">
+      ステージ / 事業種別L1 / 事業種別L2（L1に対応する値のみ） / リード経路 / 担当者 / 重要度 / 企業規模は、
+      下の「入力選択肢一覧」と完全一致した場合のみ取り込まれます（一致しない場合は空欄になります）。<br>
+      業界は自由入力欄のためどんな文字列でも取り込めます。事前に業界・企業規模を調査済みであれば、
+      その場でCSVに直接入力してください（AI推定より確実です）。
+    </p>
+
+    {_ai_prompt_block(deals_csv.build_ai_prompt(con), "/deals/import/ai_prompt.md")}
+
+    {choices_html}
+    </div>"""
 
 
 
