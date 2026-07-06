@@ -113,7 +113,7 @@ def format_title(deal: dict, date_str: str) -> str:
     parts = [p for p in [md, time_part] if p]
     title = " ".join(parts) + f" {company}"
     if deal.get("company_size") == "5000億以上":
-        title += " ！エンプラ"
+        title += ":exclamation:エンプラ"
     if owner:
         title += f"｜{owner}"
     return title
