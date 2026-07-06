@@ -23,6 +23,7 @@ from . import deals_csv
 from . import csv_utils
 from .theme_db import ThemeDBClient
 from . import theme_link
+from . import dev_project_link
 
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 
@@ -170,6 +171,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
   <a href="/deals">商談一覧</a>
   <a href="/leads">リード</a>
   <a href="/hearings" style="opacity:.8;font-size:13px">ヒアリング</a>
+  <a href="/dev-projects" style="opacity:.8;font-size:13px">開発案件</a>
   <a href="/email-draft" style="opacity:.8;font-size:13px">メール</a>
   <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
   <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Inproc Dashboard ↗</a>
@@ -1210,6 +1212,36 @@ def deal_form(con, deal=None) -> str:
           <p class="muted" style="margin:0">ヒアリング未実施</p>
         </div>"""
 
+    dev_projects_html = ""
+    if deal.get("id"):
+        dps = sfa_db.list_dev_projects(con, deal_id=deal["id"])
+        add_btn = f'<a class="btn sec" href="/dev-projects/new?deal_id={deal["id"]}">＋開発案件を追加</a>'
+        if dps:
+            dp_rows = "".join(
+                f'<tr><td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a></td>'
+                f'<td><span class="stage">{_esc(p.get("stage"))}</span></td>'
+                f'<td>{_esc(p.get("status"))}</td>'
+                f'<td>{_esc(p.get("order_potential"))}</td>'
+                f'<td>{_esc(p.get("dev_owner"))}</td>'
+                f'<td>{_esc(p.get("deadline") or "—")}</td></tr>'
+                for p in dps
+            )
+            dev_projects_html = f"""
+        <div class="card">
+          <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <span>開発案件（{len(dps)}件）</span>{add_btn}
+          </h2>
+          <table><tr><th>テーマ</th><th>ステージ</th><th>状況</th><th>受注余地</th><th>開発担当</th><th>期限</th></tr>{dp_rows}</table>
+        </div>"""
+        else:
+            dev_projects_html = f"""
+        <div class="card">
+          <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <span>開発案件</span>{add_btn}
+          </h2>
+          <p class="muted" style="margin:0">開発案件なし</p>
+        </div>"""
+
     activities_html = ""
     sync_btn = ""
     if deal.get("id"):
@@ -1352,7 +1384,154 @@ def deal_form(con, deal=None) -> str:
     }}
     </script></div>
     {hearing_html}
+    {dev_projects_html}
     {activities_html}"""
+
+
+# ── 開発案件（商談に紐づく開発テーマ管理）───────────────────────────────────────
+
+def dev_projects_list_page(con) -> str:
+    projects = sfa_db.list_dev_projects(con)
+    rows = "".join(
+        f'<tr><td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
+        f'<div class="muted">{_esc(p.get("theme_detail") or "")}</div></td>'
+        f'<td>{_esc(p.get("account_name"))}<div class="muted">{_esc(p.get("deal_name"))}</div></td>'
+        f'<td><span class="stage">{_esc(p.get("stage"))}</span></td>'
+        f'<td>{_esc(p.get("status"))}</td>'
+        f'<td>{_esc(p.get("order_potential"))}</td>'
+        f'<td>{_esc(p.get("dev_owner"))}</td>'
+        f'<td>{_esc(p.get("sales_owner"))}{(" / " + _esc(p["sales_sub_owner"])) if p.get("sales_sub_owner") else ""}</td>'
+        f'<td>{_esc(p.get("deadline") or "—")}</td>'
+        f'<td><form method="post" action="/dev-project/{p["id"]}/delete" style="display:inline" '
+        f'onsubmit="return confirm(\'削除しますか？\')">'
+        f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
+        for p in projects
+    ) or '<tr><td colspan=9 class=muted>開発案件がまだありません</td></tr>'
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>開発案件一覧（{len(projects)}件）</span>
+        <a class="btn" href="/dev-projects/new">＋新規入力</a>
+      </h2>
+      <table>
+        <tr><th>開発テーマ</th><th>商談</th><th>ステージ</th><th>状況</th><th>受注余地</th>
+            <th>開発担当</th><th>営業担当</th><th>期限</th><th></th></tr>
+        {rows}
+      </table>
+    </div>"""
+
+
+def dev_project_form(con, project: dict | None = None, deal_id: int | None = None) -> str:
+    """開発案件の新規/編集フォーム。project未指定時は新規入力（商談選択欄あり）。"""
+    is_edit = project is not None
+    p = project or {}
+    owners = sfa_db.get_master_list(con, "owners")
+
+    if is_edit:
+        deal_label = f'{_esc(p.get("account_name"))} / {_esc(p.get("deal_name"))}'
+        deal_field_html = (
+            f'<input type="hidden" name="deal_id" value="{p["deal_id"]}">'
+            f'<div class="muted" style="margin:4px 0 10px">{deal_label}</div>'
+        )
+        sales_owner_text = f'{_esc(p.get("sales_owner") or "—")} / {_esc(p.get("sales_sub_owner") or "—")}'
+        action = f'/dev-project/{p["id"]}/edit'
+        back_href = f'/deal/{p["deal_id"]}'
+        preselect_deal_id = None
+    else:
+        deals = sfa_db.list_deals(con, status="open")
+        opts = "".join(
+            f'<option value="{d["id"]}" data-owner="{_esc(d.get("owner"))}" '
+            f'data-sub-owner="{_esc(d.get("sub_owner"))}">'
+            f'{_esc(d.get("account_name"))} / {_esc(d.get("deal_name"))}</option>'
+            for d in deals
+        )
+        deal_field_html = f"""
+          <input type="text" id="dpDealFilter" placeholder="会社名・商談名で絞り込み" oninput="dpFilterDeals()">
+          <select name="deal_id" id="dpDealSelect" required size="8" style="height:170px" onchange="dpShowSalesOwner()">
+            <option value=""></option>
+            {opts}
+          </select>
+          <p class="muted" id="dpSalesOwnerLine" style="margin-top:6px">営業担当: —</p>"""
+        sales_owner_text = None
+        action = "/dev-project/new"
+        back_href = f'/deal/{deal_id}' if deal_id else "/dev-projects"
+        preselect_deal_id = deal_id
+
+    sales_owner_block = "" if sales_owner_text is None else (
+        f'<label>営業担当（商談の主担当・サブ担当を自動反映）</label>'
+        f'<div class="muted" style="margin-bottom:6px">{sales_owner_text}</div>'
+    )
+
+    return f"""
+    <div class="card" style="max-width:680px">
+      <p style="margin:0 0 10px"><a class="btn sec" href="{back_href}">← 戻る</a></p>
+      <h2>{'開発案件を編集' if is_edit else '開発案件 新規入力'}</h2>
+      <form method="post" action="{action}">
+        <label>商談</label>
+        {deal_field_html}
+        <label>開発テーマ *</label>
+        <input name="theme" required value="{_esc(p.get('theme'))}">
+        <label>開発テーマ詳細</label>
+        <textarea name="theme_detail" rows="3">{_esc(p.get('theme_detail'))}</textarea>
+        <div class="grid">
+          <div><label>状況</label><select name="status">{_opt(sfa_db.DEV_PROJECT_STATUSES, p.get('status'))}</select></div>
+          <div><label>ステージ</label><select name="stage">{_opt(sfa_db.DEV_PROJECT_STAGES, p.get('stage'))}</select></div>
+          <div><label>解像度</label><select name="resolution" id="dpResolution" onchange="dpRecalcPotential()">{_opt(sfa_db.DEV_RESOLUTIONS, p.get('resolution'))}</select></div>
+          <div><label>予算確認</label><select name="budget_confirmed" id="dpBudget" onchange="dpRecalcPotential()">{_opt(sfa_db.DEV_BUDGET_CONFIRMED, p.get('budget_confirmed'))}</select></div>
+          <div><label>実現難易度</label><select name="difficulty" id="dpDifficulty" onchange="dpRecalcPotential()">{_opt(sfa_db.DEV_DIFFICULTIES, p.get('difficulty'))}</select></div>
+          <div><label>バックエンド有無</label><select name="has_backend">{_opt(sfa_db.DEV_HAS_BACKEND, p.get('has_backend'))}</select></div>
+          <div><label>開発担当</label><select name="dev_owner">{_opt(owners, p.get('dev_owner'))}</select></div>
+          <div><label>期限</label><input type="date" name="deadline" value="{_esc(p.get('deadline'))}"></div>
+        </div>
+        <label>受注余地（自動判定）</label>
+        <div><span class="stage" id="dpOrderPotential">{_esc(p.get('order_potential') or '（保存時に判定）')}</span></div>
+        <label>技術サポート</label>
+        <input name="tech_support" value="{_esc(p.get('tech_support'))}">
+        {sales_owner_block}
+        <label>開発MS</label>
+        <input name="dev_milestone" value="{_esc(p.get('dev_milestone'))}">
+        <label>開発方針</label>
+        <textarea name="dev_policy" rows="3">{_esc(p.get('dev_policy'))}</textarea>
+        <div style="margin-top:16px">
+          <button class="btn" type="submit">保存</button>
+          <a class="btn sec" href="{back_href}">キャンセル</a>
+        </div>
+      </form>
+    </div>
+    <script>
+    function dpFilterDeals() {{
+      const q = document.getElementById('dpDealFilter').value.trim();
+      const sel = document.getElementById('dpDealSelect');
+      for (const o of sel.options) {{
+        if (!o.value) continue;
+        o.style.display = (!q || o.text.includes(q)) ? '' : 'none';
+      }}
+    }}
+    function dpShowSalesOwner() {{
+      const sel = document.getElementById('dpDealSelect');
+      const o = sel.options[sel.selectedIndex];
+      const owner = o ? (o.getAttribute('data-owner') || '—') : '—';
+      const sub = o ? (o.getAttribute('data-sub-owner') || '—') : '—';
+      document.getElementById('dpSalesOwnerLine').textContent = '営業担当: ' + owner + ' / ' + sub;
+    }}
+    function dpRecalcPotential() {{
+      const budget = document.getElementById('dpBudget').value;
+      const resolution = document.getElementById('dpResolution').value;
+      const difficulty = document.getElementById('dpDifficulty').value;
+      let potential = '中';
+      if (budget === '×') potential = '低';
+      else if (budget === '〇' && resolution === '〇' && (difficulty === '易' || difficulty === '中')) potential = '高';
+      document.getElementById('dpOrderPotential').textContent = potential;
+    }}
+    (function() {{
+      const sel = document.getElementById('dpDealSelect');
+      if (sel) {{
+        const pre = {json.dumps(preselect_deal_id)};
+        if (pre) sel.value = String(pre);
+        dpShowSalesOwner();
+      }}
+    }})();
+    </script>"""
 
 
 # ── リード / ピッチテーマ ページ（CRM吸収）─────────────────────────────────────
@@ -3800,6 +3979,28 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(activity_deal_picker(con)))
                 elif path == "/deal/new":
                     self._send(render(deal_form(con)))
+                # ── 開発案件 ──
+                elif path == "/dev-projects":
+                    self._send(render(dev_projects_list_page(con)))
+                elif path == "/dev-projects/new":
+                    qs = self._qs()
+                    did_raw = qs.get("deal_id", [None])[0]
+                    try:
+                        did = int(did_raw) if did_raw else None
+                    except ValueError:
+                        did = None
+                    self._send(render(dev_project_form(con, deal_id=did)))
+                elif path.startswith("/dev-project/") and path.endswith("/edit"):
+                    try:
+                        pid = int(path.split("/")[2])
+                        proj = sfa_db.get_dev_project(con, pid)
+                        self._send(
+                            render(dev_project_form(con, proj) if proj
+                                   else "<div class=card>開発案件が見つかりません</div>"),
+                            200 if proj else 404,
+                        )
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>ページが見つかりません</div>"), 404)
                 elif path == "/accounts":
                     self._send(render(accounts_page(con)))
                 elif path == "/account/new":
@@ -4009,6 +4210,84 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except Exception as exc:  # noqa: BLE001
                             print(f"[theme_link] sync_deal failed: {exc}")
                     self._redirect(f"/deal/{did}")
+
+                # ── 開発案件 ──
+                elif path == "/dev-project/new":
+                    deal_id_val = int(f["deal_id"]) if f.get("deal_id") else None
+                    if not deal_id_val:
+                        self._redirect("/dev-projects")
+                        return
+                    pid = sfa_db.upsert_dev_project(
+                        con, id=None, deal_id=deal_id_val,
+                        theme=f.get("theme") or "(無題)",
+                        theme_detail=f.get("theme_detail") or None,
+                        status=f.get("status") or None,
+                        stage=f.get("stage") or None,
+                        resolution=f.get("resolution") or None,
+                        budget_confirmed=f.get("budget_confirmed") or None,
+                        difficulty=f.get("difficulty") or None,
+                        has_backend=f.get("has_backend") or None,
+                        dev_owner=f.get("dev_owner") or None,
+                        tech_support=f.get("tech_support") or None,
+                        dev_milestone=f.get("dev_milestone") or None,
+                        deadline=f.get("deadline") or None,
+                        dev_policy=f.get("dev_policy") or None,
+                    )
+                    if theme_client is not None:
+                        try:
+                            dev_project_link.sync_dev_project(theme_client, con, pid)
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[dev_project_link] sync_dev_project failed: {exc}")
+                    self._redirect(f"/deal/{deal_id_val}")
+
+                elif path.startswith("/dev-project/") and path.endswith("/edit"):
+                    try:
+                        pid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/dev-projects")
+                        return
+                    existing = sfa_db.get_dev_project(con, pid)
+                    if not existing:
+                        self._redirect("/dev-projects")
+                        return
+                    sfa_db.upsert_dev_project(
+                        con, id=pid, deal_id=existing["deal_id"],
+                        theme=f.get("theme") or "(無題)",
+                        theme_detail=f.get("theme_detail") or None,
+                        status=f.get("status") or None,
+                        stage=f.get("stage") or None,
+                        resolution=f.get("resolution") or None,
+                        budget_confirmed=f.get("budget_confirmed") or None,
+                        difficulty=f.get("difficulty") or None,
+                        has_backend=f.get("has_backend") or None,
+                        dev_owner=f.get("dev_owner") or None,
+                        tech_support=f.get("tech_support") or None,
+                        dev_milestone=f.get("dev_milestone") or None,
+                        deadline=f.get("deadline") or None,
+                        dev_policy=f.get("dev_policy") or None,
+                    )
+                    if theme_client is not None:
+                        try:
+                            dev_project_link.sync_dev_project(theme_client, con, pid)
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[dev_project_link] sync_dev_project failed: {exc}")
+                    self._redirect(f"/deal/{existing['deal_id']}")
+
+                elif path.startswith("/dev-project/") and path.endswith("/delete"):
+                    try:
+                        pid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/dev-projects")
+                        return
+                    existing = sfa_db.get_dev_project(con, pid)
+                    if existing:
+                        sfa_db.delete_dev_project(con, pid)
+                        if theme_client is not None and existing.get("hisho_id"):
+                            try:
+                                dev_project_link.delete_dev_project_remote(theme_client, existing["hisho_id"])
+                            except Exception as exc:  # noqa: BLE001
+                                print(f"[dev_project_link] delete_dev_project_remote failed: {exc}")
+                    self._redirect(f"/deal/{existing['deal_id']}" if existing else "/dev-projects")
 
                 elif path == "/activity/add":
                     did = int(f["deal_id"])

@@ -26,7 +26,7 @@ LEAD_PATTERNS = ["Connection", "Exh.", "Partner", "Advisor", "PE", "Under", "SNS
 COMPANY_SIZES = ["500億未満", "1000億未満", "3000億未満", "5000億未満", "5000億以上"]
 ACTIVITY_TYPES = ["面談", "電話", "メール", "メモ"]
 IMPORTANCE_OPTIONS = ["高", "中", "低"]
-OWNERS = ["吉江", "中島", "早瀬", "岩崎", "高橋", "土屋", "戸田", "片山", "杉山", "山端", "堀籠"]
+OWNERS = ["吉江", "中島", "早瀬", "岩崎", "高橋", "土屋", "戸田", "片山", "杉山", "山端", "堀籠", "Shreyas"]
 INDUSTRIES = [
     "製造業(自動車・モビリティ)", "製造業(電機・電子・精密)", "製造業(重工・鉄鋼)",
     "製造業(化学・素材)", "製造業(食品・消費財)", "製造業(医療機器)", "製造業(その他)",
@@ -57,6 +57,30 @@ MASTER_LABELS = {
     "activity_types":    "活動種別",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
+
+# 開発案件（商談に紐づく開発テーマの管理）
+DEV_PROJECT_STATUSES = ["開発中", "完成", "中止"]
+DEV_PROJECT_STAGES = ["プロト", "PoC", "本番"]
+DEV_ORDER_POTENTIALS = ["低", "中", "高"]
+DEV_RESOLUTIONS = ["〇", "△", "×"]
+DEV_BUDGET_CONFIRMED = ["〇", "×"]
+DEV_DIFFICULTIES = ["易", "中", "難"]
+DEV_HAS_BACKEND = ["有り", "無し"]
+
+
+def compute_dev_order_potential(*, budget_confirmed: str | None, resolution: str | None,
+                                 difficulty: str | None) -> str:
+    """受注余地を解像度・予算確認・実現難易度から自動判定する。
+
+    a) 予算確認×なら低
+    b) 予算確認〇 かつ 解像度〇 かつ 難易度が易/中 なら高
+    c) それ以外はすべて中
+    """
+    if budget_confirmed == "×":
+        return "低"
+    if budget_confirmed == "〇" and resolution == "〇" and difficulty in ("易", "中"):
+        return "高"
+    return "中"
 
 # CRM吸収: リード/ピッチテーマ用定数
 PITCH_THEME_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6']
@@ -249,6 +273,30 @@ CREATE TABLE IF NOT EXISTS hearing_drafts (
     updated_at    TEXT DEFAULT (datetime('now')),
     UNIQUE(target_type, target_id, template_id)
 );
+
+-- 開発案件（商談に紐づく開発テーマ。1商談:N開発案件）
+CREATE TABLE IF NOT EXISTS dev_projects (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id          INTEGER NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    theme            TEXT NOT NULL,        -- 開発テーマ
+    theme_detail     TEXT,                 -- 開発テーマ詳細
+    status           TEXT,                 -- 開発中/完成/中止
+    stage            TEXT,                 -- プロト/PoC/本番
+    order_potential  TEXT,                 -- 受注余地: 低/中/高（自動判定）
+    resolution       TEXT,                 -- 解像度: 〇/△/×
+    budget_confirmed TEXT,                 -- 予算確認: 〇/×
+    difficulty       TEXT,                 -- 実現難易度: 易/中/難
+    has_backend      TEXT,                 -- バックエンド有無: 有り/無し
+    dev_owner        TEXT,                 -- 開発担当（メンバー選択）
+    tech_support     TEXT,                 -- 技術サポート（自由記述）
+    dev_milestone    TEXT,                 -- 開発MS（自由記述）
+    deadline         TEXT,                 -- 期限（YYYY-MM-DD）
+    dev_policy       TEXT,                 -- 開発方針（自由記述）
+    hisho_id         INTEGER,              -- Hisho側 dev_projects.id（同期キー。NULL=未連携）
+    created_at       TEXT DEFAULT (datetime('now')),
+    updated_at       TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dev_projects_deal ON dev_projects(deal_id);
 """
 
 
@@ -776,3 +824,61 @@ def count_hearing_results(con, deal_id: int) -> int:
         "SELECT count(*) FROM hearing_results WHERE deal_id=?", (int(deal_id),)
     ).fetchone()
     return int(r[0]) if r else 0
+
+
+# ---- 開発案件（deal_id:N の開発テーマ管理） ----
+
+DEV_PROJECT_FIELDS = [
+    "deal_id", "theme", "theme_detail", "status", "stage", "order_potential",
+    "resolution", "budget_confirmed", "difficulty", "has_backend", "dev_owner",
+    "tech_support", "dev_milestone", "deadline", "dev_policy",
+]
+
+_DEV_PROJECT_SELECT = (
+    "SELECT p.*, d.deal_name, d.owner AS sales_owner, d.sub_owner AS sales_sub_owner, "
+    "a.name AS account_name FROM dev_projects p "
+    "JOIN deals d ON d.id = p.deal_id LEFT JOIN accounts a ON a.id = d.account_id"
+)
+
+
+def list_dev_projects(con, *, deal_id: int | None = None) -> list[dict]:
+    q = _DEV_PROJECT_SELECT
+    params: list = []
+    if deal_id:
+        q += " WHERE p.deal_id = ?"
+        params.append(int(deal_id))
+    q += " ORDER BY p.updated_at DESC"
+    return [dict(r) for r in con.execute(q, params)]
+
+
+def get_dev_project(con, id: int) -> dict | None:
+    r = con.execute(_DEV_PROJECT_SELECT + " WHERE p.id = ?", (int(id),)).fetchone()
+    return dict(r) if r else None
+
+
+def upsert_dev_project(con, *, id=None, commit: bool = True, **fields) -> int:
+    data = {k: fields.get(k) for k in DEV_PROJECT_FIELDS}
+    data["order_potential"] = compute_dev_order_potential(
+        budget_confirmed=data.get("budget_confirmed"),
+        resolution=data.get("resolution"),
+        difficulty=data.get("difficulty"),
+    )
+    if id:
+        sets = ", ".join(f"{k}=?" for k in DEV_PROJECT_FIELDS) + ", updated_at=datetime('now')"
+        con.execute(f"UPDATE dev_projects SET {sets} WHERE id=?",
+                    [data[k] for k in DEV_PROJECT_FIELDS] + [int(id)])
+        if commit:
+            con.commit()
+        return int(id)
+    cols = ", ".join(DEV_PROJECT_FIELDS)
+    ph = ", ".join("?" for _ in DEV_PROJECT_FIELDS)
+    cur = con.execute(f"INSERT INTO dev_projects ({cols}) VALUES ({ph})",
+                       [data[k] for k in DEV_PROJECT_FIELDS])
+    if commit:
+        con.commit()
+    return cur.lastrowid
+
+
+def delete_dev_project(con, id: int) -> None:
+    con.execute("DELETE FROM dev_projects WHERE id=?", (int(id),))
+    con.commit()
