@@ -398,6 +398,22 @@ def list_deals(con, status: str | None = "open", owner: str | None = None,
     return [dict(r) for r in con.execute(q, params)]
 
 
+def list_deals_by_date(con, date: str, owner: str | None = None) -> list[dict]:
+    """指定日が次回MS日付、または活動履歴の実施日のいずれかに一致する商談を返す。"""
+    q = """SELECT DISTINCT d.*, a.name AS account_name, a.industry, a.company_size
+           FROM deals d
+           LEFT JOIN accounts a ON a.id = d.account_id
+           WHERE (d.next_milestone_date = ?
+                  OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id AND act.occurred_on = ?))"""
+    params: list = [date, date]
+    if owner:
+        q += " AND (d.owner = ? OR d.sub_owner = ?)"
+        params.append(owner)
+        params.append(owner)
+    q += " ORDER BY a.name"
+    return [dict(r) for r in con.execute(q, params)]
+
+
 def get_deal(con, deal_id: int) -> dict | None:
     r = con.execute(
         """SELECT d.*, a.name AS account_name FROM deals d
