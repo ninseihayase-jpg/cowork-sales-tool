@@ -910,7 +910,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
             f' style="font-size:11px;padding:1px 2px;width:75px">'
         )
         rows.append(
-            f'<tr>'
+            f'<tr class="deal-row" data-account="{_esc((d.get("account_name") or "").lower())}">'
             f'<td style="width:32px"><input type="checkbox" name="ids" value="{d["id"]}"></td>'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{d["id"]}</td>'
             f'<td><a href="/deal/{d["id"]}">{_esc(d.get("account_name"))}</a></td>'
@@ -948,6 +948,10 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       </span>
     </h2>
     {filter_row}
+    <div style="margin-bottom:10px">
+      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
+        oninput="filterDealsByAccount()" style="max-width:280px">
+    </div>
     <form id="deal_bulk_form" method="post" action="/deals/bulk_edit">
     <div style="overflow-x:auto">
     <table style="min-width:900px"><tr>
@@ -998,6 +1002,12 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       }}).then(r => r.json()).then(d => {{
         if (!d.ok) alert('更新エラー');
       }}).catch(() => alert('通信エラー'));
+    }}
+    function filterDealsByAccount() {{
+      var q = document.getElementById('accSearchInput').value.trim().toLowerCase();
+      document.querySelectorAll('#deal_bulk_form tr.deal-row').forEach(function(row) {{
+        row.style.display = (!q || row.dataset.account.includes(q)) ? '' : 'none';
+      }});
     }}
     function repopulateDealBulkValue() {{
       var field = document.getElementById('deal_bulk_field').value;
@@ -1523,10 +1533,20 @@ def deal_form(con, deal=None) -> str:
 
 def dev_projects_list_page(con) -> str:
     projects = sfa_db.list_dev_projects(con)
+
+    def _hearing_link(deal_id):
+        n = sfa_db.count_hearing_results(con, deal_id)
+        if n:
+            latest = sfa_db.list_hearing_results(con, deal_id)[0]
+            return f'<a href="/hearing/result/{latest["id"]}">📋ヒアリング（{n}）</a>'
+        return f'<a class="muted" href="/hearing/new?target=deal:{deal_id}">ヒアリング未実施</a>'
+
     rows = "".join(
         f'<tr><td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
         f'<div class="muted">{_esc(p.get("theme_detail") or "")}</div></td>'
-        f'<td>{_esc(p.get("account_name"))}<div class="muted">{_esc(p.get("deal_name"))}</div></td>'
+        f'<td><a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
+        f'<div class="muted">{_esc(p.get("deal_name"))}</div>'
+        f'<div style="font-size:11px;margin-top:2px">{_hearing_link(p["deal_id"])}</div></td>'
         f'<td><span class="stage">{_esc(p.get("stage"))}</span></td>'
         f'<td>{_esc(p.get("status"))}</td>'
         f'<td>{_esc(p.get("order_potential"))}</td>'
@@ -3171,9 +3191,17 @@ def hearing_result_page(con, result: dict) -> str:
 
 
 def hearings_page(con, template_id: int | None = None) -> str:
-    """ヒアリングタブ：実施済み一覧 + xlsx一括DL。template_id指定時はそのテンプレートのみに絞り込む。"""
+    """ヒアリングタブ：実施済み一覧 + テンプレート絞り込み + xlsx/docxダウンロード。"""
+    templates = sfa_db.list_hearing_templates(con)
     results = sfa_db.list_all_hearing_results(con, template_id=template_id)
     tmpl = sfa_db.get_hearing_template(con, template_id) if template_id else None
+    tmpl_opts = '<option value="">全テンプレート</option>' + "".join(
+        f'<option value="{t["id"]}"{" selected" if template_id == t["id"] else ""}>{_esc(t["name"])}</option>'
+        for t in templates
+    )
+    tmpl_filter_form = f"""<form method="get" action="/hearings" class="filter-row">
+      <select name="template_id" onchange="this.form.submit()">{tmpl_opts}</select>
+    </form>"""
     rows = ""
     for r in results:
         preview = "　".join(
@@ -3191,20 +3219,16 @@ def hearings_page(con, template_id: int | None = None) -> str:
             f'<td class="muted" style="font-size:12px;cursor:pointer" onclick="{_nav}">{preview}</td>'
             f'</tr>'
         )
+    dl_qs = f"?template_id={template_id}" if template_id else ""
     header_actions = []
-    if template_id and tmpl:
-        header_actions.append('<a class="btn sec" href="/hearings">全テンプレート表示に戻る</a>')
-        if results:
-            header_actions.append(
-                f'<a class="btn sec" href="/hearings/export.csv?template_id={template_id}">📥 このテンプレートのみCSVダウンロード</a>'
-            )
-    elif results:
-        header_actions.append('<a class="btn sec" href="/hearings/export">📥 xlsx一括ダウンロード</a>')
+    if results:
+        header_actions.append(f'<a class="btn sec" href="/hearings/export{dl_qs}">📥 xlsxダウンロード</a>')
+        header_actions.append(f'<a class="btn sec" href="/hearings/export.docx{dl_qs}">📥 docxダウンロード</a>')
     header_actions.append('<a class="btn sec" href="/hearing-templates">テンプレート管理</a>')
     header_actions.append('<a class="btn" href="/hearing/new">＋新規ヒアリング</a>')
     title = f"ヒアリング（{_esc(tmpl['name'])}）" if tmpl else "ヒアリング"
-    desc = ("このテンプレートで実施されたヒアリングのみ表示しています。"
-            if tmpl else "実施済みのヒアリング結果一覧です。xlsxはテンプレートごとにシートが分かれます。")
+    desc = ("このテンプレートで実施されたヒアリングのみ表示しています。ダウンロードもこの絞り込み対象のみです。"
+            if tmpl else "実施済みのヒアリング結果一覧です。テンプレートを選ぶと絞り込めます（ダウンロードも絞り込み対象のみになります）。")
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -3214,6 +3238,7 @@ def hearings_page(con, template_id: int | None = None) -> str:
         </span>
       </h2>
       <p class="muted" style="margin-bottom:14px">{desc}</p>
+      {tmpl_filter_form}
       <form id="hearing_bulk_form" method="post" action="/hearings/bulk_delete">
       <table>
         <tr><th style="width:32px"><input type="checkbox" id="hearing_chk_all" title="全選択"
@@ -3237,11 +3262,11 @@ def hearings_page(con, template_id: int | None = None) -> str:
     </script>"""
 
 
-def build_hearings_xlsx(con) -> bytes:
-    """全ヒアリング結果を、テンプレートごとに1シートのxlsxにまとめる。"""
+def build_hearings_xlsx(con, template_id: int | None = None) -> bytes:
+    """ヒアリング結果を、テンプレートごとに1シートのxlsxにまとめる。template_id指定時はそのテンプレートのみ。"""
     import openpyxl
     from io import BytesIO
-    results = sfa_db.list_all_hearing_results(con)
+    results = sfa_db.list_all_hearing_results(con, template_id=template_id)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)  # デフォルトシート削除
 
@@ -3286,6 +3311,35 @@ def build_hearings_xlsx(con) -> bytes:
 
     buf = BytesIO()
     wb.save(buf)
+    return buf.getvalue()
+
+
+def build_hearings_docx(con, template_id: int | None = None) -> bytes:
+    """ヒアリング結果を、商談ごとに見出し＋Q&A形式でまとめたdocxを生成する。template_id指定時はそのテンプレートのみ。"""
+    from docx import Document
+    from io import BytesIO
+    results = sfa_db.list_all_hearing_results(con, template_id=template_id)
+    tmpl = sfa_db.get_hearing_template(con, template_id) if template_id else None
+
+    doc = Document()
+    title = f"ヒアリング結果（{tmpl['name']}）" if tmpl else "ヒアリング結果（全テンプレート）"
+    doc.add_heading(title, level=1)
+    if not results:
+        doc.add_paragraph("（データなし）")
+    for r in results:
+        doc.add_heading(f"{r.get('account_name') or ''} / {r.get('deal_name') or ''}", level=2)
+        meta = doc.add_paragraph()
+        meta.add_run(
+            f"テンプレート: {r.get('template_name') or ''}　ヒアリング日: {r.get('conducted_on') or '—'}"
+        ).italic = True
+        for a in (r.get("answers") or []):
+            p = doc.add_paragraph()
+            p.add_run(f"{a.get('label')}: ").bold = True
+            p.add_run(_format_answer_for_export(a))
+        doc.add_paragraph("")
+
+    buf = BytesIO()
+    doc.save(buf)
     return buf.getvalue()
 
 
@@ -3955,17 +4009,43 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render("<div class=card>見つかりません</div>"), 404)
                 # ── 初回ヒアリング ──
                 elif path == "/hearings/export":
+                    qs = self._qs()
                     try:
-                        data = build_hearings_xlsx(con)
+                        tid = int(qs.get("template_id", ["0"])[0] or 0) or None
+                    except ValueError:
+                        tid = None
+                    try:
+                        data = build_hearings_xlsx(con, template_id=tid)
                         self.send_response(200)
                         self.send_header("Content-Type",
                                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                        self.send_header("Content-Disposition", 'attachment; filename="hearings.xlsx"')
+                        fname = f"hearings_{tid}.xlsx" if tid else "hearings.xlsx"
+                        self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
                         self.send_header("Content-Length", str(len(data)))
                         self.end_headers()
                         self.wfile.write(data)
                     except Exception as _ex:
                         print(f"[hearings/export] {_ex}", flush=True)
+                        import traceback as _tb; _tb.print_exc()
+                        self._send(render("<div class=card>エクスポートに失敗しました</div>"), 500)
+                elif path == "/hearings/export.docx":
+                    qs = self._qs()
+                    try:
+                        tid = int(qs.get("template_id", ["0"])[0] or 0) or None
+                    except ValueError:
+                        tid = None
+                    try:
+                        data = build_hearings_docx(con, template_id=tid)
+                        self.send_response(200)
+                        self.send_header("Content-Type",
+                                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                        fname = f"hearings_{tid}.docx" if tid else "hearings.docx"
+                        self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                    except Exception as _ex:
+                        print(f"[hearings/export.docx] {_ex}", flush=True)
                         import traceback as _tb; _tb.print_exc()
                         self._send(render("<div class=card>エクスポートに失敗しました</div>"), 500)
                 elif path == "/hearings/export.csv":
