@@ -292,6 +292,7 @@ CREATE TABLE IF NOT EXISTS dev_projects (
     dev_milestone    TEXT,                 -- 開発MS（自由記述）
     deadline         TEXT,                 -- 期限（YYYY-MM-DD）
     dev_policy       TEXT,                 -- 開発方針（自由記述）
+    tool_url         TEXT,                 -- 制作したツールのリンク
     hisho_id         INTEGER,              -- Hisho側 dev_projects.id（同期キー。NULL=未連携）
     created_at       TEXT DEFAULT (datetime('now')),
     updated_at       TEXT DEFAULT (datetime('now'))
@@ -347,6 +348,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("CREATE INDEX IF NOT EXISTS idx_meeting_notes_theme ON meeting_notes(theme_id)")
         if "task_done" not in note_cols:
             con.execute("ALTER TABLE meeting_notes ADD COLUMN task_done INTEGER DEFAULT 0")
+        dp_cols = {r[1] for r in con.execute("PRAGMA table_info(dev_projects)")}
+        if "tool_url" not in dp_cols:
+            con.execute("ALTER TABLE dev_projects ADD COLUMN tool_url TEXT")
         con.commit()
     finally:
         con.close()
@@ -847,7 +851,7 @@ def count_hearing_results(con, deal_id: int) -> int:
 DEV_PROJECT_FIELDS = [
     "deal_id", "theme", "theme_detail", "status", "stage", "order_potential",
     "resolution", "budget_confirmed", "difficulty", "has_backend", "dev_owner",
-    "tech_support", "dev_milestone", "deadline", "dev_policy",
+    "tech_support", "dev_milestone", "deadline", "dev_policy", "tool_url",
 ]
 
 _DEV_PROJECT_SELECT = (

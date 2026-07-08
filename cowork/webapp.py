@@ -98,6 +98,19 @@ def _decode_uploaded_csv(file_item) -> str | None:
         return data.decode("cp932", errors="replace")
 
 
+def _tool_link_btn(url, label: str = "🔧 ツール") -> str:
+    """開発案件の「制作したツールのリンク」を、邪魔にならない小さなボタンとして描画する。
+    一覧・商談詳細など複数画面で共通利用する。"""
+    if not url:
+        return ""
+    return (
+        f'<a href="{_esc(url)}" target="_blank" rel="noopener" title="制作したツールを開く" '
+        f'style="display:inline-block;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;'
+        f'border-radius:6px;padding:2px 8px;font-size:11px;text-decoration:none;white-space:nowrap">'
+        f'{label}</a>'
+    )
+
+
 def _chips(values) -> str:
     """CSV一括取込ページ向け: 選択肢一覧をチップ表示するHTMLを生成。"""
     return "".join(
@@ -909,6 +922,10 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
             f' onchange="updateDealField({did}, \'value_lumpsum\', this.value)"'
             f' style="font-size:11px;padding:1px 2px;width:75px">'
         )
+        tool_btns = " ".join(
+            _tool_link_btn(dp.get("tool_url")) for dp in sfa_db.list_dev_projects(con, deal_id=d["id"])
+            if dp.get("tool_url")
+        ) or "—"
         rows.append(
             f'<tr class="deal-row" data-account="{_esc((d.get("account_name") or "").lower())}">'
             f'<td style="width:32px"><input type="checkbox" name="ids" value="{d["id"]}"></td>'
@@ -923,6 +940,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
             f'<td>{inp_client_budget}</td>'
             f'<td>{inp_value_lumpsum}</td>'
             f'<td>{ms}</td>'
+            f'<td>{tool_btns}</td>'
             f'<td class="right" title="テーマDB連携">{linked}</td></tr>'
         )
     accounts = sfa_db.list_accounts(con)
@@ -961,8 +979,8 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <th>種別L1</th><th>種別L2</th>
       <th>予算<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span></th>
       <th>提案総額<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span></th>
-      <th>次回MS</th><th class="right">連携</th></tr>
-    {''.join(rows) or '<tr><td colspan=13 class=muted>商談がありません。</td></tr>'}
+      <th>次回MS</th><th>ツール</th><th class="right">連携</th></tr>
+    {''.join(rows) or '<tr><td colspan=14 class=muted>商談がありません。</td></tr>'}
     </table></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
       <select id="deal_bulk_field" name="field" style="width:auto">
@@ -1107,9 +1125,14 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
                 f'<div style="margin-bottom:2px"><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a></div>'
                 for p in dps
             )
+            tool_html = "".join(
+                f'<div style="margin-bottom:2px">{_tool_link_btn(p.get("tool_url")) or "—"}</div>'
+                for p in dps
+            )
         else:
             dev_owner_html = '<span class="muted">—</span>'
             dev_link_html = f'<a class="muted" href="/dev-projects/new?deal_id={did}">＋追加</a>'
+            tool_html = "—"
         if d.get("status") != "closed":
             revert_html = (
                 f'<form method="post" action="/deal/{did}/revert_to_lead" style="margin:0" onsubmit="return revertToLead(this)">'
@@ -1131,6 +1154,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
             f'<td>{inp_ms_label}</td>'
             f'<td>{dev_owner_html}</td>'
             f'<td>{dev_link_html}</td>'
+            f'<td>{tool_html}</td>'
             f'<td>{revert_html}</td>'
             f'</tr>'
         )
@@ -1150,8 +1174,9 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       <th style="position:sticky;top:0;background:#fff;z-index:2">次回MS</th>
       <th style="position:sticky;top:0;background:#fff;z-index:2">開発担当</th>
       <th style="position:sticky;top:0;background:#fff;z-index:2">開発案件名</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">ツール</th>
       <th style="position:sticky;top:0;background:#fff;z-index:2">操作</th></tr>
-    {''.join(rows) or '<tr><td colspan=11 class=muted>該当する商談がありません。</td></tr>'}
+    {''.join(rows) or '<tr><td colspan=12 class=muted>該当する商談がありません。</td></tr>'}
     </table></div>
     </div>
     <script>
@@ -1390,7 +1415,8 @@ def deal_form(con, deal=None) -> str:
                 f'<td>{_esc(p.get("status"))}</td>'
                 f'<td>{_esc(p.get("order_potential"))}</td>'
                 f'<td>{_esc(p.get("dev_owner"))}</td>'
-                f'<td>{_esc(p.get("deadline") or "—")}</td></tr>'
+                f'<td>{_esc(p.get("deadline") or "—")}</td>'
+                f'<td>{_tool_link_btn(p.get("tool_url")) or "—"}</td></tr>'
                 for p in dps
             )
             dev_projects_html = f"""
@@ -1398,7 +1424,7 @@ def deal_form(con, deal=None) -> str:
           <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
             <span>開発案件（{len(dps)}件）</span>{add_btn}
           </h2>
-          <table><tr><th>テーマ</th><th>ステージ</th><th>状況</th><th>受注余地</th><th>開発担当</th><th>期限</th></tr>{dp_rows}</table>
+          <table><tr><th>テーマ</th><th>ステージ</th><th>状況</th><th>受注余地</th><th>開発担当</th><th>期限</th><th>ツール</th></tr>{dp_rows}</table>
         </div>"""
         else:
             dev_projects_html = f"""
@@ -1587,11 +1613,12 @@ def dev_projects_list_page(con) -> str:
         f'<td>{_esc(p.get("dev_owner"))}</td>'
         f'<td>{_esc(p.get("sales_owner"))}{(" / " + _esc(p["sales_sub_owner"])) if p.get("sales_sub_owner") else ""}</td>'
         f'<td>{_esc(p.get("deadline") or "—")}</td>'
+        f'<td>{_tool_link_btn(p.get("tool_url")) or "—"}</td>'
         f'<td><form method="post" action="/dev-project/{p["id"]}/delete" style="display:inline" '
         f'onsubmit="return confirm(\'削除しますか？\')">'
         f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
         for p in projects
-    ) or '<tr><td colspan=9 class=muted>開発案件がまだありません</td></tr>'
+    ) or '<tr><td colspan=10 class=muted>開発案件がまだありません</td></tr>'
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -1600,7 +1627,7 @@ def dev_projects_list_page(con) -> str:
       </h2>
       <table>
         <tr><th>開発テーマ</th><th>商談</th><th>ステージ</th><th>状況</th><th>受注余地</th>
-            <th>開発担当</th><th>営業担当</th><th>期限</th><th></th></tr>
+            <th>開発担当</th><th>営業担当</th><th>期限</th><th>ツール</th><th></th></tr>
         {rows}
       </table>
     </div>"""
@@ -1677,6 +1704,8 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         <input name="dev_milestone" value="{_esc(p.get('dev_milestone'))}">
         <label>開発方針</label>
         <textarea name="dev_policy" rows="3">{_esc(p.get('dev_policy'))}</textarea>
+        <label>制作したツールのリンク</label>
+        <input type="url" name="tool_url" placeholder="https://..." value="{_esc(p.get('tool_url'))}">
         <div style="margin-top:16px">
           <button class="btn" type="submit">保存</button>
           <a class="btn sec" href="{back_href}">キャンセル</a>
@@ -4492,6 +4521,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         dev_milestone=f.get("dev_milestone") or None,
                         deadline=f.get("deadline") or None,
                         dev_policy=f.get("dev_policy") or None,
+                        tool_url=f.get("tool_url") or None,
                     )
                     if theme_client is not None:
                         try:
@@ -4525,6 +4555,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         dev_milestone=f.get("dev_milestone") or None,
                         deadline=f.get("deadline") or None,
                         dev_policy=f.get("dev_policy") or None,
+                        tool_url=f.get("tool_url") or None,
                     )
                     if theme_client is not None:
                         try:
