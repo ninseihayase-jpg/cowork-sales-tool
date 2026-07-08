@@ -407,8 +407,9 @@ def list_deals_by_date(con, date: str, owner: str | None = None) -> list[dict]:
     q = """SELECT DISTINCT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d
            LEFT JOIN accounts a ON a.id = d.account_id
-           WHERE (d.next_milestone_date = ?
-                  OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id AND act.occurred_on = ?))"""
+           WHERE (d.status IS NULL OR d.status != 'closed')
+                 AND (d.next_milestone_date = ?
+                      OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id AND act.occurred_on = ?))"""
     params: list = [date, date]
     if owner:
         q += " AND (d.owner = ? OR d.sub_owner = ?)"

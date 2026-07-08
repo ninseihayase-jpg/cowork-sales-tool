@@ -98,6 +98,12 @@ def _decode_uploaded_csv(file_item) -> str | None:
         return data.decode("cp932", errors="replace")
 
 
+def _sticky_th(label: str) -> str:
+    """縦スクロールしても項目名が見えるよう、テーブル見出しをposition:stickyにする共通ヘルパー。
+    親のoverflow:auto付きコンテナ内で使うこと（テーブル単体ではスクロールしないため効果がない）。"""
+    return f'<th style="position:sticky;top:0;background:#fff;z-index:2">{label}</th>'
+
+
 def _tool_link_btn(url, label: str = "🔧 ツール") -> str:
     """開発案件の「制作したツールのリンク」を、邪魔にならない小さなボタンとして描画する。
     一覧・商談詳細など複数画面で共通利用する。"""
@@ -971,15 +977,15 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         oninput="filterDealsByAccount()" style="max-width:280px">
     </div>
     <form id="deal_bulk_form" method="post" action="/deals/bulk_edit">
-    <div style="overflow-x:auto">
+    <div style="overflow:auto;max-height:70vh">
     <table style="min-width:900px"><tr>
-      <th style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択"
+      <th style="width:28px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="deal_chk_all" title="全選択"
             onchange="document.querySelectorAll('#deal_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-      <th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>主担当</th><th>サブ担当</th>
-      <th>種別L1</th><th>種別L2</th>
-      <th>予算<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span></th>
-      <th>提案総額<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span></th>
-      <th>次回MS</th><th>ツール</th><th class="right">連携</th></tr>
+      {_sticky_th('#')}{_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('ステージ')}{_sticky_th('主担当')}{_sticky_th('サブ担当')}
+      {_sticky_th('種別L1')}{_sticky_th('種別L2')}
+      {_sticky_th('予算<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span>')}
+      {_sticky_th('提案総額<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span>')}
+      {_sticky_th('次回MS')}{_sticky_th('ツール')}<th class="right" style="position:sticky;top:0;background:#fff;z-index:2">連携</th></tr>
     {''.join(rows) or '<tr><td colspan=14 class=muted>商談がありません。</td></tr>'}
     </table></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
@@ -1071,6 +1077,10 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       <select name="owner">{owner_opts}</select>
       <button class="btn sec" type="submit">表示</button>
     </form>"""
+    _return_qs = urllib.parse.urlencode(
+        {"tab": "byDate", "date": target_date or "", "owner": owner or ""}
+    )
+    return_to_url = f"/deals?{_return_qs}"
 
     if not target_date:
         return f"""
@@ -1122,7 +1132,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
                 for p in dps
             )
             dev_link_html = "".join(
-                f'<div style="margin-bottom:2px"><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a></div>'
+                f'<div style="margin-bottom:2px"><a href="/dev-project/{p["id"]}/edit?return_to={urllib.parse.quote(return_to_url, safe="")}">{_esc(p.get("theme"))}</a></div>'
                 for p in dps
             )
             tool_html = "".join(
@@ -1131,7 +1141,10 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
             )
         else:
             dev_owner_html = '<span class="muted">—</span>'
-            dev_link_html = f'<a class="muted" href="/dev-projects/new?deal_id={did}">＋追加</a>'
+            dev_link_html = (
+                f'<a class="muted" href="/dev-projects/new?deal_id={did}'
+                f'&return_to={urllib.parse.quote(return_to_url, safe="")}">＋追加</a>'
+            )
             tool_html = "—"
         if d.get("status") != "closed":
             revert_html = (
@@ -1164,18 +1177,9 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     {form}
     <div style="overflow:auto;max-height:70vh">
     <table style="min-width:1200px"><tr>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">#</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">アカウント</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">案件名</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">ステージ</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">主担当</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">サブ担当</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">次回MS日付</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">次回MS</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">開発担当</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">開発案件名</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">ツール</th>
-      <th style="position:sticky;top:0;background:#fff;z-index:2">操作</th></tr>
+      {_sticky_th('#')}{_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('ステージ')}
+      {_sticky_th('主担当')}{_sticky_th('サブ担当')}{_sticky_th('次回MS日付')}{_sticky_th('次回MS')}
+      {_sticky_th('開発担当')}{_sticky_th('開発案件名')}{_sticky_th('ツール')}{_sticky_th('操作')}</tr>
     {''.join(rows) or '<tr><td colspan=12 class=muted>該当する商談がありません。</td></tr>'}
     </table></div>
     </div>
@@ -1251,17 +1255,17 @@ def accounts_page(con) -> str:
         <a class="btn" href="/account/new">＋手動追加</a>
       </h2>
       <form id="acc_bulk_form" method="post" action="/accounts/bulk_delete">
-      <div style="overflow-x:auto">
+      <div style="overflow:auto;max-height:70vh">
       <table>
-        <tr><th style="width:32px"><input type="checkbox" id="acc_chk_all" title="全選択"
+        <tr><th style="width:32px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="acc_chk_all" title="全選択"
               onchange="document.querySelectorAll('#acc_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            <th>企業名</th><th>業界</th><th>企業規模</th><th class="right">商談数</th></tr>
+            {_sticky_th('企業名')}{_sticky_th('業界')}{_sticky_th('企業規模')}<th class="right" style="position:sticky;top:0;background:#fff;z-index:2">商談数</th></tr>
         {rows_html}
       </table>
+      </div>
       <div style="margin-top:10px">
         <button class="btn" type="button" onclick="accBulkDelete()"
           style="background:#c53030;border-color:#c53030;color:#fff">選択した件を削除</button>
-      </div>
       </div>
       </form>
     </div>
@@ -1625,19 +1629,27 @@ def dev_projects_list_page(con) -> str:
         <span>開発案件一覧（{len(projects)}件）</span>
         <a class="btn" href="/dev-projects/new">＋新規入力</a>
       </h2>
+      <div style="overflow:auto;max-height:70vh">
       <table>
-        <tr><th>開発テーマ</th><th>商談</th><th>ステージ</th><th>状況</th><th>受注余地</th>
-            <th>開発担当</th><th>営業担当</th><th>期限</th><th>ツール</th><th></th></tr>
+        <tr>{_sticky_th('開発テーマ')}{_sticky_th('商談')}{_sticky_th('ステージ')}{_sticky_th('状況')}{_sticky_th('受注余地')}
+            {_sticky_th('開発担当')}{_sticky_th('営業担当')}{_sticky_th('期限')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
         {rows}
       </table>
+      </div>
     </div>"""
 
 
-def dev_project_form(con, project: dict | None = None, deal_id: int | None = None) -> str:
-    """開発案件の新規/編集フォーム。project未指定時は新規入力（商談選択欄あり）。"""
+def dev_project_form(con, project: dict | None = None, deal_id: int | None = None,
+                      return_to: str | None = None) -> str:
+    """開発案件の新規/編集フォーム。project未指定時は新規入力（商談選択欄あり）。
+
+    return_to: 指定時は保存後・戻る/キャンセル時にこのURLへ戻す（例: 特定日の商談一覧から
+    遷移した場合、保存後も同じ一覧に戻れるようにする）。未指定時は従来どおり商談詳細へ戻る。
+    """
     is_edit = project is not None
     p = project or {}
     owners = sfa_db.get_master_list(con, "owners")
+    return_to_field = f'<input type="hidden" name="return_to" value="{_esc(return_to)}">' if return_to else ""
 
     if is_edit:
         deal_label = f'{_esc(p.get("account_name"))} / {_esc(p.get("deal_name"))}'
@@ -1647,7 +1659,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         )
         sales_owner_text = f'{_esc(p.get("sales_owner") or "—")} / {_esc(p.get("sales_sub_owner") or "—")}'
         action = f'/dev-project/{p["id"]}/edit'
-        back_href = f'/deal/{p["deal_id"]}'
+        back_href = return_to or f'/deal/{p["deal_id"]}'
         preselect_deal_id = None
     else:
         deals = sfa_db.list_deals(con, status="open")
@@ -1666,7 +1678,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
           <p class="muted" id="dpSalesOwnerLine" style="margin-top:6px">営業担当: —</p>"""
         sales_owner_text = None
         action = "/dev-project/new"
-        back_href = f'/deal/{deal_id}' if deal_id else "/dev-projects"
+        back_href = return_to or (f'/deal/{deal_id}' if deal_id else "/dev-projects")
         preselect_deal_id = deal_id
 
     sales_owner_block = "" if sales_owner_text is None else (
@@ -1679,6 +1691,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
       <p style="margin:0 0 10px"><a class="btn sec" href="{back_href}">← 戻る</a></p>
       <h2>{'開発案件を編集' if is_edit else '開発案件 新規入力'}</h2>
       <form method="post" action="{action}">
+        {return_to_field}
         <label>商談</label>
         {deal_field_html}
         <label>開発テーマ *</label>
@@ -2524,7 +2537,9 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
             val = _esc(pv if isinstance(pv, str) else "")
             fields_html += (f'<div class="hq-item{branch_class}"{branch_attrs} style="margin:10px 0">'
                             f'<label>{label}{req}</label>'
-                            f'<textarea name="answer_{i}" rows="2"{req_attr}>{val}</textarea></div>')
+                            f'<textarea name="answer_{i}" rows="2" class="hq-autogrow"'
+                            f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
+                            f'{req_attr}>{val}</textarea></div>')
 
     prev_note = (f'<p class="muted" style="font-size:12px;margin:0 0 10px">'
                  f'前回ヒアリング（{_esc(prev_date)}）の内容を引用しています。保存すると新しい履歴として追加されます。</p>'
@@ -2559,6 +2574,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
     return f"""
     <style>
     .hq-branch {{ transition: opacity .25s, filter .25s; }}
+    .hq-autogrow {{ transition: height .15s ease; }}
     .hq-branch.hq-inactive {{ opacity: .38; filter: grayscale(.35); }}
     .hq-branch.hq-inactive > label:first-child {{ color: #aaa; }}
     .hq-sticky {{
@@ -2685,6 +2701,9 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       </form>
     </div>
     <script>
+    // 自由記述欄: フォーカス時に大きく広げ、離れたら空なら小さく戻す(入力中の視認性を確保)
+    function hqAutogrow(el) {{ el.rows = 8; }}
+    function hqAutoshrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
     // ページ共通ヘッダー(position:sticky)の実高さ分だけ、このページ内のstickyバーを下にずらす
     (function() {{
       var pageHeader = document.querySelector('header');
@@ -3314,13 +3333,18 @@ def hearings_page(con, template_id: int | None = None) -> str:
       <p class="muted" style="margin-bottom:14px">{desc}</p>
       {tmpl_filter_form}
       <form id="hearing_bulk_form" method="post" action="/hearings/bulk_delete">
+      <div style="overflow:auto;max-height:70vh">
       <table style="table-layout:fixed">
-        <tr><th style="width:32px"><input type="checkbox" id="hearing_chk_all" title="全選択"
+        <tr><th style="width:32px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="hearing_chk_all" title="全選択"
               onchange="document.querySelectorAll('#hearing_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            <th style="width:90px">ヒアリング日</th><th style="width:160px">アカウント</th>
-            <th style="width:200px">案件名</th><th style="width:150px">テンプレート</th><th>回答プレビュー</th></tr>
+            <th style="width:90px;position:sticky;top:0;background:#fff;z-index:2">ヒアリング日</th>
+            <th style="width:160px;position:sticky;top:0;background:#fff;z-index:2">アカウント</th>
+            <th style="width:200px;position:sticky;top:0;background:#fff;z-index:2">案件名</th>
+            <th style="width:150px;position:sticky;top:0;background:#fff;z-index:2">テンプレート</th>
+            <th style="position:sticky;top:0;background:#fff;z-index:2">回答プレビュー</th></tr>
         {rows or '<tr><td colspan=6 class="muted">まだヒアリング結果がありません。</td></tr>'}
       </table>
+      </div>
       {f'''<div style="margin-top:10px">
         <button class="btn" type="button" onclick="hearingBulkDelete()"
           style="background:#c53030;border-color:#c53030;color:#fff">選択した件を削除</button>
@@ -3547,18 +3571,19 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
       </h2>
       {filter_form}
       <form id="bulk_form" method="post" action="/leads/bulk_edit">
-      <div style="overflow-x:auto">
+      <div style="overflow:auto;max-height:70vh">
       <table>
-        <tr><th style="width:32px"><input type="checkbox" id="chk_all" title="全選択"
+        <tr><th style="width:32px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="chk_all" title="全選択"
               onchange="document.querySelectorAll('[name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            <th>氏名 / 会社</th><th>ステータス</th>
-            <th class="hide-sm">経路</th>
-            <th class="hide-sm">担当</th>
-            <th class="hide-sm">業界</th>
-            <th class="hide-sm">企業規模</th>
-            <th>更新日</th></tr>
+            {_sticky_th('氏名 / 会社')}{_sticky_th('ステータス')}
+            <th class="hide-sm" style="position:sticky;top:0;background:#fff;z-index:2">経路</th>
+            <th class="hide-sm" style="position:sticky;top:0;background:#fff;z-index:2">担当</th>
+            <th class="hide-sm" style="position:sticky;top:0;background:#fff;z-index:2">業界</th>
+            <th class="hide-sm" style="position:sticky;top:0;background:#fff;z-index:2">企業規模</th>
+            {_sticky_th('更新日')}</tr>
         {''.join(rows) or '<tr><td colspan=8 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
       </table>
+      </div>
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
         <select id="bulk_field" name="field" style="width:auto">
           <option value="lead_status">ステータス</option>
@@ -3571,7 +3596,6 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         <button class="btn sec" type="submit">選択した件を一括変更</button>
         <button class="btn" type="button" onclick="bulkDelete()"
           style="background:#c53030;border-color:#c53030;color:#fff;margin-left:8px">選択した件を削除</button>
-      </div>
       </div>
       </form>
     </div>
@@ -4278,13 +4302,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         did = int(did_raw) if did_raw else None
                     except ValueError:
                         did = None
-                    self._send(render(dev_project_form(con, deal_id=did)))
+                    return_to = qs.get("return_to", [None])[0]
+                    self._send(render(dev_project_form(con, deal_id=did, return_to=return_to)))
                 elif path.startswith("/dev-project/") and path.endswith("/edit"):
                     try:
                         pid = int(path.split("/")[2])
                         proj = sfa_db.get_dev_project(con, pid)
+                        return_to = self._qs().get("return_to", [None])[0]
                         self._send(
-                            render(dev_project_form(con, proj) if proj
+                            render(dev_project_form(con, proj, return_to=return_to) if proj
                                    else "<div class=card>開発案件が見つかりません</div>"),
                             200 if proj else 404,
                         )
@@ -4528,7 +4554,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             dev_project_link.sync_dev_project(theme_client, con, pid)
                         except Exception as exc:  # noqa: BLE001
                             print(f"[dev_project_link] sync_dev_project failed: {exc}")
-                    self._redirect(f"/deal/{deal_id_val}")
+                    _return_to = f.get("return_to") or ""
+                    self._redirect(_return_to if _return_to.startswith("/") else f"/deal/{deal_id_val}")
 
                 elif path.startswith("/dev-project/") and path.endswith("/edit"):
                     try:
@@ -4562,7 +4589,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             dev_project_link.sync_dev_project(theme_client, con, pid)
                         except Exception as exc:  # noqa: BLE001
                             print(f"[dev_project_link] sync_dev_project failed: {exc}")
-                    self._redirect(f"/deal/{existing['deal_id']}")
+                    _return_to = f.get("return_to") or ""
+                    self._redirect(_return_to if _return_to.startswith("/") else f"/deal/{existing['deal_id']}")
 
                 elif path.startswith("/dev-project/") and path.endswith("/delete"):
                     try:
