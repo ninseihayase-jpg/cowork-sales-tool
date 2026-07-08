@@ -104,6 +104,15 @@ def _sticky_th(label: str) -> str:
     return f'<th style="position:sticky;top:0;background:#fff;z-index:2">{label}</th>'
 
 
+def _content_disposition(filename: str) -> str:
+    """ダウンロードファイル名に日本語等を含む場合の Content-Disposition ヘッダ値を組み立てる。
+    http.server はヘッダをlatin-1でエンコードするため、非ASCII文字を含む filename= だけでは
+    UnicodeEncodeErrorでクラッシュする。RFC 6266のfilename*(UTF-8)形式を併記して回避する。"""
+    ascii_fallback = filename.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    encoded = urllib.parse.quote(filename, safe="")
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+
+
 def _tool_link_btn(url, label: str = "🔧 ツール") -> str:
     """開発案件の「制作したツールのリンク」を、邪魔にならない小さなボタンとして描画する。
     一覧・商談詳細など複数画面で共通利用する。"""
@@ -1064,16 +1073,23 @@ def deals_page(con, *, tab: str = "active", owner: str | None = None, status_fil
 
 
 def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None = None) -> str:
-    """指定日が次回MSまたは活動履歴にある商談の一覧・その場編集画面。"""
+    """指定日が次回MSまたは活動履歴にある商談の一覧・その場編集画面。日付未指定時は当日を表示する。"""
+    target_date = target_date or date.today().isoformat()
     owners = sfa_db.get_master_list(con, "owners")
     stages = sfa_db.get_master_list(con, "deal_stages")
     owner_opts = '<option value="">全担当</option>' + "".join(
         f'<option value="{html.escape(o)}"{" selected" if o == owner else ""}>{html.escape(o)}</option>'
         for o in owners
     )
+    _cur_date_obj = date.fromisoformat(target_date)
+    _prev_date = (_cur_date_obj - timedelta(days=1)).isoformat()
+    _next_date = (_cur_date_obj + timedelta(days=1)).isoformat()
+    _owner_qs = f"&owner={urllib.parse.quote(owner)}" if owner else ""
     form = f"""<form method="get" action="/deals" class="filter-row">
       <input type="hidden" name="tab" value="byDate">
+      <a class="btn sec" href="/deals?tab=byDate&date={_prev_date}{_owner_qs}">◀ 前日</a>
       <input type="date" name="date" value="{_esc(target_date)}" required>
+      <a class="btn sec" href="/deals?tab=byDate&date={_next_date}{_owner_qs}">翌日 ▶</a>
       <select name="owner">{owner_opts}</select>
       <button class="btn sec" type="submit">表示</button>
     </form>"""
@@ -1081,13 +1097,6 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
         {"tab": "byDate", "date": target_date or "", "owner": owner or ""}
     )
     return_to_url = f"/deals?{_return_qs}"
-
-    if not target_date:
-        return f"""
-        <div class="card"><h2>特定日の商談</h2>
-        <p class="muted">日付（と必要なら担当）を選ぶと、その日が次回MSまたは活動履歴にある商談を一覧表示します。</p>
-        {form}
-        </div>"""
 
     deals = sfa_db.list_deals_by_date(con, target_date, owner=owner)
     today_str = date.today().isoformat()
@@ -1150,6 +1159,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
             revert_html = (
                 f'<form method="post" action="/deal/{did}/revert_to_lead" style="margin:0" onsubmit="return revertToLead(this)">'
                 f'<input type="hidden" name="memo" value="">'
+                f'<input type="hidden" name="return_to" value="{_esc(return_to_url)}">'
                 f'<button type="submit" class="btn sec" style="font-size:11px;padding:4px 8px;'
                 f'background:#f59e0b22;color:#92400e;border-color:#f59e0b44">↩ リードに戻す</button></form>'
             )
@@ -1634,8 +1644,41 @@ def deal_form(con, deal=None) -> str:
 
 # ── 開発案件（商談に紐づく開発テーマ管理）───────────────────────────────────────
 
-def dev_projects_list_page(con) -> str:
-    projects = sfa_db.list_dev_projects(con)
+def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: str | None = None,
+                            status: str | None = None, stage: str | None = None,
+                            order_potential: str | None = None, deadline_week: str | None = None) -> str:
+    owners = sfa_db.get_master_list(con, "owners")
+    deadline_from = deadline_to = None
+    if deadline_week and "-W" in deadline_week:
+        try:
+            _year, _week = deadline_week.split("-W")
+            _mon = date.fromisocalendar(int(_year), int(_week), 1)
+            _sun = date.fromisocalendar(int(_year), int(_week), 7)
+            deadline_from, deadline_to = _mon.isoformat(), _sun.isoformat()
+        except (ValueError, TypeError):
+            pass
+    projects = sfa_db.list_dev_projects(
+        con, dev_owner=dev_owner, sales_owner=sales_owner, status=status,
+        stage=stage, order_potential=order_potential,
+        deadline_from=deadline_from, deadline_to=deadline_to,
+    )
+
+    def _fopt(values, current):
+        return '<option value="">全て</option>' + "".join(
+            f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
+            for v in values
+        )
+
+    filter_row = f"""<form method="get" action="/dev-projects" class="filter-row">
+      <select name="dev_owner">{_fopt(owners, dev_owner).replace('全て', '開発担当:全て', 1)}</select>
+      <select name="sales_owner">{_fopt(owners, sales_owner).replace('全て', '営業担当:全て', 1)}</select>
+      <select name="status">{_fopt(sfa_db.DEV_PROJECT_STATUSES, status).replace('全て', '状況:全て', 1)}</select>
+      <select name="stage">{_fopt(sfa_db.DEV_PROJECT_STAGES, stage).replace('全て', 'ステージ:全て', 1)}</select>
+      <select name="order_potential">{_fopt(sfa_db.DEV_ORDER_POTENTIALS, order_potential).replace('全て', '受注余地:全て', 1)}</select>
+      <input type="week" name="deadline_week" value="{_esc(deadline_week)}" title="期限（週）で絞り込み">
+      <button class="btn sec" type="submit">絞り込み</button>
+      <a class="btn sec" href="/dev-projects">リセット</a>
+    </form>"""
 
     def _hearing_link(deal_id):
         n = sfa_db.count_hearing_results(con, deal_id)
@@ -1668,6 +1711,7 @@ def dev_projects_list_page(con) -> str:
         <span>開発案件一覧（{len(projects)}件）</span>
         <a class="btn" href="/dev-projects/new">＋新規入力</a>
       </h2>
+      {filter_row}
       <div style="overflow:auto;max-height:70vh">
       <table>
         <tr>{_sticky_th('開発テーマ')}{_sticky_th('商談')}{_sticky_th('ステージ')}{_sticky_th('状況')}{_sticky_th('受注余地')}
@@ -3444,10 +3488,15 @@ def hearings_page(con, template_id: int | None = None) -> str:
         {rows or '<tr><td colspan=6 class="muted">まだヒアリング結果がありません。</td></tr>'}
       </table>
       </div>
-      {f'''<div style="margin-top:10px">
+      {f'''<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn sec" type="submit" formaction="/hearings/export_selected" name="fmt" value="xlsx">
+          📥 選択した件をxlsxダウンロード</button>
+        <button class="btn sec" type="submit" formaction="/hearings/export_selected" name="fmt" value="docx">
+          📥 選択した件をdocxダウンロード</button>
         <button class="btn" type="button" onclick="hearingBulkDelete()"
           style="background:#c53030;border-color:#c53030;color:#fff">選択した件を削除</button>
-      </div>''' if results else ''}
+      </div>
+      <p class="muted" style="font-size:11px;margin-top:6px">ダウンロードは案件（商談）ごとに別ファイルで生成されます。複数の案件をまたいで選択した場合はzipにまとめてダウンロードされます。</p>''' if results else ''}
       </form>
     </div>
     <script>
@@ -3455,90 +3504,218 @@ def hearings_page(con, template_id: int | None = None) -> str:
       var ids = Array.from(document.querySelectorAll('#hearing_bulk_form [name=ids]:checked')).map(function(c){{return c.value;}});
       if (!ids.length) {{ alert('削除するヒアリング結果を選択してください。'); return; }}
       if (!confirm(ids.length + '件のヒアリング結果を削除します。この操作は取り消せません。よろしいですか？')) return;
-      document.getElementById('hearing_bulk_form').submit();
+      var form = document.getElementById('hearing_bulk_form');
+      form.action = '/hearings/bulk_delete';
+      form.submit();
     }}
     </script>"""
 
 
-def build_hearings_xlsx(con, template_id: int | None = None) -> bytes:
-    """ヒアリング結果を、テンプレートごとに1シートのxlsxにまとめる。template_id指定時はそのテンプレートのみ。"""
-    import openpyxl
+def _docx_add_answer(doc, a: dict) -> None:
+    """1つの回答をdocxに追記する。yabane/radar/timeline/scorecardは表（フロー図的な構造）として出力し、
+    それ以外は通常のテキストとして出力する。"""
+    atype = a.get("type")
+    ans = a.get("answer")
+    p = doc.add_paragraph()
+    p.add_run(str(a.get("label") or "")).bold = True
+
+    def _table(headers, data_rows):
+        table = doc.add_table(rows=1, cols=len(headers))
+        table.style = "Light Grid Accent 1"
+        for i, h in enumerate(headers):
+            table.rows[0].cells[i].text = h
+        for row_vals in data_rows:
+            cells = table.add_row().cells
+            for i, v in enumerate(row_vals):
+                cells[i].text = "" if v is None else str(v)
+
+    if atype == "yabane" and isinstance(ans, dict):
+        rows = _yabane_rows_from_answer(ans)
+        if rows:
+            _table(
+                ["ステップ", "部署", "作業内容", "アウトプット", "現行課題", "目指す姿", "目標数値"],
+                [[r.get("step"), r.get("dept"), r.get("content"), r.get("output"),
+                  r.get("issue"), r.get("target"), r.get("target_number")] for r in rows],
+            )
+        else:
+            doc.add_paragraph("（データなし）")
+    elif atype == "radar" and isinstance(ans, dict):
+        axes = ans.get("axes") or []
+        if axes:
+            _table(["軸", "スコア（/5）"], [[ax.get("label"), ax.get("score")] for ax in axes])
+        else:
+            doc.add_paragraph("（データなし）")
+    elif atype == "timeline" and isinstance(ans, dict):
+        events = ans.get("events") or []
+        if events:
+            _table(["日付", "イベント", "メモ"], [[ev.get("date"), ev.get("label"), ev.get("note")] for ev in events])
+        else:
+            doc.add_paragraph("（データなし）")
+    elif atype == "scorecard" and isinstance(ans, dict):
+        criteria = ans.get("criteria") or []
+        items = ans.get("items") or []
+        if criteria and items:
+            data_rows = []
+            for it in items:
+                scores = it.get("scores") or {}
+                total = sum(v for v in scores.values() if isinstance(v, (int, float)))
+                data_rows.append([it.get("label")] + [scores.get(c) for c in criteria] + [total or None])
+            _table(["対象"] + list(criteria) + ["合計"], data_rows)
+        else:
+            doc.add_paragraph("（データなし）")
+    else:
+        doc.add_paragraph(_format_answer(ans))
+    doc.add_paragraph("")
+
+
+def _xlsx_add_answer(ws, row: int, a: dict) -> int:
+    """1つの回答をシートに書き込み、次の書き込み開始行を返す。docx版と同様、
+    yabane/radar/timeline/scorecardは表として出力する。"""
+    from openpyxl.styles import Font
+    atype = a.get("type")
+    ans = a.get("answer")
+    ws.cell(row=row, column=1, value=str(a.get("label") or "")).font = Font(bold=True)
+    row += 1
+
+    def _write_table(headers, data_rows):
+        nonlocal row
+        for i, h in enumerate(headers):
+            ws.cell(row=row, column=1 + i, value=h).font = Font(bold=True)
+        row += 1
+        for row_vals in data_rows:
+            for i, v in enumerate(row_vals):
+                ws.cell(row=row, column=1 + i, value=v)
+            row += 1
+
+    if atype == "yabane" and isinstance(ans, dict):
+        rows = _yabane_rows_from_answer(ans)
+        if rows:
+            _write_table(
+                ["ステップ", "部署", "作業内容", "アウトプット", "現行課題", "目指す姿", "目標数値"],
+                [[r.get("step"), r.get("dept"), r.get("content"), r.get("output"),
+                  r.get("issue"), r.get("target"), r.get("target_number")] for r in rows],
+            )
+        else:
+            ws.cell(row=row, column=1, value="（データなし）")
+            row += 1
+    elif atype == "radar" and isinstance(ans, dict):
+        axes = ans.get("axes") or []
+        if axes:
+            _write_table(["軸", "スコア（/5）"], [[ax.get("label"), ax.get("score")] for ax in axes])
+        else:
+            ws.cell(row=row, column=1, value="（データなし）")
+            row += 1
+    elif atype == "timeline" and isinstance(ans, dict):
+        events = ans.get("events") or []
+        if events:
+            _write_table(["日付", "イベント", "メモ"], [[ev.get("date"), ev.get("label"), ev.get("note")] for ev in events])
+        else:
+            ws.cell(row=row, column=1, value="（データなし）")
+            row += 1
+    elif atype == "scorecard" and isinstance(ans, dict):
+        criteria = ans.get("criteria") or []
+        items = ans.get("items") or []
+        if criteria and items:
+            data_rows = []
+            for it in items:
+                scores = it.get("scores") or {}
+                total = sum(v for v in scores.values() if isinstance(v, (int, float)))
+                data_rows.append([it.get("label")] + [scores.get(c) for c in criteria] + [total or None])
+            _write_table(["対象"] + list(criteria) + ["合計"], data_rows)
+        else:
+            ws.cell(row=row, column=1, value="（データなし）")
+            row += 1
+    else:
+        ws.cell(row=row, column=1, value=_format_answer(ans))
+        row += 1
+    return row + 1  # 空行を挟む
+
+
+def build_hearing_result_docx_for_deal(results: list[dict]) -> bytes:
+    """1商談分のヒアリング結果（複数可）をdocxにまとめる。"""
+    from docx import Document
     from io import BytesIO
-    results = sfa_db.list_all_hearing_results(con, template_id=template_id)
-    wb = openpyxl.Workbook()
-    wb.remove(wb.active)  # デフォルトシート削除
-
-    # テンプレート名スナップショット単位でグループ化
-    groups: dict = {}
+    doc = Document()
+    first = results[0]
+    doc.add_heading(f"{first.get('account_name') or ''} / {first.get('deal_name') or ''}", level=1)
     for r in results:
-        key = r.get("template_name") or "（テンプレート不明）"
-        groups.setdefault(key, []).append(r)
+        doc.add_heading(f"{r.get('template_name') or ''}（{r.get('conducted_on') or '—'}）", level=2)
+        for a in (r.get("answers") or []):
+            _docx_add_answer(doc, a)
+        doc.add_paragraph("")
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
 
-    def safe_sheet_name(name: str, used: set) -> str:
-        for ch in r'\/?*[]:':
-            name = name.replace(ch, "_")
-        name = (name or "Sheet")[:31]
-        base, n = name, 1
-        while name in used:
-            suffix = f"_{n}"
-            name = base[:31 - len(suffix)] + suffix
-            n += 1
-        used.add(name)
-        return name
 
-    used_names: set = set()
-    if not groups:
-        ws = wb.create_sheet(safe_sheet_name("ヒアリング", used_names))
-        ws.append(["（データなし）"])
-    for tmpl_name, items in groups.items():
-        # この群に出現する全項目ラベルを出現順に収集
-        labels: list = []
-        for r in items:
-            for a in (r.get("answers") or []):
-                lbl = a.get("label")
-                if lbl and lbl not in labels:
-                    labels.append(lbl)
-        ws = wb.create_sheet(safe_sheet_name(tmpl_name, used_names))
-        ws.append(["商談ID", "アカウント", "案件名", "ヒアリング日"] + labels)
-        for r in items:
-            amap = {a.get("label"): _format_answer_for_export(a) for a in (r.get("answers") or [])}
-            ws.append([
-                r.get("deal_id"), r.get("account_name") or "", r.get("deal_name") or "",
-                r.get("conducted_on") or "",
-            ] + [amap.get(lbl, "") for lbl in labels])
-
+def build_hearing_result_xlsx_for_deal(results: list[dict]) -> bytes:
+    """1商談分のヒアリング結果（複数可）をxlsxにまとめる。"""
+    import openpyxl
+    from openpyxl.styles import Font
+    from io import BytesIO
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "ヒアリング結果"
+    first = results[0]
+    ws.cell(row=1, column=1, value=f"{first.get('account_name') or ''} / {first.get('deal_name') or ''}").font = Font(bold=True, size=13)
+    row = 3
+    for r in results:
+        ws.cell(row=row, column=1, value=f"{r.get('template_name') or ''}（{r.get('conducted_on') or '—'}）").font = Font(bold=True, size=12)
+        row += 1
+        for a in (r.get("answers") or []):
+            row = _xlsx_add_answer(ws, row, a)
+        row += 1
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
-def build_hearings_docx(con, template_id: int | None = None) -> bytes:
-    """ヒアリング結果を、商談ごとに見出し＋Q&A形式でまとめたdocxを生成する。template_id指定時はそのテンプレートのみ。"""
-    from docx import Document
+def build_hearings_export_bundle(con, result_ids: list[int], fmt: str) -> tuple[bytes, str, str]:
+    """選択されたヒアリング結果を商談（案件）ごとに別ファイルで生成する。
+    1商談のみの場合はそのファイルを直接返し、複数商談にまたがる場合はzipにまとめる。
+    戻り値: (バイト列, ファイル名, Content-Type)。
+    """
+    import re as _re
+    import zipfile
     from io import BytesIO
-    results = sfa_db.list_all_hearing_results(con, template_id=template_id)
-    tmpl = sfa_db.get_hearing_template(con, template_id) if template_id else None
 
-    doc = Document()
-    title = f"ヒアリング結果（{tmpl['name']}）" if tmpl else "ヒアリング結果（全テンプレート）"
-    doc.add_heading(title, level=1)
-    if not results:
-        doc.add_paragraph("（データなし）")
-    for r in results:
-        doc.add_heading(f"{r.get('account_name') or ''} / {r.get('deal_name') or ''}", level=2)
-        meta = doc.add_paragraph()
-        meta.add_run(
-            f"テンプレート: {r.get('template_name') or ''}　ヒアリング日: {r.get('conducted_on') or '—'}"
-        ).italic = True
-        for a in (r.get("answers") or []):
-            p = doc.add_paragraph()
-            p.add_run(f"{a.get('label')}: ").bold = True
-            p.add_run(_format_answer_for_export(a))
-        doc.add_paragraph("")
+    all_results = [r for r in (sfa_db.get_hearing_result(con, rid) for rid in result_ids) if r]
+    groups: dict = {}
+    for r in all_results:
+        groups.setdefault(r["deal_id"], []).append(r)
+
+    ext = "docx" if fmt == "docx" else "xlsx"
+    ctype = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document" if ext == "docx"
+             else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    builder = build_hearing_result_docx_for_deal if ext == "docx" else build_hearing_result_xlsx_for_deal
+
+    def safe_filename(name: str) -> str:
+        name = _re.sub(r'[\\/:*?"<>|]', "_", name or "案件")
+        return name[:60] or "案件"
+
+    files = []
+    for _deal_id, items in groups.items():
+        first = items[0]
+        fname = safe_filename(f"{first.get('account_name') or ''}_{first.get('deal_name') or ''}") + f".{ext}"
+        files.append((fname, builder(items)))
+
+    if not files:
+        raise ValueError("対象のヒアリング結果が見つかりません")
+    if len(files) == 1:
+        return files[0][1], files[0][0], ctype
 
     buf = BytesIO()
-    doc.save(buf)
-    return buf.getvalue()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        used_names: set = set()
+        for fname, data in files:
+            base, _, extn = fname.rpartition(".")
+            final_name, n = fname, 1
+            while final_name in used_names:
+                final_name = f"{base}_{n}.{extn}"
+                n += 1
+            used_names.add(final_name)
+            zf.writestr(final_name, data)
+    return buf.getvalue(), "hearings_export.zip", "application/zip"
 
 
 def build_hearing_results_csv(con, template_id: int) -> bytes:
@@ -4202,44 +4379,24 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     except (ValueError, IndexError):
                         self._send(render("<div class=card>見つかりません</div>"), 404)
                 # ── 初回ヒアリング ──
-                elif path == "/hearings/export":
+                elif path == "/hearings/export" or path == "/hearings/export.docx":
                     qs = self._qs()
                     try:
                         tid = int(qs.get("template_id", ["0"])[0] or 0) or None
                     except ValueError:
                         tid = None
+                    fmt = "docx" if path.endswith(".docx") else "xlsx"
                     try:
-                        data = build_hearings_xlsx(con, template_id=tid)
+                        result_ids = [r["id"] for r in sfa_db.list_all_hearing_results(con, template_id=tid)]
+                        data, fname, ctype = build_hearings_export_bundle(con, result_ids, fmt)
                         self.send_response(200)
-                        self.send_header("Content-Type",
-                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                        fname = f"hearings_{tid}.xlsx" if tid else "hearings.xlsx"
-                        self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                        self.send_header("Content-Type", ctype)
+                        self.send_header("Content-Disposition", _content_disposition(fname))
                         self.send_header("Content-Length", str(len(data)))
                         self.end_headers()
                         self.wfile.write(data)
                     except Exception as _ex:
                         print(f"[hearings/export] {_ex}", flush=True)
-                        import traceback as _tb; _tb.print_exc()
-                        self._send(render("<div class=card>エクスポートに失敗しました</div>"), 500)
-                elif path == "/hearings/export.docx":
-                    qs = self._qs()
-                    try:
-                        tid = int(qs.get("template_id", ["0"])[0] or 0) or None
-                    except ValueError:
-                        tid = None
-                    try:
-                        data = build_hearings_docx(con, template_id=tid)
-                        self.send_response(200)
-                        self.send_header("Content-Type",
-                                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                        fname = f"hearings_{tid}.docx" if tid else "hearings.docx"
-                        self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
-                        self.send_header("Content-Length", str(len(data)))
-                        self.end_headers()
-                        self.wfile.write(data)
-                    except Exception as _ex:
-                        print(f"[hearings/export.docx] {_ex}", flush=True)
                         import traceback as _tb; _tb.print_exc()
                         self._send(render("<div class=card>エクスポートに失敗しました</div>"), 500)
                 elif path == "/hearings/export.csv":
@@ -4389,7 +4546,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(deal_form(con)))
                 # ── 開発案件 ──
                 elif path == "/dev-projects":
-                    self._send(render(dev_projects_list_page(con)))
+                    qs = self._qs()
+                    def qs1(k): return (qs.get(k, [None])[0] or None)
+                    self._send(render(dev_projects_list_page(
+                        con, dev_owner=qs1("dev_owner"), sales_owner=qs1("sales_owner"),
+                        status=qs1("status"), stage=qs1("stage"),
+                        order_potential=qs1("order_potential"), deadline_week=qs1("deadline_week"),
+                    )))
                 elif path == "/dev-projects/new":
                     qs = self._qs()
                     did_raw = qs.get("deal_id", [None])[0]
@@ -4911,6 +5074,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             sfa_db.delete_hearing_result(con, int(rid))
                     self._redirect("/hearings")
 
+                elif path == "/hearings/export_selected":
+                    result_ids = [int(rid) for rid in f_list.get("ids", []) if str(rid).isdigit()]
+                    fmt = f.get("fmt") or "xlsx"
+                    if not result_ids:
+                        self._redirect("/hearings")
+                    else:
+                        try:
+                            data, fname, ctype = build_hearings_export_bundle(con, result_ids, fmt)
+                            self.send_response(200)
+                            self.send_header("Content-Type", ctype)
+                            self.send_header("Content-Disposition", _content_disposition(fname))
+                            self.send_header("Content-Length", str(len(data)))
+                            self.end_headers()
+                            self.wfile.write(data)
+                        except Exception as _ex:
+                            print(f"[hearings/export_selected] {_ex}", flush=True)
+                            import traceback as _tb; _tb.print_exc()
+                            self._send(render("<div class=card>エクスポートに失敗しました</div>"), 500)
+
                 elif path == "/hearing/autosave":
                     try:
                         ttype = f.get("target_type", "")
@@ -5367,8 +5549,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     theme_link.sync_deal(theme_client, con, _did)
                                 except Exception as _exc:
                                     print(f"[theme_link] sync_deal failed: {_exc}")
-                            if _lid:
-                                _redirect_to = f"/lead/{_lid}"
+                            _return_to = f.get("return_to") or ""
+                            if _return_to.startswith("/"):
+                                _redirect_to = _return_to
+                            elif _lid:
+                                _redirect_to = f"/leads/{_lid}"
                     self._redirect(_redirect_to)
 
                 # ── 商談クローズ（リードには戻さず終了扱いにする）──

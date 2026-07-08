@@ -862,12 +862,42 @@ _DEV_PROJECT_SELECT = (
 )
 
 
-def list_dev_projects(con, *, deal_id: int | None = None) -> list[dict]:
+def list_dev_projects(con, *, deal_id: int | None = None, dev_owner: str | None = None,
+                       sales_owner: str | None = None, status: str | None = None,
+                       stage: str | None = None, order_potential: str | None = None,
+                       deadline_from: str | None = None, deadline_to: str | None = None) -> list[dict]:
+    """開発案件一覧。deal_id以外はすべて一覧画面の絞り込み用。
+    sales_ownerは主担当・サブ担当のいずれかに一致する案件を返す。"""
     q = _DEV_PROJECT_SELECT
+    conds: list = []
     params: list = []
     if deal_id:
-        q += " WHERE p.deal_id = ?"
+        conds.append("p.deal_id = ?")
         params.append(int(deal_id))
+    if dev_owner:
+        conds.append("p.dev_owner = ?")
+        params.append(dev_owner)
+    if sales_owner:
+        conds.append("(d.owner = ? OR d.sub_owner = ?)")
+        params.append(sales_owner)
+        params.append(sales_owner)
+    if status:
+        conds.append("p.status = ?")
+        params.append(status)
+    if stage:
+        conds.append("p.stage = ?")
+        params.append(stage)
+    if order_potential:
+        conds.append("p.order_potential = ?")
+        params.append(order_potential)
+    if deadline_from:
+        conds.append("p.deadline >= ?")
+        params.append(deadline_from)
+    if deadline_to:
+        conds.append("p.deadline <= ?")
+        params.append(deadline_to)
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
     q += " ORDER BY p.updated_at DESC"
     return [dict(r) for r in con.execute(q, params)]
 
