@@ -1670,13 +1670,12 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         )
 
     filter_row = f"""<form method="get" action="/dev-projects" class="filter-row">
-      <select name="dev_owner">{_fopt(owners, dev_owner).replace('全て', '開発担当:全て', 1)}</select>
-      <select name="sales_owner">{_fopt(owners, sales_owner).replace('全て', '営業担当:全て', 1)}</select>
-      <select name="status">{_fopt(sfa_db.DEV_PROJECT_STATUSES, status).replace('全て', '状況:全て', 1)}</select>
-      <select name="stage">{_fopt(sfa_db.DEV_PROJECT_STAGES, stage).replace('全て', 'ステージ:全て', 1)}</select>
-      <select name="order_potential">{_fopt(sfa_db.DEV_ORDER_POTENTIALS, order_potential).replace('全て', '受注余地:全て', 1)}</select>
-      <input type="week" name="deadline_week" value="{_esc(deadline_week)}" title="期限（週）で絞り込み">
-      <button class="btn sec" type="submit">絞り込み</button>
+      <select name="dev_owner" onchange="this.form.submit()">{_fopt(owners, dev_owner).replace('全て', '開発担当:全て', 1)}</select>
+      <select name="sales_owner" onchange="this.form.submit()">{_fopt(owners, sales_owner).replace('全て', '営業担当:全て', 1)}</select>
+      <select name="status" onchange="this.form.submit()">{_fopt(sfa_db.DEV_PROJECT_STATUSES, status).replace('全て', '状況:全て', 1)}</select>
+      <select name="stage" onchange="this.form.submit()">{_fopt(sfa_db.DEV_PROJECT_STAGES, stage).replace('全て', 'ステージ:全て', 1)}</select>
+      <select name="order_potential" onchange="this.form.submit()">{_fopt(sfa_db.DEV_ORDER_POTENTIALS, order_potential).replace('全て', '受注余地:全て', 1)}</select>
+      <input type="week" name="deadline_week" value="{_esc(deadline_week)}" title="期限（週）で絞り込み" onchange="this.form.submit()">
       <a class="btn sec" href="/dev-projects">リセット</a>
     </form>"""
 
@@ -1796,8 +1795,10 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         <label>技術サポート</label>
         <input name="tech_support" value="{_esc(p.get('tech_support'))}">
         {sales_owner_block}
-        <label>開発MS</label>
-        <input name="dev_milestone" value="{_esc(p.get('dev_milestone'))}">
+        <div class="grid">
+          <div><label>開発MS日</label><input type="date" name="dev_milestone_date" value="{_esc(p.get('dev_milestone_date'))}"></div>
+          <div><label>開発MS</label><input name="dev_milestone" value="{_esc(p.get('dev_milestone'))}"></div>
+        </div>
         <label>開発方針</label>
         <textarea name="dev_policy" rows="3">{_esc(p.get('dev_policy'))}</textarea>
         <label>制作したツールのリンク</label>
@@ -4824,6 +4825,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         dev_owner=f.get("dev_owner") or None,
                         tech_support=f.get("tech_support") or None,
                         dev_milestone=f.get("dev_milestone") or None,
+                        dev_milestone_date=f.get("dev_milestone_date") or None,
                         deadline=f.get("deadline") or None,
                         dev_policy=f.get("dev_policy") or None,
                         tool_url=f.get("tool_url") or None,
@@ -4859,6 +4861,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         dev_owner=f.get("dev_owner") or None,
                         tech_support=f.get("tech_support") or None,
                         dev_milestone=f.get("dev_milestone") or None,
+                        dev_milestone_date=f.get("dev_milestone_date") or None,
                         deadline=f.get("deadline") or None,
                         dev_policy=f.get("dev_policy") or None,
                         tool_url=f.get("tool_url") or None,

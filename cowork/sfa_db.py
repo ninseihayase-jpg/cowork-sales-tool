@@ -289,7 +289,8 @@ CREATE TABLE IF NOT EXISTS dev_projects (
     has_backend      TEXT,                 -- バックエンド有無: 有り/無し
     dev_owner        TEXT,                 -- 開発担当（メンバー選択）
     tech_support     TEXT,                 -- 技術サポート（自由記述）
-    dev_milestone    TEXT,                 -- 開発MS（自由記述）
+    dev_milestone    TEXT,                 -- 開発MS（自由記述ラベル）
+    dev_milestone_date TEXT,               -- 開発MS日（YYYY-MM-DD）
     deadline         TEXT,                 -- 期限（YYYY-MM-DD）
     dev_policy       TEXT,                 -- 開発方針（自由記述）
     tool_url         TEXT,                 -- 制作したツールのリンク
@@ -351,6 +352,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         dp_cols = {r[1] for r in con.execute("PRAGMA table_info(dev_projects)")}
         if "tool_url" not in dp_cols:
             con.execute("ALTER TABLE dev_projects ADD COLUMN tool_url TEXT")
+        if "dev_milestone_date" not in dp_cols:
+            con.execute("ALTER TABLE dev_projects ADD COLUMN dev_milestone_date TEXT")
         con.commit()
     finally:
         con.close()
@@ -852,7 +855,7 @@ def count_hearing_results(con, deal_id: int) -> int:
 DEV_PROJECT_FIELDS = [
     "deal_id", "theme", "theme_detail", "status", "stage", "order_potential",
     "resolution", "budget_confirmed", "difficulty", "has_backend", "dev_owner",
-    "tech_support", "dev_milestone", "deadline", "dev_policy", "tool_url",
+    "tech_support", "dev_milestone", "dev_milestone_date", "deadline", "dev_policy", "tool_url",
 ]
 
 _DEV_PROJECT_SELECT = (
