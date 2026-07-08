@@ -1519,13 +1519,22 @@ def deal_form(con, deal=None) -> str:
             '}'
         )
     revert_btn = ""
+    close_btn = ""
     if deal.get("id") and deal.get("status") != "closed":
         revert_btn = (
-            f'<form method="post" action="/deal/{deal["id"]}/revert_to_lead" style="margin-top:8px"'
+            f'<form method="post" action="/deal/{deal["id"]}/revert_to_lead" style="margin-top:8px;display:inline-block"'
             ' onsubmit="return revertToLead(this)">'
             '<input type="hidden" name="memo" value="">'
             '<button type="submit" class="btn" style="background:#f59e0b;font-size:12px;padding:6px 12px">'
             '↩ リードに戻す（アポ獲得前に戻る）'
+            '</button></form>'
+        )
+        close_btn = (
+            f'<form method="post" action="/deal/{deal["id"]}/close" style="margin-top:8px;margin-left:8px;display:inline-block"'
+            ' onsubmit="return closeDeal(this)">'
+            '<input type="hidden" name="memo" value="">'
+            '<button type="submit" class="btn" style="background:#c53030;font-size:12px;padding:6px 12px">'
+            '🗑 商談をクローズする'
             '</button></form>'
         )
     return f"""
@@ -1590,7 +1599,7 @@ def deal_form(con, deal=None) -> str:
       </div>
       <p><button class="btn">保存</button> <a class="btn sec" href="/">一覧へ</a> {sync_btn}</p>
     </form>
-    {revert_btn}
+    {revert_btn}{close_btn}
     <script>
     {new_acc_js}
     const L2_MAP = {json.dumps(sfa_db.BUSINESS_TYPE_L2_BY_L1, ensure_ascii=False)};
@@ -1605,6 +1614,13 @@ def deal_form(con, deal=None) -> str:
     function revertToLead(form) {{
       if (!confirm('アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。')) return false;
       var memo = prompt('リードに戻す理由・メモがあれば入力してください（任意）:', '');
+      if (memo === null) return false;
+      form.memo.value = memo;
+      return true;
+    }}
+    function closeDeal(form) {{
+      if (!confirm('この商談をクローズします。\\nリードには戻さず、この商談の状態を「クローズ」にします。')) return false;
+      var memo = prompt('クローズ理由・メモがあれば入力してください（任意）:', '');
       if (memo === null) return false;
       form.memo.value = memo;
       return true;
@@ -1834,6 +1850,66 @@ def convert_lead_to_deal(con, lead: dict) -> int:
     )
     con.commit()
     return int(deal_id)
+
+
+def find_past_closed_deals(con, company_name: str) -> list[dict]:
+    """会社名（アカウント名）が一致する、クローズ済みの過去商談を新しい順で返す。
+    リードから商談を復活させる際の選択肢に使う。"""
+    company_name = (company_name or "").strip()
+    if not company_name:
+        return []
+    acc = con.execute("SELECT id FROM accounts WHERE name=?", (company_name,)).fetchone()
+    if not acc:
+        return []
+    return [dict(r) for r in con.execute(
+        "SELECT id, deal_name, stage, owner, updated_at FROM deals "
+        "WHERE account_id=? AND status='closed' ORDER BY updated_at DESC",
+        (dict(acc)["id"],),
+    )]
+
+
+def revive_deal_from_lead(con, lead: dict, deal_id: int) -> int:
+    """過去にクローズした商談を復活させ、リードをそこに紐づける。"""
+    con.execute("UPDATE deals SET status='open', updated_at=datetime('now') WHERE id=?", (deal_id,))
+    con.execute(
+        "UPDATE leads SET deal_id=?, lead_status='converted', updated_at=datetime('now') WHERE id=?",
+        (deal_id, lead["id"]),
+    )
+    con.execute(
+        "INSERT INTO activities (deal_id, type, occurred_on, body) VALUES (?,?,date('now'),?)",
+        (deal_id, "メモ", f"リード「{lead.get('name','')}」からアポ再獲得。商談を復活しました。"),
+    )
+    con.commit()
+    return int(deal_id)
+
+
+def lead_convert_choice_page(con, lead: dict, past_deals: list[dict]) -> str:
+    """過去のクローズ済み商談がある場合に、新規作成か復活かを選ばせる確認画面。"""
+    opts = "".join(
+        f'<label style="display:block;margin:8px 0;font-weight:400">'
+        f'<input type="radio" name="mode" value="revive_{d["id"]}" style="width:auto;margin-right:6px">'
+        f'過去の商談を復活: <strong>{_esc(d.get("deal_name"))}</strong>'
+        f'（ステージ: {_esc(d.get("stage")) or "—"}、担当: {_esc(d.get("owner")) or "—"}、'
+        f'最終更新: {_esc((d.get("updated_at") or "")[:10])}）</label>'
+        for d in past_deals
+    )
+    return f"""
+    <div class="card" style="max-width:700px">
+      <h2>商談化の方法を選択</h2>
+      <p class="muted">この会社（{_esc(lead.get('company'))}）には過去にクローズした商談があります。
+      過去の商談を復活させて続きから進めますか？それとも新規の商談として開始しますか？</p>
+      <form method="post" action="/leads/{lead['id']}/convert">
+        <label style="display:block;margin:8px 0;font-weight:400">
+          <input type="radio" name="mode" value="new" checked style="width:auto;margin-right:6px">
+          新規商談として作成
+        </label>
+        {opts}
+        <div style="margin-top:16px">
+          <button class="btn sync" type="submit">確定</button>
+          <a class="btn sec" href="/leads/{lead['id']}">キャンセル</a>
+        </div>
+      </form>
+    </div>"""
 
 
 # ── 初回ヒアリング ───────────────────────────────────────────────────────────────
@@ -3719,11 +3795,7 @@ def lead_form(con, lead=None) -> str:
 
         can_convert = (cur_status not in ("converted", "lost") and not lead.get("deal_id"))
         if can_convert:
-            convert_btn = (
-                f'<form method="post" action="/leads/{lead["id"]}/convert" style="display:inline">'
-                f'<button class="btn sync"'
-                f' onclick="return confirm(\'アポ獲得後に商談化します。\\nリードはクローズされ、商談が作成されます。\')">'
-                f'アポ獲得 → 商談化</button></form>')
+            convert_btn = f'<a class="btn sync" href="/leads/{lead["id"]}/convert">アポ獲得 → 商談化</a>'
         if lead.get("deal_id"):
             deal_link = f'<a class="btn sec" href="/deal/{lead["deal_id"]}">紐付け商談を見る 🔗</a>'
 
@@ -4370,6 +4442,27 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
+                elif path.startswith("/leads/") and path.endswith("/convert"):
+                    try:
+                        lid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>ページが見つかりません</div>"), 404)
+                    else:
+                        lead = sfa_db.get_lead(con, lid)
+                        if not lead:
+                            self._send(render("<div class=card>リードが見つかりません</div>"), 404)
+                        else:
+                            past_deals = find_past_closed_deals(con, lead.get("company"))
+                            if past_deals:
+                                self._send(render(lead_convert_choice_page(con, lead, past_deals)))
+                            else:
+                                try:
+                                    deal_id = convert_lead_to_deal(con, lead)
+                                    self._redirect(f"/deal/{deal_id}")
+                                except Exception as _conv_e:
+                                    print(f"[convert] error lid={lid}: {_conv_e}", flush=True)
+                                    import traceback as _tb; _tb.print_exc()
+                                    self._redirect(f"/leads/{lid}")
                 elif path.startswith("/leads/"):
                     try:
                         lid = int(path.split("/")[2])
@@ -5192,8 +5285,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if not lead:
                         self._redirect("/leads")
                     else:
+                        mode = f.get("mode") or "new"
                         try:
-                            deal_id = convert_lead_to_deal(con, lead)
+                            if mode.startswith("revive_") and mode[7:].isdigit():
+                                deal_id = revive_deal_from_lead(con, lead, int(mode[7:]))
+                            else:
+                                deal_id = convert_lead_to_deal(con, lead)
+                            if theme_client is not None:
+                                try:
+                                    theme_link.sync_deal(theme_client, con, deal_id)
+                                except Exception as _exc:
+                                    print(f"[theme_link] sync_deal failed: {_exc}")
                             self._redirect(f"/deal/{deal_id}")
                         except Exception as _conv_e:
                             print(f"[convert] error lid={lid}: {_conv_e}", flush=True)
@@ -5260,8 +5362,39 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     assigned_to=_deal.get("owner"),
                                 )
                             con.commit()
+                            if theme_client is not None:
+                                try:
+                                    theme_link.sync_deal(theme_client, con, _did)
+                                except Exception as _exc:
+                                    print(f"[theme_link] sync_deal failed: {_exc}")
                             if _lid:
                                 _redirect_to = f"/lead/{_lid}"
+                    self._redirect(_redirect_to)
+
+                # ── 商談クローズ（リードには戻さず終了扱いにする）──
+                elif path.endswith("/close") and "/deal/" in path:
+                    deal_id_str = path.split("/deal/")[1].split("/")[0]
+                    _redirect_to = "/deals"
+                    if deal_id_str.isdigit():
+                        _did = int(deal_id_str)
+                        _deal = sfa_db.get_deal(con, _did)
+                        if _deal and _deal.get("status") != "closed":
+                            _memo = (f.get("memo") or "").strip()
+                            _close_line = "商談をクローズしました。"
+                            _existing_note = _deal.get("note") or ""
+                            _body = f"{_existing_note}\n{_close_line}" if _existing_note else _close_line
+                            _new_note = f"[クローズ時のメモ] {_memo}\n{_body}" if _memo else _body
+                            con.execute(
+                                "UPDATE deals SET status='closed', note=?, updated_at=datetime('now') WHERE id=?",
+                                (_new_note, _did),
+                            )
+                            con.commit()
+                            if theme_client is not None:
+                                try:
+                                    theme_link.sync_deal(theme_client, con, _did)
+                                except Exception as _exc:
+                                    print(f"[theme_link] sync_deal failed: {_exc}")
+                            _redirect_to = f"/deal/{_did}"
                     self._redirect(_redirect_to)
 
                 # ── メモ保存 ──
