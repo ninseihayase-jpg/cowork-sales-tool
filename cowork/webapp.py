@@ -3244,21 +3244,24 @@ def hearings_page(con, template_id: int | None = None) -> str:
     tmpl_filter_form = f"""<form method="get" action="/hearings" class="filter-row">
       <select name="template_id" onchange="this.form.submit()">{tmpl_opts}</select>
     </form>"""
+    _ellip = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
     rows = ""
     for r in results:
-        preview = "　".join(
-            f'{_esc(a.get("label"))}: {_esc(_format_answer_for_export(a))}'
+        preview_full = "　".join(
+            f'{a.get("label")}: {_format_answer_for_export(a)}'
             for a in (r.get("answers") or [])[:2]
         )
+        preview = preview_full[:160] + ("…" if len(preview_full) > 160 else "")
         _nav = f"location.href='/hearing/result/{r['id']}'"
         rows += (
             f'<tr>'
             f'<td style="width:32px"><input type="checkbox" name="ids" value="{r["id"]}"></td>'
-            f'<td style="cursor:pointer" onclick="{_nav}">{_esc(r.get("conducted_on") or "—")}</td>'
-            f'<td style="cursor:pointer" onclick="{_nav}"><a href="/deal/{r["deal_id"]}" onclick="event.stopPropagation()">{_esc(r.get("account_name") or "")}</a></td>'
-            f'<td style="cursor:pointer" onclick="{_nav}">{_esc(r.get("deal_name") or "")}</td>'
-            f'<td style="cursor:pointer" onclick="{_nav}">{_esc(r.get("template_name") or "")}</td>'
-            f'<td class="muted" style="font-size:12px;cursor:pointer" onclick="{_nav}">{preview}</td>'
+            f'<td style="width:90px;cursor:pointer" onclick="{_nav}">{_esc(r.get("conducted_on") or "—")}</td>'
+            f'<td style="width:160px;{_ellip};cursor:pointer" title="{_esc(r.get("account_name") or "")}">'
+            f'<a href="/deal/{r["deal_id"]}" onclick="event.stopPropagation()">{_esc(r.get("account_name") or "")}</a></td>'
+            f'<td style="width:200px;{_ellip};cursor:pointer" onclick="{_nav}" title="{_esc(r.get("deal_name") or "")}">{_esc(r.get("deal_name") or "")}</td>'
+            f'<td style="width:150px;{_ellip};cursor:pointer" onclick="{_nav}" title="{_esc(r.get("template_name") or "")}">{_esc(r.get("template_name") or "")}</td>'
+            f'<td class="muted" style="font-size:12px;cursor:pointer" onclick="{_nav}" title="{_esc(preview_full)}">{_esc(preview)}</td>'
             f'</tr>'
         )
     dl_qs = f"?template_id={template_id}" if template_id else ""
@@ -3282,10 +3285,11 @@ def hearings_page(con, template_id: int | None = None) -> str:
       <p class="muted" style="margin-bottom:14px">{desc}</p>
       {tmpl_filter_form}
       <form id="hearing_bulk_form" method="post" action="/hearings/bulk_delete">
-      <table>
+      <table style="table-layout:fixed">
         <tr><th style="width:32px"><input type="checkbox" id="hearing_chk_all" title="全選択"
               onchange="document.querySelectorAll('#hearing_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            <th>ヒアリング日</th><th>アカウント</th><th>案件名</th><th>テンプレート</th><th>回答プレビュー</th></tr>
+            <th style="width:90px">ヒアリング日</th><th style="width:160px">アカウント</th>
+            <th style="width:200px">案件名</th><th style="width:150px">テンプレート</th><th>回答プレビュー</th></tr>
         {rows or '<tr><td colspan=6 class="muted">まだヒアリング結果がありません。</td></tr>'}
       </table>
       {f'''<div style="margin-top:10px">
