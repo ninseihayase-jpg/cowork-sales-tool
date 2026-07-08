@@ -3415,6 +3415,8 @@ def hearing_result_page(con, result: dict) -> str:
       <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
         <a class="btn sec" href="/deal/{result['deal_id']}">商談へ戻る</a>
         <a class="btn sec" href="/hearings">ヒアリング一覧</a>
+        <a class="btn sec" href="/hearing/result/{result['id']}/export.xlsx">📥 xlsxダウンロード</a>
+        <a class="btn sec" href="/hearing/result/{result['id']}/export.docx">📥 docxダウンロード</a>
         {f'<a class="btn sec" href="/hearing/result/{result["id"]}/edit">編集</a>' if result.get('template_id') else ''}
         <form method="post" action="/hearing/result/{result['id']}/delete" style="display:inline;margin:0">
           <button class="btn" style="background:#c53030;border-color:#c53030;color:#fff"
@@ -4505,6 +4507,28 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             target_label=label, prefill=prefill, prev_date=None, draft=draft,
                             edit_result_id=rid, edit_conducted_on=r.get("conducted_on"),
                         )))
+                elif path.startswith("/hearing/result/") and (path.endswith("/export.xlsx") or path.endswith("/export.docx")):
+                    try:
+                        rid = int(path.split("/")[3])
+                    except (ValueError, IndexError):
+                        rid = 0
+                    r = sfa_db.get_hearing_result(con, rid) if rid else None
+                    if not r:
+                        self._send(render("<div class=card>ヒアリング結果が見つかりません</div>"), 404)
+                    else:
+                        fmt = "docx" if path.endswith(".docx") else "xlsx"
+                        try:
+                            data, fname, ctype = build_hearings_export_bundle(con, [rid], fmt)
+                            self.send_response(200)
+                            self.send_header("Content-Type", ctype)
+                            self.send_header("Content-Disposition", _content_disposition(fname))
+                            self.send_header("Content-Length", str(len(data)))
+                            self.end_headers()
+                            self.wfile.write(data)
+                        except Exception as _ex:
+                            print(f"[hearing/result/export] {_ex}", flush=True)
+                            import traceback as _tb; _tb.print_exc()
+                            self._send(render("<div class=card>エクスポートに失敗しました</div>"), 500)
                 elif path.startswith("/hearing/result/"):
                     try:
                         rid = int(path.split("/")[3])
