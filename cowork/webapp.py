@@ -240,7 +240,7 @@ def email_pattern_form(con, pattern=None) -> str:
         for name, email in INPROC_MEMBERS
     )
     return f"""
-    <div class="card" style="max-width:700px">
+    <div class="card" style="max-width:900px">
       <h2>{title}</h2>
       <form method="post" action="{action}">
         <label>パターン名</label>
@@ -1138,10 +1138,19 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     return f"""
     <div class="card"><h2>特定日の商談（{_esc(target_date)}） {len(deals)}件</h2>
     {form}
-    <div style="overflow-x:auto">
+    <div style="overflow:auto;max-height:70vh">
     <table style="min-width:1200px"><tr>
-      <th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>主担当</th><th>サブ担当</th>
-      <th>次回MS日付</th><th>次回MS</th><th>開発担当</th><th>開発案件名</th><th>操作</th></tr>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">#</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">アカウント</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">案件名</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">ステージ</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">主担当</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">サブ担当</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">次回MS日付</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">次回MS</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">開発担当</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">開発案件名</th>
+      <th style="position:sticky;top:0;background:#fff;z-index:2">操作</th></tr>
     {''.join(rows) or '<tr><td colspan=11 class=muted>該当する商談がありません。</td></tr>'}
     </table></div>
     </div>
@@ -1639,7 +1648,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
     )
 
     return f"""
-    <div class="card" style="max-width:680px">
+    <div class="card" style="max-width:900px">
       <p style="margin:0 0 10px"><a class="btn sec" href="{back_href}">← 戻る</a></p>
       <h2>{'開発案件を編集' if is_edit else '開発案件 新規入力'}</h2>
       <form method="post" action="{action}">
@@ -1810,7 +1819,7 @@ def hearing_template_form(con, tmpl=None) -> str:
     items = (tmpl.get("items") if tmpl else None) or []
     items_data = json.dumps(items, ensure_ascii=False)
     return f"""
-    <div class="card" style="max-width:820px">
+    <div class="card" style="max-width:1000px">
       <h2>{title}</h2>
       <form method="post" action="{action}" onsubmit="return serializeItems()">
         <label>テンプレート名</label>
@@ -2221,7 +2230,7 @@ def hearing_new_page(con, preselect: str | None = None) -> str:
         lead_opts += (f'<option value="{val}"{_sel(val)}>リード: '
                       f'{_esc(l.get("company") or "?")} / {_esc(l.get("name") or "?")}</option>')
     return f"""
-    <div class="card" style="max-width:680px">
+    <div class="card" style="max-width:700px">
       <h2>新規ヒアリング</h2>
       <p class="muted" style="margin-bottom:14px">対象とテンプレートを選んでください。リードを選んだ場合は、保存時に自動で商談化されます。</p>
       <form method="get" action="/hearing/start">
@@ -2530,7 +2539,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       padding: 10px 20px 10px; margin: -20px -16px 16px;
     }}
     .hq-sticky-inner {{
-      max-width: 760px; margin: 0 auto;
+      max-width: 1100px; margin: 0 auto;
       display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
       position: relative;
     }}
@@ -2604,7 +2613,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         {guide_html}
       </div>
     </div>
-    <div class="card" style="max-width:760px">
+    <div class="card" style="max-width:1100px">
       {prev_note}
       {draft_note}
       <p id="hq_autosave_status" class="muted" style="font-size:11px;margin:0 0 8px"></p>
@@ -2647,6 +2656,14 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       </form>
     </div>
     <script>
+    // ページ共通ヘッダー(position:sticky)の実高さ分だけ、このページ内のstickyバーを下にずらす
+    (function() {{
+      var pageHeader = document.querySelector('header');
+      var stickyBar = document.querySelector('.hq-sticky');
+      if (pageHeader && stickyBar) {{
+        stickyBar.style.top = pageHeader.getBoundingClientRect().height + 'px';
+      }}
+    }})();
     // ── レーダーチャート JS ──
     function _svgEsc(s){{return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}}
     function raRedraw(wrapper) {{
@@ -3197,7 +3214,7 @@ def hearing_result_page(con, result: dict) -> str:
         )
         history = f'<p class="muted" style="margin-top:12px;font-size:12px">この商談のヒアリング履歴: {links}</p>'
     return f"""
-    <div class="card" style="max-width:960px">
+    <div class="card" style="max-width:1100px">
       <h2>ヒアリング結果</h2>
       <p style="margin:0 0 4px"><strong>商談:</strong> <a href="/deal/{result['deal_id']}">{_esc(result.get('account_name') or '')} / {_esc(result.get('deal_name') or '')}</a></p>
       <p class="muted" style="margin:0 0 12px"><strong>テンプレート:</strong> {_esc(result.get('template_name') or '')}　<strong>ヒアリング日:</strong> {_esc(result.get('conducted_on') or '—')}</p>
