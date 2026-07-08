@@ -1110,6 +1110,15 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
         else:
             dev_owner_html = '<span class="muted">—</span>'
             dev_link_html = f'<a class="muted" href="/dev-projects/new?deal_id={did}">＋追加</a>'
+        if d.get("status") != "closed":
+            revert_html = (
+                f'<form method="post" action="/deal/{did}/revert_to_lead" style="margin:0" onsubmit="return revertToLead(this)">'
+                f'<input type="hidden" name="memo" value="">'
+                f'<button type="submit" class="btn sec" style="font-size:11px;padding:4px 8px;'
+                f'background:#f59e0b22;color:#92400e;border-color:#f59e0b44">↩ リードに戻す</button></form>'
+            )
+        else:
+            revert_html = '<span class="muted">—</span>'
         rows.append(
             f'<tr>'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}</td>'
@@ -1122,6 +1131,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
             f'<td>{inp_ms_label}</td>'
             f'<td>{dev_owner_html}</td>'
             f'<td>{dev_link_html}</td>'
+            f'<td>{revert_html}</td>'
             f'</tr>'
         )
 
@@ -1129,10 +1139,10 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     <div class="card"><h2>特定日の商談（{_esc(target_date)}） {len(deals)}件</h2>
     {form}
     <div style="overflow-x:auto">
-    <table style="min-width:1100px"><tr>
+    <table style="min-width:1200px"><tr>
       <th>#</th><th>アカウント</th><th>案件名</th><th>ステージ</th><th>主担当</th><th>サブ担当</th>
-      <th>次回MS日付</th><th>次回MS</th><th>開発担当</th><th>開発案件名</th></tr>
-    {''.join(rows) or '<tr><td colspan=10 class=muted>該当する商談がありません。</td></tr>'}
+      <th>次回MS日付</th><th>次回MS</th><th>開発担当</th><th>開発案件名</th><th>操作</th></tr>
+    {''.join(rows) or '<tr><td colspan=11 class=muted>該当する商談がありません。</td></tr>'}
     </table></div>
     </div>
     <script>
@@ -1149,6 +1159,13 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
         headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
         body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
       }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー'); }}).catch(() => alert('通信エラー'));
+    }}
+    function revertToLead(form) {{
+      if (!confirm('アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。')) return false;
+      var memo = prompt('リードに戻す理由・メモがあれば入力してください（任意）:', '');
+      if (memo === null) return false;
+      form.memo.value = memo;
+      return true;
     }}
     </script>
     """
@@ -1444,7 +1461,8 @@ def deal_form(con, deal=None) -> str:
     if deal.get("id") and deal.get("status") != "closed":
         revert_btn = (
             f'<form method="post" action="/deal/{deal["id"]}/revert_to_lead" style="margin-top:8px"'
-            ' onsubmit="return confirm(\'アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。\')">'
+            ' onsubmit="return revertToLead(this)">'
+            '<input type="hidden" name="memo" value="">'
             '<button type="submit" class="btn" style="background:#f59e0b;font-size:12px;padding:6px 12px">'
             '↩ リードに戻す（アポ獲得前に戻る）'
             '</button></form>'
@@ -1522,6 +1540,13 @@ def deal_form(con, deal=None) -> str:
       sel.innerHTML = '<option value=""></option>' +
         (L2_MAP[l1] || []).map(v => `<option value="${{v}}"${{v===cur?' selected':''}}>${{v}}</option>`).join('');
       document.getElementById('cost_section').style.display = l1 === 'コスト削減' ? '' : 'none';
+    }}
+    function revertToLead(form) {{
+      if (!confirm('アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。')) return false;
+      var memo = prompt('リードに戻す理由・メモがあれば入力してください（任意）:', '');
+      if (memo === null) return false;
+      form.memo.value = memo;
+      return true;
     }}
     </script></div>
     {hearing_html}
@@ -5080,42 +5105,57 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _did = int(deal_id_str)
                         _deal = sfa_db.get_deal(con, _did)
                         if _deal and _deal.get("status") != "closed":
+                            _memo = (f.get("memo") or "").strip()
+                            _acct_row = con.execute(
+                                "SELECT * FROM accounts WHERE id=?", (_deal.get("account_id"),)
+                            ).fetchone()
+                            _acct = dict(_acct_row) if _acct_row else {}
+
+                            # 現状メモ: リードに戻す時のメモ（あれば）を一番上に追記した上でクローズ理由も付与
+                            _close_line = "アポ未獲得のためクローズ（リードに戻す）"
+                            _existing_note = _deal.get("note") or ""
+                            _body = f"{_existing_note}\n{_close_line}" if _existing_note else _close_line
+                            _new_note = f"[リードに戻す時のメモ] {_memo}\n{_body}" if _memo else _body
+                            con.execute(
+                                "UPDATE deals SET status='closed', note=?, updated_at=datetime('now') WHERE id=?",
+                                (_new_note, _did),
+                            )
+
                             _lid = None
                             # 既存リード検索（deal_id が紐付いているもの）
                             _lead_row = con.execute(
                                 "SELECT * FROM leads WHERE deal_id=? LIMIT 1", (_did,)
                             ).fetchone()
                             if _lead_row:
-                                _lid = dict(_lead_row)["id"]
+                                _lead = dict(_lead_row)
+                                _lid = _lead["id"]
+                                _lead_notes = (_lead.get("notes") or "")
+                                _lead_new_notes = f"{_new_note}\n{_lead_notes}" if _lead_notes else _new_note
                                 con.execute(
                                     "UPDATE leads SET lead_status='following', deal_id=NULL, "
-                                    "updated_at=datetime('now') WHERE id=?", (_lid,)
+                                    "industry=COALESCE(?, industry), company_size=COALESCE(?, company_size), "
+                                    "notes=?, updated_at=datetime('now') WHERE id=?",
+                                    (_acct.get("industry"), _acct.get("company_size"), _lead_new_notes, _lid),
                                 )
+                                _activity_note = "アポ未獲得のため商談からリードへ戻す（フォロー中に変更）。"
+                                if _memo:
+                                    _activity_note += f" メモ: {_memo}"
                                 con.execute(
                                     "INSERT INTO lead_activities (lead_id,type,content,author) VALUES (?,?,?,?)",
-                                    (_lid, "note", "アポ未獲得のため商談からリードへ戻す（フォロー中に変更）。", "システム"),
+                                    (_lid, "note", _activity_note, "システム"),
                                 )
                             else:
-                                # 既存リードがなければアカウントから新規作成
-                                _acct_row = con.execute(
-                                    "SELECT * FROM accounts WHERE id=?", (_deal.get("account_id"),)
-                                ).fetchone()
-                                _acct = dict(_acct_row) if _acct_row else {}
+                                # 既存リードがなければアカウントから新規作成（業界・企業規模・現状メモを連携）
+                                _origin_line = f"商談 #{_did}（{_deal.get('deal_name','')}）からリードに戻す"
                                 _lid = sfa_db.upsert_lead(
                                     con, name=_acct.get("name", "（不明）"),
                                     company=_acct.get("name", "（不明）"),
+                                    industry=_acct.get("industry"),
+                                    company_size=_acct.get("company_size"),
                                     lead_status="following",
-                                    notes=f"アポ未獲得のため商談 #{_did} ({_deal.get('deal_name','')}) からリードに戻す",
+                                    notes=f"{_origin_line}\n{_new_note}",
                                     assigned_to=_deal.get("owner"),
                                 )
-                            # 商談をクローズ
-                            con.execute(
-                                "UPDATE deals SET status='closed', "
-                                "note=CASE WHEN note IS NULL OR note='' THEN ? ELSE note||char(10)||? END, "
-                                "updated_at=datetime('now') WHERE id=?",
-                                ("アポ未獲得のためクローズ（リードに戻す）",
-                                 "アポ未獲得のためクローズ（リードに戻す）", _did),
-                            )
                             con.commit()
                             if _lid:
                                 _redirect_to = f"/lead/{_lid}"
