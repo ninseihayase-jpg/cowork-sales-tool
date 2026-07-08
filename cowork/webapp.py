@@ -1382,6 +1382,28 @@ def deal_form(con, deal=None) -> str:
         }}
         </script>"""
 
+    other_deals_html = ""
+    if deal.get("id") and deal.get("account_id"):
+        _other_deals = [dict(r) for r in con.execute(
+            "SELECT id, deal_name, stage, status, owner, updated_at FROM deals "
+            "WHERE account_id=? AND id!=? ORDER BY id DESC",
+            (deal["account_id"], deal["id"]),
+        )]
+        if _other_deals:
+            _od_rows = "".join(
+                f'<tr><td><a href="/deal/{d["id"]}">{_esc(d.get("deal_name"))}</a></td>'
+                f'<td><span class="stage">{_esc(d.get("stage")) or "—"}</span></td>'
+                f'<td>{"クローズ" if d.get("status") == "closed" else "進行中"}</td>'
+                f'<td>{_esc(d.get("owner")) or "—"}</td>'
+                f'<td class="muted">{_esc((d.get("updated_at") or "")[:10])}</td></tr>'
+                for d in _other_deals
+            )
+            other_deals_html = f"""
+        <div class="card">
+          <h2>この会社の他の商談（{len(_other_deals)}件）</h2>
+          <table><tr><th>案件名</th><th>ステージ</th><th>状況</th><th>担当</th><th>更新日</th></tr>{_od_rows}</table>
+        </div>"""
+
     hearing_html = ""
     if deal.get("id"):
         n_hearings = sfa_db.count_hearing_results(con, deal["id"])
@@ -1588,6 +1610,7 @@ def deal_form(con, deal=None) -> str:
       return true;
     }}
     </script></div>
+    {other_deals_html}
     {hearing_html}
     {dev_projects_html}
     {activities_html}"""
