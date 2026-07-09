@@ -1899,6 +1899,8 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
       <h2>{'開発案件を編集' if is_edit else '開発案件 新規入力'}</h2>
       <form method="post" action="{action}">
         {return_to_field}
+        <label>制作したツールのリンク</label>
+        <input type="url" name="tool_url" placeholder="https://..." value="{_esc(p.get('tool_url'))}">
         <label>商談</label>
         {deal_field_html}
         <label>開発テーマ *</label>
@@ -1928,8 +1930,6 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         </div>
         <label>開発方針</label>
         <textarea name="dev_policy" rows="3">{_esc(p.get('dev_policy'))}</textarea>
-        <label>制作したツールのリンク</label>
-        <input type="url" name="tool_url" placeholder="https://..." value="{_esc(p.get('tool_url'))}">
         <div style="margin-top:16px">
           <button class="btn" type="submit">保存</button>
           <a class="btn sec" href="{back_href}">キャンセル</a>
