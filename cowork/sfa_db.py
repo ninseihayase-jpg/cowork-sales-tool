@@ -403,6 +403,8 @@ CREATE TABLE IF NOT EXISTS dev_projects (
     dev_end_date     TEXT,                 -- 開発終了日（起票時のデフォルトは期限と同値）
     dev_policy       TEXT,                 -- 開発方針（自由記述）
     tool_url         TEXT,                 -- 制作したツールのリンク
+    tool_login_id    TEXT,                 -- 制作したツールのログインID（必要な場合のみ）
+    tool_login_pass  TEXT,                 -- 制作したツールのログインパスワード（必要な場合のみ）
     hisho_id         INTEGER,              -- Hisho側 dev_projects.id（同期キー。NULL=未連携）
     created_at       TEXT DEFAULT (datetime('now')),
     updated_at       TEXT DEFAULT (datetime('now'))
@@ -491,6 +493,10 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE dev_projects ADD COLUMN dev_start_date TEXT")
         if "dev_end_date" not in dp_cols:
             con.execute("ALTER TABLE dev_projects ADD COLUMN dev_end_date TEXT")
+        if "tool_login_id" not in dp_cols:
+            con.execute("ALTER TABLE dev_projects ADD COLUMN tool_login_id TEXT")
+        if "tool_login_pass" not in dp_cols:
+            con.execute("ALTER TABLE dev_projects ADD COLUMN tool_login_pass TEXT")
         con.commit()
     finally:
         con.close()
@@ -993,7 +999,7 @@ DEV_PROJECT_FIELDS = [
     "deal_id", "theme", "theme_detail", "status", "stage", "order_potential",
     "resolution", "budget_confirmed", "difficulty", "has_backend", "dev_owner",
     "tech_support", "dev_milestone", "dev_milestone_date", "deadline", "dev_start_date",
-    "dev_end_date", "dev_policy", "tool_url",
+    "dev_end_date", "dev_policy", "tool_url", "tool_login_id", "tool_login_pass",
 ]
 
 _DEV_PROJECT_SELECT = (

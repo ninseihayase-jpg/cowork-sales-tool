@@ -168,17 +168,26 @@ def _content_disposition(filename: str) -> str:
     return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
 
 
-def _tool_link_btn(url, label: str = "🔧 ツール") -> str:
+def _tool_link_btn(url, label: str = "🔧 ツール", *, tool_id=None, tool_password=None) -> str:
     """開発案件の「制作したツールのリンク」を、邪魔にならない小さなボタンとして描画する。
+    ID/PASSが設定されている場合は、カーソルを合わせるとコピペ可能な状態で表示する。
     一覧・商談詳細など複数画面で共通利用する。"""
     if not url:
         return ""
-    return (
+    link = (
         f'<a href="{_esc(url)}" target="_blank" rel="noopener" title="制作したツールを開く" '
         f'style="display:inline-block;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;'
         f'border-radius:6px;padding:2px 8px;font-size:11px;text-decoration:none;white-space:nowrap">'
         f'{label}</a>'
     )
+    if not tool_id and not tool_password:
+        return link
+    cred_lines = ""
+    if tool_id:
+        cred_lines += f'<div>ID: {_esc(tool_id)}</div>'
+    if tool_password:
+        cred_lines += f'<div>PASS: {_esc(tool_password)}</div>'
+    return f'<span class="tool-link-wrap">{link}<div class="tool-link-cred">{cred_lines}</div></span>'
 
 
 def _chips(values) -> str:
@@ -224,6 +233,11 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  th{{color:#8893a8;font-weight:600;font-size:12px}}
  tr:hover td{{background:#fafbfd}}
  .stage{{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;background:#e8edf7;color:#33406b;white-space:nowrap}}
+ .tool-link-wrap{{position:relative;display:inline-block}}
+ .tool-link-cred{{display:none;position:absolute;top:100%;left:0;z-index:20;background:#fff;
+   border:1px solid #d0e4ff;border-radius:6px;padding:6px 10px;font-size:11px;white-space:nowrap;
+   box-shadow:0 2px 8px rgba(0,0,0,.12);color:#1d2430;user-select:text;margin-top:4px}}
+ .tool-link-wrap:hover .tool-link-cred{{display:block}}
  .btn{{display:inline-block;background:#2f6fed;color:#fff;border:0;border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer;text-decoration:none}}
  .btn.sec{{background:#e8edf7;color:#33406b}} .btn.sync{{background:#0c9b6a}}
  label{{display:block;font-size:12px;color:#6b7689;margin:10px 0 3px}}
@@ -994,7 +1008,8 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
             f' style="font-size:11px;padding:1px 2px;width:75px">'
         )
         tool_btns = " ".join(
-            _tool_link_btn(dp.get("tool_url")) for dp in sfa_db.list_dev_projects(con, deal_id=d["id"])
+            _tool_link_btn(dp.get("tool_url"), tool_id=dp.get("tool_login_id"), tool_password=dp.get("tool_login_pass"))
+            for dp in sfa_db.list_dev_projects(con, deal_id=d["id"])
             if dp.get("tool_url")
         ) or "—"
         rows.append(
@@ -1204,7 +1219,9 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
                 for p in dps
             )
             tool_html = "".join(
-                f'<div style="margin-bottom:2px">{_tool_link_btn(p.get("tool_url")) or "—"}</div>'
+                f'<div style="margin-bottom:2px">'
+                f'{_tool_link_btn(p.get("tool_url"), tool_id=p.get("tool_login_id"), tool_password=p.get("tool_login_pass")) or "—"}'
+                f'</div>'
                 for p in dps
             )
         else:
@@ -1511,7 +1528,7 @@ def deal_form(con, deal=None) -> str:
                 f'<td>{_esc(p.get("order_potential"))}</td>'
                 f'<td>{_esc(p.get("dev_owner"))}</td>'
                 f'<td>{_esc(p.get("deadline") or "—")}</td>'
-                f'<td>{_tool_link_btn(p.get("tool_url")) or "—"}</td></tr>'
+                f'<td>{_tool_link_btn(p.get("tool_url"), tool_id=p.get("tool_login_id"), tool_password=p.get("tool_login_pass")) or "—"}</td></tr>'
                 for p in dps
             )
             dev_projects_html = f"""
@@ -1823,7 +1840,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         f'<td>{_esc(p.get("dev_owner"))}</td>'
         f'<td>{_esc(p.get("sales_owner"))}{(" / " + _esc(p["sales_sub_owner"])) if p.get("sales_sub_owner") else ""}</td>'
         f'<td>{_esc(p.get("deadline") or "—")}</td>'
-        f'<td>{_tool_link_btn(p.get("tool_url")) or "—"}</td>'
+        f'<td>{_tool_link_btn(p.get("tool_url"), tool_id=p.get("tool_login_id"), tool_password=p.get("tool_login_pass")) or "—"}</td>'
         f'<td><form method="post" action="/dev-project/{p["id"]}/delete" style="display:inline" '
         f'onsubmit="return confirm(\'削除しますか？\')">'
         f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
@@ -1904,6 +1921,12 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
           <label style="font-size:11px;color:#6b7689;margin:0 0 2px;display:block">制作したツールのリンク</label>
           <input type="url" name="tool_url" form="dpForm" placeholder="https://..."
             value="{_esc(p.get('tool_url'))}" style="width:220px;font-size:12px;padding:5px 8px">
+          <div style="display:flex;gap:4px;margin-top:4px">
+            <input type="text" name="tool_login_id" form="dpForm" placeholder="ID（必要な場合）"
+              value="{_esc(p.get('tool_login_id'))}" style="width:106px;font-size:11px;padding:4px 6px">
+            <input type="text" name="tool_login_pass" form="dpForm" placeholder="PASS（必要な場合）"
+              value="{_esc(p.get('tool_login_pass'))}" style="width:106px;font-size:11px;padding:4px 6px">
+          </div>
         </div>
       </div>
       <form method="post" action="{action}" id="dpForm">
@@ -5350,6 +5373,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         dev_end_date=_dp_end,
                         dev_policy=f.get("dev_policy") or None,
                         tool_url=f.get("tool_url") or None,
+                        tool_login_id=f.get("tool_login_id") or None,
+                        tool_login_pass=f.get("tool_login_pass") or None,
                     )
                     if theme_client is not None:
                         try:
@@ -5397,6 +5422,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         dev_end_date=_dp_end,
                         dev_policy=f.get("dev_policy") or None,
                         tool_url=f.get("tool_url") or None,
+                        tool_login_id=f.get("tool_login_id") or None,
+                        tool_login_pass=f.get("tool_login_pass") or None,
                     )
                     if theme_client is not None:
                         try:
