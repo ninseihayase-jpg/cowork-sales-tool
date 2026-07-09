@@ -150,7 +150,8 @@ def _generate_issue_ai_summary(issue: dict, memos: list[dict]) -> str:
     prompt = (
         f"以下は社内論点「{issue.get('issue','')}」についての議論メモの履歴です。\n"
         "話されているサブトピック・論点ごとに分けて、日本語で箇条書きに要約してください。\n"
-        "各行は「・」で始め、1行1トピックで簡潔に（できれば結論や合意事項が分かるように）まとめてください。\n"
+        "各行は必ず「・トピック名：内容」の形式で書いてください"
+        "（トピック名は名詞句で2〜10文字程度の短い見出し、内容にできれば結論や合意事項が分かるように書く）。\n"
         "まだ結論が出ていない・保留中の論点があれば、そのように分かるように書いてください。\n"
         "箇条書きは最大6行程度、前置きや「要約:」等の言葉は不要で、箇条書き本文だけを出力してください。\n\n"
         f"{memo_text}"
@@ -2054,18 +2055,38 @@ AI_SUMMARY_HOVER_CSS = """
 .ai-summary-label { font-size: 10px; color: #8893a8; letter-spacing: .04em; margin-bottom: 2px; }
 .ai-summary-text {
   font-size: 12px; color: #3a4760; background: #f8f9fa; border-radius: 6px; padding: 4px 8px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-height: 1.8em;
-  transition: max-height .15s ease; cursor: default;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden;
+  cursor: default;
 }
 .ai-summary-box:hover .ai-summary-text {
-  white-space: pre-wrap; max-height: 220px; overflow-y: auto;
+  display: block; -webkit-line-clamp: unset; max-height: 220px; overflow-y: auto;
 }
+.ai-summary-title { text-decoration: underline; font-weight: 700; }
 """
+
+
+def _format_ai_summary_html(summary: str | None) -> str:
+    """AIサマリーの各行(・トピック名：内容)を解析し、トピック名を下線付きで表示するHTMLを組み立てる。"""
+    if not summary:
+        return '<span class="muted">—</span>'
+    lines = [l.strip().lstrip("・-").strip() for l in summary.split("\n") if l.strip()]
+    parts = []
+    for line in lines:
+        if "：" in line:
+            title, rest = line.split("：", 1)
+        elif ":" in line:
+            title, rest = line.split(":", 1)
+        else:
+            title, rest = line, ""
+        title_html = f'<span class="ai-summary-title">{_esc(title.strip())}</span>'
+        rest_html = f"：{_esc(rest.strip())}" if rest else ""
+        parts.append(f"・{title_html}{rest_html}")
+    return "<br>".join(parts)
 
 
 def _ai_summary_hover_html(summary: str | None, *, issue_id: int, return_to: str) -> str:
     """AIサマリー: 通常は1行に折りたたみ、カーソルを合わせると全文を縦に広げて表示する。"""
-    text = _esc(summary) if summary else '<span class="muted">—</span>'
+    text = _format_ai_summary_html(summary)
     return f"""
     <div class="ai-summary-box">
       <div class="ai-summary-label">AIサマリー
