@@ -1792,6 +1792,8 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         </div>
         <label>受注余地（自動判定）</label>
         <div><span class="stage" id="dpOrderPotential">{_esc(p.get('order_potential') or '（保存時に判定）')}</span></div>
+        <label>開発開始日〜終了日（期限から自動計算・読み取り専用。以後の調整はHisho側ダッシュボードで行う）</label>
+        <div class="muted">{_esc(p.get('dev_start_date') or '—')} 〜 {_esc(p.get('dev_end_date') or '—')}{'' if is_edit else '（保存時に自動計算）'}</div>
         <label>技術サポート</label>
         <input name="tech_support" value="{_esc(p.get('tech_support'))}">
         {sales_owner_block}
@@ -4840,21 +4842,29 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if not deal_id_val:
                         self._redirect("/dev-projects")
                         return
+                    _dp_deadline = f.get("deadline") or None
+                    _dp_stage = f.get("stage") or None
+                    _dp_backend = f.get("has_backend") or None
+                    _dp_difficulty = f.get("difficulty") or None
+                    _dp_start, _dp_end = sfa_db.compute_dev_schedule(
+                        _dp_deadline, _dp_stage, _dp_backend, _dp_difficulty)
                     pid = sfa_db.upsert_dev_project(
                         con, id=None, deal_id=deal_id_val,
                         theme=f.get("theme") or "(無題)",
                         theme_detail=f.get("theme_detail") or None,
                         status=f.get("status") or None,
-                        stage=f.get("stage") or None,
+                        stage=_dp_stage,
                         resolution=f.get("resolution") or None,
                         budget_confirmed=f.get("budget_confirmed") or None,
-                        difficulty=f.get("difficulty") or None,
-                        has_backend=f.get("has_backend") or None,
+                        difficulty=_dp_difficulty,
+                        has_backend=_dp_backend,
                         dev_owner=f.get("dev_owner") or None,
                         tech_support=f.get("tech_support") or None,
                         dev_milestone=f.get("dev_milestone") or None,
                         dev_milestone_date=f.get("dev_milestone_date") or None,
-                        deadline=f.get("deadline") or None,
+                        deadline=_dp_deadline,
+                        dev_start_date=_dp_start,
+                        dev_end_date=_dp_end,
                         dev_policy=f.get("dev_policy") or None,
                         tool_url=f.get("tool_url") or None,
                     )
@@ -4876,21 +4886,32 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if not existing:
                         self._redirect("/dev-projects")
                         return
+                    _dp_deadline = f.get("deadline") or None
+                    _dp_stage = f.get("stage") or None
+                    _dp_backend = f.get("has_backend") or None
+                    _dp_difficulty = f.get("difficulty") or None
+                    _dp_start = existing.get("dev_start_date")
+                    _dp_end = existing.get("dev_end_date")
+                    if not _dp_start or not _dp_end:
+                        _dp_start, _dp_end = sfa_db.compute_dev_schedule(
+                            _dp_deadline, _dp_stage, _dp_backend, _dp_difficulty)
                     sfa_db.upsert_dev_project(
                         con, id=pid, deal_id=existing["deal_id"],
                         theme=f.get("theme") or "(無題)",
                         theme_detail=f.get("theme_detail") or None,
                         status=f.get("status") or None,
-                        stage=f.get("stage") or None,
+                        stage=_dp_stage,
                         resolution=f.get("resolution") or None,
                         budget_confirmed=f.get("budget_confirmed") or None,
-                        difficulty=f.get("difficulty") or None,
-                        has_backend=f.get("has_backend") or None,
+                        difficulty=_dp_difficulty,
+                        has_backend=_dp_backend,
                         dev_owner=f.get("dev_owner") or None,
                         tech_support=f.get("tech_support") or None,
                         dev_milestone=f.get("dev_milestone") or None,
                         dev_milestone_date=f.get("dev_milestone_date") or None,
-                        deadline=f.get("deadline") or None,
+                        deadline=_dp_deadline,
+                        dev_start_date=_dp_start,
+                        dev_end_date=_dp_end,
                         dev_policy=f.get("dev_policy") or None,
                         tool_url=f.get("tool_url") or None,
                     )

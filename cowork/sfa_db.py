@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date, timedelta
 from pathlib import Path
 
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "cowork_sfa.db")
@@ -81,6 +82,108 @@ def compute_dev_order_potential(*, budget_confirmed: str | None, resolution: str
     if budget_confirmed == "〇" and resolution == "〇" and difficulty in ("易", "中"):
         return "高"
     return "中"
+
+
+# ---- 開発スケジュール自動計算（営業日・日本の祝日考慮） ----
+# Hisho側dashboard.htmlの同名JSロジックをPython移植したもの。両者は常に同じ結果になるよう保つこと。
+
+def _jp_equinox_day(year: int, is_spring: bool) -> int:
+    base = 20.8431 if is_spring else 23.2488
+    leap = (year - 1980) // 4
+    return int(base + 0.242194 * (year - 1980) - leap)
+
+
+def _nth_monday_of_month(year: int, month: int, n: int) -> int:
+    d = date(year, month, 1)
+    count = 0
+    while True:
+        if d.weekday() == 0:  # Monday
+            count += 1
+            if count == n:
+                return d.day
+        d += timedelta(days=1)
+
+
+def _jp_holidays_for_year(year: int) -> set:
+    holidays: set = set()
+
+    def add(m, d):
+        holidays.add(date(year, m, d))
+
+    add(1, 1)                                    # 元日
+    add(1, _nth_monday_of_month(year, 1, 2))      # 成人の日
+    add(2, 11)                                    # 建国記念の日
+    add(2, 23)                                    # 天皇誕生日
+    add(3, _jp_equinox_day(year, True))           # 春分の日
+    add(4, 29)                                    # 昭和の日
+    add(5, 3); add(5, 4); add(5, 5)               # 憲法記念日/みどりの日/こどもの日
+    add(7, _nth_monday_of_month(year, 7, 3))      # 海の日
+    add(8, 11)                                    # 山の日
+    add(9, _nth_monday_of_month(year, 9, 3))      # 敬老の日
+    add(9, _jp_equinox_day(year, False))          # 秋分の日
+    add(10, _nth_monday_of_month(year, 10, 2))    # スポーツの日
+    add(11, 3); add(11, 23)                       # 文化の日/勤労感謝の日
+    # 振替休日: 日曜の祝日→直後の非祝日
+    for d in list(holidays):
+        if d.weekday() == 6:
+            nd = d + timedelta(days=1)
+            while nd in holidays:
+                nd += timedelta(days=1)
+            holidays.add(nd)
+    return holidays
+
+
+_JP_HOLIDAY_CACHE: dict = {}
+
+
+def _jp_holidays(year: int) -> set:
+    if year not in _JP_HOLIDAY_CACHE:
+        _JP_HOLIDAY_CACHE[year] = _jp_holidays_for_year(year)
+    return _JP_HOLIDAY_CACHE[year]
+
+
+def is_business_day(d: date) -> bool:
+    return d.weekday() < 5 and d not in _jp_holidays(d.year)
+
+
+def add_business_days(d: date, n: int) -> date:
+    step = 1 if n >= 0 else -1
+    remaining = abs(n)
+    while remaining > 0:
+        d += timedelta(days=step)
+        if is_business_day(d):
+            remaining -= 1
+    return d
+
+
+def dev_period_days(stage: str | None, has_backend: str | None, difficulty: str | None) -> int:
+    """開発期間（営業日）。"""
+    mult = 4 if stage == "PoC" else 2 if stage == "本番" else 1
+    days = 2
+    if has_backend == "有り":
+        days += 3
+    if difficulty == "中":
+        days += 2
+    elif difficulty == "難":
+        days += 5
+    return days * mult
+
+
+def compute_dev_schedule(deadline: str | None, stage: str | None, has_backend: str | None,
+                          difficulty: str | None) -> tuple:
+    """期限から開発期間（営業日）を逆算し、(開始日, 終了日) を返す。
+    終了日はデフォルトで期限と同値。期限未設定なら (None, None)。
+    開発案件の起票（新規作成）時にのみ呼び出し、以後はHisho側での手動調整に委ねる。"""
+    if not deadline:
+        return None, None
+    try:
+        end = date.fromisoformat(deadline)
+    except ValueError:
+        return None, None
+    days = dev_period_days(stage, has_backend, difficulty)
+    start = add_business_days(end, -days)
+    return start.isoformat(), end.isoformat()
+
 
 # CRM吸収: リード/ピッチテーマ用定数
 PITCH_THEME_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6']
@@ -291,7 +394,9 @@ CREATE TABLE IF NOT EXISTS dev_projects (
     tech_support     TEXT,                 -- 技術サポート（自由記述）
     dev_milestone    TEXT,                 -- 開発MS（自由記述ラベル）
     dev_milestone_date TEXT,               -- 開発MS日（YYYY-MM-DD）
-    deadline         TEXT,                 -- 期限（YYYY-MM-DD）
+    deadline         TEXT,                 -- 期限（YYYY-MM-DD）。ガント上では変更不可、SFAでのみ変更する
+    dev_start_date   TEXT,                 -- 開発開始日（起票時に期限から自動計算。以後はHisho側の手動調整に委ねる）
+    dev_end_date     TEXT,                 -- 開発終了日（起票時のデフォルトは期限と同値）
     dev_policy       TEXT,                 -- 開発方針（自由記述）
     tool_url         TEXT,                 -- 制作したツールのリンク
     hisho_id         INTEGER,              -- Hisho側 dev_projects.id（同期キー。NULL=未連携）
@@ -354,6 +459,10 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE dev_projects ADD COLUMN tool_url TEXT")
         if "dev_milestone_date" not in dp_cols:
             con.execute("ALTER TABLE dev_projects ADD COLUMN dev_milestone_date TEXT")
+        if "dev_start_date" not in dp_cols:
+            con.execute("ALTER TABLE dev_projects ADD COLUMN dev_start_date TEXT")
+        if "dev_end_date" not in dp_cols:
+            con.execute("ALTER TABLE dev_projects ADD COLUMN dev_end_date TEXT")
         con.commit()
     finally:
         con.close()
@@ -855,7 +964,8 @@ def count_hearing_results(con, deal_id: int) -> int:
 DEV_PROJECT_FIELDS = [
     "deal_id", "theme", "theme_detail", "status", "stage", "order_potential",
     "resolution", "budget_confirmed", "difficulty", "has_backend", "dev_owner",
-    "tech_support", "dev_milestone", "dev_milestone_date", "deadline", "dev_policy", "tool_url",
+    "tech_support", "dev_milestone", "dev_milestone_date", "deadline", "dev_start_date",
+    "dev_end_date", "dev_policy", "tool_url",
 ]
 
 _DEV_PROJECT_SELECT = (

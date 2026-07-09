@@ -16,7 +16,8 @@ DEV_PROJECT_COLUMNS = [
     "sfa_id", "deal_id", "client_name", "deal_name", "theme", "theme_detail",
     "status", "stage", "order_potential", "resolution", "budget_confirmed",
     "difficulty", "has_backend", "dev_owner", "tech_support", "sales_owner",
-    "sales_sub_owner", "dev_milestone", "dev_milestone_date", "deadline", "dev_policy",
+    "sales_sub_owner", "dev_milestone", "dev_milestone_date", "deadline",
+    "dev_start_date", "dev_end_date", "dev_policy",
     "tool_url",
 ]
 
@@ -43,6 +44,8 @@ def _fields(p: dict) -> dict:
         "dev_milestone": p.get("dev_milestone"),
         "dev_milestone_date": p.get("dev_milestone_date"),
         "deadline": p.get("deadline"),
+        "dev_start_date": p.get("dev_start_date"),
+        "dev_end_date": p.get("dev_end_date"),
         "dev_policy": p.get("dev_policy"),
         "tool_url": p.get("tool_url"),
     }
