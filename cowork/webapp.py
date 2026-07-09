@@ -149,8 +149,10 @@ def _generate_issue_ai_summary(issue: dict, memos: list[dict]) -> str:
     )
     prompt = (
         f"以下は社内論点「{issue.get('issue','')}」についての議論メモの履歴です。\n"
-        "これまでの議論内容と現時点の結論・残っている課題を、日本語で3行以内・箇条書きなしの短い文章で要約してください。"
-        "前置きや「要約:」等の言葉は不要で、要約本文だけを出力してください。\n\n"
+        "話されているサブトピック・論点ごとに分けて、日本語で箇条書きに要約してください。\n"
+        "各行は「・」で始め、1行1トピックで簡潔に（できれば結論や合意事項が分かるように）まとめてください。\n"
+        "まだ結論が出ていない・保留中の論点があれば、そのように分かるように書いてください。\n"
+        "箇条書きは最大6行程度、前置きや「要約:」等の言葉は不要で、箇条書き本文だけを出力してください。\n\n"
         f"{memo_text}"
     )
     return _call_claude_haiku(prompt)
@@ -1537,7 +1539,7 @@ def deal_form(con, deal=None) -> str:
                 memos = sfa_db.list_deal_issue_memos(con, it["id"])
                 return_to = f'/deal/{deal["id"]}'
                 memo_panel = _issue_memo_panel_html(memos, it, return_to=return_to)
-                summary_box = _ai_summary_hover_html(it.get('ai_summary'))
+                summary_box = _ai_summary_hover_html(it.get('ai_summary'), issue_id=it['id'], return_to=return_to)
                 issue_rows += f"""
                 <tr>
                   <td>{_esc(it.get('issue'))}</td>
@@ -2061,12 +2063,18 @@ AI_SUMMARY_HOVER_CSS = """
 """
 
 
-def _ai_summary_hover_html(summary: str | None) -> str:
+def _ai_summary_hover_html(summary: str | None, *, issue_id: int, return_to: str) -> str:
     """AIサマリー: 通常は1行に折りたたみ、カーソルを合わせると全文を縦に広げて表示する。"""
     text = _esc(summary) if summary else '<span class="muted">—</span>'
     return f"""
     <div class="ai-summary-box">
-      <div class="ai-summary-label">AIサマリー</div>
+      <div class="ai-summary-label">AIサマリー
+        <form method="post" action="/deal-issue/{issue_id}/regenerate_summary" style="display:inline">
+          <input type="hidden" name="return_to" value="{_esc(return_to)}">
+          <button type="submit" class="muted" style="background:none;border:0;cursor:pointer;padding:0;
+            margin-left:6px;font-size:10px;text-decoration:underline" title="メモ履歴から再生成">🔄再生成</button>
+        </form>
+      </div>
       <div class="ai-summary-text">{text}</div>
     </div>"""
 
@@ -2131,7 +2139,7 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
         memos = sfa_db.list_deal_issue_memos(con, it["id"])
         is_open = str(open_issue) == str(it["id"])
         memo_panel = _issue_memo_panel_html(memos, it, return_to=return_to)
-        summary_box = _ai_summary_hover_html(it.get('ai_summary'))
+        summary_box = _ai_summary_hover_html(it.get('ai_summary'), issue_id=it['id'], return_to=return_to)
         rows += f"""
         <tr>
           <td><a href="/deal/{it['deal_id']}">{_esc(it.get('account_name'))}</a>
@@ -5462,6 +5470,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         sfa_db.delete_deal_issue_memo(con, mid)
                     _return_to = f.get("return_to") or ""
                     self._redirect(_return_to if _return_to.startswith("/") else "/deal-issues")
+
+                elif path.startswith("/deal-issue/") and path.endswith("/regenerate_summary"):
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues")
+                        return
+                    existing = sfa_db.get_deal_issue(con, iid)
+                    if existing:
+                        memos = sfa_db.list_deal_issue_memos(con, iid)
+                        summary = _generate_issue_ai_summary(existing, memos)
+                        if summary:
+                            sfa_db.set_deal_issue_ai_summary(con, iid, summary)
+                    _return_to = f.get("return_to") or ""
+                    self._redirect(_return_to if _return_to.startswith("/")
+                                   else (f"/deal/{existing['deal_id']}" if existing else "/deal-issues"))
 
                 elif path.startswith("/deal-issue/") and path.endswith("/field"):
                     _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "due_date"}
