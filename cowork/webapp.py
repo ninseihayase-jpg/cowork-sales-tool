@@ -3407,7 +3407,13 @@ def hearing_result_page(con, result: dict) -> str:
         history = f'<p class="muted" style="margin-top:12px;font-size:12px">この商談のヒアリング履歴: {links}</p>'
     return f"""
     <div class="card" style="max-width:1100px">
-      <h2>ヒアリング結果</h2>
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>ヒアリング結果</span>
+        <span style="display:flex;gap:8px;flex-wrap:wrap">
+          <a class="btn sec" href="/hearing/result/{result['id']}/export.xlsx">📥 xlsxダウンロード</a>
+          <a class="btn sec" href="/hearing/result/{result['id']}/export.docx">📥 docxダウンロード</a>
+        </span>
+      </h2>
       <p style="margin:0 0 4px"><strong>商談:</strong> <a href="/deal/{result['deal_id']}">{_esc(result.get('account_name') or '')} / {_esc(result.get('deal_name') or '')}</a></p>
       <p class="muted" style="margin:0 0 12px"><strong>テンプレート:</strong> {_esc(result.get('template_name') or '')}　<strong>ヒアリング日:</strong> {_esc(result.get('conducted_on') or '—')}</p>
       {result_html}
@@ -3415,8 +3421,6 @@ def hearing_result_page(con, result: dict) -> str:
       <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
         <a class="btn sec" href="/deal/{result['deal_id']}">商談へ戻る</a>
         <a class="btn sec" href="/hearings">ヒアリング一覧</a>
-        <a class="btn sec" href="/hearing/result/{result['id']}/export.xlsx">📥 xlsxダウンロード</a>
-        <a class="btn sec" href="/hearing/result/{result['id']}/export.docx">📥 docxダウンロード</a>
         {f'<a class="btn sec" href="/hearing/result/{result["id"]}/edit">編集</a>' if result.get('template_id') else ''}
         <form method="post" action="/hearing/result/{result['id']}/delete" style="display:inline;margin:0">
           <button class="btn" style="background:#c53030;border-color:#c53030;color:#fff"
