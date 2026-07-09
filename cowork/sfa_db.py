@@ -68,6 +68,10 @@ DEV_BUDGET_CONFIRMED = ["〇", "×"]
 DEV_DIFFICULTIES = ["易", "中", "難"]
 DEV_HAS_BACKEND = ["有り", "無し"]
 
+# 社内論点管理
+DEAL_ISSUE_STATUSES = ["議論中", "議論済み", "取り消し"]
+DEAL_ISSUE_MEMBERS = ["経営", "営業担当", "営業+開発担当", "開発コア"]
+
 
 def compute_dev_order_potential(*, budget_confirmed: str | None, resolution: str | None,
                                  difficulty: str | None) -> str:
@@ -404,6 +408,30 @@ CREATE TABLE IF NOT EXISTS dev_projects (
     updated_at       TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_dev_projects_deal ON dev_projects(deal_id);
+
+-- 社内論点（商談に紐づく議論すべき論点。1商談:N論点）
+CREATE TABLE IF NOT EXISTS deal_issues (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id     INTEGER NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    issue       TEXT NOT NULL,        -- 論点
+    members     TEXT,                 -- 議論メンバー（複数選択、カンマ区切り）
+    status      TEXT DEFAULT '議論中', -- 議論中/議論済み/取り消し
+    due_date    TEXT,                 -- 解消期限（YYYY-MM-DD）
+    ai_summary  TEXT,                 -- メモ全履歴からAI自動生成したサマリー
+    created_at  TEXT DEFAULT (datetime('now')),
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_deal_issues_deal ON deal_issues(deal_id);
+
+-- 論点メモ（論点ごとの追記型ディスカッションログ）
+CREATE TABLE IF NOT EXISTS deal_issue_memos (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id   INTEGER NOT NULL REFERENCES deal_issues(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL,
+    author     TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_deal_issue_memos_issue ON deal_issue_memos(issue_id);
 """
 
 
@@ -1045,4 +1073,100 @@ def upsert_dev_project(con, *, id=None, commit: bool = True, **fields) -> int:
 
 def delete_dev_project(con, id: int) -> None:
     con.execute("DELETE FROM dev_projects WHERE id=?", (int(id),))
+    con.commit()
+
+
+# ---- 社内論点（deal_id:N の議論ポイント管理） ----
+
+DEAL_ISSUE_FIELDS = ["deal_id", "issue", "members", "status", "due_date"]
+
+_DEAL_ISSUE_SELECT = (
+    "SELECT i.*, d.deal_name, d.owner AS sales_owner, d.sub_owner AS sales_sub_owner, "
+    "a.name AS account_name FROM deal_issues i "
+    "JOIN deals d ON d.id = i.deal_id LEFT JOIN accounts a ON a.id = d.account_id"
+)
+
+DEAL_ISSUE_SORTS = ["due_date", "status", "updated_at"]
+
+
+def list_deal_issues(con, *, deal_id: int | None = None, status: str | None = None,
+                      member: str | None = None, q: str | None = None,
+                      sort: str = "due_date") -> list[dict]:
+    """論点一覧。deal_id以外はすべて一覧画面の絞り込み用。
+    member指定時は議論メンバー（カンマ区切り複数選択）にその値を含む論点のみ返す。
+    q指定時はアカウント名・商談名の部分一致で絞り込む。"""
+    q_sql = _DEAL_ISSUE_SELECT
+    conds: list = []
+    params: list = []
+    if deal_id:
+        conds.append("i.deal_id = ?")
+        params.append(int(deal_id))
+    if status:
+        conds.append("i.status = ?")
+        params.append(status)
+    if member:
+        conds.append("i.members LIKE ?")
+        params.append(f"%{member}%")
+    if q:
+        conds.append("(a.name LIKE ? OR d.deal_name LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+    if conds:
+        q_sql += " WHERE " + " AND ".join(conds)
+    order = {
+        "due_date": "i.due_date IS NULL, i.due_date ASC",
+        "status": "i.status ASC, i.due_date IS NULL, i.due_date ASC",
+        "updated_at": "i.updated_at DESC",
+    }.get(sort, "i.due_date IS NULL, i.due_date ASC")
+    q_sql += f" ORDER BY {order}"
+    return [dict(r) for r in con.execute(q_sql, params)]
+
+
+def get_deal_issue(con, id: int) -> dict | None:
+    r = con.execute(_DEAL_ISSUE_SELECT + " WHERE i.id = ?", (int(id),)).fetchone()
+    return dict(r) if r else None
+
+
+def upsert_deal_issue(con, *, id=None, commit: bool = True, **fields) -> int:
+    data = {k: fields.get(k) for k in DEAL_ISSUE_FIELDS}
+    if id:
+        sets = ", ".join(f"{k}=?" for k in DEAL_ISSUE_FIELDS) + ", updated_at=datetime('now')"
+        con.execute(f"UPDATE deal_issues SET {sets} WHERE id=?",
+                    [data[k] for k in DEAL_ISSUE_FIELDS] + [int(id)])
+        if commit:
+            con.commit()
+        return int(id)
+    cols = ", ".join(DEAL_ISSUE_FIELDS)
+    ph = ", ".join("?" for _ in DEAL_ISSUE_FIELDS)
+    cur = con.execute(f"INSERT INTO deal_issues ({cols}) VALUES ({ph})",
+                       [data[k] for k in DEAL_ISSUE_FIELDS])
+    if commit:
+        con.commit()
+    return cur.lastrowid
+
+
+def delete_deal_issue(con, id: int) -> None:
+    con.execute("DELETE FROM deal_issues WHERE id=?", (int(id),))
+    con.commit()
+
+
+def list_deal_issue_memos(con, issue_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM deal_issue_memos WHERE issue_id=? ORDER BY created_at ASC", (issue_id,)
+    )]
+
+
+def add_deal_issue_memo(con, *, issue_id: int, body: str, author: str | None = None) -> int:
+    cur = con.execute(
+        "INSERT INTO deal_issue_memos (issue_id, body, author) VALUES (?,?,?)",
+        (int(issue_id), body, author),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+def set_deal_issue_ai_summary(con, issue_id: int, summary: str) -> None:
+    con.execute(
+        "UPDATE deal_issues SET ai_summary=?, updated_at=datetime('now') WHERE id=?",
+        (summary, int(issue_id)),
+    )
     con.commit()

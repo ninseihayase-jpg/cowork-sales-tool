@@ -12,7 +12,9 @@ import html
 import json
 import os
 import re
+import threading
 import urllib.parse
+import urllib.request
 from datetime import date, timedelta
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +28,7 @@ from . import theme_link
 from . import dev_project_link
 
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 INPROC_MEMBERS = [
     ("吉江", "takuya.yoshie@inproc.org"),
@@ -98,10 +101,59 @@ def _decode_uploaded_csv(file_item) -> str | None:
         return data.decode("cp932", errors="replace")
 
 
-def _sticky_th(label: str) -> str:
+def _sticky_th(label: str, width: str | None = None) -> str:
     """縦スクロールしても項目名が見えるよう、テーブル見出しをposition:stickyにする共通ヘルパー。
     親のoverflow:auto付きコンテナ内で使うこと（テーブル単体ではスクロールしないため効果がない）。"""
-    return f'<th style="position:sticky;top:0;background:#fff;z-index:2">{label}</th>'
+    w = f"width:{width};" if width else ""
+    return f'<th style="position:sticky;top:0;background:#fff;z-index:2;{w}">{label}</th>'
+
+
+def _call_claude_haiku(prompt: str, *, timeout: int = 20, max_wait: int = 25) -> str:
+    """Claude Haikuを呼び出しテキストを返す。APIキー未設定・失敗・タイムアウト時は空文字。"""
+    if not ANTHROPIC_API_KEY:
+        return ""
+    result: list = [None]
+
+    def _do():
+        try:
+            payload = json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 512,
+                "messages": [{"role": "user", "content": prompt}],
+            }).encode()
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages", data=payload, headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                })
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = json.loads(resp.read())
+            result[0] = body["content"][0]["text"].strip()
+        except Exception as e:
+            print(f"[issue AI summary] Claude API error: {e}", flush=True)
+
+    t = threading.Thread(target=_do, daemon=True)
+    t.start()
+    t.join(timeout=max_wait)
+    return result[0] or ""
+
+
+def _generate_issue_ai_summary(issue: dict, memos: list[dict]) -> str:
+    """論点のメモ全履歴からAIサマリーを生成する。失敗時は空文字（呼び出し側は既存サマリーを保持すること）。"""
+    if not memos:
+        return ""
+    memo_text = "\n".join(
+        f"- ({(m.get('created_at') or '')[:16]}) {m.get('body','')}"
+        for m in memos
+    )
+    prompt = (
+        f"以下は社内論点「{issue.get('issue','')}」についての議論メモの履歴です。\n"
+        "これまでの議論内容と現時点の結論・残っている課題を、日本語で3行以内・箇条書きなしの短い文章で要約してください。"
+        "前置きや「要約:」等の言葉は不要で、要約本文だけを出力してください。\n\n"
+        f"{memo_text}"
+    )
+    return _call_claude_haiku(prompt)
 
 
 def _content_disposition(filename: str) -> str:
@@ -200,6 +252,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
   <a href="/leads">リード</a>
   <a href="/hearings" style="opacity:.8;font-size:13px">ヒアリング</a>
   <a href="/dev-projects" style="opacity:.8;font-size:13px">開発案件</a>
+  <a href="/deal-issues" style="opacity:.8;font-size:13px">論点</a>
   <a href="/email-draft" style="opacity:.8;font-size:13px">メール</a>
   <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
   <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Inproc Dashboard ↗</a>
@@ -974,9 +1027,12 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     return f"""
     <div class="card"><h2 style="display:flex;justify-content:space-between;align-items:center">
       <span>商談 ({len(deals)})</span>
-      <span style="display:flex;gap:8px">
+      <span style="display:flex;gap:8px;flex-wrap:wrap">
         {sync_btn}
         <a class="btn sec" href="/deals/import">CSV取込</a>
+        <a class="btn sec" href="/dev-projects/new">＋新規開発案件</a>
+        <a class="btn sec" href="/hearing/new">＋新規ヒアリング</a>
+        <a class="btn sec" href="/deal-issue/new">＋新規論点</a>
         <a class="btn" href="/deal/new">＋商談追加</a>
       </span>
     </h2>
@@ -1471,6 +1527,61 @@ def deal_form(con, deal=None) -> str:
           <p class="muted" style="margin:0">開発案件なし</p>
         </div>"""
 
+    deal_issues_html = ""
+    if deal.get("id"):
+        issues = sfa_db.list_deal_issues(con, deal_id=deal["id"])
+        add_issue_btn = f'<a class="btn sec" href="/deal-issue/new?deal_id={deal["id"]}">＋論点を追加</a>'
+        if issues:
+            issue_rows = ""
+            for it in issues:
+                memos = sfa_db.list_deal_issue_memos(con, it["id"])
+                return_to = f'/deal/{deal["id"]}'
+                memo_panel = _issue_memo_panel_html(memos, it, return_to=return_to)
+                summary_box = _ai_summary_hover_html(it.get('ai_summary'))
+                issue_rows += f"""
+                <tr>
+                  <td>{_esc(it.get('issue'))}</td>
+                  <td>{_issue_status_select_html(it['id'], it.get('status'))}</td>
+                  <td>{_issue_members_inline_html(it['id'], it.get('members'))}</td>
+                  <td>{_issue_due_date_input_html(it['id'], it.get('due_date'))}</td>
+                  <td>
+                    {summary_box}
+                    <details class="di-memo-details">
+                      <summary style="cursor:pointer">メモ（{len(memos)}）</summary>
+                      {memo_panel}
+                    </details>
+                  </td>
+                  <td><a href="/deal-issue/{it['id']}/edit?return_to={urllib.parse.quote(return_to, safe='')}">編集</a></td>
+                </tr>"""
+            deal_issues_html = f"""
+        <style>
+        .di-autogrow {{ transition: height .15s ease; }}
+        {AI_SUMMARY_HOVER_CSS}
+        </style>
+        <div class="card">
+          <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <span>社内論点（{len(issues)}件）</span>{add_issue_btn}
+          </h2>
+          <table style="table-layout:fixed;width:100%">
+            <tr><th style="width:18%">論点</th><th style="width:9%">ステータス</th><th style="width:18%">議論メンバー</th>
+                <th style="width:9%">解消期限</th><th style="width:40%">サマリー・メモ</th><th style="width:6%"></th></tr>
+            {issue_rows}
+          </table>
+        </div>
+        <script>
+        function diAutogrow(el) {{ el.rows = 8; }}
+        function diAutoshrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
+        {DEAL_ISSUE_INLINE_EDIT_JS}
+        </script>"""
+        else:
+            deal_issues_html = f"""
+        <div class="card">
+          <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <span>社内論点</span>{add_issue_btn}
+          </h2>
+          <p class="muted" style="margin:0">論点なし</p>
+        </div>"""
+
     activities_html = ""
     sync_btn = ""
     if deal.get("id"):
@@ -1508,6 +1619,15 @@ def deal_form(con, deal=None) -> str:
             f'{"🔗 テーマDB連携済 (id="+str(deal.get("theme_id"))+")" if deal.get("theme_id") else "テーマDB未連携（保存時に自動連携）"}'
             f'</span>'
         )
+    top_action_buttons = ""
+    if deal.get("id"):
+        _did = deal["id"]
+        top_action_buttons = f"""
+        <div style="display:flex;gap:8px;margin:-4px 0 14px;flex-wrap:wrap">
+          <a class="btn sec" href="/dev-projects/new?deal_id={_did}">＋新規開発案件</a>
+          <a class="btn sec" href="/hearing/new?target=deal:{_did}">＋新規ヒアリング</a>
+          <a class="btn sec" href="/deal-issue/new?deal_id={_did}">＋新規論点</a>
+        </div>"""
     acc_req = "required" if deal.get("id") else ""
     new_acc_html = ""
     new_acc_js = ""
@@ -1549,6 +1669,7 @@ def deal_form(con, deal=None) -> str:
         )
     return f"""
     <div class="card"><h2>{'商談編集' if deal.get('id') else '新規商談'}</h2>
+    {top_action_buttons}
     {lead_picker_html}
     <form method="post" action="/deal/save">
       <input type="hidden" name="id" value="{_esc(deal.get('id'))}">
@@ -1639,6 +1760,7 @@ def deal_form(con, deal=None) -> str:
     {other_deals_html}
     {hearing_html}
     {dev_projects_html}
+    {deal_issues_html}
     {activities_html}"""
 
 
@@ -1844,6 +1966,290 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         dpShowSalesOwner();
       }}
     }})();
+    </script>"""
+
+
+# ── 社内論点（商談に紐づく議論ポイント管理） ─────────────────────────────────────
+
+def _deal_issues_url(*, status=None, member=None, q=None, sort=None, open_issue=None) -> str:
+    params = {}
+    if status:
+        params["status"] = status
+    if member:
+        params["member"] = member
+    if q:
+        params["q"] = q
+    if sort:
+        params["sort"] = sort
+    if open_issue:
+        params["open_issue"] = open_issue
+    qs = urllib.parse.urlencode(params)
+    return "/deal-issues" + (f"?{qs}" if qs else "")
+
+
+def _issue_status_select_html(issue_id: int, current: str | None) -> str:
+    opts = "".join(
+        f'<option value="{html.escape(s)}"{" selected" if s == current else ""}>{html.escape(s)}</option>'
+        for s in sfa_db.DEAL_ISSUE_STATUSES
+    )
+    return (f'<select onchange="updateDealIssueField({issue_id}, \'status\', this.value, true)" '
+            f'style="font-size:11px;padding:2px 4px">{opts}</select>')
+
+
+def _issue_members_inline_html(issue_id: int, current_members: str | None) -> str:
+    selected = set((current_members or "").split(","))
+    boxes = "".join(
+        f'<label style="display:inline-flex;align-items:center;gap:2px;margin:0 8px 2px 0;'
+        f'font-size:11px;font-weight:normal;white-space:nowrap">'
+        f'<input type="checkbox" value="{html.escape(m)}"{" checked" if m in selected else ""} '
+        f'onchange="diUpdateMembers({issue_id}, this)" style="width:auto">{html.escape(m)}</label>'
+        for m in sfa_db.DEAL_ISSUE_MEMBERS
+    )
+    return f'<div class="di-members-cell">{boxes}</div>'
+
+
+def _issue_due_date_input_html(issue_id: int, due_date: str | None) -> str:
+    is_overdue = bool(due_date) and due_date <= date.today().isoformat()
+    style = "font-size:11px;padding:2px 4px"
+    if is_overdue:
+        style += ";color:#dc2626;font-weight:700;border-color:#dc2626"
+    return (f'<input type="date" value="{_esc(due_date)}" '
+            f'onchange="updateDealIssueField({issue_id}, \'due_date\', this.value, true)" '
+            f'style="{style}">')
+
+
+DEAL_ISSUE_INLINE_EDIT_JS = """
+function updateDealIssueField(id, field, value, reload) {
+  fetch('/deal-issue/' + id + '/field', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+  }).then(r => r.json()).then(d => {
+    if (!d.ok) { alert('更新エラー'); return; }
+    // 一覧の絞り込み・並び替えは変更後の値を反映していないため、再読込して整合させる
+    // (ステータスは即時、議論メンバーは連続クリックを考慮して少し待って反映)
+    if (reload) location.reload();
+  }).catch(() => alert('通信エラー'));
+}
+var _diMembersReloadTimer = null;
+function diUpdateMembers(id, checkboxEl) {
+  var container = checkboxEl.closest('.di-members-cell');
+  var checked = Array.from(container.querySelectorAll('input[type=checkbox]:checked')).map(function(c){ return c.value; });
+  updateDealIssueField(id, 'members', checked.join(','), false);
+  clearTimeout(_diMembersReloadTimer);
+  _diMembersReloadTimer = setTimeout(function() { location.reload(); }, 900);
+}
+document.addEventListener('click', function(e) {
+  document.querySelectorAll('details.di-memo-details[open]').forEach(function(d) {
+    if (!d.contains(e.target)) d.removeAttribute('open');
+  });
+});
+"""
+
+
+AI_SUMMARY_HOVER_CSS = """
+.ai-summary-box { margin-bottom: 6px; }
+.ai-summary-label { font-size: 10px; color: #8893a8; letter-spacing: .04em; margin-bottom: 2px; }
+.ai-summary-text {
+  font-size: 12px; color: #3a4760; background: #f8f9fa; border-radius: 6px; padding: 4px 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-height: 1.8em;
+  transition: max-height .15s ease; cursor: default;
+}
+.ai-summary-box:hover .ai-summary-text {
+  white-space: pre-wrap; max-height: 220px; overflow-y: auto;
+}
+"""
+
+
+def _ai_summary_hover_html(summary: str | None) -> str:
+    """AIサマリー: 通常は1行に折りたたみ、カーソルを合わせると全文を縦に広げて表示する。"""
+    text = _esc(summary) if summary else '<span class="muted">—</span>'
+    return f"""
+    <div class="ai-summary-box">
+      <div class="ai-summary-label">AIサマリー</div>
+      <div class="ai-summary-text">{text}</div>
+    </div>"""
+
+
+def _issue_memo_panel_html(memos: list[dict], issue: dict, *, return_to: str) -> str:
+    """論点1件分の、メモ履歴＋追加フォーム（<details>展開時に表示する内容）。"""
+    memo_html = "".join(
+        f'<div style="padding:6px 0;border-bottom:1px solid #eef1f5">'
+        f'<div class="muted">{_esc((m.get("created_at") or "")[:16])}</div>'
+        f'<div style="white-space:pre-wrap">{_esc(m.get("body"))}</div></div>'
+        for m in memos
+    ) or '<div class="muted">まだメモがありません</div>'
+    return f"""
+    <div style="margin-top:8px;width:100%">
+      <div style="max-height:220px;overflow-y:auto;margin-bottom:8px">{memo_html}</div>
+      <form method="post" action="/deal-issue/{issue['id']}/memo">
+        <input type="hidden" name="return_to" value="{_esc(return_to)}">
+        <textarea name="body" class="di-autogrow" rows="2" placeholder="メモを追加"
+          onfocus="diAutogrow(this)" onblur="diAutoshrink(this)" required
+          style="width:100%;box-sizing:border-box"></textarea>
+        <p style="margin-top:6px"><button class="btn sec" type="submit">メモを追加</button></p>
+      </form>
+    </div>"""
+
+
+def deal_issues_list_page(con, *, status: str | None = None, member: str | None = None,
+                           q: str | None = None, sort: str | None = None,
+                           open_issue: str | None = None) -> str:
+    sort = sort or "due_date"
+    issues = sfa_db.list_deal_issues(con, status=status, member=member, q=q, sort=sort)
+
+    def _fopt(values, current):
+        return '<option value="">全て</option>' + "".join(
+            f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
+            for v in values
+        )
+
+    sort_labels = [("due_date", "解消期限"), ("status", "ステータス"), ("updated_at", "更新日時")]
+    sort_opts = "".join(
+        f'<option value="{k}"{" selected" if k == sort else ""}>並び替え: {label}</option>'
+        for k, label in sort_labels
+    )
+
+    filter_row = f"""<form method="get" action="/deal-issues" class="filter-row">
+      <input name="q" placeholder="会社名・商談名で検索" value="{_esc(q or '')}">
+      <select name="status" onchange="this.form.submit()">{_fopt(sfa_db.DEAL_ISSUE_STATUSES, status).replace('全て', 'ステータス:全て', 1)}</select>
+      <select name="member" onchange="this.form.submit()">{_fopt(sfa_db.DEAL_ISSUE_MEMBERS, member).replace('全て', '議論メンバー:全て', 1)}</select>
+      <select name="sort" onchange="this.form.submit()">{sort_opts}</select>
+      <button class="btn sec" type="submit">検索</button>
+      <a class="btn sec" href="/deal-issues">リセット</a>
+    </form>"""
+
+    rows = ""
+    for it in issues:
+        return_to = _deal_issues_url(status=status, member=member, q=q, sort=sort, open_issue=it["id"])
+        memos = sfa_db.list_deal_issue_memos(con, it["id"])
+        is_open = str(open_issue) == str(it["id"])
+        memo_panel = _issue_memo_panel_html(memos, it, return_to=return_to)
+        summary_box = _ai_summary_hover_html(it.get('ai_summary'))
+        rows += f"""
+        <tr>
+          <td><a href="/deal/{it['deal_id']}">{_esc(it.get('account_name'))}</a>
+              <div class="muted">{_esc(it.get('deal_name'))}</div></td>
+          <td>{_esc(it.get('issue'))}</td>
+          <td>{_issue_status_select_html(it['id'], it.get('status'))}</td>
+          <td>{_issue_members_inline_html(it['id'], it.get('members'))}</td>
+          <td>{_issue_due_date_input_html(it['id'], it.get('due_date'))}</td>
+          <td>
+            {summary_box}
+            <details class="di-memo-details"{' open' if is_open else ''}>
+              <summary style="cursor:pointer">メモ（{len(memos)}）</summary>
+              {memo_panel}
+            </details>
+          </td>
+          <td><a href="/deal-issue/{it['id']}/edit">編集</a></td>
+        </tr>"""
+
+    return f"""
+    <style>
+    .di-autogrow {{ transition: height .15s ease; }}
+    {AI_SUMMARY_HOVER_CSS}
+    </style>
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>社内論点一覧（{len(issues)}件）</span>
+        <a class="btn" href="/deal-issue/new">＋新規論点</a>
+      </h2>
+      {filter_row}
+      <div style="overflow:auto;max-height:70vh">
+      <table style="table-layout:fixed;width:100%">
+        <tr>{_sticky_th('商談', width='16%')}{_sticky_th('論点', width='14%')}{_sticky_th('ステータス', width='9%')}
+            {_sticky_th('議論メンバー', width='14%')}{_sticky_th('解消期限', width='9%')}
+            {_sticky_th('サマリー・メモ', width='34%')}{_sticky_th('', width='5%')}</tr>
+        {rows or '<tr><td colspan=7 class=muted>論点がまだありません</td></tr>'}
+      </table>
+      </div>
+    </div>
+    <script>
+    function diAutogrow(el) {{ el.rows = 8; }}
+    function diAutoshrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
+    {DEAL_ISSUE_INLINE_EDIT_JS}
+    </script>"""
+
+
+def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
+                     return_to: str | None = None) -> str:
+    """論点の新規/編集フォーム。issue未指定時は新規入力（商談選択欄あり）。"""
+    is_edit = issue is not None
+    it = issue or {}
+    return_to_field = f'<input type="hidden" name="return_to" value="{_esc(return_to)}">' if return_to else ""
+    selected_members = set((it.get("members") or "").split(","))
+    members_html = "".join(
+        f'<label style="display:inline-flex;align-items:center;gap:4px;margin:0 14px 6px 0;font-weight:normal">'
+        f'<input type="checkbox" name="members" value="{_esc(m)}"'
+        f'{" checked" if m in selected_members else ""} style="width:auto">{_esc(m)}</label>'
+        for m in sfa_db.DEAL_ISSUE_MEMBERS
+    )
+    delete_btn = ""
+
+    if is_edit:
+        deal_label = f'{_esc(it.get("account_name"))} / {_esc(it.get("deal_name"))}'
+        deal_field_html = (
+            f'<input type="hidden" name="deal_id" value="{it["deal_id"]}">'
+            f'<div class="muted" style="margin:4px 0 10px">{deal_label}</div>'
+        )
+        action = f'/deal-issue/{it["id"]}/edit'
+        back_href = return_to or f'/deal/{it["deal_id"]}'
+        delete_btn = (
+            f'<form method="post" action="/deal-issue/{it["id"]}/delete" style="display:inline;margin-left:8px" '
+            f'onsubmit="return confirm(\'削除しますか？\')">'
+            f'<button class="btn" style="background:#ef4444" type="submit">削除</button></form>'
+        )
+    else:
+        deals = sfa_db.list_deals(con, status="open")
+        opts = "".join(
+            f'<option value="{d["id"]}"{" selected" if deal_id == d["id"] else ""}>'
+            f'{_esc(d.get("account_name"))} / {_esc(d.get("deal_name"))}</option>'
+            for d in deals
+        )
+        deal_field_html = f"""
+          <input type="text" id="diDealFilter" placeholder="会社名・商談名で絞り込み" oninput="diFilterDeals()">
+          <select name="deal_id" id="diDealSelect" required size="8" style="height:170px">
+            <option value=""></option>
+            {opts}
+          </select>"""
+        action = "/deal-issue/new"
+        back_href = return_to or (f'/deal/{deal_id}' if deal_id else "/deal-issues")
+
+    default_due_date = it.get('due_date') if is_edit else (
+        it.get('due_date') or (date.today() + timedelta(days=7)).isoformat())
+
+    return f"""
+    <div class="card" style="max-width:700px">
+      <p style="margin:0 0 10px"><a class="btn sec" href="{back_href}">← 戻る</a></p>
+      <h2>{'論点を編集' if is_edit else '論点 新規入力'}</h2>
+      <form method="post" action="{action}">
+        {return_to_field}
+        <label>商談</label>
+        {deal_field_html}
+        <label>論点 *</label>
+        <input name="issue" required value="{_esc(it.get('issue'))}">
+        <label>議論メンバー</label>
+        <div style="margin:4px 0 10px">{members_html}</div>
+        <div class="grid">
+          <div><label>ステータス</label><select name="status">{_opt(sfa_db.DEAL_ISSUE_STATUSES, it.get('status') or '議論中')}</select></div>
+          <div><label>解消期限</label><input type="date" name="due_date" value="{_esc(default_due_date)}"></div>
+        </div>
+        <div style="margin-top:16px">
+          <button class="btn" type="submit">保存</button>
+          <a class="btn sec" href="{back_href}">キャンセル</a>
+          {delete_btn}
+        </div>
+      </form>
+    </div>
+    <script>
+    function diFilterDeals() {{
+      const q = document.getElementById('diDealFilter').value.trim();
+      const sel = document.getElementById('diDealSelect');
+      for (const o of sel.options) {{
+        if (!o.value) continue;
+        o.style.display = (!q || o.text.includes(q)) ? '' : 'none';
+      }}
+    }}
     </script>"""
 
 
@@ -4605,6 +5011,41 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         )
                     except (ValueError, IndexError):
                         self._send(render("<div class=card>ページが見つかりません</div>"), 404)
+                # ── 社内論点 ──
+                elif path == "/deal-issues":
+                    qs = self._qs()
+                    def qs1(k): return (qs.get(k, [None])[0] or None)
+                    # フィルタフォーム未送信(初回訪問・リセットリンク)はデフォルトで議論中のみ表示。
+                    # フォーム送信済み(sortが必ず送られる)なら、status=""(「全て」明示選択)を
+                    # そのまま絞り込みなし(None)として扱う。
+                    # 注: _qs()の parse_qs は空値パラメータを保持しないため、statusキーの有無では
+                    # 「フォーム未送信」と「全て選択」を区別できない。sortの有無で判定する。
+                    _status_default = "議論中" if "sort" not in qs else qs1("status")
+                    self._send(render(deal_issues_list_page(
+                        con, status=_status_default, member=qs1("member"),
+                        q=qs1("q"), sort=qs1("sort"), open_issue=qs1("open_issue"),
+                    )))
+                elif path == "/deal-issue/new":
+                    qs = self._qs()
+                    did_raw = qs.get("deal_id", [None])[0]
+                    try:
+                        did = int(did_raw) if did_raw else None
+                    except ValueError:
+                        did = None
+                    return_to = qs.get("return_to", [None])[0]
+                    self._send(render(deal_issue_form(con, deal_id=did, return_to=return_to)))
+                elif path.startswith("/deal-issue/") and path.endswith("/edit"):
+                    try:
+                        iid = int(path.split("/")[2])
+                        iss = sfa_db.get_deal_issue(con, iid)
+                        return_to = self._qs().get("return_to", [None])[0]
+                        self._send(
+                            render(deal_issue_form(con, iss, return_to=return_to) if iss
+                                   else "<div class=card>論点が見つかりません</div>"),
+                            200 if iss else 404,
+                        )
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>ページが見つかりません</div>"), 404)
                 elif path == "/accounts":
                     self._send(render(accounts_page(con)))
                 elif path == "/account/new":
@@ -4938,6 +5379,96 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             except Exception as exc:  # noqa: BLE001
                                 print(f"[dev_project_link] delete_dev_project_remote failed: {exc}")
                     self._redirect(f"/deal/{existing['deal_id']}" if existing else "/dev-projects")
+
+                # ── 社内論点 ──
+                elif path == "/deal-issue/new":
+                    deal_id_val = int(f["deal_id"]) if f.get("deal_id") else None
+                    if not deal_id_val:
+                        self._redirect("/deal-issues")
+                        return
+                    iid = sfa_db.upsert_deal_issue(
+                        con, id=None, deal_id=deal_id_val,
+                        issue=f.get("issue") or "(無題)",
+                        members=",".join(f_list.get("members", [])),
+                        status=f.get("status") or "議論中",
+                        due_date=f.get("due_date") or None,
+                    )
+                    _return_to = f.get("return_to") or ""
+                    self._redirect(_return_to if _return_to.startswith("/") else f"/deal/{deal_id_val}")
+
+                elif path.startswith("/deal-issue/") and path.endswith("/edit"):
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues")
+                        return
+                    existing = sfa_db.get_deal_issue(con, iid)
+                    if not existing:
+                        self._redirect("/deal-issues")
+                        return
+                    sfa_db.upsert_deal_issue(
+                        con, id=iid, deal_id=existing["deal_id"],
+                        issue=f.get("issue") or "(無題)",
+                        members=",".join(f_list.get("members", [])),
+                        status=f.get("status") or "議論中",
+                        due_date=f.get("due_date") or None,
+                    )
+                    _return_to = f.get("return_to") or ""
+                    self._redirect(_return_to if _return_to.startswith("/") else f"/deal/{existing['deal_id']}")
+
+                elif path.startswith("/deal-issue/") and path.endswith("/delete"):
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues")
+                        return
+                    existing = sfa_db.get_deal_issue(con, iid)
+                    if existing:
+                        sfa_db.delete_deal_issue(con, iid)
+                    self._redirect(f"/deal/{existing['deal_id']}" if existing else "/deal-issues")
+
+                elif path.startswith("/deal-issue/") and path.endswith("/memo"):
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues")
+                        return
+                    existing = sfa_db.get_deal_issue(con, iid)
+                    body = f.get("body") or ""
+                    if existing and body.strip():
+                        sfa_db.add_deal_issue_memo(con, issue_id=iid, body=body)
+                        memos = sfa_db.list_deal_issue_memos(con, iid)
+                        summary = _generate_issue_ai_summary(existing, memos)
+                        if summary:
+                            sfa_db.set_deal_issue_ai_summary(con, iid, summary)
+                    _return_to = f.get("return_to") or ""
+                    self._redirect(_return_to if _return_to.startswith("/")
+                                   else (f"/deal/{existing['deal_id']}" if existing else "/deal-issues"))
+
+                elif path.startswith("/deal-issue/") and path.endswith("/field"):
+                    _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "due_date"}
+                    parts = path.split("/")
+                    _ok = False
+                    _err = ""
+                    if len(parts) == 4 and parts[3] == "field" and parts[2].isdigit():
+                        iid = int(parts[2])
+                        field = f.get("field", "")
+                        value = f.get("value", "")
+                        if field not in _DEAL_ISSUE_ALLOWED_FIELDS:
+                            _err = "不正なフィールド"
+                        elif field == "status" and value and value not in sfa_db.DEAL_ISSUE_STATUSES:
+                            _err = "不正なステータス値"
+                        else:
+                            con.execute(
+                                f"UPDATE deal_issues SET {field}=?, updated_at=datetime('now') WHERE id=?",
+                                (value or None, iid),
+                            )
+                            con.commit()
+                            _ok = True
+                    else:
+                        _err = "不正なリクエスト"
+                    _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
+                    self._send(_resp, ctype="application/json")
 
                 elif path == "/activity/add":
                     did = int(f["deal_id"])
