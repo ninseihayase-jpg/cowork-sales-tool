@@ -1164,6 +1164,16 @@ def add_deal_issue_memo(con, *, issue_id: int, body: str, author: str | None = N
     return cur.lastrowid
 
 
+def get_deal_issue_memo(con, memo_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM deal_issue_memos WHERE id=?", (int(memo_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def delete_deal_issue_memo(con, memo_id: int) -> None:
+    con.execute("DELETE FROM deal_issue_memos WHERE id=?", (int(memo_id),))
+    con.commit()
+
+
 def set_deal_issue_ai_summary(con, issue_id: int, summary: str) -> None:
     con.execute(
         "UPDATE deal_issues SET ai_summary=?, updated_at=datetime('now') WHERE id=?",

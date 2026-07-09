@@ -2074,9 +2074,15 @@ def _ai_summary_hover_html(summary: str | None) -> str:
 def _issue_memo_panel_html(memos: list[dict], issue: dict, *, return_to: str) -> str:
     """論点1件分の、メモ履歴＋追加フォーム（<details>展開時に表示する内容）。"""
     memo_html = "".join(
-        f'<div style="padding:6px 0;border-bottom:1px solid #eef1f5">'
+        f'<div style="padding:6px 0;border-bottom:1px solid #eef1f5;display:flex;justify-content:space-between;gap:8px">'
+        f'<div style="flex:1;min-width:0">'
         f'<div class="muted">{_esc((m.get("created_at") or "")[:16])}</div>'
         f'<div style="white-space:pre-wrap">{_esc(m.get("body"))}</div></div>'
+        f'<form method="post" action="/deal-issue-memo/{m["id"]}/delete" style="flex-shrink:0" '
+        f'onsubmit="return confirm(\'このメモを削除しますか？\')">'
+        f'<input type="hidden" name="return_to" value="{_esc(return_to)}">'
+        f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer;padding:0;'
+        f'font-size:12px" title="削除">✕</button></form></div>'
         for m in memos
     ) or '<div class="muted">まだメモがありません</div>'
     return f"""
@@ -5444,6 +5450,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _return_to = f.get("return_to") or ""
                     self._redirect(_return_to if _return_to.startswith("/")
                                    else (f"/deal/{existing['deal_id']}" if existing else "/deal-issues"))
+
+                elif path.startswith("/deal-issue-memo/") and path.endswith("/delete"):
+                    try:
+                        mid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues")
+                        return
+                    memo = sfa_db.get_deal_issue_memo(con, mid)
+                    if memo:
+                        sfa_db.delete_deal_issue_memo(con, mid)
+                    _return_to = f.get("return_to") or ""
+                    self._redirect(_return_to if _return_to.startswith("/") else "/deal-issues")
 
                 elif path.startswith("/deal-issue/") and path.endswith("/field"):
                     _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "due_date"}
