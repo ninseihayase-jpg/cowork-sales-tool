@@ -168,7 +168,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  th,td{{text-align:left;padding:7px 8px;border-bottom:1px solid #eef1f5}}
  th{{color:#8893a8;font-weight:600;font-size:12px}}
  tr:hover td{{background:#fafbfd}}
- .stage{{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;background:#e8edf7;color:#33406b}}
+ .stage{{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;background:#e8edf7;color:#33406b;white-space:nowrap}}
  .btn{{display:inline-block;background:#2f6fed;color:#fff;border:0;border-radius:7px;padding:8px 14px;font-size:13px;cursor:pointer;text-decoration:none}}
  .btn.sec{{background:#e8edf7;color:#33406b}} .btn.sync{{background:#0c9b6a}}
  label{{display:block;font-size:12px;color:#6b7689;margin:10px 0 3px}}
@@ -1693,7 +1693,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         f'<div class="muted">{_esc(p.get("deal_name"))}</div>'
         f'<div style="font-size:11px;margin-top:2px">{_hearing_link(p["deal_id"])}</div></td>'
         f'<td><span class="stage">{_esc(p.get("stage"))}</span></td>'
-        f'<td>{_esc(p.get("status"))}</td>'
+        f'<td style="white-space:nowrap">{_esc(p.get("status"))}</td>'
         f'<td>{_esc(p.get("order_potential"))}</td>'
         f'<td>{_esc(p.get("dev_owner"))}</td>'
         f'<td>{_esc(p.get("sales_owner"))}{(" / " + _esc(p["sales_sub_owner"])) if p.get("sales_sub_owner") else ""}</td>'
