@@ -1895,12 +1895,19 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
 
     return f"""
     <div class="card" style="max-width:900px">
-      <p style="margin:0 0 10px"><a class="btn sec" href="{back_href}">← 戻る</a></p>
-      <h2>{'開発案件を編集' if is_edit else '開発案件 新規入力'}</h2>
-      <form method="post" action="{action}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div>
+          <p style="margin:0 0 10px"><a class="btn sec" href="{back_href}">← 戻る</a></p>
+          <h2 style="margin:0">{'開発案件を編集' if is_edit else '開発案件 新規入力'}</h2>
+        </div>
+        <div style="text-align:right">
+          <label style="font-size:11px;color:#6b7689;margin:0 0 2px;display:block">制作したツールのリンク</label>
+          <input type="url" name="tool_url" form="dpForm" placeholder="https://..."
+            value="{_esc(p.get('tool_url'))}" style="width:220px;font-size:12px;padding:5px 8px">
+        </div>
+      </div>
+      <form method="post" action="{action}" id="dpForm">
         {return_to_field}
-        <label>制作したツールのリンク</label>
-        <input type="url" name="tool_url" placeholder="https://..." value="{_esc(p.get('tool_url'))}">
         <label>商談</label>
         {deal_field_html}
         <label>開発テーマ *</label>
