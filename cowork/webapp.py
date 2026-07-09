@@ -1010,7 +1010,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         tool_btns = " ".join(
             _tool_link_btn(dp.get("tool_url"), tool_id=dp.get("tool_login_id"), tool_password=dp.get("tool_login_pass"))
             for dp in sfa_db.list_dev_projects(con, deal_id=d["id"])
-            if dp.get("tool_url")
+            if dp.get("tool_url") and dp.get("status") != "中止"
         ) or "—"
         rows.append(
             f'<tr class="deal-row" data-account="{_esc((d.get("account_name") or "").lower())}">'
@@ -1208,7 +1208,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
             f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
             f' style="font-size:12px;padding:2px 4px;width:140px">'
         )
-        dps = sfa_db.list_dev_projects(con, deal_id=did)
+        dps = [p for p in sfa_db.list_dev_projects(con, deal_id=did) if p.get("status") != "中止"]
         if dps:
             dev_owner_html = "".join(
                 f'<div style="margin-bottom:2px">{_sel(p["id"], "dev_owner", owners, p.get("dev_owner") or "", "updateDevProjectField")}</div>'
@@ -1829,7 +1829,8 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         return f'<a class="muted" href="/hearing/new?target=deal:{deal_id}">ヒアリング未実施</a>'
 
     rows = "".join(
-        f'<tr><td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
+        f'<tr><td style="width:28px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
+        f'<td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
         f'<div class="muted">{_esc(p.get("theme_detail") or "")}</div></td>'
         f'<td><a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
         f'<div class="muted">{_esc(p.get("deal_name"))}</div>'
@@ -1845,7 +1846,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         f'onsubmit="return confirm(\'削除しますか？\')">'
         f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
         for p in projects
-    ) or '<tr><td colspan=10 class=muted>開発案件がまだありません</td></tr>'
+    ) or '<tr><td colspan=11 class=muted>開発案件がまだありません</td></tr>'
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -1853,14 +1854,30 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         <a class="btn" href="/dev-projects/new">＋新規入力</a>
       </h2>
       {filter_row}
+      <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
       <table>
-        <tr>{_sticky_th('開発テーマ')}{_sticky_th('商談')}{_sticky_th('ステージ')}{_sticky_th('状況')}{_sticky_th('受注余地')}
+        <tr><th style="width:28px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="dp_chk_all" title="全選択"
+              onchange="document.querySelectorAll('#dp_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
+            {_sticky_th('開発テーマ')}{_sticky_th('商談')}{_sticky_th('ステージ')}{_sticky_th('状況')}{_sticky_th('受注余地')}
             {_sticky_th('開発担当')}{_sticky_th('営業担当')}{_sticky_th('期限')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
         {rows}
       </table>
       </div>
-    </div>"""
+      <div style="margin-top:10px">
+        <button class="btn" type="button" onclick="dpBulkDelete()"
+          style="background:#c53030;border-color:#c53030;color:#fff">選択した件を削除</button>
+      </div>
+      </form>
+    </div>
+    <script>
+    function dpBulkDelete() {{
+      var ids = Array.from(document.querySelectorAll('#dp_bulk_form [name=ids]:checked')).map(function(c){{return c.value;}});
+      if (!ids.length) {{ alert('削除する開発案件を選択してください。'); return; }}
+      if (!confirm(ids.length + '件の開発案件を削除します。この操作は取り消せません。')) return;
+      document.getElementById('dp_bulk_form').submit();
+    }}
+    </script>"""
 
 
 def dev_project_form(con, project: dict | None = None, deal_id: int | None = None,
@@ -3083,15 +3100,20 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                     f' placeholder="ステップ名"></td>'
                     f'<td class="yb-dept-cell"><input class="yb-row-dept" value="{_esc(_r.get("dept",""))}"'
                     f' placeholder="部署名"></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-content"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-content hq-autogrow" rows="2"'
+                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
                     f' placeholder="作業内容">{_esc(_r.get("content",""))}</textarea></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-output"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-output hq-autogrow" rows="2"'
+                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
                     f' placeholder="アウトプット">{_esc(_r.get("output",""))}</textarea></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-issue"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-issue hq-autogrow" rows="2"'
+                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
                     f' placeholder="現行課題">{_esc(_r.get("issue",""))}</textarea></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-target"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-target hq-autogrow" rows="2"'
+                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
                     f' placeholder="目指す姿">{_esc(_r.get("target",""))}</textarea></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-target-number"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-target-number hq-autogrow" rows="2"'
+                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
                     f' placeholder="目標数値（作業時間等）">{_esc(_r.get("target_number",""))}</textarea></td>'
                     f'<td class="yb-del-cell"><button type="button" class="yb-del-row-btn"'
                     f' onclick="ybDelRow(this)">✕</button></td>'
@@ -3447,11 +3469,11 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       return '<tr class="yb-row">' +
         '<td class="yb-step-cell"><input class="yb-row-step" value="'+esc(step)+'" placeholder="ステップ名"></td>' +
         '<td class="yb-dept-cell"><input class="yb-row-dept" value="'+esc(dept)+'" placeholder="部署名"></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-content" placeholder="作業内容"></textarea></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-output" placeholder="アウトプット"></textarea></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-issue" placeholder="現行課題"></textarea></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-target" placeholder="目指す姿"></textarea></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-target-number" placeholder="目標数値（作業時間等）"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-content hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="作業内容"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-output hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="アウトプット"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-issue hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="現行課題"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-target hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="目指す姿"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-target-number hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="目標数値（作業時間等）"></textarea></td>' +
         '<td class="yb-del-cell"><button type="button" class="yb-del-row-btn" onclick="ybDelRow(this)">✕</button></td>' +
       '</tr>';
     }}
@@ -5448,6 +5470,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             except Exception as exc:  # noqa: BLE001
                                 print(f"[dev_project_link] delete_dev_project_remote failed: {exc}")
                     self._redirect(f"/deal/{existing['deal_id']}" if existing else "/dev-projects")
+
+                elif path == "/dev-projects/bulk_delete":
+                    ids = f_list.get("ids", [])
+                    for pid_raw in ids:
+                        if not str(pid_raw).isdigit():
+                            continue
+                        pid = int(pid_raw)
+                        existing = sfa_db.get_dev_project(con, pid)
+                        if not existing:
+                            continue
+                        sfa_db.delete_dev_project(con, pid)
+                        if theme_client is not None and existing.get("hisho_id"):
+                            try:
+                                dev_project_link.delete_dev_project_remote(theme_client, existing["hisho_id"])
+                            except Exception as exc:  # noqa: BLE001
+                                print(f"[dev_project_link] delete_dev_project_remote failed: {exc}")
+                    self._redirect("/dev-projects")
 
                 # ── 社内論点 ──
                 elif path == "/deal-issue/new":
