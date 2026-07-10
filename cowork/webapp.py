@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import base64
+import hmac
 import html
 import json
 import os
@@ -29,6 +31,9 @@ from . import dev_project_link
 
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# ブラウザ向け全ページのBasic認証（未設定時はfail-closed=全拒否）
+SFA_BASIC_USER = os.environ.get("SFA_BASIC_USER", "")
+SFA_BASIC_PASS = os.environ.get("SFA_BASIC_PASS", "")
 
 INPROC_MEMBERS = [
     ("吉江", "takuya.yoshie@inproc.org"),
@@ -4832,7 +4837,38 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             qs_raw = self.path.split("?")[1] if "?" in self.path else ""
             return urllib.parse.parse_qs(qs_raw)
 
+        def _check_basic_auth(self) -> bool:
+            """ブラウザ向け全ルートのBasic認証。
+
+            除外: /health（Render死活監視）、/api/*（トークン認証）、/slack/*（署名検証）。
+            SFA_BASIC_USER/SFA_BASIC_PASS 未設定時はfail-closed（503でアクセス拒否）。
+            認証NGなら401+WWW-Authenticateを返しFalse。呼び出し側は即returnすること。
+            """
+            path = self.path.split("?")[0].rstrip("/") or "/"
+            if path == "/health" or path.startswith("/api/") or path.startswith("/slack/"):
+                return True
+            if not SFA_BASIC_USER or not SFA_BASIC_PASS:
+                body = ("<h1>503</h1><p>SFA_BASIC_USER / SFA_BASIC_PASS が未設定のため"
+                        "アクセスを拒否しています（fail-closed）。環境変数を設定してください。</p>").encode("utf-8")
+                self._send(body, status=503)
+                return False
+            header = self.headers.get("Authorization", "")
+            if header.startswith("Basic "):
+                try:
+                    userpass = base64.b64decode(header[6:]).decode("utf-8")
+                except Exception:
+                    userpass = ""
+                if hmac.compare_digest(userpass, f"{SFA_BASIC_USER}:{SFA_BASIC_PASS}"):
+                    return True
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="Inproc Salesforce"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return False
+
         def do_GET(self):
+            if not self._check_basic_auth():
+                return
             path = self.path.split("?")[0].rstrip("/") or "/"
             con = sfa_db.connect(db_path)
             try:
@@ -4841,7 +4877,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/api/deals":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
-                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
                         self._send(b'{"error":"unauthorized"}', status=401, ctype="application/json")
                     else:
                         status_q = (qs.get("status", ["open"])[0] or "open")
@@ -4851,7 +4887,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/api/memo/list":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
-                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
                         theme_id_q = qs.get("theme_id", [None])[0]
@@ -4869,7 +4905,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # ダッシュボード用: theme_id → SFA deal_id マッピング
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
-                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
                         rows = con.execute(
@@ -4881,7 +4917,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # スプシ出力用: 全メモ + deals/accounts JOIN
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
-                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
                         rows = con.execute("""
@@ -5228,17 +5264,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         if not lead:
                             self._send(render("<div class=card>リードが見つかりません</div>"), 404)
                         else:
+                            # GETではDBに書き込まない（リンクプリフェッチ等での誤変換防止）。
+                            # 過去商談があれば選択ページ、無ければ確認ページを表示しPOSTで実行する。
                             past_deals = find_past_closed_deals(con, lead.get("company"))
                             if past_deals:
                                 self._send(render(lead_convert_choice_page(con, lead, past_deals)))
                             else:
-                                try:
-                                    deal_id = convert_lead_to_deal(con, lead)
-                                    self._redirect(f"/deal/{deal_id}")
-                                except Exception as _conv_e:
-                                    print(f"[convert] error lid={lid}: {_conv_e}", flush=True)
-                                    import traceback as _tb; _tb.print_exc()
-                                    self._redirect(f"/leads/{lid}")
+                                confirm_html = f"""
+                                <div class="card" style="max-width:560px">
+                                  <h2>リードを商談化</h2>
+                                  <p>{_esc(lead.get('company'))} / {_esc(lead.get('name'))} を商談化します。</p>
+                                  <form method="post" action="/leads/{lid}/convert">
+                                    <input type="hidden" name="mode" value="new">
+                                    <button class="btn" type="submit">商談化する</button>
+                                    <a class="btn sec" href="/leads/{lid}">キャンセル</a>
+                                  </form>
+                                </div>"""
+                                self._send(render(confirm_html))
                 elif path.startswith("/leads/"):
                     try:
                         lid = int(path.split("/")[2])
@@ -5276,6 +5318,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 con.close()
 
         def do_POST(self):
+            if not self._check_basic_auth():
+                return
             path = self.path.split("?")[0].rstrip("/")
             con = sfa_db.connect(db_path)
             ctype = self.headers.get("Content-Type", "")
@@ -6380,7 +6424,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/api/memo/save":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
-                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
                         try:
@@ -6401,7 +6445,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/api/memo/delete":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
-                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
                         try:
@@ -6417,7 +6461,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/api/memo/toggle_task":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
-                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
                         try:
@@ -6434,7 +6478,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/api/deals/mark_notified":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
-                    if SFA_API_TOKEN and token != SFA_API_TOKEN:
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
                         try:
@@ -6456,11 +6500,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 # ── Slack Events API ──
                 elif path == "/slack/events":
                     import threading as _threading
+                    from cowork import slack_bot as _sb
                     # body は do_POST 先頭の raw 変数で読み込み済み（rfile は再読不可）
+                    # Slack署名検証（fail-closed）: 偽イベントによるDB書き込み・API消費を防ぐ
+                    if not _sb.verify_signature(
+                        raw.encode("utf-8"),
+                        self.headers.get("X-Slack-Request-Timestamp", ""),
+                        self.headers.get("X-Slack-Signature", ""),
+                    ):
+                        self._send(b'{"error":"invalid signature"}', 401, ctype="application/json")
+                        return
                     try:
                         data = json.loads(raw)
                     except Exception:
-                        self._send("<error/>", 400)
+                        self._send(b"<error/>", 400)
                         return
 
                     # URL検証チャレンジ

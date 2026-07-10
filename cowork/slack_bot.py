@@ -93,11 +93,16 @@ def post_message(channel: str, thread_ts: str, text: str) -> str | None:
 
 
 def verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
+    """Slack署名検証。秘密未設定・ヘッダー不正時はFalse（fail-closed）。"""
     if not SLACK_SIGNING_SECRET:
-        return True
-    if abs(time.time() - float(timestamp)) > 300:
+        print("[SlackBot] SLACK_SIGNING_SECRET未設定のためリクエストを拒否（fail-closed）", flush=True)
         return False
-    base = f"v0:{timestamp}:{body.decode()}"
+    try:
+        if abs(time.time() - float(timestamp)) > 300:
+            return False
+        base = f"v0:{timestamp}:{body.decode()}"
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return False
     expected = "v0=" + hmac.new(
         SLACK_SIGNING_SECRET.encode(), base.encode(), hashlib.sha256
     ).hexdigest()
