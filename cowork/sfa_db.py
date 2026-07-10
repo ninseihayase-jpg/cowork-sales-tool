@@ -455,7 +455,40 @@ def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     return con
 
 
+def backup_db(db_path: str = DEFAULT_DB_PATH, keep: int = 14) -> str | None:
+    """DBのバックアップを backups/ に取得する（1日1世代、最新keep世代を保持）。
+
+    init_db()のマイグレーション実行前に必ず呼ばれる（スキーマ変更事故からの復元手段）。
+    同日分が既に存在する場合はスキップ。バックアップ失敗は呼び出し側で握りつぶし、
+    起動自体は止めない。
+    """
+    p = Path(db_path)
+    if not p.exists():
+        return None
+    backup_dir = p.parent / "backups"
+    backup_dir.mkdir(exist_ok=True)
+    dest = backup_dir / f"{p.stem}_{date.today().isoformat()}.db"
+    if dest.exists():
+        return str(dest)
+    src = sqlite3.connect(db_path)
+    try:
+        dst = sqlite3.connect(str(dest))
+        try:
+            src.backup(dst)  # WAL中でも一貫したスナップショットが取れる公式API
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    for old in sorted(backup_dir.glob(f"{p.stem}_*.db"))[:-keep]:
+        old.unlink()
+    return str(dest)
+
+
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
+    try:
+        backup_db(db_path)
+    except Exception as exc:  # noqa: BLE001 — バックアップ失敗で起動を止めない
+        print(f"[backup] DB backup failed (continuing): {exc}", flush=True)
     con = connect(db_path)
     try:
         con.executescript(SCHEMA)
