@@ -4925,6 +4925,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         effective = None if status_q == "all" else status_q
                         deals = sfa_db.list_deals(con, status=effective)
                         self._send(json.dumps([dict(d) for d in deals], ensure_ascii=False, default=str).encode(), ctype="application/json")
+                elif path == "/api/dev_projects":
+                    # スプシ出力用: 開発案件一覧（deals/accounts JOIN込み）
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send(b'{"error":"unauthorized"}', status=401, ctype="application/json")
+                    else:
+                        status_q = (qs.get("status", ["open"])[0] or "open")
+                        projects = sfa_db.list_dev_projects(con)
+                        if status_q != "all":
+                            projects = [p for p in projects if p.get("status") != "中止"]
+                        self._send(json.dumps(projects, ensure_ascii=False, default=str).encode(), ctype="application/json")
                 elif path == "/api/memo/list":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")

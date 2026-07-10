@@ -41,6 +41,7 @@ SFA_API_URL = os.environ.get("SFA_API_URL", "").rstrip("/")
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 SHEET_NAME = "商談一覧"
 MEMO_SHEET_NAME = "メモ・タスク"
+DEV_SHEET_NAME = "開発案件一覧"
 
 # スプシのカラム定義: (ヘッダ表示名, deals dictのキー名)
 COLUMNS = [
@@ -64,6 +65,38 @@ FIELDS  = [f for _, f in COLUMNS]
 
 
 MEMO_HEADERS = ["アカウント", "案件名", "メモ一覧（日付つき）", "タスク一覧（未完了）"]
+
+# 開発案件シートのカラム定義: (ヘッダ表示名, dev_project dictのキー名)
+# tool_login_id/tool_login_pass は機微情報のため出力しない。
+DEV_COLUMNS = [
+    ("ID",         "id"),
+    ("アカウント",    "account_name"),
+    ("商談名",       "deal_name"),
+    ("営業担当",     "sales_owner"),
+    ("開発テーマ",    "theme"),
+    ("テーマ詳細",    "theme_detail"),
+    ("ステータス",    "status"),
+    ("フェーズ",     "stage"),
+    ("受注余地",     "order_potential"),
+    ("解像度",       "resolution"),
+    ("予算確認",     "budget_confirmed"),
+    ("実現難易度",    "difficulty"),
+    ("開発担当",     "dev_owner"),
+    ("開発MSラベル",  "dev_milestone"),
+    ("開発MS日",     "dev_milestone_date"),
+    ("期限",        "deadline"),
+    ("更新日",       "updated_at"),
+]
+DEV_HEADERS = [h for h, _ in DEV_COLUMNS]
+DEV_FIELDS  = [f for _, f in DEV_COLUMNS]
+
+
+def dev_project_to_row(p: dict) -> list:
+    row = []
+    for f in DEV_FIELDS:
+        v = p.get(f)
+        row.append("" if v is None else v)
+    return row
 
 
 def group_memos(memos: list[dict]) -> list[list]:
@@ -217,6 +250,29 @@ def fetch_deals_via_db() -> list[dict]:
         con.close()
 
 
+def fetch_dev_projects_via_api() -> list[dict]:
+    """SFA WebアプリのAPIから開発案件一覧を取得する（Renderのcron環境用）。"""
+    url = f"{SFA_API_URL}/api/dev_projects?status=open&token={urllib.parse.quote(SFA_API_TOKEN)}"
+    print(f"SFA API ({SFA_API_URL}/api/dev_projects) から開発案件を取得中...")
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(f"API エラー: {data['error']}")
+    return data
+
+
+def fetch_dev_projects_via_db() -> list[dict]:
+    """ローカルSQLite DBから開発案件一覧を取得する（ローカル実行時フォールバック）。中止案件は除外。"""
+    from cowork import sfa_db
+    con = sfa_db.connect(DB_PATH)
+    try:
+        projects = sfa_db.list_dev_projects(con)
+        return [p for p in projects if p.get("status") != "中止"]
+    finally:
+        con.close()
+
+
 def main() -> None:
     # --- バリデーション ---
     if not WEEKLY_SHEET_ID:
@@ -274,9 +330,18 @@ def main() -> None:
     print(f"  メモ: {len(memos)}件")
     memo_rows = group_memos(memos)
 
+    # --- 開発案件一覧を取得（API優先、なければDB直接） ---
+    if SFA_API_URL and SFA_API_TOKEN:
+        dev_projects = fetch_dev_projects_via_api()
+    else:
+        dev_projects = fetch_dev_projects_via_db()
+    print(f"  開発案件: {len(dev_projects)}件")
+    dev_rows = [dev_project_to_row(p) for p in dev_projects]
+
     print(f"Google Sheets (id={WEEKLY_SHEET_ID}) へ書き込み中...")
     write_sheet(gc, WEEKLY_SHEET_ID, SHEET_NAME, rows)
     write_sheet(gc, WEEKLY_SHEET_ID, MEMO_SHEET_NAME, memo_rows, headers=MEMO_HEADERS)
+    write_sheet(gc, WEEKLY_SHEET_ID, DEV_SHEET_NAME, dev_rows, headers=DEV_HEADERS)
     print("完了")
 
 
