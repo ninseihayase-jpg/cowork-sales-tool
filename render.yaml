@@ -21,7 +21,7 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: THEME_API_TOKEN
-        value: hisho-2026
+        sync: false          # 秘密情報。Renderダッシュボードで設定（平文コミット禁止）
       - key: THEME_API_URL
         value: https://hisho-ohxe.onrender.com
       - key: PYTHONUNBUFFERED
@@ -30,6 +30,10 @@ services:
         value: https://sfa-crm.onrender.com
       - key: SFA_API_TOKEN
         sync: false
+      - key: SFA_BASIC_USER
+        sync: false          # ブラウザ向けBasic認証ユーザー名。未設定だと全ページ503
+      - key: SFA_BASIC_PASS
+        sync: false          # ブラウザ向けBasic認証パスワード
     disk:
       name: sfa-db
       mountPath: /data

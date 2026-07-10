@@ -71,6 +71,16 @@ def _esc(v) -> str:
     return "" if v is None else html.escape(str(v))
 
 
+def _num(v, default=0) -> float:
+    """外部入力由来の値を数値に強制する（HTML/SVGへ埋め込む前のXSS・型事故防止）。"""
+    if isinstance(v, (int, float)):
+        return v
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _opt_l2(l1: str | None, selected: str | None) -> str:
     """L1に対応するL2選択肢を生成。"""
     opts = ['<option value=""></option>']
@@ -266,7 +276,15 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  .dash-card .actions{{display:flex;gap:8px;flex-wrap:wrap}}
  .btn.ext{{background:#f3f0ff;color:#5b21b6}}
  @media(max-width:640px){{.grid{{grid-template-columns:1fr}}.full{{grid-column:1}}.hide-sm{{display:none}}table{{display:block;overflow-x:auto}}}}
-</style></head><body>
+</style>
+<script>
+/* 全ページ共通: JSでHTMLを組み立てる際のエスケープ（XSS防止）。動的optionやinnerHTML挿入で必ず使う */
+function escH(s) {{
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}}
+</script>
+</head><body>
 <header>
   <h1>Inproc Salesforce</h1>
   <a href="/">ホーム</a>
@@ -856,7 +874,7 @@ def masters_page(con) -> str:
       const hidden = document.getElementById('hidden_' + key);
       const items = Array.from(container.querySelectorAll('.master-item'));
       hidden.innerHTML = items.map(el =>
-        `<input type="hidden" name="${{key}}[]" value="${{el.querySelector('.item-label').textContent}}">`
+        `<input type="hidden" name="${{key}}[]" value="${{escH(el.querySelector('.item-label').textContent)}}">`
       ).join('');
       items.forEach((el, i) => {{
         el.dataset.idx = i;
@@ -877,7 +895,7 @@ def masters_page(con) -> str:
       container.insertAdjacentHTML('beforeend',
         `<div class="master-item" draggable="true" data-key="${{key}}" data-idx="${{idx}}">` +
         `<span class="drag-handle" title="ドラッグで並び替え">⠿</span>` +
-        `<span class="item-label">${{val}}</span>` +
+        `<span class="item-label">${{escH(val)}}</span>` +
         `<button type="button" onclick="delItem('${{key}}',${{idx}})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px;padding:0 4px">✕</button>` +
         `</div>`
       );
@@ -1101,7 +1119,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       if (l2sel) {{
         var opts = DEAL_L2_MAP[l1_value] || [];
         l2sel.innerHTML = '<option value=""></option>' +
-          opts.map(function(v) {{ return '<option value="' + v + '">' + v + '</option>'; }}).join('');
+          opts.map(function(v) {{ return '<option value="' + escH(v) + '">' + escH(v) + '</option>'; }}).join('');
         l2sel.value = '';
         updateDealField(id, 'business_type_l2', '');
       }}
@@ -1126,7 +1144,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       var opts = DEAL_BULK_OPTIONS[field] || [];
       var sel = document.getElementById('deal_bulk_value');
       sel.innerHTML = opts.map(function(pair) {{
-        return '<option value="' + pair[0] + '">' + pair[1] + '</option>';
+        return '<option value="' + escH(pair[0]) + '">' + escH(pair[1]) + '</option>';
       }}).join('');
     }}
     document.getElementById('deal_bulk_field').addEventListener('change', repopulateDealBulkValue);
@@ -1811,7 +1829,7 @@ def deal_form(con, deal=None) -> str:
       const sel = document.getElementById('biz_l2');
       const cur = sel.value;
       sel.innerHTML = '<option value=""></option>' +
-        (L2_MAP[l1] || []).map(v => `<option value="${{v}}"${{v===cur?' selected':''}}>${{v}}</option>`).join('');
+        (L2_MAP[l1] || []).map(v => `<option value="${{escH(v)}}"${{v===cur?' selected':''}}>${{escH(v)}}</option>`).join('');
       document.getElementById('cost_section').style.display = l1 === 'コスト削減' ? '' : 'none';
     }}
     function revertToLead(form) {{
@@ -1983,7 +2001,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
     <div class="card" style="max-width:900px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
         <div>
-          <p style="margin:0 0 10px"><a class="btn sec" href="{back_href}">← 戻る</a></p>
+          <p style="margin:0 0 10px"><a class="btn sec" href="{_esc(back_href)}">← 戻る</a></p>
           <h2 style="margin:0">{'開発案件を編集' if is_edit else '開発案件 新規入力'}</h2>
         </div>
         <div style="text-align:right">
@@ -2031,7 +2049,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         <textarea name="dev_policy" rows="3">{_esc(p.get('dev_policy'))}</textarea>
         <div style="margin-top:16px">
           <button class="btn" type="submit">保存</button>
-          <a class="btn sec" href="{back_href}">キャンセル</a>
+          <a class="btn sec" href="{_esc(back_href)}">キャンセル</a>
         </div>
       </form>
     </div>
@@ -2361,7 +2379,7 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
 
     return f"""
     <div class="card" style="max-width:700px">
-      <p style="margin:0 0 10px"><a class="btn sec" href="{back_href}">← 戻る</a></p>
+      <p style="margin:0 0 10px"><a class="btn sec" href="{_esc(back_href)}">← 戻る</a></p>
       <h2>{'論点を編集' if is_edit else '論点 新規入力'}</h2>
       <form method="post" action="{action}">
         {return_to_field}
@@ -2377,7 +2395,7 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
         </div>
         <div style="margin-top:16px">
           <button class="btn" type="submit">保存</button>
-          <a class="btn sec" href="{back_href}">キャンセル</a>
+          <a class="btn sec" href="{_esc(back_href)}">キャンセル</a>
           {delete_btn}
         </div>
       </form>
@@ -3770,7 +3788,7 @@ def _radar_result_html(ra: dict) -> str:
         anc = "end" if lx < cx - 8 else ("start" if lx > cx + 8 else "middle")
         axis_lines += (f'<text x="{lx:.1f}" y="{ly+4:.1f}" text-anchor="{anc}"'
                        f' font-size="10" fill="#475569">{_esc(ax.get("label",""))}</text>')
-        score = ax.get("score") or 0
+        score = _num(ax.get("score"))
         pr = R * score / 5
         poly_pts += f'{cx+pr*math.cos(angle):.1f},{cy+pr*math.sin(angle):.1f} '
         dots += (f'<circle cx="{cx+pr*math.cos(angle):.1f}" cy="{cy+pr*math.sin(angle):.1f}"'
@@ -3784,9 +3802,9 @@ def _radar_result_html(ra: dict) -> str:
         f'<td style="padding:5px 10px;border-bottom:1px solid #ede9fe">'
         f'<div style="display:flex;align-items:center;gap:8px">'
         f'<div style="flex:1;height:8px;background:#ede9fe;border-radius:4px;overflow:hidden">'
-        f'<div style="width:{(ax.get("score") or 0)*20}%;height:100%;background:#7c3aed;border-radius:4px"></div>'
+        f'<div style="width:{_num(ax.get("score"))*20}%;height:100%;background:#7c3aed;border-radius:4px"></div>'
         f'</div>'
-        f'<span style="font-weight:700;color:#7c3aed;min-width:20px">{ax.get("score") or 0}</span>'
+        f'<span style="font-weight:700;color:#7c3aed;min-width:20px">{_esc(ax.get("score") or 0)}</span>'
         f'</div>'
         f'</td>'
         f'</tr>'
@@ -3845,7 +3863,7 @@ def _scorecard_result_html(sc: dict) -> str:
         total = sum(v for v in scores.values() if isinstance(v, (int, float)))
         score_tds = "".join(
             f'<td style="padding:6px 10px;border:1px solid #fde68a;text-align:center;font-size:13px;font-weight:700;color:#d97706">'
-            f'{scores.get(c, "—")}</td>'
+            f'{_esc(scores.get(c, "—"))}</td>'
             for c in criteria
         )
         rows_html += (
@@ -4452,7 +4470,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
       var opts = BULK_OPTIONS[field] || [];
       var sel = document.getElementById('bulk_value');
       sel.innerHTML = opts.map(function(pair) {{
-        return '<option value="' + pair[0] + '">' + pair[1] + '</option>';
+        return '<option value="' + escH(pair[0]) + '">' + escH(pair[1]) + '</option>';
       }}).join('');
     }}
     function bulkDelete() {{
