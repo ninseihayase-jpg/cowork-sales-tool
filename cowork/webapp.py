@@ -127,8 +127,8 @@ def _decode_uploaded_csv(file_item) -> str | None:
 def _sticky_th(label: str, width: str | None = None) -> str:
     """縦スクロールしても項目名が見えるよう、テーブル見出しをposition:stickyにする共通ヘルパー。
     親のoverflow:auto付きコンテナ内で使うこと（テーブル単体ではスクロールしないため効果がない）。"""
-    w = f"width:{width};" if width else ""
-    return f'<th style="position:sticky;top:0;background:#fff;z-index:2;{w}">{label}</th>'
+    w = f' style="width:{width}"' if width else ""
+    return f'<th class="sticky"{w}>{label}</th>'
 
 
 def _call_claude_haiku(prompt: str, *, timeout: int = 20, max_wait: int = 25) -> str:
@@ -255,6 +255,8 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  th,td{{text-align:left;padding:7px 8px;border-bottom:1px solid #eef1f5}}
  th{{color:#8893a8;font-weight:600;font-size:12px}}
  tr:hover td{{background:#fafbfd}}
+ /* 縦スクロール時に見出しを固定表示する共通クラス（旧: 各thへの直書きstyleを置換） */
+ th.sticky{{position:sticky;top:0;background:#fff;z-index:2}}
  .stage{{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;background:#e8edf7;color:#33406b;white-space:nowrap}}
  .tool-link-wrap{{position:relative;display:inline-block}}
  .tool-link-cred{{display:none;position:absolute;top:100%;left:0;z-index:20;background:#fff;
@@ -1108,13 +1110,13 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     <form id="deal_bulk_form" method="post" action="/deals/bulk_edit">
     <div style="overflow:auto;max-height:70vh">
     <table style="min-width:900px"><tr>
-      <th style="width:28px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="deal_chk_all" title="全選択"
+      <th class="sticky" style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択"
             onchange="document.querySelectorAll('#deal_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
       {_sticky_th('#')}{_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('ステージ')}{_sticky_th('主担当')}{_sticky_th('サブ担当')}
       {_sticky_th('種別L1')}{_sticky_th('種別L2')}
       {_sticky_th('予算<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span>')}
       {_sticky_th('提案総額<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span>')}
-      {_sticky_th('次回MS')}{_sticky_th('ツール')}<th class="right" style="position:sticky;top:0;background:#fff;z-index:2">連携</th></tr>
+      {_sticky_th('次回MS')}{_sticky_th('ツール')}<th class="right sticky">連携</th></tr>
     {''.join(rows) or '<tr><td colspan=14 class=muted>商談がありません。</td></tr>'}
     </table></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
@@ -1389,9 +1391,9 @@ def accounts_page(con) -> str:
       <form id="acc_bulk_form" method="post" action="/accounts/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
       <table>
-        <tr><th style="width:32px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="acc_chk_all" title="全選択"
+        <tr><th class="sticky" style="width:32px"><input type="checkbox" id="acc_chk_all" title="全選択"
               onchange="document.querySelectorAll('#acc_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            {_sticky_th('企業名')}{_sticky_th('業界')}{_sticky_th('企業規模')}<th class="right" style="position:sticky;top:0;background:#fff;z-index:2">商談数</th></tr>
+            {_sticky_th('企業名')}{_sticky_th('業界')}{_sticky_th('企業規模')}<th class="right sticky">商談数</th></tr>
         {rows_html}
       </table>
       </div>
@@ -1950,7 +1952,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
       <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
       <table>
-        <tr><th style="width:28px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="dp_chk_all" title="全選択"
+        <tr><th class="sticky" style="width:28px"><input type="checkbox" id="dp_chk_all" title="全選択"
               onchange="document.querySelectorAll('#dp_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
             {_sticky_th('開発テーマ')}{_sticky_th('商談')}{_sticky_th('ステージ')}{_sticky_th('状況')}{_sticky_th('受注余地')}
             {_sticky_th('開発担当')}{_sticky_th('営業担当')}{_sticky_th('期限')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
@@ -4080,13 +4082,13 @@ def hearings_page(con, template_id: int | None = None) -> str:
       <form id="hearing_bulk_form" method="post" action="/hearings/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
       <table style="table-layout:fixed">
-        <tr><th style="width:32px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="hearing_chk_all" title="全選択"
+        <tr><th class="sticky" style="width:32px"><input type="checkbox" id="hearing_chk_all" title="全選択"
               onchange="document.querySelectorAll('#hearing_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            <th style="width:90px;position:sticky;top:0;background:#fff;z-index:2">ヒアリング日</th>
-            <th style="width:160px;position:sticky;top:0;background:#fff;z-index:2">アカウント</th>
-            <th style="width:200px;position:sticky;top:0;background:#fff;z-index:2">案件名</th>
-            <th style="width:150px;position:sticky;top:0;background:#fff;z-index:2">テンプレート</th>
-            <th style="position:sticky;top:0;background:#fff;z-index:2">回答プレビュー</th></tr>
+            <th class="sticky" style="width:90px">ヒアリング日</th>
+            <th class="sticky" style="width:160px">アカウント</th>
+            <th class="sticky" style="width:200px">案件名</th>
+            <th class="sticky" style="width:150px">テンプレート</th>
+            <th class="sticky">回答プレビュー</th></tr>
         {rows or '<tr><td colspan=6 class="muted">まだヒアリング結果がありません。</td></tr>'}
       </table>
       </div>
@@ -4451,13 +4453,13 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
       <form id="bulk_form" method="post" action="/leads/bulk_edit">
       <div style="overflow:auto;max-height:70vh">
       <table>
-        <tr><th style="width:32px;position:sticky;top:0;background:#fff;z-index:2"><input type="checkbox" id="chk_all" title="全選択"
+        <tr><th class="sticky" style="width:32px"><input type="checkbox" id="chk_all" title="全選択"
               onchange="document.querySelectorAll('[name=ids]').forEach(c=>c.checked=this.checked)"></th>
             {_sticky_th('氏名 / 会社')}{_sticky_th('ステータス')}
-            <th class="hide-sm" style="position:sticky;top:0;background:#fff;z-index:2">経路</th>
-            <th class="hide-sm" style="position:sticky;top:0;background:#fff;z-index:2">担当</th>
-            <th class="hide-sm" style="position:sticky;top:0;background:#fff;z-index:2">業界</th>
-            <th class="hide-sm" style="position:sticky;top:0;background:#fff;z-index:2">企業規模</th>
+            <th class="hide-sm sticky">経路</th>
+            <th class="hide-sm sticky">担当</th>
+            <th class="hide-sm sticky">業界</th>
+            <th class="hide-sm sticky">企業規模</th>
             {_sticky_th('更新日')}</tr>
         {''.join(rows) or '<tr><td colspan=8 class=muted>リードがありません。「＋新規リード」から追加、またはCSV取込してください。</td></tr>'}
       </table>
