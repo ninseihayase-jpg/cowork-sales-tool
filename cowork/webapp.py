@@ -1602,32 +1602,47 @@ def deal_form(con, deal=None) -> str:
           <p class="muted" style="margin:0">論点なし</p>
         </div>"""
 
-    attachments_html = ""
+    attachments_widget = ""
     if deal.get("id"):
         attachments = sfa_db.list_deal_attachments(con, deal["id"])
-        if attachments:
-            att_rows = "".join(
-                f'<tr><td><a href="{_esc(a.get("url"))}" target="_blank" rel="noopener">📎 {_esc(a.get("label"))}</a></td>'
-                f'<td class="muted" style="white-space:nowrap">{_esc((a.get("created_at") or "")[:16])}</td>'
-                f'<td><form method="post" action="/deal-attachment/{a["id"]}/delete" style="display:inline" '
-                f'onsubmit="return confirm(\'削除しますか？\')">'
-                f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
-                for a in attachments
-            )
-            attachments_table = f'<table><tr><th>ファイル</th><th>追加日時</th><th></th></tr>{att_rows}</table>'
-        else:
-            attachments_table = '<p class="muted" style="margin:0 0 10px">添付ファイルなし</p>'
-        attachments_html = f"""
-        <div class="card">
-          <h2>添付ファイル（{len(attachments)}件）</h2>
-          {attachments_table}
-          <form method="post" action="/deal/{deal['id']}/attachment" style="margin-top:10px">
-            <div class="grid">
-              <div><label>ファイル名・ラベル *</label><input name="label" required placeholder="例: 見積依頼書.xlsx"></div>
-              <div><label>リンク（SharePoint等） *</label><input type="url" name="url" required placeholder="https://..."></div>
-            </div>
-            <p><button class="btn sec" type="submit">追加</button></p>
-          </form>
+        att_items = "".join(
+            f'<div class="attach-item">'
+            f'<a href="{_esc(a.get("url"))}" target="_blank" rel="noopener">{_esc(a.get("label"))}</a>'
+            f'<form method="post" action="/deal-attachment/{a["id"]}/delete" style="display:inline;margin:0" '
+            f'onsubmit="return confirm(\'削除しますか？\')">'
+            f'<button type="submit" class="attach-del" title="削除">✕</button></form>'
+            f'</div>'
+            for a in attachments
+        ) or '<div class="muted" style="padding:4px 0">添付ファイルなし</div>'
+        attachments_widget = f"""
+        <style>
+        .attach-wrap {{ position:relative; display:inline-block }}
+        .attach-trigger {{ display:inline-block; background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe;
+          border-radius:6px; padding:4px 10px; font-size:12px; cursor:default; white-space:nowrap }}
+        .attach-panel {{ display:none; position:absolute; top:100%; right:0; z-index:30; background:#fff;
+          border:1px solid #d0e4ff; border-radius:8px; padding:10px 12px; width:260px;
+          box-shadow:0 4px 12px rgba(0,0,0,.12); text-align:left; margin-top:4px }}
+        .attach-wrap:hover .attach-panel {{ display:block }}
+        .attach-item {{ display:flex; justify-content:space-between; align-items:center; gap:6px;
+          padding:4px 0; border-bottom:1px solid #f1f5f9; font-size:12px }}
+        .attach-item a {{ word-break:break-all }}
+        .attach-del {{ background:none; border:0; color:#94a3b8; cursor:pointer; font-size:11px; padding:0;
+          flex-shrink:0 }}
+        .attach-add-form {{ margin-top:8px; display:flex; flex-direction:column; gap:4px }}
+        .attach-add-form input {{ font-size:11px; padding:4px 6px; margin:0 }}
+        .attach-add-form button {{ font-size:11px; padding:4px 6px; background:#2f6fed; color:#fff;
+          border:0; border-radius:5px; cursor:pointer }}
+        </style>
+        <div class="attach-wrap">
+          <span class="attach-trigger">📎 添付ファイル（{len(attachments)}）</span>
+          <div class="attach-panel">
+            {att_items}
+            <form method="post" action="/deal/{deal['id']}/attachment" class="attach-add-form">
+              <input name="label" placeholder="ファイル名" required>
+              <input type="url" name="url" placeholder="https://..." required>
+              <button type="submit">追加</button>
+            </form>
+          </div>
         </div>"""
 
     activities_html = ""
@@ -1716,7 +1731,11 @@ def deal_form(con, deal=None) -> str:
             '</button></form>'
         )
     return f"""
-    <div class="card"><h2>{'商談編集' if deal.get('id') else '新規商談'}</h2>
+    <div class="card">
+    <h2 style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <span>{'商談編集' if deal.get('id') else '新規商談'}</span>
+      {attachments_widget}
+    </h2>
     {top_action_buttons}
     {lead_picker_html}
     <form method="post" action="/deal/save">
@@ -1809,7 +1828,6 @@ def deal_form(con, deal=None) -> str:
     {hearing_html}
     {dev_projects_html}
     {deal_issues_html}
-    {attachments_html}
     {activities_html}"""
 
 
