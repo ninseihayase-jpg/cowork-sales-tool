@@ -434,6 +434,16 @@ CREATE TABLE IF NOT EXISTS deal_issue_memos (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_deal_issue_memos_issue ON deal_issue_memos(issue_id);
+
+-- 商談への添付ファイル（実体は保存せずSharePoint等の外部リンクのみ保持）
+CREATE TABLE IF NOT EXISTS deal_attachments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id    INTEGER NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    label      TEXT NOT NULL,
+    url        TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_deal_attachments_deal ON deal_attachments(deal_id);
 """
 
 
@@ -1177,6 +1187,31 @@ def get_deal_issue_memo(con, memo_id: int) -> dict | None:
 
 def delete_deal_issue_memo(con, memo_id: int) -> None:
     con.execute("DELETE FROM deal_issue_memos WHERE id=?", (int(memo_id),))
+    con.commit()
+
+
+def list_deal_attachments(con, deal_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM deal_attachments WHERE deal_id=? ORDER BY created_at DESC", (deal_id,)
+    )]
+
+
+def add_deal_attachment(con, *, deal_id: int, label: str, url: str) -> int:
+    cur = con.execute(
+        "INSERT INTO deal_attachments (deal_id, label, url) VALUES (?,?,?)",
+        (int(deal_id), label, url),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+def get_deal_attachment(con, attachment_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM deal_attachments WHERE id=?", (int(attachment_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def delete_deal_attachment(con, attachment_id: int) -> None:
+    con.execute("DELETE FROM deal_attachments WHERE id=?", (int(attachment_id),))
     con.commit()
 
 

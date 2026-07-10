@@ -1602,6 +1602,34 @@ def deal_form(con, deal=None) -> str:
           <p class="muted" style="margin:0">論点なし</p>
         </div>"""
 
+    attachments_html = ""
+    if deal.get("id"):
+        attachments = sfa_db.list_deal_attachments(con, deal["id"])
+        if attachments:
+            att_rows = "".join(
+                f'<tr><td><a href="{_esc(a.get("url"))}" target="_blank" rel="noopener">📎 {_esc(a.get("label"))}</a></td>'
+                f'<td class="muted" style="white-space:nowrap">{_esc((a.get("created_at") or "")[:16])}</td>'
+                f'<td><form method="post" action="/deal-attachment/{a["id"]}/delete" style="display:inline" '
+                f'onsubmit="return confirm(\'削除しますか？\')">'
+                f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
+                for a in attachments
+            )
+            attachments_table = f'<table><tr><th>ファイル</th><th>追加日時</th><th></th></tr>{att_rows}</table>'
+        else:
+            attachments_table = '<p class="muted" style="margin:0 0 10px">添付ファイルなし</p>'
+        attachments_html = f"""
+        <div class="card">
+          <h2>添付ファイル（{len(attachments)}件）</h2>
+          {attachments_table}
+          <form method="post" action="/deal/{deal['id']}/attachment" style="margin-top:10px">
+            <div class="grid">
+              <div><label>ファイル名・ラベル *</label><input name="label" required placeholder="例: 見積依頼書.xlsx"></div>
+              <div><label>リンク（SharePoint等） *</label><input type="url" name="url" required placeholder="https://..."></div>
+            </div>
+            <p><button class="btn sec" type="submit">追加</button></p>
+          </form>
+        </div>"""
+
     activities_html = ""
     sync_btn = ""
     if deal.get("id"):
@@ -1781,6 +1809,7 @@ def deal_form(con, deal=None) -> str:
     {hearing_html}
     {dev_projects_html}
     {deal_issues_html}
+    {attachments_html}
     {activities_html}"""
 
 
@@ -5605,6 +5634,29 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _err = "不正なリクエスト"
                     _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
                     self._send(_resp, ctype="application/json")
+
+                elif path.startswith("/deal/") and path.endswith("/attachment"):
+                    try:
+                        did = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deals")
+                        return
+                    label = (f.get("label") or "").strip()
+                    url = (f.get("url") or "").strip()
+                    if label and url:
+                        sfa_db.add_deal_attachment(con, deal_id=did, label=label, url=url)
+                    self._redirect(f"/deal/{did}")
+
+                elif path.startswith("/deal-attachment/") and path.endswith("/delete"):
+                    try:
+                        aid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deals")
+                        return
+                    att = sfa_db.get_deal_attachment(con, aid)
+                    if att:
+                        sfa_db.delete_deal_attachment(con, aid)
+                    self._redirect(f"/deal/{att['deal_id']}" if att else "/deals")
 
                 elif path == "/activity/add":
                     did = int(f["deal_id"])
