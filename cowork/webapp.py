@@ -81,6 +81,14 @@ def _num(v, default=0) -> float:
         return default
 
 
+def _csv_safe(v):
+    """CSVセル値の数式インジェクション中和。=+-@ 等で始まる文字列はExcel/Sheetsで
+    数式として実行されうるため、先頭にシングルクォートを付けて無害化する。"""
+    if isinstance(v, str) and v and v[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + v
+    return v
+
+
 def _opt_l2(l1: str | None, selected: str | None) -> str:
     """L1に対応するL2選択肢を生成。"""
     opts = ['<option value=""></option>']
@@ -4316,13 +4324,13 @@ def build_hearing_results_csv(con, template_id: int) -> bytes:
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["商談ID", "アカウント", "案件名", "ヒアリング日"] + labels)
+    writer.writerow([_csv_safe(h) for h in (["商談ID", "アカウント", "案件名", "ヒアリング日"] + labels)])
     for r in results:
         amap = {a.get("label"): _format_answer_for_export(a) for a in (r.get("answers") or [])}
-        writer.writerow([
+        writer.writerow([_csv_safe(v) for v in ([
             r.get("deal_id"), r.get("account_name") or "", r.get("deal_name") or "",
             r.get("conducted_on") or "",
-        ] + [amap.get(lbl, "") for lbl in labels])
+        ] + [amap.get(lbl, "") for lbl in labels])])
     return ("﻿" + buf.getvalue()).encode("utf-8")
 
 
