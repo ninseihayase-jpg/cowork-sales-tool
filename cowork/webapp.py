@@ -2255,10 +2255,14 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
         is_open = str(open_issue) == str(it["id"])
         memo_panel = _issue_memo_panel_html(memos, it, return_to=return_to)
         summary_box = _ai_summary_hover_html(it.get('ai_summary'), issue_id=it['id'], return_to=return_to)
+        deal_cell = (
+            f'<a href="/deal/{it["deal_id"]}">{_esc(it.get("account_name"))}</a>'
+            f'<div class="muted">{_esc(it.get("deal_name"))}</div>'
+            if it.get('deal_id') else '<span class="muted">商談共通</span>'
+        )
         rows += f"""
         <tr>
-          <td><a href="/deal/{it['deal_id']}">{_esc(it.get('account_name'))}</a>
-              <div class="muted">{_esc(it.get('deal_name'))}</div></td>
+          <td>{deal_cell}</td>
           <td>{_esc(it.get('issue'))}</td>
           <td>{_issue_status_select_html(it['id'], it.get('status'))}</td>
           <td>{_issue_members_inline_html(it['id'], it.get('members'))}</td>
@@ -2316,13 +2320,16 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
     delete_btn = ""
 
     if is_edit:
-        deal_label = f'{_esc(it.get("account_name"))} / {_esc(it.get("deal_name"))}'
+        if it.get("deal_id"):
+            deal_label = f'{_esc(it.get("account_name"))} / {_esc(it.get("deal_name"))}'
+        else:
+            deal_label = '商談共通（特定の商談に紐づかない論点）'
         deal_field_html = (
-            f'<input type="hidden" name="deal_id" value="{it["deal_id"]}">'
+            f'<input type="hidden" name="deal_id" value="{it.get("deal_id") or ""}">'
             f'<div class="muted" style="margin:4px 0 10px">{deal_label}</div>'
         )
         action = f'/deal-issue/{it["id"]}/edit'
-        back_href = return_to or f'/deal/{it["deal_id"]}'
+        back_href = return_to or (f'/deal/{it["deal_id"]}' if it.get("deal_id") else "/deal-issues")
         delete_btn = (
             f'<form method="post" action="/deal-issue/{it["id"]}/delete" style="display:inline;margin-left:8px" '
             f'onsubmit="return confirm(\'削除しますか？\')">'
@@ -2337,8 +2344,8 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
         )
         deal_field_html = f"""
           <input type="text" id="diDealFilter" placeholder="会社名・商談名で絞り込み" oninput="diFilterDeals()">
-          <select name="deal_id" id="diDealSelect" required size="8" style="height:170px">
-            <option value=""></option>
+          <select name="deal_id" id="diDealSelect" size="8" style="height:170px">
+            <option value="">（商談に紐づけない・商談共通）</option>
             {opts}
           </select>"""
         action = "/deal-issue/new"
@@ -5538,9 +5545,6 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 # ── 社内論点 ──
                 elif path == "/deal-issue/new":
                     deal_id_val = int(f["deal_id"]) if f.get("deal_id") else None
-                    if not deal_id_val:
-                        self._redirect("/deal-issues")
-                        return
                     iid = sfa_db.upsert_deal_issue(
                         con, id=None, deal_id=deal_id_val,
                         issue=f.get("issue") or "(無題)",
@@ -5549,7 +5553,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         due_date=f.get("due_date") or None,
                     )
                     _return_to = f.get("return_to") or ""
-                    self._redirect(_return_to if _return_to.startswith("/") else f"/deal/{deal_id_val}")
+                    self._redirect(_return_to if _return_to.startswith("/")
+                                   else (f"/deal/{deal_id_val}" if deal_id_val else "/deal-issues"))
 
                 elif path.startswith("/deal-issue/") and path.endswith("/edit"):
                     try:

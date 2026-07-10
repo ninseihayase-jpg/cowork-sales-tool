@@ -414,7 +414,7 @@ CREATE INDEX IF NOT EXISTS idx_dev_projects_deal ON dev_projects(deal_id);
 -- 社内論点（商談に紐づく議論すべき論点。1商談:N論点）
 CREATE TABLE IF NOT EXISTS deal_issues (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    deal_id     INTEGER NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    deal_id     INTEGER REFERENCES deals(id) ON DELETE CASCADE,  -- NULL=商談に紐づかない共通論点
     issue       TEXT NOT NULL,        -- 論点
     members     TEXT,                 -- 議論メンバー（複数選択、カンマ区切り）
     status      TEXT DEFAULT '議論中', -- 議論中/議論済み/取り消し
@@ -507,6 +507,41 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE dev_projects ADD COLUMN tool_login_id TEXT")
         if "tool_login_pass" not in dp_cols:
             con.execute("ALTER TABLE dev_projects ADD COLUMN tool_login_pass TEXT")
+        # deal_issues.deal_id を NOT NULL → NULL可に変更（商談共通の論点に対応）。
+        # SQLiteはNOT NULL制約を直接ALTERできないため、テーブルを作り直す。
+        issue_deal_id_col = next(
+            (c for c in con.execute("PRAGMA table_info(deal_issues)") if c[1] == "deal_id"), None
+        )
+        if issue_deal_id_col is not None and issue_deal_id_col[3] == 1:
+            # foreign_keys=ONのままDROP TABLEすると、SQLiteはdeal_issue_memosの
+            # ON DELETE CASCADEを全行に適用してしまい、既存メモが全消失する。
+            # 一時的にOFFにしてから作り直す。
+            con.commit()
+            con.execute("PRAGMA foreign_keys = OFF")
+            con.execute("""
+                CREATE TABLE deal_issues_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    deal_id     INTEGER REFERENCES deals(id) ON DELETE CASCADE,
+                    issue       TEXT NOT NULL,
+                    members     TEXT,
+                    status      TEXT DEFAULT '議論中',
+                    due_date    TEXT,
+                    ai_summary  TEXT,
+                    created_at  TEXT DEFAULT (datetime('now')),
+                    updated_at  TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            con.execute(
+                "INSERT INTO deal_issues_new (id, deal_id, issue, members, status, due_date, "
+                "ai_summary, created_at, updated_at) "
+                "SELECT id, deal_id, issue, members, status, due_date, ai_summary, created_at, updated_at "
+                "FROM deal_issues"
+            )
+            con.execute("DROP TABLE deal_issues")
+            con.execute("ALTER TABLE deal_issues_new RENAME TO deal_issues")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_deal_issues_deal ON deal_issues(deal_id)")
+            con.commit()
+            con.execute("PRAGMA foreign_keys = ON")
         con.commit()
     finally:
         con.close()
@@ -1099,7 +1134,7 @@ DEAL_ISSUE_FIELDS = ["deal_id", "issue", "members", "status", "due_date"]
 _DEAL_ISSUE_SELECT = (
     "SELECT i.*, d.deal_name, d.owner AS sales_owner, d.sub_owner AS sales_sub_owner, "
     "a.name AS account_name FROM deal_issues i "
-    "JOIN deals d ON d.id = i.deal_id LEFT JOIN accounts a ON a.id = d.account_id"
+    "LEFT JOIN deals d ON d.id = i.deal_id LEFT JOIN accounts a ON a.id = d.account_id"
 )
 
 DEAL_ISSUE_SORTS = ["due_date", "status", "updated_at"]
