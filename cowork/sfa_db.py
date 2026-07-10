@@ -447,6 +447,16 @@ CREATE TABLE IF NOT EXISTS deal_attachments (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_deal_attachments_deal ON deal_attachments(deal_id);
+
+-- Hisho同期の失敗記録（printで消えていた失敗を永続化し、後から再同期・可視化する）
+CREATE TABLE IF NOT EXISTS sync_failures (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,   -- 'deal' | 'dev_project' | 'dev_project_delete'
+    ref_id     INTEGER NOT NULL,-- 対象のSFA側ID（dev_project_delete時はhisho_id）
+    error      TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(kind, ref_id)
+);
 """
 
 
@@ -1296,3 +1306,36 @@ def set_deal_issue_ai_summary(con, issue_id: int, summary: str) -> None:
         (summary, int(issue_id)),
     )
     con.commit()
+
+
+# ---- Hisho同期の失敗記録 ----
+
+def record_sync_failure(con, kind: str, ref_id: int, error: str) -> None:
+    """同期失敗を記録（同一(kind,ref_id)は最新エラーで上書き）。記録自体の失敗は握りつぶす。"""
+    try:
+        con.execute(
+            "INSERT INTO sync_failures (kind, ref_id, error) VALUES (?,?,?) "
+            "ON CONFLICT(kind, ref_id) DO UPDATE SET error=excluded.error, created_at=datetime('now')",
+            (kind, int(ref_id), (error or "")[:2000]),
+        )
+        con.commit()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sync_failures] record failed: {exc}", flush=True)
+
+
+def clear_sync_failure(con, kind: str, ref_id: int) -> None:
+    """同期成功時に該当の失敗記録を消す。"""
+    try:
+        con.execute("DELETE FROM sync_failures WHERE kind=? AND ref_id=?", (kind, int(ref_id)))
+        con.commit()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sync_failures] clear failed: {exc}", flush=True)
+
+
+def list_sync_failures(con) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM sync_failures ORDER BY created_at ASC")]
+
+
+def count_sync_failures(con) -> int:
+    return con.execute("SELECT COUNT(*) c FROM sync_failures").fetchone()["c"]

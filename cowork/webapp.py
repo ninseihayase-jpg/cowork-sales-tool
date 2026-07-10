@@ -1078,10 +1078,20 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         f'⏳ テーマDB未同期 {pending_sync}件を同期</button></form>'
         if pending_sync else ""
     )
+    # Hisho同期に失敗して記録が残っている件数（あれば再同期ボタンを出す）
+    _sync_fail_n = sfa_db.count_sync_failures(con)
+    sync_fail_btn = (
+        f'<form method="post" action="/sync-failures/retry" style="display:inline">'
+        f'<button class="btn" style="font-size:12px;background:#c53030" '
+        f'onclick="return confirm(\'Hisho同期に失敗した{_sync_fail_n}件の再同期を試みます。よろしいですか？\')">'
+        f'⚠ 同期失敗 {_sync_fail_n}件を再同期</button></form>'
+        if _sync_fail_n else ""
+    )
     return f"""
     <div class="card"><h2 style="display:flex;justify-content:space-between;align-items:center">
       <span>商談 ({len(deals)})</span>
       <span style="display:flex;gap:8px;flex-wrap:wrap">
+        {sync_fail_btn}
         {sync_btn}
         <a class="btn sec" href="/deals/import">CSV取込</a>
         <a class="btn sec" href="/dev-projects/new">＋新規開発案件</a>
@@ -5514,7 +5524,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if theme_client is not None:
                         try:
                             theme_link.sync_deal(theme_client, con, did)
+                            sfa_db.clear_sync_failure(con, "deal", did)
                         except Exception as exc:  # noqa: BLE001
+                            sfa_db.record_sync_failure(con, "deal", did, str(exc))
                             print(f"[theme_link] sync_deal failed: {exc}")
                     self._redirect(f"/deal/{did}")
 
@@ -5558,7 +5570,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if theme_client is not None:
                         try:
                             dev_project_link.sync_dev_project(theme_client, con, pid)
+                            sfa_db.clear_sync_failure(con, "dev_project", pid)
                         except Exception as exc:  # noqa: BLE001
+                            sfa_db.record_sync_failure(con, "dev_project", pid, str(exc))
                             print(f"[dev_project_link] sync_dev_project failed: {exc}")
                     _return_to = f.get("return_to") or ""
                     self._redirect(_return_to if _return_to.startswith("/") else f"/deal/{deal_id_val}")
@@ -5607,7 +5621,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if theme_client is not None:
                         try:
                             dev_project_link.sync_dev_project(theme_client, con, pid)
+                            sfa_db.clear_sync_failure(con, "dev_project", pid)
                         except Exception as exc:  # noqa: BLE001
+                            sfa_db.record_sync_failure(con, "dev_project", pid, str(exc))
                             print(f"[dev_project_link] sync_dev_project failed: {exc}")
                     _return_to = f.get("return_to") or ""
                     self._redirect(_return_to if _return_to.startswith("/") else f"/deal/{existing['deal_id']}")
@@ -6259,6 +6275,36 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             home_page(con),
                             flash=f"テーマDB未同期の商談{pending}件の同期をバックグラウンドで開始しました。"
                                   f"数分後に商談一覧の「連携」列で確認できます。",
+                        ))
+
+                elif path == "/sync-failures/retry":
+                    # 記録済みのHisho同期失敗を1件ずつ再同期し、成功したものは記録から消す
+                    if theme_client is None:
+                        self._send(render(home_page(con), flash="テーマDB連携が無効です（THEME_API_TOKEN未設定）。"))
+                    else:
+                        failures = sfa_db.list_sync_failures(con)
+                        ok = 0
+                        still_failing = 0
+                        for frec in failures:
+                            kind, ref_id = frec["kind"], frec["ref_id"]
+                            try:
+                                if kind == "deal":
+                                    theme_link.sync_deal(theme_client, con, ref_id)
+                                elif kind == "dev_project":
+                                    dev_project_link.sync_dev_project(theme_client, con, ref_id)
+                                elif kind == "dev_project_delete":
+                                    dev_project_link.delete_dev_project_remote(theme_client, ref_id)
+                                else:
+                                    continue
+                                sfa_db.clear_sync_failure(con, kind, ref_id)
+                                ok += 1
+                            except Exception as exc:  # noqa: BLE001
+                                sfa_db.record_sync_failure(con, kind, ref_id, str(exc))
+                                still_failing += 1
+                        self._send(render(
+                            home_page(con),
+                            flash=f"再同期: 成功{ok}件 / 失敗{still_failing}件。"
+                                  + ("失敗分は記録に残しています。" if still_failing else ""),
                         ))
 
                 elif path == "/leads/bulk_source":
