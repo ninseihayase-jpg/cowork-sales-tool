@@ -1000,6 +1000,11 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     }
     deal_bulk_options_json = json.dumps(deal_bulk_options, ensure_ascii=False)
 
+    # N+1回避: 全開発案件を1クエリで取得しdeal_idでグルーピング（商談ごとの都度クエリを廃止）
+    _dev_by_deal: dict = {}
+    for _dp in sfa_db.list_dev_projects(con):
+        _dev_by_deal.setdefault(_dp["deal_id"], []).append(_dp)
+
     rows = []
     for d in deals:
         val = d.get("value_lumpsum") or d.get("value_recurring") or ""
@@ -1032,7 +1037,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         )
         tool_btns = " ".join(
             _tool_link_btn(dp.get("tool_url"), tool_id=dp.get("tool_login_id"), tool_password=dp.get("tool_login_pass"))
-            for dp in sfa_db.list_dev_projects(con, deal_id=d["id"])
+            for dp in _dev_by_deal.get(d["id"], [])
             if dp.get("tool_url") and dp.get("status") != "中止"
         ) or "—"
         rows.append(
@@ -5148,9 +5153,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/deals":
                     qs = self._qs()
                     def qs1(k): return (qs.get(k, [None])[0] or None)
+                    _date_q = qs1("date")
+                    if _date_q:
+                        try:
+                            date.fromisoformat(_date_q)
+                        except ValueError:
+                            _date_q = None
                     self._send(render(deals_page(
                         con, tab=qs1("tab") or "active", owner=qs1("owner"),
-                        status_filter=qs1("status"), stage_filter=qs1("stage"), date=qs1("date"),
+                        status_filter=qs1("status"), stage_filter=qs1("stage"), date=_date_q,
                     )))
                 elif path == "/deals/import":
                     self._send(render(deals_import_page(con)))
@@ -5311,25 +5322,33 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render("<div class=card>ページが見つかりません</div>"), 404)
                 # ── 商談・アカウント ──
                 elif path.startswith("/deal/"):
-                    did = int(path.split("/")[2])
-                    deal = sfa_db.get_deal(con, did)
-                    self._send(
-                        render(deal_form(con, deal)) if deal
-                        else render("<div class=card>商談が見つかりません</div>"),
-                        200 if deal else 404,
-                    )
+                    try:
+                        did = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>ページが見つかりません</div>"), 404)
+                    else:
+                        deal = sfa_db.get_deal(con, did)
+                        self._send(
+                            render(deal_form(con, deal)) if deal
+                            else render("<div class=card>商談が見つかりません</div>"),
+                            200 if deal else 404,
+                        )
                 elif path.startswith("/account/"):
                     parts = path.split("/")
-                    aid = int(parts[2])
-                    acc = con.execute("SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
-                    if len(parts) >= 4 and parts[3] == "edit":
-                        self._send(render(account_form(con, dict(acc) if acc else None)))
+                    try:
+                        aid = int(parts[2])
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>ページが見つかりません</div>"), 404)
                     else:
-                        self._send(
-                            render(account_detail(con, dict(acc))) if acc
-                            else render("<div class=card>アカウントが見つかりません</div>"),
-                            200 if acc else 404,
-                        )
+                        acc = con.execute("SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
+                        if len(parts) >= 4 and parts[3] == "edit":
+                            self._send(render(account_form(con, dict(acc) if acc else None)))
+                        else:
+                            self._send(
+                                render(account_detail(con, dict(acc))) if acc
+                                else render("<div class=card>アカウントが見つかりません</div>"),
+                                200 if acc else 404,
+                            )
                 else:
                     self._send(render("<div class=card>ページが見つかりません</div>"), 404)
             finally:
@@ -5363,8 +5382,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── アカウント ──
                 elif path == "/account/save":
+                    try:
+                        _acc_id = int(f["id"]) if f.get("id") else None
+                    except ValueError:
+                        _acc_id = None
                     saved_acc_id = sfa_db.upsert_account(
-                        con, id=int(f["id"]) if f.get("id") else None,
+                        con, id=_acc_id,
                         name=f.get("name") or "(無名)",
                         industry=f.get("industry") or None,
                         company_size=f.get("company_size") or None,
@@ -5425,7 +5448,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except ValueError:
                             return None
                     # 新規アカウント自動作成（deal/new フォームで「新規アカウントを追加」チェック時）
-                    deal_account_id = int(f["account_id"]) if f.get("account_id") else None
+                    try:
+                        deal_account_id = int(f["account_id"]) if f.get("account_id") else None
+                    except ValueError:
+                        deal_account_id = None
                     new_acc_name = (f.get("new_account_name") or "").strip()
                     if new_acc_name and not deal_account_id:
                         existing_acc = con.execute(
@@ -5446,8 +5472,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 industry=est1.get("industry"),
                                 company_size=est1.get("company_size"),
                             )
+                    try:
+                        _deal_id_in = int(f["id"]) if f.get("id") else None
+                    except ValueError:
+                        _deal_id_in = None
                     did = sfa_db.upsert_deal(
-                        con, id=int(f["id"]) if f.get("id") else None,
+                        con, id=_deal_id_in,
                         account_id=deal_account_id,
                         deal_name=f.get("deal_name") or "(無題)",
                         stage=f.get("stage") or None,
@@ -5482,7 +5512,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── 開発案件 ──
                 elif path == "/dev-project/new":
-                    deal_id_val = int(f["deal_id"]) if f.get("deal_id") else None
+                    try:
+                        deal_id_val = int(f["deal_id"]) if f.get("deal_id") else None
+                    except ValueError:
+                        deal_id_val = None
                     if not deal_id_val:
                         self._redirect("/dev-projects")
                         return
@@ -5606,7 +5639,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── 社内論点 ──
                 elif path == "/deal-issue/new":
-                    deal_id_val = int(f["deal_id"]) if f.get("deal_id") else None
+                    try:
+                        deal_id_val = int(f["deal_id"]) if f.get("deal_id") else None
+                    except ValueError:
+                        deal_id_val = None
                     iid = sfa_db.upsert_deal_issue(
                         con, id=None, deal_id=deal_id_val,
                         issue=f.get("issue") or "(無題)",
@@ -5744,7 +5780,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect(f"/deal/{att['deal_id']}" if att else "/deals")
 
                 elif path == "/activity/add":
-                    did = int(f["deal_id"])
+                    try:
+                        did = int(f["deal_id"])
+                    except (ValueError, KeyError):
+                        self._redirect("/deals")
+                        return
                     sfa_db.add_activity(
                         con, deal_id=did,
                         type=f.get("type") or None,
@@ -5898,7 +5938,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         items = []
                     tid = None
                     if path != "/hearing-templates/save":
-                        tid = int(path.split("/")[2])
+                        try:
+                            tid = int(path.split("/")[2])
+                        except (ValueError, IndexError):
+                            self._send(render("<div class=card>不正なリクエスト</div>"), 400)
+                            return
                     sfa_db.save_hearing_template(
                         con, id=tid,
                         name=f.get("name", "") or "(無題)",
@@ -6080,7 +6124,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── リード ──
                 elif path == "/leads/save":
-                    existing_id = int(f["id"]) if f.get("id") else None
+                    try:
+                        existing_id = int(f["id"]) if f.get("id") else None
+                    except ValueError:
+                        existing_id = None
                     existing_deal_id = None
                     existing_pitch_theme_id = None
                     if existing_id:
@@ -6297,7 +6344,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect("/leads")
 
                 elif path.startswith("/leads/") and path.endswith("/activity"):
-                    lid = int(path.split("/")[2])
+                    parts = path.split("/")
+                    if len(parts) != 4 or not parts[2].isdigit():
+                        self._redirect("/leads")
+                        return
+                    lid = int(parts[2])
                     sfa_db.create_lead_activity(
                         con, lead_id=lid,
                         type=f.get("type") or "note",
@@ -6307,7 +6358,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect(f"/leads/{lid}")
 
                 elif path.startswith("/leads/") and path.endswith("/status"):
-                    lid = int(path.split("/")[2])
+                    parts = path.split("/")
+                    if len(parts) != 4 or not parts[2].isdigit():
+                        self._redirect("/leads")
+                        return
+                    lid = int(parts[2])
                     new_status = f.get("status", "")
                     if new_status in sfa_db.LEAD_STATUSES:
                         con.execute(
@@ -6318,7 +6373,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect(f"/leads/{lid}")
 
                 elif path.startswith("/leads/") and path.endswith("/convert"):
-                    lid = int(path.split("/")[2])
+                    parts = path.split("/")
+                    if len(parts) != 4 or not parts[2].isdigit():
+                        self._redirect("/leads")
+                        return
+                    lid = int(parts[2])
                     lead = sfa_db.get_lead(con, lid)
                     if not lead:
                         self._redirect("/leads")
