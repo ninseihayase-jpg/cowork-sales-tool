@@ -59,6 +59,20 @@ def sync_dev_project(client: ThemeDBClient, con, dev_project_id: int) -> dict:
     fields = _fields(p)
 
     hisho_id = p.get("hisho_id")
+    if not hisho_id:
+        # ローカルにhisho_idが無くても、過去のINSERTがACK喪失で書き戻せていない可能性がある。
+        # sfa_idでHisho側を検索し、既存行があればそのidを回復してUPDATEに回す。
+        # （これをしないと再INSERTがsfa_id UNIQUE制約で永久に失敗し「詰み」になる）
+        try:
+            found = client.execute("SELECT id FROM dev_projects WHERE sfa_id=?", [p["id"]])
+            rows = found.get("rows") or []
+            if rows:
+                hisho_id = rows[0]["id"]
+                con.execute("UPDATE dev_projects SET hisho_id=? WHERE id=?", (hisho_id, dev_project_id))
+                con.commit()
+        except Exception as exc:  # noqa: BLE001 — 回復検索の失敗は握りつぶし通常INSERTへ
+            print(f"[dev_project_link] sfa_id recovery lookup failed: {exc}", flush=True)
+
     if hisho_id:
         sets = ", ".join(f"{k}=?" for k in DEV_PROJECT_COLUMNS) + ", updated_at=datetime('now')"
         client.execute(f"UPDATE dev_projects SET {sets} WHERE id=?",

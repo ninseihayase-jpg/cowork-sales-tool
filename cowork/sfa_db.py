@@ -264,6 +264,9 @@ CREATE TABLE IF NOT EXISTS activities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_deals_account ON deals(account_id);
+CREATE INDEX IF NOT EXISTS idx_deals_status_updated ON deals(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_deals_owner ON deals(owner);
+CREATE INDEX IF NOT EXISTS idx_deals_stage ON deals(stage);
 CREATE INDEX IF NOT EXISTS idx_activities_deal ON activities(deal_id);
 
 -- CRM吸収: ピッチテーマ
@@ -588,7 +591,11 @@ def get_master_list(con, key: str) -> list[str]:
     """DB保存値があればそれを返す。なければデフォルト定数を返す。"""
     row = con.execute("SELECT values_json FROM masters WHERE key=?", (key,)).fetchone()
     if row:
-        return _json.loads(row[0])
+        try:
+            return _json.loads(row[0])
+        except (ValueError, TypeError):
+            # 保存値が破損している場合はデフォルトにフォールバック（呼び出し側のクラッシュ防止）
+            print(f"[masters] values_json broken for key={key}, falling back to default", flush=True)
     return list(MASTER_KEYS.get(key, []))
 
 
@@ -660,7 +667,7 @@ def list_activities(con, deal_id: int) -> list[dict]:
 
 # ---- 更新系 ----
 def upsert_account(con, *, id=None, name, industry=None, company_size=None, note=None, commit: bool = True) -> int:
-    if id:
+    if id is not None:
         con.execute(
             "UPDATE accounts SET name=?, industry=?, company_size=?, note=?, updated_at=datetime('now') WHERE id=?",
             (name, industry, company_size, note, id),
@@ -716,7 +723,7 @@ DEAL_FIELDS = [
 
 def upsert_deal(con, *, id=None, commit: bool = True, **fields) -> int:
     data = {k: fields.get(k) for k in DEAL_FIELDS}
-    if id:
+    if id is not None:
         # theme_id は sync_deal が直接 SQL で管理するため、NULL で上書きしない
         update_keys = [k for k in DEAL_FIELDS if not (k == "theme_id" and data[k] is None)]
         sets = ", ".join(f"{k}=?" for k in update_keys) + ", updated_at=datetime('now')"
@@ -755,7 +762,7 @@ def list_pitch_themes(con, active_only: bool = False) -> list[dict]:
 
 
 def upsert_pitch_theme(con, *, id=None, name, description=None, color='#6366f1', is_active=1) -> int:
-    if id:
+    if id is not None:
         con.execute(
             "UPDATE pitch_themes SET name=?,description=?,color=?,is_active=? WHERE id=?",
             (name, description, color, int(is_active), id),
@@ -821,7 +828,7 @@ def get_lead(con, lead_id: int) -> dict | None:
 
 def upsert_lead(con, *, id=None, commit: bool = True, **fields) -> int:
     data = {k: fields.get(k) for k in LEAD_FIELDS}
-    if id:
+    if id is not None:
         sets = ", ".join(f"{k}=?" for k in LEAD_FIELDS) + ", updated_at=datetime('now')"
         con.execute(f"UPDATE leads SET {sets} WHERE id=?", [data[k] for k in LEAD_FIELDS] + [id])
         if commit:
@@ -848,7 +855,7 @@ def get_email_pattern(con, id: int) -> dict | None:
 
 def save_email_pattern(con, *, id=None, name, subject, body,
                        from_address=None, cc_addresses=None) -> int:
-    if id:
+    if id is not None:
         con.execute(
             "UPDATE email_patterns SET name=?, subject=?, body=?, from_address=?, cc_addresses=? WHERE id=?",
             (name, subject, body, from_address or None, cc_addresses or None, int(id)),
@@ -923,7 +930,7 @@ def get_hearing_template(con, id: int) -> dict | None:
 
 def save_hearing_template(con, *, id=None, name, description=None, items) -> int:
     items_json = _json.dumps(items if items is not None else [], ensure_ascii=False)
-    if id:
+    if id is not None:
         con.execute(
             "UPDATE hearing_templates SET name=?, description=?, items_json=? WHERE id=?",
             (name, description or None, items_json, int(id)),
@@ -1083,7 +1090,7 @@ DEV_PROJECT_FIELDS = [
 _DEV_PROJECT_SELECT = (
     "SELECT p.*, d.deal_name, d.owner AS sales_owner, d.sub_owner AS sales_sub_owner, "
     "a.name AS account_name FROM dev_projects p "
-    "JOIN deals d ON d.id = p.deal_id LEFT JOIN accounts a ON a.id = d.account_id"
+    "LEFT JOIN deals d ON d.id = p.deal_id LEFT JOIN accounts a ON a.id = d.account_id"
 )
 
 
@@ -1139,7 +1146,7 @@ def upsert_dev_project(con, *, id=None, commit: bool = True, **fields) -> int:
         resolution=data.get("resolution"),
         difficulty=data.get("difficulty"),
     )
-    if id:
+    if id is not None:
         sets = ", ".join(f"{k}=?" for k in DEV_PROJECT_FIELDS) + ", updated_at=datetime('now')"
         con.execute(f"UPDATE dev_projects SET {sets} WHERE id=?",
                     [data[k] for k in DEV_PROJECT_FIELDS] + [int(id)])
@@ -1212,7 +1219,7 @@ def get_deal_issue(con, id: int) -> dict | None:
 
 def upsert_deal_issue(con, *, id=None, commit: bool = True, **fields) -> int:
     data = {k: fields.get(k) for k in DEAL_ISSUE_FIELDS}
-    if id:
+    if id is not None:
         sets = ", ".join(f"{k}=?" for k in DEAL_ISSUE_FIELDS) + ", updated_at=datetime('now')"
         con.execute(f"UPDATE deal_issues SET {sets} WHERE id=?",
                     [data[k] for k in DEAL_ISSUE_FIELDS] + [int(id)])

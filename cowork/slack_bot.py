@@ -390,6 +390,9 @@ def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
     bot_uid = get_bot_user_id()
     base: dict = {}
     overrides: dict = {}
+    # bot_ts が None（post_message失敗等でDBにNULLが残った場合）でも
+    # 文字列比較(ts > bot_ts)でTypeErrorにならないようフォールバック
+    bot_ts = bot_ts or ""
 
     all_labels = (
         "活動日", "種別", "相手", "内容", "ステージ", "次回MS日", "次回MSラベル", "追記メモ",
@@ -509,6 +512,8 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None,
             result = _tl.sync_deal(theme_client, con, deal_id)
             print(f"[SlackBot] Hisho sync: deal_id={deal_id} action={result.get('action')} theme_id={result.get('theme_id')}", flush=True)
         except Exception as _e:
+            # sync_deal内でcommit前に失敗した場合に備え、未コミットの書き込みを破棄
+            con.rollback()
             print(f"[SlackBot] Hisho sync error: {_e}", flush=True)
 
     return deal_id
@@ -593,7 +598,10 @@ def handle_mention(event: dict, con: sqlite3.Connection):
             "「キャンセル」でやり直し"
         )
         bot_ts = post_message(channel, thread_ts, msg)
-        save_pending_thread(con, thread_ts, channel, None, bot_ts, state="new_deal_ask")
+        if bot_ts:
+            save_pending_thread(con, thread_ts, channel, None, bot_ts, state="new_deal_ask")
+        else:
+            print(f"[SlackBot] post_message failed — pending not saved: thread={thread_ts}", flush=True)
         return
 
     # 商談特定結果を人間に確認
@@ -614,8 +622,11 @@ def handle_mention(event: dict, con: sqlite3.Connection):
     bot_ts = post_message(channel, thread_ts, confirm_text)
 
     # state='identifying' で保存（商談確認待ち）
-    save_pending_thread(con, thread_ts, channel, deal["id"], bot_ts,
-                        state="identifying")
+    if bot_ts:
+        save_pending_thread(con, thread_ts, channel, deal["id"], bot_ts,
+                            state="identifying")
+    else:
+        print(f"[SlackBot] post_message failed — pending not saved: thread={thread_ts}", flush=True)
 
 
 def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
@@ -658,11 +669,14 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 "*1️⃣ 商談のみ追加*（活動履歴なし）\n"
                 "*2️⃣ 商談＋活動履歴を追加*\n\n"
                 "「1」または「2」で返信 / 「キャンセル」でやり直し")
-            con.execute(
-                "UPDATE slack_threads SET state='new_deal_select', bot_message_ts=? WHERE thread_ts=?",
-                (new_bot_ts, thread_ts),
-            )
-            con.commit()
+            if new_bot_ts:
+                con.execute(
+                    "UPDATE slack_threads SET state='new_deal_select', bot_message_ts=? WHERE thread_ts=?",
+                    (new_bot_ts, thread_ts),
+                )
+                con.commit()
+            else:
+                print(f"[SlackBot] post_message failed — state stays new_deal_ask: thread={thread_ts}", flush=True)
             return
 
         if text.strip().isdigit():
@@ -691,11 +705,14 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                     f"商談一覧: {SFA_TOOL_URL}/deals"
                 )
                 new_bot_ts = post_message(channel, thread_ts, confirm_text)
-                con.execute(
-                    "UPDATE slack_threads SET deal_id=?, bot_message_ts=?, state='identifying' WHERE thread_ts=?",
-                    (specified_id, new_bot_ts, thread_ts),
-                )
-                con.commit()
+                if new_bot_ts:
+                    con.execute(
+                        "UPDATE slack_threads SET deal_id=?, bot_message_ts=?, state='identifying' WHERE thread_ts=?",
+                        (specified_id, new_bot_ts, thread_ts),
+                    )
+                    con.commit()
+                else:
+                    print(f"[SlackBot] post_message failed — state stays new_deal_ask: thread={thread_ts}", flush=True)
             return
 
         post_message(channel, thread_ts,
@@ -801,11 +818,14 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 f"• create_mode: {'商談のみ' if create_mode == 'deal_only' else '商談＋活動履歴'}\n\n"
                 f"「はい」で追加確定 / 「いいえ」でアカウント名を修正（「アカウント名: 正しい名前」と返信後「確定」）\n"
                 f"「キャンセル」でやり直し")
-            con.execute(
-                "UPDATE slack_threads SET state='new_deal_acc_confirm', bot_message_ts=?, meta=? WHERE thread_ts=?",
-                (new_bot_ts, meta_with_fields, thread_ts),
-            )
-            con.commit()
+            if new_bot_ts:
+                con.execute(
+                    "UPDATE slack_threads SET state='new_deal_acc_confirm', bot_message_ts=?, meta=? WHERE thread_ts=?",
+                    (new_bot_ts, meta_with_fields, thread_ts),
+                )
+                con.commit()
+            else:
+                print(f"[SlackBot] post_message failed — state stays new_deal_pending: thread={thread_ts}", flush=True)
             return
 
         # 既存アカウント → そのまま商談作成
@@ -820,6 +840,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 f"{act_msg}{SFA_TOOL_URL}/deal/{new_deal_id}")
             print(f"[SlackBot] new deal added: thread={thread_ts} deal_id={new_deal_id}", flush=True)
         except Exception as e:
+            con.rollback()
             post_message(channel, thread_ts, f"❌ DB追加エラー: {e}")
             print(f"[SlackBot] new deal error: {e}", flush=True)
         return
@@ -869,11 +890,14 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
             lines += ["", "✅ 修正後「確定」と返信してください / 「キャンセル」でやり直し"]
             new_bot_ts = post_message(channel, thread_ts, "\n".join(lines))
             new_meta = json.dumps({"create_mode": create_mode}, ensure_ascii=False)
-            con.execute(
-                "UPDATE slack_threads SET state='new_deal_pending', bot_message_ts=?, meta=? WHERE thread_ts=?",
-                (new_bot_ts, new_meta, thread_ts),
-            )
-            con.commit()
+            if new_bot_ts:
+                con.execute(
+                    "UPDATE slack_threads SET state='new_deal_pending', bot_message_ts=?, meta=? WHERE thread_ts=?",
+                    (new_bot_ts, new_meta, thread_ts),
+                )
+                con.commit()
+            else:
+                print(f"[SlackBot] post_message failed — state stays new_deal_acc_confirm: thread={thread_ts}", flush=True)
             return
 
         if text_l not in ("はい", "yes", "y", "ok"):
@@ -895,6 +919,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 f"{act_msg}{SFA_TOOL_URL}/deal/{new_deal_id}")
             print(f"[SlackBot] new deal+account: thread={thread_ts} deal_id={new_deal_id}", flush=True)
         except Exception as e:
+            con.rollback()
             post_message(channel, thread_ts, f"❌ DB追加エラー: {e}")
             print(f"[SlackBot] new deal+account error: {e}", flush=True)
         return
@@ -957,11 +982,14 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 "*1️⃣ 商談のみ追加*（活動履歴なし）\n"
                 "*2️⃣ 商談＋活動履歴を追加*\n\n"
                 "「1」または「2」で返信 / 「キャンセル」でやり直し")
-            con.execute(
-                "UPDATE slack_threads SET deal_id=NULL, state='new_deal_select', bot_message_ts=? WHERE thread_ts=?",
-                (new_bot_ts, thread_ts),
-            )
-            con.commit()
+            if new_bot_ts:
+                con.execute(
+                    "UPDATE slack_threads SET deal_id=NULL, state='new_deal_select', bot_message_ts=? WHERE thread_ts=?",
+                    (new_bot_ts, thread_ts),
+                )
+                con.commit()
+            else:
+                print(f"[SlackBot] post_message failed — state stays identifying: thread={thread_ts}", flush=True)
 
         elif text.strip().isdigit():
             # SFA番号で商談を直接指定
@@ -992,12 +1020,15 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                     f"商談一覧: {SFA_TOOL_URL}/deals"
                 )
                 new_bot_ts = post_message(channel, thread_ts, confirm_text)
-                con.execute(
-                    "UPDATE slack_threads SET deal_id=?, bot_message_ts=? WHERE thread_ts=?",
-                    (specified_id, new_bot_ts, thread_ts)
-                )
-                con.commit()
-                print(f"[SlackBot] deal switched to #{specified_id}: thread={thread_ts}")
+                if new_bot_ts:
+                    con.execute(
+                        "UPDATE slack_threads SET deal_id=?, bot_message_ts=? WHERE thread_ts=?",
+                        (specified_id, new_bot_ts, thread_ts)
+                    )
+                    con.commit()
+                    print(f"[SlackBot] deal switched to #{specified_id}: thread={thread_ts}")
+                else:
+                    print(f"[SlackBot] post_message failed — deal switch to #{specified_id} not saved: thread={thread_ts}", flush=True)
 
         # それ以外（会話の続き等）は無視
         return
@@ -1037,8 +1068,38 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
             f"✅ SFA DB を更新しました。\n活動履歴: 追加完了 / {summary}")
         print(f"[SlackBot] DB updated: thread={thread_ts} deal_id={deal_id}")
     except Exception as e:
+        con.rollback()
         post_message(channel, thread_ts, f"❌ DB更新エラー: {e}")
         print(f"[SlackBot] DB update error: {e}")
+
+
+def _ensure_event_dedup_table(con: sqlite3.Connection) -> None:
+    """Slackイベント冪等化用テーブル（sfa_db.py側のスキーマは変更しない）。"""
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS slack_processed_events (
+            event_id TEXT PRIMARY KEY,
+            processed_at TEXT
+        )
+    """)
+
+
+def _mark_event_processed(con: sqlite3.Connection, event_id: str) -> bool:
+    """
+    event_id を処理済みとして記録する。
+    既に記録済み（Slackの再送等による重複イベント）なら False を返す。
+    """
+    _ensure_event_dedup_table(con)
+    try:
+        con.execute(
+            "INSERT INTO slack_processed_events (event_id, processed_at) VALUES (?, datetime('now'))",
+            (event_id,),
+        )
+        con.commit()
+        return True
+    except sqlite3.IntegrityError:
+        # 既に同じ event_id が記録済み = 重複配信
+        con.rollback()
+        return False
 
 
 def handle_event(data: dict, con: sqlite3.Connection, theme_client=None):
@@ -1048,12 +1109,28 @@ def handle_event(data: dict, con: sqlite3.Connection, theme_client=None):
     subtype = event.get("subtype", "")
     bot_id = event.get("bot_id", "")
     thread_ts = event.get("thread_ts", "")
-    print(f"[SlackBot] event: type={etype!r} subtype={subtype!r} bot_id={bool(bot_id)} thread={thread_ts!r}", flush=True)
+    event_id = data.get("event_id")
+    print(f"[SlackBot] event: type={etype!r} subtype={subtype!r} bot_id={bool(bot_id)} thread={thread_ts!r} event_id={event_id!r}", flush=True)
+
+    # Slackの再送（同一event_idの二重配信）による重複DB書き込み・重複返信を防ぐ
+    if event_id:
+        try:
+            is_new = _mark_event_processed(con, event_id)
+        except Exception as _e:
+            # 冪等化機構自体の異常時はフェイルオープン（処理は継続、記録のみ諦める）
+            con.rollback()
+            is_new = True
+            print(f"[SlackBot] event dedup check failed (continuing): {_e}", flush=True)
+        if not is_new:
+            print(f"[SlackBot] duplicate event skipped: event_id={event_id}", flush=True)
+            return
+
     try:
         if etype == "app_mention":
             handle_mention(event, con)
         elif etype in ("message", "message.groups", "message.channels"):
             handle_message(event, con, theme_client)
     except Exception as e:
+        con.rollback()
         print(f"[SlackBot] unhandled error ({etype}): {e}")
         import traceback; traceback.print_exc()
