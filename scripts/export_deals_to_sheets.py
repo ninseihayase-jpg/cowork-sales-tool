@@ -40,6 +40,7 @@ DB_PATH = os.environ.get("SFA_DB_PATH", str(ROOT / "cowork_sfa.db"))
 SFA_API_URL = os.environ.get("SFA_API_URL", "").rstrip("/")
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 SHEET_NAME = "商談一覧"
+CLOSED_SHEET_NAME = "クローズ商談"
 MEMO_SHEET_NAME = "メモ・タスク"
 DEV_SHEET_NAME = "開発案件一覧"
 
@@ -250,6 +251,28 @@ def fetch_deals_via_db() -> list[dict]:
         con.close()
 
 
+def fetch_closed_deals_via_api() -> list[dict]:
+    """SFA WebアプリのAPIからクローズ済み商談を取得する（Renderのcron環境用）。"""
+    url = f"{SFA_API_URL}/api/deals?status=closed&token={urllib.parse.quote(SFA_API_TOKEN)}"
+    print(f"SFA API ({SFA_API_URL}/api/deals?status=closed) からクローズ商談を取得中...")
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(f"API エラー: {data['error']}")
+    return data
+
+
+def fetch_closed_deals_via_db() -> list[dict]:
+    """ローカルSQLite DBからクローズ済み商談を取得する（ローカル実行時フォールバック）。"""
+    from cowork import sfa_db
+    con = sfa_db.connect(DB_PATH)
+    try:
+        return [dict(d) for d in sfa_db.list_deals(con, status="closed")]
+    finally:
+        con.close()
+
+
 def fetch_dev_projects_via_api() -> list[dict]:
     """SFA WebアプリのAPIから開発案件一覧を取得する（Renderのcron環境用）。"""
     url = f"{SFA_API_URL}/api/dev_projects?status=open&token={urllib.parse.quote(SFA_API_TOKEN)}"
@@ -292,6 +315,14 @@ def main() -> None:
 
     print(f"  open 商談: {len(deals)}件")
     rows = [deal_to_row(d) for d in deals]
+
+    # --- クローズ済み商談を取得（別シート用） ---
+    if SFA_API_URL and SFA_API_TOKEN:
+        closed_deals = fetch_closed_deals_via_api()
+    else:
+        closed_deals = fetch_closed_deals_via_db()
+    print(f"  closed 商談: {len(closed_deals)}件")
+    closed_rows = [deal_to_row(d) for d in closed_deals]
 
     # --- gspread でスプシに書き込み ---
     import gspread
@@ -340,6 +371,7 @@ def main() -> None:
 
     print(f"Google Sheets (id={WEEKLY_SHEET_ID}) へ書き込み中...")
     write_sheet(gc, WEEKLY_SHEET_ID, SHEET_NAME, rows)
+    write_sheet(gc, WEEKLY_SHEET_ID, CLOSED_SHEET_NAME, closed_rows)
     write_sheet(gc, WEEKLY_SHEET_ID, MEMO_SHEET_NAME, memo_rows, headers=MEMO_HEADERS)
     write_sheet(gc, WEEKLY_SHEET_ID, DEV_SHEET_NAME, dev_rows, headers=DEV_HEADERS)
     print("完了")
