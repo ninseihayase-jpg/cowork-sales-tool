@@ -497,6 +497,72 @@ def backup_db(db_path: str = DEFAULT_DB_PATH, keep: int = 14) -> str | None:
     return str(dest)
 
 
+def _backup_dir(db_path: str = DEFAULT_DB_PATH) -> Path:
+    return Path(db_path).parent / "backups"
+
+
+def backup_now(db_path: str = DEFAULT_DB_PATH, tag: str = "manual") -> str | None:
+    """任意タイミングのバックアップ（復元直前の退避や手動DL用）。日次と違い毎回作る。
+    ファイル名に時刻とタグを含めるため同名衝突しない。"""
+    p = Path(db_path)
+    if not p.exists():
+        return None
+    bdir = _backup_dir(db_path)
+    bdir.mkdir(exist_ok=True)
+    # datetime系はサンドボックスで使えないため sqlite の strftime で時刻文字列を得る
+    src = sqlite3.connect(db_path)
+    try:
+        stamp = src.execute("SELECT strftime('%Y%m%d_%H%M%S','now','localtime')").fetchone()[0]
+        dest = bdir / f"{p.stem}_{tag}_{stamp}.db"
+        dst = sqlite3.connect(str(dest))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return str(dest)
+
+
+def list_backups(db_path: str = DEFAULT_DB_PATH) -> list[dict]:
+    """backups/内のバックアップ一覧を新しい順で返す（name, size, mtime）。"""
+    bdir = _backup_dir(db_path)
+    if not bdir.exists():
+        return []
+    out = []
+    for f in bdir.glob(f"{Path(db_path).stem}_*.db"):
+        st = f.stat()
+        out.append({"name": f.name, "size": st.st_size, "mtime": st.st_mtime})
+    return sorted(out, key=lambda x: x["mtime"], reverse=True)
+
+
+def restore_backup(db_path: str, backup_name: str) -> str:
+    """指定バックアップで現DBを置き換える。復元前に現DBを backup_now(tag=prerestore) で退避。
+    backup_name は list_backups が返す name のみ許可（パストラバーサル防止）。
+    戻り値: 退避した現DBのバックアップパス。"""
+    bdir = _backup_dir(db_path)
+    src = bdir / backup_name
+    # パストラバーサル防止: 正規化後に backups/ 直下であることを厳密確認
+    if src.resolve().parent != bdir.resolve() or not src.exists():
+        raise ValueError(f"不正なバックアップ名: {backup_name}")
+    # SQLiteファイルであることを検証（壊れたファイルでの上書き防止）
+    with open(src, "rb") as fh:
+        if fh.read(16) != b"SQLite format 3\x00":
+            raise ValueError("バックアップがSQLiteファイルではありません")
+    prerestore = backup_now(db_path, tag="prerestore")
+    # WALの取り残しを避けるため、生ファイルコピーではなく sqlite backup API で上書き
+    dst = sqlite3.connect(db_path)
+    try:
+        s = sqlite3.connect(str(src))
+        try:
+            s.backup(dst)
+        finally:
+            s.close()
+    finally:
+        dst.close()
+    return prerestore or ""
+
+
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     try:
         backup_db(db_path)

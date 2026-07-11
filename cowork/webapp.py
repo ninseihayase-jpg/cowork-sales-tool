@@ -305,6 +305,7 @@ function escH(s) {{
   <a href="/deal-issues" style="opacity:.8;font-size:13px">論点</a>
   <a href="/email-draft" style="opacity:.8;font-size:13px">メール</a>
   <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
+  <a href="/backups" style="opacity:.65;font-size:12px">🗄 バックアップ</a>
   <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Inproc Dashboard ↗</a>
 </header>
 <main>{flash}{body}</main></body></html>"""
@@ -829,6 +830,54 @@ def dashboard_page(con) -> str:
     </div>
     <div style="text-align:right;margin-top:-10px;margin-bottom:6px">
       <a class="btn sec" href="/masters" style="font-size:12px;padding:5px 10px;opacity:0.7">⚙ 入力マスタの編集</a>
+    </div>"""
+
+
+def backups_page(db_path: str) -> str:
+    """DBバックアップの一覧・復元・ダウンロード画面。"""
+    backups = sfa_db.list_backups(db_path)
+
+    def _fmt_size(n):
+        return f"{n/1024:.0f} KB" if n < 1024 * 1024 else f"{n/1024/1024:.1f} MB"
+
+    def _fmt_time(ts):
+        import time as _t
+        return _t.strftime("%Y-%m-%d %H:%M", _t.localtime(ts))
+
+    rows = "".join(
+        f'<tr>'
+        f'<td>{_esc(b["name"])}</td>'
+        f'<td class="muted" style="white-space:nowrap">{_fmt_time(b["mtime"])}</td>'
+        f'<td class="muted">{_fmt_size(b["size"])}</td>'
+        f'<td><a class="btn sec" style="font-size:11px;padding:4px 8px" '
+        f'href="/backups/download?name={urllib.parse.quote(b["name"])}">⬇ DL</a></td>'
+        f'<td><form method="post" action="/backups/restore" style="display:inline" '
+        f'onsubmit="return confirm(\'このバックアップで現在のDBを置き換えます。\\n復元前の現DBは自動退避されますが、実行後は元に戻すのに再度復元操作が必要です。\\n本当に復元しますか？\')">'
+        f'<input type="hidden" name="name" value="{_esc(b["name"])}">'
+        f'<button class="btn" style="font-size:11px;padding:4px 8px;background:#c53030">↩ 復元</button></form></td>'
+        f'</tr>'
+        for b in backups
+    ) or '<tr><td colspan=5 class=muted>バックアップがまだありません</td></tr>'
+
+    return f"""
+    <div class="card" style="background:#f0f4f8;border:1.5px solid #d4dae4">
+      <h2>🗄 DBバックアップ</h2>
+      <p class="muted" style="margin:0">サーバー起動時に日次で自動取得されます。ここから手動バックアップ・
+      復元・ダウンロードができます。復元は現在のDBを丸ごと置き換える操作です（復元前に現DBは自動退避されます）。</p>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <span class="muted">保存されているバックアップ（{len(backups)}件）</span>
+        <form method="post" action="/backups/create" style="display:inline">
+          <button class="btn sec" type="submit">＋ 今すぐバックアップを作成</button>
+        </form>
+      </div>
+      <div style="overflow:auto;max-height:70vh">
+      <table>
+        <tr>{_sticky_th('ファイル名')}{_sticky_th('作成日時')}{_sticky_th('サイズ')}{_sticky_th('')}{_sticky_th('')}</tr>
+        {rows}
+      </table>
+      </div>
     </div>"""
 
 
@@ -5215,6 +5264,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self.wfile.write(body)
                 elif path == "/masters":
                     self._send(render(masters_page(con)))
+                elif path == "/backups":
+                    self._send(render(backups_page(db_path)))
+                elif path == "/backups/download":
+                    name = (self._qs().get("name", [""])[0] or "")
+                    # list_backupsに載る名前のみ許可（パストラバーサル防止）
+                    valid = {b["name"] for b in sfa_db.list_backups(db_path)}
+                    if name not in valid:
+                        self._send(render("<div class=card>バックアップが見つかりません</div>"), 404)
+                    else:
+                        fpath = sfa_db._backup_dir(db_path) / name
+                        data = fpath.read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/octet-stream")
+                        self.send_header("Content-Disposition", _content_disposition(name))
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
                 elif path == "/activity/new":
                     self._send(render(activity_deal_picker(con)))
                 elif path == "/deal/new":
@@ -5411,6 +5477,27 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         values = [v.strip() for v in values if v.strip()]
                         sfa_db.set_master_list(con, key, values)
                     self._redirect("/")
+
+                # ── バックアップ ──
+                elif path == "/backups/create":
+                    try:
+                        path_out = sfa_db.backup_now(db_path, tag="manual")
+                        import os as _os
+                        _name = _os.path.basename(path_out) if path_out else "?"
+                        self._send(render(backups_page(db_path),
+                                          flash=f"バックアップを作成しました: {_name}"))
+                    except Exception as _exc:  # noqa: BLE001
+                        self._send(render(backups_page(db_path), flash=f"バックアップ作成に失敗: {_exc}"))
+                elif path == "/backups/restore":
+                    name = f.get("name") or ""
+                    try:
+                        pre = sfa_db.restore_backup(db_path, name)
+                        import os as _os
+                        self._send(render(backups_page(db_path),
+                                          flash=f"「{name}」から復元しました。復元前の状態は "
+                                                f"{_os.path.basename(pre)} として退避済みです。"))
+                    except Exception as _exc:  # noqa: BLE001
+                        self._send(render(backups_page(db_path), flash=f"復元に失敗: {_exc}"))
 
                 # ── アカウント ──
                 elif path == "/account/save":
