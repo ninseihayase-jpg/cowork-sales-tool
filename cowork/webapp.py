@@ -833,6 +833,66 @@ def dashboard_page(con) -> str:
     </div>"""
 
 
+def sync_health_page(con, theme_client) -> str:
+    """SFA↔Hisho同期の整合性診断ページ（オンデマンドでHishoへ照会）。"""
+    if theme_client is None:
+        return """
+        <div class="card">
+          <h2>🔍 同期チェック</h2>
+          <p class="muted" style="margin:0">テーマDB連携が無効です（THEME_API_TOKEN未設定）。</p>
+        </div>"""
+    diag = dev_project_link.diagnose_sync(theme_client, con)
+    if diag.get("error"):
+        return f"""
+        <div class="card">
+          <h2>🔍 同期チェック</h2>
+          <p class="muted" style="margin:0">Hishoへの照会に失敗しました: {_esc(diag['error'])}</p>
+        </div>"""
+
+    def _section(title, items, render_row, hint):
+        if not items:
+            return (f'<div class="card"><h2>{title} <span class="stage" '
+                    f'style="background:#dcfce7;color:#166534">0件</span></h2>'
+                    f'<p class="muted" style="margin:0">問題なし。</p></div>')
+        rows = "".join(render_row(x) for x in items)
+        return (f'<div class="card"><h2>{title} <span class="stage" '
+                f'style="background:#fee2e2;color:#991b1b">{len(items)}件</span></h2>'
+                f'<p class="muted" style="margin:0 0 8px">{hint}</p>'
+                f'<table>{rows}</table></div>')
+
+    unsynced = _section(
+        "開発案件: 未同期（Hishoへ未連携）", diag["dev_unsynced"],
+        lambda p: f'<tr><td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a></td>'
+                  f'<td class="muted">{_esc(p.get("deal_name") or "—")}</td></tr>',
+        "保存し直すか「同期失敗の再同期」で解消できます。")
+    broken = _section(
+        "開発案件: リンク切れ（Hisho側に対応行が無い）", diag["dev_broken_link"],
+        lambda p: f'<tr><td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a></td>'
+                  f'<td class="muted">hisho_id={p.get("hisho_id")}</td></tr>',
+        "Hisho側で削除された可能性。保存し直すと再作成されます。")
+    orphan = _section(
+        "Hisho側の孤児（SFAに存在しない開発案件）", diag["dev_orphan_hisho"],
+        lambda r: f'<tr><td>Hisho id={r.get("id")}</td><td class="muted">sfa_id={r.get("sfa_id")}</td></tr>',
+        "SFAで削除済みだがHisho側に残っている行。Hishoダッシュボードで確認・削除してください。")
+    deal_unsynced = _section(
+        "商談: テーマDB未同期", diag["deal_unsynced"],
+        lambda d: f'<tr><td><a href="/deal/{d["id"]}">{_esc(d.get("deal_name"))}</a></td><td></td></tr>',
+        "商談一覧の「テーマDB未同期 N件を同期」で解消できます。")
+
+    total = (len(diag["dev_unsynced"]) + len(diag["dev_broken_link"])
+             + len(diag["dev_orphan_hisho"]) + len(diag["deal_unsynced"]))
+    banner_bg = "#dcfce7" if total == 0 else "#fff7ed"
+    banner_border = "#86efac" if total == 0 else "#fed7aa"
+    summary = "同期は健全です（ズレなし）。" if total == 0 else f"合計 {total} 件のズレを検出しました。"
+    return f"""
+    <div class="card" style="background:{banner_bg};border:1.5px solid {banner_border}">
+      <p style="margin:0 0 10px"><a class="btn sec" href="/deals">← 商談一覧へ</a></p>
+      <h2>🔍 SFA ↔ Hisho 同期チェック</h2>
+      <p class="muted" style="margin:0">{summary} このページを開くたびにHishoへ最新状態を照会します。</p>
+    </div>
+    {unsynced}{broken}{orphan}{deal_unsynced}"""
+
+
 def backups_page(db_path: str) -> str:
     """DBバックアップの一覧・復元・ダウンロード画面。"""
     backups = sfa_db.list_backups(db_path)
@@ -1144,6 +1204,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <span style="display:flex;gap:8px;flex-wrap:wrap">
         {sync_fail_btn}
         {sync_btn}
+        <a class="btn sec" href="/sync-health">🔍 同期チェック</a>
         <a class="btn sec" href="/deals/import">CSV取込</a>
         <a class="btn sec" href="/dev-projects/new">＋新規開発案件</a>
         <a class="btn sec" href="/hearing/new">＋新規ヒアリング</a>
@@ -5314,6 +5375,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self.wfile.write(body)
                 elif path == "/masters":
                     self._send(render(masters_page(con)))
+                elif path == "/sync-health":
+                    self._send(render(sync_health_page(con, theme_client)))
                 elif path == "/backups":
                     self._send(render(backups_page(db_path)))
                 elif path == "/backups/download":

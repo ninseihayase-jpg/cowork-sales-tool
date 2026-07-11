@@ -94,3 +94,43 @@ def delete_dev_project_remote(client: ThemeDBClient, hisho_id: int | None) -> No
     if not hisho_id:
         return
     client.execute("DELETE FROM dev_projects WHERE id=?", [hisho_id])
+
+
+def diagnose_sync(client: ThemeDBClient, con) -> dict:
+    """SFAとHishoの開発案件・商談テーマの同期整合性を照合する（読み取り専用）。
+
+    検出するズレ:
+    - dev_unsynced: SFA開発案件でhisho_id未設定（Hishoへ未同期）
+    - dev_broken_link: SFA側にhisho_idがあるがHisho側に該当行が無い（リンク切れ）
+    - dev_orphan_hisho: Hisho側dev_projectsのsfa_idがSFAに存在しない（Hisho側の孤児）
+    - deal_unsynced: SFA商談でtheme_id未設定（テーマDBへ未同期）
+    戻り値は各カテゴリのリスト（表示用に最小限の情報）。Hisho照会に失敗したら error を返す。
+    """
+    result = {"dev_unsynced": [], "dev_broken_link": [], "dev_orphan_hisho": [],
+              "deal_unsynced": [], "error": None}
+    # SFA側の開発案件
+    sfa_devs = [dict(r) for r in con.execute(
+        "SELECT p.id, p.hisho_id, p.theme, d.deal_name FROM dev_projects p "
+        "LEFT JOIN deals d ON d.id = p.deal_id")]
+    # SFA側の未同期商談
+    result["deal_unsynced"] = [dict(r) for r in con.execute(
+        "SELECT id, deal_name FROM deals WHERE theme_id IS NULL AND (status='open' OR status IS NULL)")]
+    # Hisho側の開発案件（id, sfa_id）を取得
+    try:
+        resp = client.execute("SELECT id, sfa_id FROM dev_projects", [])
+        hisho_rows = resp.get("rows") or []
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = str(exc)
+        return result
+    hisho_ids = {r["id"] for r in hisho_rows}
+    hisho_sfa_ids = {r["sfa_id"] for r in hisho_rows if r.get("sfa_id") is not None}
+    sfa_dev_ids = {p["id"] for p in sfa_devs}
+    for p in sfa_devs:
+        if not p.get("hisho_id"):
+            result["dev_unsynced"].append(p)
+        elif p["hisho_id"] not in hisho_ids:
+            result["dev_broken_link"].append(p)
+    for r in hisho_rows:
+        if r.get("sfa_id") is not None and r["sfa_id"] not in sfa_dev_ids:
+            result["dev_orphan_hisho"].append(r)
+    return result
