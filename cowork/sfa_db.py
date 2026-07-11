@@ -688,6 +688,48 @@ def list_accounts(con) -> list[dict]:
     return [dict(r) for r in con.execute("SELECT * FROM accounts ORDER BY name")]
 
 
+def find_duplicate_accounts(con) -> list[dict]:
+    """同名（前後空白を無視）のアカウントが複数あるグループを返す。
+    各グループに所属アカウントと、それぞれの商談数・コンタクト数を付ける。"""
+    rows = [dict(r) for r in con.execute(
+        "SELECT id, name, industry, company_size FROM accounts ORDER BY name, id")]
+    groups: dict = {}
+    for r in rows:
+        key = (r.get("name") or "").strip()
+        groups.setdefault(key, []).append(r)
+    out = []
+    for name, accts in groups.items():
+        if len(accts) < 2:
+            continue
+        for a in accts:
+            a["deal_count"] = con.execute(
+                "SELECT COUNT(*) c FROM deals WHERE account_id=?", (a["id"],)).fetchone()["c"]
+            a["contact_count"] = con.execute(
+                "SELECT COUNT(*) c FROM contacts WHERE account_id=?", (a["id"],)).fetchone()["c"]
+        out.append({"name": name, "accounts": accts})
+    return out
+
+
+def merge_accounts(con, keep_id: int, drop_ids: list[int]) -> dict:
+    """drop_ids のアカウントを keep_id へ統合する。
+    商談・コンタクトの account_id を付け替えてから、drop側アカウントを削除する。
+    keep_id は drop_ids に含めないこと。戻り値: 付け替え件数。"""
+    keep_id = int(keep_id)
+    moved_deals = moved_contacts = 0
+    for did in drop_ids:
+        did = int(did)
+        if did == keep_id:
+            continue
+        cur = con.execute("UPDATE deals SET account_id=? WHERE account_id=?", (keep_id, did))
+        moved_deals += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        cur = con.execute("UPDATE contacts SET account_id=? WHERE account_id=?", (keep_id, did))
+        moved_contacts += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        con.execute("DELETE FROM accounts WHERE id=?", (did,))
+    con.commit()
+    return {"moved_deals": moved_deals, "moved_contacts": moved_contacts,
+            "dropped": len([d for d in drop_ids if int(d) != keep_id])}
+
+
 def list_deals(con, status: str | None = "open", owner: str | None = None,
                stage: str | None = None) -> list[dict]:
     q = """SELECT d.*, a.name AS account_name, a.industry, a.company_size

@@ -1411,6 +1411,53 @@ def account_form(con, acc=None) -> str:
     </form></div>"""
 
 
+def account_duplicates_page(con) -> str:
+    """同名アカウントのグループを表示し、1つに統合できる画面。"""
+    groups = sfa_db.find_duplicate_accounts(con)
+    if not groups:
+        return """
+        <div class="card">
+          <p style="margin:0 0 10px"><a class="btn sec" href="/accounts">← アカウント一覧へ</a></p>
+          <h2>重複アカウント</h2>
+          <p class="muted" style="margin:0">同名の重複アカウントはありません。</p>
+        </div>"""
+    blocks = ""
+    for gi, g in enumerate(groups):
+        # 商談・コンタクトが最も多いものを「残す」初期選択にする
+        accts = sorted(g["accounts"], key=lambda a: (a["deal_count"] + a["contact_count"]), reverse=True)
+        radios = ""
+        for i, a in enumerate(accts):
+            checked = " checked" if i == 0 else ""
+            radios += (
+                f'<label style="display:block;padding:6px 0;border-bottom:1px solid #eef1f5">'
+                f'<input type="radio" name="keep_id" value="{a["id"]}"{checked} style="width:auto;margin-right:8px">'
+                f'#{a["id"]} <b>{_esc(a["name"])}</b>'
+                f'<span class="muted" style="margin-left:10px">商談{a["deal_count"]}件 / コンタクト{a["contact_count"]}件'
+                f' / 業界:{_esc(a.get("industry") or "—")} / 規模:{_esc(a.get("company_size") or "—")}</span></label>'
+            )
+        ids_csv = ",".join(str(a["id"]) for a in accts)
+        blocks += f"""
+        <div class="card">
+          <h2 style="margin-bottom:8px">「{_esc(g['name'])}」（{len(accts)}件重複）</h2>
+          <form method="post" action="/accounts/merge"
+            onsubmit="return confirm('選んだ1件に統合し、他を削除します。\\n商談・コンタクトは残す1件に付け替えられます。\\n（統合前にDBは自動バックアップされます）\\n実行しますか？')">
+            <p class="muted" style="margin:0 0 6px">残すアカウントを選択してください（他は削除され、参照は残す側へ移動）:</p>
+            {radios}
+            <input type="hidden" name="all_ids" value="{ids_csv}">
+            <p style="margin-top:10px"><button class="btn" style="background:#c53030">この1件に統合する</button></p>
+          </form>
+        </div>"""
+    return f"""
+    <div class="card" style="background:#fff7ed;border:1.5px solid #fed7aa">
+      <p style="margin:0 0 10px"><a class="btn sec" href="/accounts">← アカウント一覧へ</a></p>
+      <h2>⚠ 重複アカウントの統合（{len(groups)}グループ）</h2>
+      <p class="muted" style="margin:0">同じ会社名で複数登録されているアカウントです。1つに統合すると、
+      紐づく商談・コンタクトは残す側にまとめられ、他のアカウントは削除されます。
+      統合前に自動でDBバックアップが取られます。</p>
+    </div>
+    {blocks}"""
+
+
 def accounts_page(con) -> str:
     """アカウント一覧ページ。"""
     accounts = sfa_db.list_accounts(con)
@@ -1431,11 +1478,14 @@ def accounts_page(con) -> str:
         for a in accounts
     ) or '<tr><td colspan=5 class=muted>アカウントがありません。</td></tr>'
     deal_counts_json = json.dumps(deal_counts, ensure_ascii=False)
+    _dup_n = len(sfa_db.find_duplicate_accounts(con))
+    dup_link = (f'<a class="btn" style="background:#c53030" href="/accounts/duplicates">'
+                f'⚠ 重複を統合（{_dup_n}件）</a>' if _dup_n else "")
     return f"""
     <div class="card">
-      <h2 style="display:flex;justify-content:space-between;align-items:center">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>アカウント一覧 ({len(accounts)})</span>
-        <a class="btn" href="/account/new">＋手動追加</a>
+        <span style="display:flex;gap:8px">{dup_link}<a class="btn" href="/account/new">＋手動追加</a></span>
       </h2>
       <form id="acc_bulk_form" method="post" action="/accounts/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
@@ -5352,6 +5402,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render("<div class=card>ページが見つかりません</div>"), 404)
                 elif path == "/accounts":
                     self._send(render(accounts_page(con)))
+                elif path == "/accounts/duplicates":
+                    self._send(render(account_duplicates_page(con)))
                 elif path == "/account/new":
                     self._send(render(account_form(con)))
                 # ── リード ──
@@ -5529,6 +5581,36 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if ids:
                         con.commit()
                     self._redirect("/accounts")
+
+                elif path == "/accounts/merge":
+                    try:
+                        keep_id = int(f.get("keep_id"))
+                        all_ids = [int(x) for x in (f.get("all_ids") or "").split(",") if x.strip().isdigit()]
+                    except (ValueError, TypeError):
+                        self._send(render(account_duplicates_page(con), flash="統合対象の指定が不正です。"))
+                    else:
+                        drop_ids = [i for i in all_ids if i != keep_id]
+                        if not drop_ids:
+                            self._send(render(account_duplicates_page(con), flash="統合対象がありません。"))
+                        else:
+                            # 破壊的操作の前に必ずバックアップ
+                            try:
+                                sfa_db.backup_now(db_path, tag="premerge")
+                            except Exception as _bexc:  # noqa: BLE001
+                                print(f"[merge] pre-merge backup failed: {_bexc}", flush=True)
+                            res = sfa_db.merge_accounts(con, keep_id=keep_id, drop_ids=drop_ids)
+                            # 統合で商談のアカウントが変わったのでテーマDBへ再同期（該当商談のみ）
+                            if theme_client is not None:
+                                for drow in con.execute(
+                                        "SELECT id FROM deals WHERE account_id=?", (keep_id,)):
+                                    try:
+                                        theme_link.sync_deal(theme_client, con, drow["id"])
+                                    except Exception as _sexc:  # noqa: BLE001
+                                        sfa_db.record_sync_failure(con, "deal", drow["id"], str(_sexc))
+                            self._send(render(account_duplicates_page(con),
+                                              flash=f"統合しました（商談{res['moved_deals']}件・"
+                                                    f"コンタクト{res['moved_contacts']}件を移動、"
+                                                    f"{res['dropped']}件のアカウントを削除）。"))
 
                 # ── 商談一括編集 ──
                 elif path == "/deals/bulk_edit":
