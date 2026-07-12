@@ -1303,6 +1303,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         {sync_fail_btn}
         {sync_btn}
         <a class="btn sec" href="/sync-health">🔍 同期チェック</a>
+        <a class="btn sec" href="/data-tagging">🏷 データ整備</a>
         <a class="btn sec" href="/deals/import">CSV取込</a>
         <a class="btn sec" href="/dev-projects/new">＋新規開発案件</a>
         <a class="btn sec" href="/hearing/new">＋新規ヒアリング</a>
@@ -1704,6 +1705,136 @@ def overdue_deals_page(con, *, owner: str | None = None) -> str:
       document.querySelectorAll('tr[data-acc]').forEach(function(tr) {{
         tr.style.display = tr.getAttribute('data-acc').indexOf(q) >= 0 ? '' : 'none';
       }});
+    }}
+    </script>
+    """
+
+
+def _tag_select(js_call: str, values: list[str]) -> str:
+    """タグ付け用セレクト。onchange属性は二重引用符、JS側の文字列引数は単引用符で衝突回避。"""
+    opts = "".join(f'<option value="{html.escape(v)}">{html.escape(v)}</option>' for v in values)
+    return ('<select onchange="' + js_call + '" style="font-size:12px;padding:3px 6px">'
+            '<option value="">— 選択 —</option>' + opts + '</select>')
+
+
+def data_tagging_page(con) -> str:
+    """データ整備タグ付け画面。既存データを遡って素早くタグ付けする（バックフィル）。
+      ① 次回MSの種別(アポ/タスク)が未設定の進行中商談 … #28
+      ② 終了理由(close_reason)が未設定のクローズ商談 … #26
+      ③ 終了理由(lost_reason)が未設定の lost リード … #26
+    保存は既存のインライン編集エンドポイント(/deal/{id}/field, /leads/{id}/field)を再利用。
+    """
+    ms_deals = sfa_db.list_untyped_milestone_deals(con)
+    closed_deals = sfa_db.list_unclassified_closed_deals(con)
+    lost_leads = sfa_db.list_unclassified_lost_leads(con)
+
+    def _note_preview(v):
+        s = (v or "").strip().replace("\n", " ")
+        if not s:
+            return '<span class="muted">（メモなし）</span>'
+        return _esc(s[:140] + ("…" if len(s) > 140 else ""))
+
+    ms_list = []
+    for d in ms_deals:
+        did = d["id"]; rid = f"ms{did}"
+        js = "tagDeal(" + str(did) + ",'next_milestone_type',this,'" + rid + "')"
+        sel = _tag_select(js, sfa_db.NEXT_MS_TYPES)
+        ms_list.append(
+            f'<tr id="{rid}">'
+            f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a></td>'
+            f'<td>{_esc(d.get("deal_name"))}</td>'
+            f'<td style="white-space:nowrap">{_esc(d.get("next_milestone_date"))}</td>'
+            f'<td>{_esc(d.get("next_milestone_label"))}</td>'
+            f'<td>{sel}</td></tr>'
+        )
+    ms_rows = "".join(ms_list) or '<tr><td colspan=5 class=muted>未タグの次回MSはありません。</td></tr>'
+
+    cd_list = []
+    for d in closed_deals:
+        did = d["id"]; rid = f"cd{did}"
+        js = "tagDeal(" + str(did) + ",'close_reason',this,'" + rid + "')"
+        sel = _tag_select(js, sfa_db.CLOSE_REASONS)
+        cd_list.append(
+            f'<tr id="{rid}">'
+            f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a><br>'
+            f'<span class="muted" style="font-size:.85em">{_esc(d.get("deal_name"))} / {_esc(d.get("stage"))}</span></td>'
+            f'<td style="font-size:.85em;max-width:420px">{_note_preview(d.get("note"))}</td>'
+            f'<td>{sel}</td></tr>'
+        )
+    cd_rows = "".join(cd_list) or '<tr><td colspan=3 class=muted>未分類のクローズ商談はありません。</td></tr>'
+
+    ll_list = []
+    for l in lost_leads:
+        lid = l["id"]; rid = f"ll{lid}"
+        js = "tagLead(" + str(lid) + ",this,'" + rid + "')"
+        sel = _tag_select(js, sfa_db.CLOSE_REASONS)
+        ll_list.append(
+            f'<tr id="{rid}">'
+            f'<td><a href="/leads/{lid}">{_esc(l.get("name"))}</a><br>'
+            f'<span class="muted" style="font-size:.85em">{_esc(l.get("company"))}</span></td>'
+            f'<td style="font-size:.85em;max-width:420px">{_note_preview(l.get("notes"))}</td>'
+            f'<td>{sel}</td></tr>'
+        )
+    ll_rows = "".join(ll_list) or '<tr><td colspan=3 class=muted>未分類の lost リードはありません。</td></tr>'
+
+    return f"""
+    <div class="card">
+      <h2>データ整備 — タグ付け</h2>
+      <p class="muted" style="margin:0 0 4px">既存データを遡ってタグ付けします。選ぶと即保存され、行が薄くなります（完了の印）。</p>
+      <p class="muted" style="margin:0">残り：次回MS種別 <b>{len(ms_deals)}</b>件／終了理由(商談) <b>{len(closed_deals)}</b>件／終了理由(リード) <b>{len(lost_leads)}</b>件</p>
+    </div>
+
+    <div class="card">
+      <h2>① 次回MSの種別が未設定（{len(ms_deals)}件）</h2>
+      <p class="muted" style="margin:0 0 8px">「タスク」を選ぶとSlack翌日アポ通知から除外されます（未設定は投稿されます）。</p>
+      <div style="overflow:auto;max-height:60vh">
+      <table style="min-width:700px"><tr>
+        {_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('次回MS日')}{_sticky_th('ラベル')}{_sticky_th('種別')}</tr>
+      {ms_rows}
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h2>② 終了理由が未設定のクローズ商談（{len(closed_deals)}件）</h2>
+      <p class="muted" style="margin:0 0 8px">メモを見て5区分から選択。展示会ファネルの有効母数（ニーズなし除外）に反映されます。</p>
+      <div style="overflow:auto;max-height:60vh">
+      <table style="min-width:760px"><tr>
+        {_sticky_th('商談')}{_sticky_th('メモ（先頭のみ）')}{_sticky_th('終了理由')}</tr>
+      {cd_rows}
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h2>③ 終了理由が未設定の lost リード（{len(lost_leads)}件）</h2>
+      <div style="overflow:auto;max-height:60vh">
+      <table style="min-width:760px"><tr>
+        {_sticky_th('リード')}{_sticky_th('メモ（先頭のみ）')}{_sticky_th('終了理由')}</tr>
+      {ll_rows}
+      </table></div>
+    </div>
+
+    <script>
+    function _tagPost(url, field, value) {{
+      return fetch(url, {{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)}})
+        .then(r => r.json());
+    }}
+    function _tagDone(rowId) {{
+      var tr = document.getElementById(rowId);
+      if (tr) {{ tr.style.opacity = '0.4'; tr.style.textDecoration = 'none'; }}
+    }}
+    function tagDeal(id, field, sel, rowId) {{
+      if (!sel.value) return;
+      _tagPost('/deal/' + id + '/field', field, sel.value)
+        .then(d => {{ if (d.ok) _tagDone(rowId); else alert('更新エラー'); }})
+        .catch(() => alert('通信エラー'));
+    }}
+    function tagLead(id, sel, rowId) {{
+      if (!sel.value) return;
+      _tagPost('/leads/' + id + '/field', 'lost_reason', sel.value)
+        .then(d => {{ if (d.ok) _tagDone(rowId); else alert('更新エラー'); }})
+        .catch(() => alert('通信エラー'));
     }}
     </script>
     """
@@ -5647,6 +5778,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(sync_health_page(con, theme_client)))
                 elif path == "/weekly-numbers":
                     self._send(render(weekly_numbers_page(con)))
+                elif path == "/data-tagging":
+                    self._send(render(data_tagging_page(con)))
                 elif path == "/backups":
                     self._send(render(backups_page(db_path)))
                 elif path == "/backups/download":
@@ -6375,7 +6508,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path.startswith("/deal/") and path.endswith("/field"):
                     _DEAL_ALLOWED_FIELDS = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
                                              "client_budget", "value_lumpsum", "deal_name",
-                                             "next_milestone_date", "next_milestone_label", "next_milestone_type"}
+                                             "next_milestone_date", "next_milestone_label", "next_milestone_type",
+                                             "close_reason"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -6387,6 +6521,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _err = "不正なフィールド"
                         elif field == "next_milestone_type" and value and value not in sfa_db.NEXT_MS_TYPES:
                             _err = "不正な次回MS種別"
+                        elif field == "close_reason" and value and value not in sfa_db.CLOSE_REASONS:
+                            _err = "不正な終了理由"
                         elif field == "stage":
                             valid_stages = sfa_db.get_master_list(con, "deal_stages")
                             if value and value not in valid_stages:
@@ -6897,7 +7033,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _err = "不正なリクエスト"
                     self._send(json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode(), ctype="application/json")
                 elif path.startswith("/leads/") and path.endswith("/field"):
-                    _LEAD_ALLOWED_FIELDS = {"source", "assigned_to", "industry", "company_size", "lead_status"}
+                    _LEAD_ALLOWED_FIELDS = {"source", "assigned_to", "industry", "company_size", "lead_status",
+                                            "lost_reason"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -6911,6 +7048,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _err = "不正な経路値"
                         elif field == "lead_status" and value and value not in sfa_db.LEAD_STATUSES:
                             _err = "不正なステータス値"
+                        elif field == "lost_reason" and value and value not in sfa_db.CLOSE_REASONS:
+                            _err = "不正な終了理由"
                         else:
                             con.execute(
                                 f"UPDATE leads SET {field}=?, updated_at=datetime('now') WHERE id=?",

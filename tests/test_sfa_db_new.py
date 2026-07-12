@@ -110,6 +110,27 @@ def test_exhibition_funnel_valid_total(con, acc_id):
     assert exh["first_meeting"] == 1 and exh["second_meeting"] == 1 and exh["won"] == 1
 
 
+def test_backfill_lists(con, acc_id):
+    # ①未タグ次回MS: MSありかつ種別無しのopenのみ
+    d1 = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="MS未タグ", stage="提案",
+                            next_milestone_date="2026-07-20", status="open")
+    sfa_db.upsert_deal(con, account_id=acc_id, deal_name="MS済", stage="提案",
+                       next_milestone_date="2026-07-20", next_milestone_type="アポ", status="open")
+    sfa_db.upsert_deal(con, account_id=acc_id, deal_name="MS無", stage="提案", status="open")
+    # ②未分類クローズ: closedかつclose_reason無し
+    c1 = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="失注未分類", stage="失注", status="closed")
+    c2 = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="失注済", stage="失注", status="closed")
+    con.execute("UPDATE deals SET close_reason='失注' WHERE id=?", (c2,))
+    # ③未分類lostリード
+    con.execute("INSERT INTO leads(name,company,lead_status) VALUES('L1','X','lost')")
+    con.execute("INSERT INTO leads(name,company,lead_status,lost_reason) VALUES('L2','Y','lost','キャンセル')")
+    con.commit()
+
+    assert [d["id"] for d in sfa_db.list_untyped_milestone_deals(con)] == [d1]
+    assert [d["id"] for d in sfa_db.list_unclassified_closed_deals(con)] == [c1]
+    assert [l["name"] for l in sfa_db.list_unclassified_lost_leads(con)] == ["L1"]
+
+
 def test_weekly_numbers_and_wow(con, acc_id):
     # 先週スナップショット（前週比の基準）
     sfa_db.save_weekly_snapshot(con, "2026-06-29",

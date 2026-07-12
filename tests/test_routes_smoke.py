@@ -10,6 +10,7 @@ import base64
 import shutil
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -80,6 +81,55 @@ def _get(url, headers=None):
         return resp.getcode(), resp
     except urllib.error.HTTPError as e:
         return e.code, e
+
+
+def _post(url, data, headers=None):
+    body = urllib.parse.urlencode(data).encode()
+    h = dict(headers or {})
+    h["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(url, data=body, headers=h, method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        return resp.getcode(), resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def test_data_tagging_route_200(server):
+    code, resp = _get(server + "/data-tagging", headers=_auth_header())
+    assert code == 200
+    assert len(resp.read()) > 0
+
+
+def test_inline_close_reason_and_ms_type_persist(server, db_path):
+    """データ整備タグ付けが依存するインライン更新(close_reason/next_milestone_type/lost_reason)の
+    保存と、不正値の拒否を実HTTPで検証する。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('検証社')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="失注X", stage="失注", status="closed")
+    did2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="MSX", stage="提案",
+                              next_milestone_date="2026-07-20", status="open")
+    con.execute("INSERT INTO leads(name,company,lead_status) VALUES('リードX','Z社','lost')")
+    lid = con.execute("SELECT id FROM leads WHERE name='リードX'").fetchone()["id"]
+    con.commit()
+
+    assert _post(server + f"/deal/{did}/field", {"field": "close_reason", "value": "ニーズなし"},
+                 headers=_auth_header())[0] == 200
+    assert _post(server + f"/deal/{did2}/field", {"field": "next_milestone_type", "value": "タスク"},
+                 headers=_auth_header())[0] == 200
+    assert _post(server + f"/leads/{lid}/field", {"field": "lost_reason", "value": "キャンセル"},
+                 headers=_auth_header())[0] == 200
+    # 不正値は拒否（サーバは200で{ok:false}を返す運用なので、値が変わっていないことで確認）
+    _post(server + f"/deal/{did}/field", {"field": "close_reason", "value": "でたらめ"},
+          headers=_auth_header())
+
+    con2 = sfa_db.connect(db_path)
+    assert con2.execute("SELECT close_reason FROM deals WHERE id=?", (did,)).fetchone()[0] == "ニーズなし"
+    assert con2.execute("SELECT next_milestone_type FROM deals WHERE id=?", (did2,)).fetchone()[0] == "タスク"
+    assert con2.execute("SELECT lost_reason FROM leads WHERE id=?", (lid,)).fetchone()[0] == "キャンセル"
+    con2.close()
+    con.close()
 
 
 @pytest.mark.parametrize("path", ["/", "/deals", "/dev-projects", "/deal-issues", "/accounts", "/leads"])

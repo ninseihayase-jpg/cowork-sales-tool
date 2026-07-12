@@ -811,6 +811,34 @@ def list_overdue_deals(con, owner: str | None = None, today: str | None = None) 
     return [dict(r) for r in con.execute(q, params)]
 
 
+def list_untyped_milestone_deals(con) -> list[dict]:
+    """次回MSがあるのに種別(next_milestone_type)未設定の進行中商談（種別バックフィル対象）。"""
+    return [dict(r) for r in con.execute(
+        """SELECT d.*, a.name AS account_name FROM deals d
+           LEFT JOIN accounts a ON a.id = d.account_id
+           WHERE (d.status IS NULL OR d.status != 'closed')
+                 AND d.next_milestone_date IS NOT NULL
+                 AND (d.next_milestone_type IS NULL OR d.next_milestone_type = '')
+           ORDER BY d.next_milestone_date ASC""")]
+
+
+def list_unclassified_closed_deals(con) -> list[dict]:
+    """終了理由(close_reason)未設定のクローズ済み商談（終了理由バックフィル対象）。noteを添える。"""
+    return [dict(r) for r in con.execute(
+        """SELECT d.*, a.name AS account_name FROM deals d
+           LEFT JOIN accounts a ON a.id = d.account_id
+           WHERE d.status = 'closed' AND (d.close_reason IS NULL OR d.close_reason = '')
+           ORDER BY d.updated_at DESC""")]
+
+
+def list_unclassified_lost_leads(con) -> list[dict]:
+    """終了理由(lost_reason)未設定の lost リード（商談化前キャンセル等のバックフィル対象）。"""
+    return [dict(r) for r in con.execute(
+        """SELECT * FROM leads
+           WHERE lead_status = 'lost' AND (lost_reason IS NULL OR lost_reason = '')
+           ORDER BY updated_at DESC""")]
+
+
 def get_deal(con, deal_id: int) -> dict | None:
     r = con.execute(
         """SELECT d.*, a.name AS account_name FROM deals d
