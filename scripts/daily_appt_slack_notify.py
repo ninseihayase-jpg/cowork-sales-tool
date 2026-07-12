@@ -162,15 +162,26 @@ def main():
     else:
         date_str = target_date_str()
         print(f"[INFO] 対象日: {date_str}")
+        # 次回MS種別が「タスク」のものは投稿しない（fail-safe: アポ／未設定は投稿する）。
+        def _is_appt(d: dict) -> bool:
+            return (d.get("next_milestone_type") or "") != "タスク"
+
         targets = [
             d for d in deals
-            if d.get("next_milestone_date") == date_str and d.get("slack_notified_date") != date_str
+            if d.get("next_milestone_date") == date_str
+            and d.get("slack_notified_date") != date_str
+            and _is_appt(d)
         ]
         skipped = sum(
             1 for d in deals
             if d.get("next_milestone_date") == date_str and d.get("slack_notified_date") == date_str
         )
-        print(f"[INFO] 対象商談: {len(targets)}件（既に通知済みでスキップ: {skipped}件）")
+        task_skipped = sum(
+            1 for d in deals
+            if d.get("next_milestone_date") == date_str and not _is_appt(d)
+        )
+        print(f"[INFO] 対象商談: {len(targets)}件"
+              f"（通知済みスキップ: {skipped}件 / タスクのため除外: {task_skipped}件）")
 
     if not targets:
         print("[INFO] 対象商談がないため終了します。")

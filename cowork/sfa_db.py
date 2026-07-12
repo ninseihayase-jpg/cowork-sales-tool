@@ -16,6 +16,8 @@ DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "cowork_sfa.db")
 
 # テーマDBの選択肢に準拠（表記揺れ防止。docs/00 §3 / 秘書 db_schema_design.md）
 DEAL_STAGES = ["初回アポ実施", "要件詰め", "提案", "クロージング", "受注", "失注", "保留中"]
+# 次回MSの種別。Slack日次アポ通知は「アポ」（および未設定=fail-safe）のみ投稿し、「タスク」は除外する。
+NEXT_MS_TYPES = ["アポ", "タスク"]
 BUSINESS_TYPE_L1 = ["コスト削減", "コンサルティング", "AI導入", "他"]
 BUSINESS_TYPE_L2_BY_L1 = {
     "コスト削減":     ["コスト診断(無償)", "コスト診断(有償)", "コスト削減(成果報酬)"],
@@ -239,6 +241,7 @@ CREATE TABLE IF NOT EXISTS deals (
     client_budget TEXT,
     next_milestone_date TEXT,
     next_milestone_label TEXT,
+    next_milestone_type TEXT,         -- 次回MSの種別: アポ / タスク。Slack日次通知は「アポ」(および未設定)のみ対象
     note TEXT,
     goal TEXT,
     importance TEXT,                  -- 重要度: 高/中/低
@@ -594,6 +597,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             ("diagnosis_cost", "REAL"),
             ("sub_owner", "TEXT"),
             ("slack_notified_date", "TEXT"),
+            ("next_milestone_type", "TEXT"),
         ]:
             if col not in deal_cols:
                 con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")
@@ -833,7 +837,7 @@ def upsert_account_merge(con, *, name: str, industry=None, company_size=None, co
 DEAL_FIELDS = [
     "account_id", "theme_id", "deal_name", "stage", "business_type_l1", "business_type_l2",
     "lead_pattern", "owner", "sub_owner", "value_lumpsum", "value_lumpsum_monthly", "value_recurring",
-    "client_budget", "next_milestone_date", "next_milestone_label", "note", "goal",
+    "client_budget", "next_milestone_date", "next_milestone_label", "next_milestone_type", "note", "goal",
     "importance", "status",
     "cost_stage", "approach_value", "approach_rate", "reduction_rate", "fee_rate", "diagnosis_cost",
 ]

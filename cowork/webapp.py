@@ -1365,6 +1365,8 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
             f'<input type="text" value="{_esc(d.get("next_milestone_label"))}"'
             f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
             f' style="font-size:12px;padding:2px 4px;width:140px">'
+            f'<br>' + _sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES,
+                           d.get("next_milestone_type") or "", "updateDealField")
         )
         dps = [p for p in sfa_db.list_dev_projects(con, deal_id=did) if p.get("status") != "中止"]
         if dps:
@@ -1880,6 +1882,7 @@ def deal_form(con, deal=None) -> str:
             <div class="grid">
               <div><label>次回MS日</label><input type="date" name="next_milestone_date" value="{_esc(deal.get('next_milestone_date'))}"></div>
               <div><label>次回MSラベル</label><input name="next_milestone_label" value="{_esc(deal.get('next_milestone_label'))}"></div>
+              <div><label>次回MS種別</label><select name="next_milestone_type">{_opt(sfa_db.NEXT_MS_TYPES, deal.get('next_milestone_type') or 'アポ')}</select></div>
             </div>
             <label>現状メモ</label><textarea name="update_note" rows="2">{_esc(deal.get('note'))}</textarea>
           </div>
@@ -1982,6 +1985,8 @@ def deal_form(con, deal=None) -> str:
           <input type="date" name="next_milestone_date" value="{_esc(deal.get('next_milestone_date'))}"></div>
         <div><label>次回MSラベル</label>
           <input name="next_milestone_label" value="{_esc(deal.get('next_milestone_label'))}"></div>
+        <div><label>次回MS種別 <span class="muted" style="font-weight:400;font-size:.8em">（タスクはSlackアポ通知に出さない）</span></label>
+          <select name="next_milestone_type">{_opt(sfa_db.NEXT_MS_TYPES, deal.get('next_milestone_type') or 'アポ')}</select></div>
       </div>
       <label>現状メモ</label><textarea name="note" rows="2">{_esc(deal.get('note'))}</textarea>
       <label>ゴール</label><textarea name="goal" rows="2">{_esc(deal.get('goal'))}</textarea>
@@ -3593,6 +3598,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
             <div class="grid">
               <div><label>次回MS日</label><input type="date" name="next_milestone_date"></div>
               <div><label>次回MSラベル</label><input name="next_milestone_label"></div>
+              <div><label>次回MS種別</label><select name="next_milestone_type">{_opt(sfa_db.NEXT_MS_TYPES, 'アポ')}</select></div>
             </div>
             <label>現状メモ</label><textarea name="update_note" rows="2"></textarea>
           </div>
@@ -5756,6 +5762,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         client_budget=f.get("client_budget") or None,
                         next_milestone_date=f.get("next_milestone_date") or None,
                         next_milestone_label=f.get("next_milestone_label") or None,
+                        next_milestone_type=f.get("next_milestone_type") or None,
                         note=f.get("note") or None,
                         goal=f.get("goal") or None,
                         importance=f.get("importance") or None,
@@ -6086,6 +6093,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 client_budget=deal.get("client_budget"),
                                 next_milestone_date=ms_date or deal.get("next_milestone_date"),
                                 next_milestone_label=ms_label or deal.get("next_milestone_label"),
+                                next_milestone_type=f.get("next_milestone_type") or deal.get("next_milestone_type"),
                                 note=update_note or deal.get("note"),
                                 goal=deal.get("goal"),
                                 status=deal.get("status"),
@@ -6096,7 +6104,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path.startswith("/deal/") and path.endswith("/field"):
                     _DEAL_ALLOWED_FIELDS = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
                                              "client_budget", "value_lumpsum", "deal_name",
-                                             "next_milestone_date", "next_milestone_label"}
+                                             "next_milestone_date", "next_milestone_label", "next_milestone_type"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -6106,6 +6114,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         value = f.get("value", "")
                         if field not in _DEAL_ALLOWED_FIELDS:
                             _err = "不正なフィールド"
+                        elif field == "next_milestone_type" and value and value not in sfa_db.NEXT_MS_TYPES:
+                            _err = "不正な次回MS種別"
                         elif field == "stage":
                             valid_stages = sfa_db.get_master_list(con, "deal_stages")
                             if value and value not in valid_stages:
@@ -6382,6 +6392,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 client_budget=deal.get("client_budget"),
                                 next_milestone_date=ms_date or deal.get("next_milestone_date"),
                                 next_milestone_label=ms_label or deal.get("next_milestone_label"),
+                                next_milestone_type=f.get("next_milestone_type") or deal.get("next_milestone_type"),
                                 note=update_note or deal.get("note"),
                                 goal=deal.get("goal"), status=deal.get("status"),
                             )
