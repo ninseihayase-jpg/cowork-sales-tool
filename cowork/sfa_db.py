@@ -18,6 +18,9 @@ DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "cowork_sfa.db")
 DEAL_STAGES = ["初回アポ実施", "要件詰め", "提案", "クロージング", "受注", "失注", "保留中"]
 # 次回MSの種別。Slack日次アポ通知は「アポ」（および未設定=fail-safe）のみ投稿し、「タスク」は除外する。
 NEXT_MS_TYPES = ["アポ", "タスク"]
+# 商談/リードの終了理由（区分）。「自社都合で撤退」を独立させ"失注"と区別する（戦略的な選別を数字で語るため）。
+# 展示会ファネルの有効母数は「ニーズなし」を除いて算出する。
+CLOSE_REASONS = ["ニーズなし", "キャンセル", "失注", "自社都合で撤退", "保留・時期尚早"]
 BUSINESS_TYPE_L1 = ["コスト削減", "コンサルティング", "AI導入", "他"]
 BUSINESS_TYPE_L2_BY_L1 = {
     "コスト削減":     ["コスト診断(無償)", "コスト診断(有償)", "コスト削減(成果報酬)"],
@@ -246,6 +249,7 @@ CREATE TABLE IF NOT EXISTS deals (
     goal TEXT,
     importance TEXT,                  -- 重要度: 高/中/低
     status TEXT DEFAULT 'open',       -- open / closed
+    close_reason TEXT,                -- 終了理由: ニーズなし/キャンセル/失注/自社都合で撤退/保留・時期尚早
     cost_stage TEXT,                  -- コスト削減ステージ（L1=コスト削減のみ）
     approach_value REAL,              -- アプローチ額（億円）
     approach_rate REAL,               -- アプローチ率(%)
@@ -293,6 +297,7 @@ CREATE TABLE IF NOT EXISTS leads (
     source          TEXT DEFAULT 'other',
     pitch_theme_id  INTEGER REFERENCES pitch_themes(id) ON DELETE SET NULL,
     lead_status     TEXT DEFAULT 'new',
+    lost_reason     TEXT,                 -- lead_status=lost時の終了理由(CLOSE_REASONS)。商談化前のキャンセル等
     notes           TEXT,
     assigned_to     TEXT,
     deal_id         INTEGER REFERENCES deals(id) ON DELETE SET NULL,
@@ -593,6 +598,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             ("industry", "TEXT"),
             ("company_size", "TEXT"),
             ("email_pattern_id", "INTEGER REFERENCES email_patterns(id) ON DELETE SET NULL"),
+            ("lost_reason", "TEXT"),
         ]:
             if col not in lead_cols:
                 con.execute(f"ALTER TABLE leads ADD COLUMN {col} {typedef}")
@@ -608,6 +614,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             ("sub_owner", "TEXT"),
             ("slack_notified_date", "TEXT"),
             ("next_milestone_type", "TEXT"),
+            ("close_reason", "TEXT"),
         ]:
             if col not in deal_cols:
                 con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")

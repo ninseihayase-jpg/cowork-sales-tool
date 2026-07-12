@@ -129,14 +129,18 @@ def compute_weekly_numbers(con, as_of: date | None = None) -> dict:
 
 def _exhibition_funnel(con) -> dict:
     """展示会由来(lead_pattern='Exh.')商談の面談回数ベースのファネル。
-    - leads: 展示会由来の商談総数
-    - first_meeting: 面談を1回以上実施
-    - second_meeting: 面談を2回以上実施（＝次の商談に進んだ）
-    - won: 受注ステージ
-    キャンセル率・ニーズなしは手元集計/終了理由タグ(#19)とマージする前提（ここでは扱わない）。
+    - total: 展示会由来の商談総数
+    - no_need / canceled: 終了理由タグ(#19)別の件数
+    - valid_total: 有効母数（総数 − ニーズなし）。"最初から見込みゼロ"を分母から外して率を誠実にする
+    - first_meeting: 面談1回以上 / second_meeting: 面談2回以上（=次の商談に進んだ） / won: 受注
     """
     total = con.execute(
         "SELECT COUNT(*) n FROM deals WHERE lead_pattern='Exh.'").fetchone()["n"]
+    by_reason = {r["cr"]: r["n"] for r in con.execute(
+        "SELECT close_reason cr, COUNT(*) n FROM deals WHERE lead_pattern='Exh.' "
+        "AND close_reason IS NOT NULL GROUP BY close_reason")}
+    no_need = by_reason.get("ニーズなし", 0)
+    canceled = by_reason.get("キャンセル", 0)
     mtg_counts = {r["deal_id"]: r["c"] for r in con.execute(
         "SELECT a.deal_id, COUNT(*) c FROM activities a JOIN deals d ON d.id=a.deal_id "
         "WHERE d.lead_pattern='Exh.' AND a.type='面談' GROUP BY a.deal_id")}
@@ -144,7 +148,9 @@ def _exhibition_funnel(con) -> dict:
     second = sum(1 for c in mtg_counts.values() if c >= 2)
     won = con.execute(
         "SELECT COUNT(*) n FROM deals WHERE lead_pattern='Exh.' AND stage='受注'").fetchone()["n"]
-    return {"total": total, "first_meeting": first, "second_meeting": second, "won": won}
+    return {"total": total, "no_need": no_need, "canceled": canceled,
+            "valid_total": total - no_need,
+            "first_meeting": first, "second_meeting": second, "won": won}
 
 
 def _stock_wow(con, week_start: str, prev_start: str) -> dict:

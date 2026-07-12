@@ -894,9 +894,9 @@ def weekly_numbers_page(con) -> str:
         f"・現ファネル：初回アポ {fn.get('初回アポ実施',0)}／要件詰め {fn.get('要件詰め',0)}"
         f"／提案 {fn.get('提案',0)}／クロージング {fn.get('クロージング',0)}\n"
         f"・パイプライン総額：{stock['pipeline_lump']:,.0f}万円{wow_pipe}\n"
-        f"・展示会ファネル：商談化 {exh['total']} → 初回面談 {exh['first_meeting']} "
-        f"→ 次商談 {exh['second_meeting']} → 受注 {exh['won']}\n"
-        f"※キャンセル率・ニーズなしは手元集計とマージ"
+        f"・展示会ファネル：商談化 {exh['total']}（有効母数 {exh['valid_total']}／ニーズなし {exh['no_need']}）"
+        f" → 初回面談 {exh['first_meeting']} → 次商談 {exh['second_meeting']} → 受注 {exh['won']}\n"
+        f"※キャンセル率は手元集計とマージ"
     )
 
     return f"""
@@ -920,9 +920,11 @@ def weekly_numbers_page(con) -> str:
         {closing_rows}
       </table>
       <h3>展示会ファネル（コホート）</h3>
-      <p>商談化 <b>{exh['total']}</b> → 初回面談到達 <b>{exh['first_meeting']}</b>
-         → 次の商談に進んだ <b>{exh['second_meeting']}</b> → 受注 <b>{exh['won']}</b>
-         <span class="muted" style="font-size:.85em">（キャンセル率・ニーズなしは手元集計/終了理由タグとマージ予定）</span></p>
+      <p>商談化 <b>{exh['total']}</b>
+         <span class="muted" style="font-size:.85em">（有効母数 {exh['valid_total']}／ニーズなし {exh['no_need']}・キャンセル {exh['canceled']}）</span>
+         → 初回面談到達 <b>{exh['first_meeting']}</b>
+         → 次の商談に進んだ <b>{exh['second_meeting']}</b> → 受注 <b>{exh['won']}</b></p>
+      <p class="muted" style="font-size:.85em">有効母数＝総数−ニーズなし（最初から見込みゼロを分母から外す）。キャンセル率の手元集計とマージ想定。</p>
       <h3>レポート②に貼れるテキスト</h3>
       <textarea rows="12" style="width:100%;font-family:monospace;font-size:13px"
         onclick="this.select()">{_esc(paste)}</textarea>
@@ -2025,6 +2027,8 @@ def deal_form(con, deal=None) -> str:
             f'<form method="post" action="/deal/{deal["id"]}/revert_to_lead" style="margin-top:8px;display:inline-block"'
             ' onsubmit="return revertToLead(this)">'
             '<input type="hidden" name="memo" value="">'
+            '<select name="close_reason" style="font-size:12px;padding:5px;margin-right:4px">'
+            f'<option value="">終了理由（任意）</option>{_opt(sfa_db.CLOSE_REASONS, deal.get("close_reason"))}</select>'
             '<button type="submit" class="btn" style="background:#f59e0b;font-size:12px;padding:6px 12px">'
             '↩ リードに戻す（アポ獲得前に戻る）'
             '</button></form>'
@@ -2033,6 +2037,8 @@ def deal_form(con, deal=None) -> str:
             f'<form method="post" action="/deal/{deal["id"]}/close" style="margin-top:8px;margin-left:8px;display:inline-block"'
             ' onsubmit="return closeDeal(this)">'
             '<input type="hidden" name="memo" value="">'
+            '<select name="close_reason" style="font-size:12px;padding:5px;margin-right:4px">'
+            f'<option value="">終了理由（任意）</option>{_opt(sfa_db.CLOSE_REASONS, deal.get("close_reason"))}</select>'
             '<button type="submit" class="btn" style="background:#c53030;font-size:12px;padding:6px 12px">'
             '🗑 商談をクローズする'
             '</button></form>'
@@ -2077,6 +2083,8 @@ def deal_form(con, deal=None) -> str:
           <select name="importance">{_opt(sfa_db.IMPORTANCE_OPTIONS, deal.get('importance'))}</select></div>
         <div><label>ステータス</label>
           <select name="status">{_opt(['open', 'closed'], deal.get('status') or 'open')}</select></div>
+        <div><label>終了理由 <span class="muted" style="font-weight:400;font-size:.8em">（失注/クローズ時）</span></label>
+          <select name="close_reason"><option value="">（なし）</option>{_opt(sfa_db.CLOSE_REASONS, deal.get('close_reason'))}</select></div>
         <div><label>次回MS日</label>
           <input type="date" name="next_milestone_date" value="{_esc(deal.get('next_milestone_date'))}"></div>
         <div><label>次回MSラベル</label>
@@ -4878,6 +4886,8 @@ def lead_form(con, lead=None) -> str:
             <select name="source">{_opt_kv(source_items, lead.get('source') or 'other')}</select></div>
           <div><label>ステータス</label>
             <select name="lead_status">{_opt_kv(status_items, lead.get('lead_status') or 'new')}</select></div>
+          <div><label>終了理由 <span class="muted" style="font-weight:400;font-size:.8em">（lost時）</span></label>
+            <select name="lost_reason"><option value="">（なし）</option>{_opt(sfa_db.CLOSE_REASONS, lead.get('lost_reason'))}</select></div>
         </div>
         <label>メモ</label><textarea name="notes" rows="2">{_esc(lead.get('notes'))}</textarea>
         <p style="display:flex;flex-wrap:wrap;gap:8px">
@@ -5872,6 +5882,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         fee_rate=num("fee_rate"),
                         diagnosis_cost=num("diagnosis_cost"),
                     )
+                    # 終了理由はDEAL_FIELDS外（部分更新でのNULL上書き事故を避けるため個別UPDATE）。
+                    # 送信された時のみ更新（空送信で既存値を消さない）。
+                    _cr = f.get("close_reason")
+                    if _cr is not None and "close_reason" in f:
+                        con.execute("UPDATE deals SET close_reason=? WHERE id=?",
+                                    (_cr or None, did))
+                        con.commit()
                     if theme_client is not None:
                         try:
                             theme_link.sync_deal(theme_client, con, did)
@@ -6532,6 +6549,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         assigned_to=f.get("assigned_to") or None,
                         deal_id=existing_deal_id,
                     )
+                    # 終了理由(lost_reason)はLEAD_FIELDS外なので個別UPDATE（送信時のみ）
+                    if "lost_reason" in f:
+                        _lr = (f.get("lost_reason") or "").strip()
+                        con.execute("UPDATE leads SET lost_reason=? WHERE id=?",
+                                    (_lr if _lr in sfa_db.CLOSE_REASONS else None, lid))
+                        con.commit()
                     # アカウント自動追加・補完
                     existing_acc = con.execute(
                         "SELECT id, industry, company_size FROM accounts WHERE name=?",
@@ -6817,6 +6840,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _deal = sfa_db.get_deal(con, _did)
                         if _deal and _deal.get("status") != "closed":
                             _memo = (f.get("memo") or "").strip()
+                            _cr = (f.get("close_reason") or "").strip()
+                            _cr = _cr if _cr in sfa_db.CLOSE_REASONS else None
                             _acct_row = con.execute(
                                 "SELECT * FROM accounts WHERE id=?", (_deal.get("account_id"),)
                             ).fetchone()
@@ -6824,12 +6849,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                             # 現状メモ: リードに戻す時のメモ（あれば）を一番上に追記した上でクローズ理由も付与
                             _close_line = "アポ未獲得のためクローズ（リードに戻す）"
+                            if _cr:
+                                _close_line += f"／終了理由: {_cr}"
                             _existing_note = _deal.get("note") or ""
                             _body = f"{_existing_note}\n{_close_line}" if _existing_note else _close_line
                             _new_note = f"[リードに戻す時のメモ] {_memo}\n{_body}" if _memo else _body
                             con.execute(
-                                "UPDATE deals SET status='closed', note=?, updated_at=datetime('now') WHERE id=?",
-                                (_new_note, _did),
+                                "UPDATE deals SET status='closed', note=?, "
+                                "close_reason=COALESCE(?, close_reason), updated_at=datetime('now') WHERE id=?",
+                                (_new_note, _cr, _did),
                             )
 
                             _lid = None
@@ -6893,9 +6921,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _existing_note = _deal.get("note") or ""
                             _body = f"{_existing_note}\n{_close_line}" if _existing_note else _close_line
                             _new_note = f"[クローズ時のメモ] {_memo}\n{_body}" if _memo else _body
+                            _cr = (f.get("close_reason") or "").strip()
+                            _cr = _cr if _cr in sfa_db.CLOSE_REASONS else None
                             con.execute(
-                                "UPDATE deals SET status='closed', note=?, updated_at=datetime('now') WHERE id=?",
-                                (_new_note, _did),
+                                "UPDATE deals SET status='closed', note=?, "
+                                "close_reason=COALESCE(?, close_reason), updated_at=datetime('now') WHERE id=?",
+                                (_new_note, _cr, _did),
                             )
                             con.commit()
                             if theme_client is not None:
