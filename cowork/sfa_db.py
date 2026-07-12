@@ -789,6 +789,28 @@ def list_deals_by_date(con, date: str, owner: str | None = None) -> list[dict]:
     return [dict(r) for r in con.execute(q, params)]
 
 
+def list_overdue_deals(con, owner: str | None = None, today: str | None = None) -> list[dict]:
+    """次回MSが超過した進行中商談を返す（当日 >= 次回MS日、つまり next_milestone_date <= 当日）。
+
+    商談一覧の赤ハイライト（next_milestone_date <= today）と定義を一致させる。
+    最も遅れているものから順（next_milestone_date 昇順）。
+    """
+    today = today or date.today().isoformat()
+    q = """SELECT d.*, a.name AS account_name, a.industry, a.company_size
+           FROM deals d
+           LEFT JOIN accounts a ON a.id = d.account_id
+           WHERE (d.status IS NULL OR d.status != 'closed')
+                 AND d.next_milestone_date IS NOT NULL
+                 AND d.next_milestone_date <= ?"""
+    params: list = [today]
+    if owner:
+        q += " AND (d.owner = ? OR d.sub_owner = ?)"
+        params.append(owner)
+        params.append(owner)
+    q += " ORDER BY d.next_milestone_date ASC"
+    return [dict(r) for r in con.execute(q, params)]
+
+
 def get_deal(con, deal_id: int) -> dict | None:
     r = con.execute(
         """SELECT d.*, a.name AS account_name FROM deals d

@@ -1388,17 +1388,21 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
 
 def deals_page(con, *, tab: str = "active", owner: str | None = None, status_filter: str | None = None,
                stage_filter: str | None = None, date: str | None = None) -> str:
-    """商談一覧をタブ化: 「進行中の商談」(既存home_page)と「特定日の商談」。"""
+    """商談一覧をタブ化: 「進行中の商談」(既存home_page)・「特定日の商談」・「MS超過の商談」。"""
     is_by_date = tab == "byDate"
+    is_overdue = tab == "overdue"
     tab_nav = f"""
     <div style="display:flex;gap:8px;margin-bottom:14px">
-      <a class="{'btn sec' if is_by_date else 'btn'}" href="/deals">進行中の商談</a>
+      <a class="{'btn' if not (is_by_date or is_overdue) else 'btn sec'}" href="/deals">進行中の商談</a>
       <a class="{'btn' if is_by_date else 'btn sec'}" href="/deals?tab=byDate">特定日の商談</a>
+      <a class="{'btn' if is_overdue else 'btn sec'}" href="/deals?tab=overdue">MS超過の商談</a>
     </div>"""
-    body = (
-        deals_by_date_page(con, target_date=date, owner=owner) if is_by_date
-        else home_page(con, owner=owner, status_filter=status_filter, stage_filter=stage_filter)
-    )
+    if is_overdue:
+        body = overdue_deals_page(con, owner=owner)
+    elif is_by_date:
+        body = deals_by_date_page(con, target_date=date, owner=owner)
+    else:
+        body = home_page(con, owner=owner, status_filter=status_filter, stage_filter=stage_filter)
     return tab_nav + body
 
 
@@ -1548,6 +1552,158 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       if (memo === null) return false;
       form.memo.value = memo;
       return true;
+    }}
+    </script>
+    """
+
+
+def overdue_deals_page(con, *, owner: str | None = None) -> str:
+    """次回MSが超過した進行中商談の一覧・その場編集。当日 >= 次回MS日（＝next_milestone_date <= 当日）。
+
+    担当フィルタ（サーバ側）＋アカウント名検索（クライアント側）＋インライン編集。
+    見せ方・編集挙動は「特定日の商談」タブに揃えている。
+    """
+    owners = sfa_db.get_master_list(con, "owners")
+    stages = sfa_db.get_master_list(con, "deal_stages")
+    owner_opts = '<option value="">全担当</option>' + "".join(
+        f'<option value="{html.escape(o)}"{" selected" if o == owner else ""}>{html.escape(o)}</option>'
+        for o in owners
+    )
+    form = f"""<form method="get" action="/deals" class="filter-row">
+      <input type="hidden" name="tab" value="overdue">
+      <select name="owner">{owner_opts}</select>
+      <button class="btn sec" type="submit">担当で絞り込み</button>
+      <input type="text" id="ovAccSearch" placeholder="🔍 アカウント名で検索..."
+        oninput="filterOverdueByAccount()" style="max-width:260px;margin-left:8px">
+    </form>"""
+    _return_qs = urllib.parse.urlencode({"tab": "overdue", "owner": owner or ""})
+    return_to_url = f"/deals?{_return_qs}"
+
+    deals = sfa_db.list_overdue_deals(con, owner=owner)
+    today_str = date.today().isoformat()
+
+    def _sel(row_id, field, values, current, fn):
+        opts = "".join(
+            f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
+            for v in values
+        )
+        return (f'<select onchange="{fn}({row_id}, \'{field}\', this.value)"'
+                f' style="font-size:11px;padding:1px 2px;max-width:90px">'
+                f'<option value=""></option>{opts}</select>')
+
+    rows = []
+    for d in deals:
+        did = d["id"]
+        sel_stage = _sel(did, "stage", stages, d.get("stage") or "", "updateDealField")
+        sel_owner = _sel(did, "owner", owners, d.get("owner") or "", "updateDealField")
+        sel_sub_owner = _sel(did, "sub_owner", owners, d.get("sub_owner") or "", "updateDealField")
+        inp_deal_name = (
+            f'<input type="text" value="{_esc(d.get("deal_name"))}"'
+            f' onchange="updateDealField({did}, \'deal_name\', this.value)"'
+            f' style="font-size:12px;padding:2px 4px;width:160px">'
+        )
+        # このタブは定義上すべて超過なので、次回MS日は赤で強調する
+        ms_date_style = "background:#fee2e2;border-color:#ef4444;color:#991b1b"
+        inp_ms_date = (
+            f'<input type="date" value="{_esc(d.get("next_milestone_date"))}"'
+            f' onchange="updateDealField({did}, \'next_milestone_date\', this.value)"'
+            f' style="font-size:12px;padding:2px 4px;{ms_date_style}"'
+            f' title="次回MSが本日以前です。更新してください">'
+        )
+        inp_ms_label = (
+            f'<input type="text" value="{_esc(d.get("next_milestone_label"))}"'
+            f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
+            f' style="font-size:12px;padding:2px 4px;width:140px">'
+            f'<br>' + _sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES,
+                           d.get("next_milestone_type") or "", "updateDealField")
+        )
+        dps = [p for p in sfa_db.list_dev_projects(con, deal_id=did) if p.get("status") != "中止"]
+        if dps:
+            dev_owner_html = "".join(
+                f'<div style="margin-bottom:2px">{_sel(p["id"], "dev_owner", owners, p.get("dev_owner") or "", "updateDevProjectField")}</div>'
+                for p in dps
+            )
+            dev_link_html = "".join(
+                f'<div style="margin-bottom:2px"><a href="/dev-project/{p["id"]}/edit?return_to={urllib.parse.quote(return_to_url, safe="")}">{_esc(p.get("theme"))}</a></div>'
+                for p in dps
+            )
+            tool_html = "".join(
+                f'<div style="margin-bottom:2px">'
+                f'{_tool_link_btn(p.get("tool_url"), tool_id=p.get("tool_login_id"), tool_password=p.get("tool_login_pass")) or "—"}'
+                f'</div>'
+                for p in dps
+            )
+        else:
+            dev_owner_html = '<span class="muted">—</span>'
+            dev_link_html = (
+                f'<a class="muted" href="/dev-projects/new?deal_id={did}'
+                f'&return_to={urllib.parse.quote(return_to_url, safe="")}">＋追加</a>'
+            )
+            tool_html = "—"
+        revert_html = (
+            f'<form method="post" action="/deal/{did}/revert_to_lead" style="margin:0" onsubmit="return revertToLead(this)">'
+            f'<input type="hidden" name="memo" value="">'
+            f'<input type="hidden" name="return_to" value="{_esc(return_to_url)}">'
+            f'<button type="submit" class="btn sec" style="font-size:11px;padding:4px 8px;'
+            f'background:#f59e0b22;color:#92400e;border-color:#f59e0b44">↩ リードに戻す</button></form>'
+        )
+        _acc = (d.get("account_name") or "")
+        rows.append(
+            f'<tr data-acc="{_esc(_acc.lower())}">'
+            f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}</td>'
+            f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a></td>'
+            f'<td>{inp_deal_name}</td>'
+            f'<td>{sel_stage}</td>'
+            f'<td>{sel_owner}</td>'
+            f'<td>{sel_sub_owner}</td>'
+            f'<td>{inp_ms_date}</td>'
+            f'<td>{inp_ms_label}</td>'
+            f'<td>{dev_owner_html}</td>'
+            f'<td>{dev_link_html}</td>'
+            f'<td>{tool_html}</td>'
+            f'<td>{revert_html}</td>'
+            f'</tr>'
+        )
+
+    return f"""
+    <div class="card"><h2>MS超過の商談 {len(deals)}件</h2>
+    <p class="muted" style="margin:0 0 10px">次回MS日が本日（{_esc(today_str)}）以前の進行中商談です。遅れている順に並んでいます。</p>
+    {form}
+    <div style="overflow:auto;max-height:70vh">
+    <table style="min-width:1200px"><tr>
+      {_sticky_th('#')}{_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('ステージ')}
+      {_sticky_th('主担当')}{_sticky_th('サブ担当')}{_sticky_th('次回MS日付')}{_sticky_th('次回MS')}
+      {_sticky_th('開発担当')}{_sticky_th('開発案件名')}{_sticky_th('ツール')}{_sticky_th('操作')}</tr>
+    {''.join(rows) or '<tr><td colspan=12 class=muted>MS超過の商談はありません。</td></tr>'}
+    </table></div>
+    </div>
+    <script>
+    function updateDealField(id, field, value) {{
+      fetch('/deal/' + id + '/field', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+      }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー'); }}).catch(() => alert('通信エラー'));
+    }}
+    function updateDevProjectField(id, field, value) {{
+      fetch('/dev-project/' + id + '/field', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+      }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー'); }}).catch(() => alert('通信エラー'));
+    }}
+    function revertToLead(form) {{
+      if (!confirm('アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。')) return false;
+      var memo = prompt('リードに戻す理由・メモがあれば入力してください（任意）:', '');
+      if (memo === null) return false;
+      form.memo.value = memo;
+      return true;
+    }}
+    function filterOverdueByAccount() {{
+      var q = (document.getElementById('ovAccSearch').value || '').toLowerCase();
+      document.querySelectorAll('tr[data-acc]').forEach(function(tr) {{
+        tr.style.display = tr.getAttribute('data-acc').indexOf(q) >= 0 ? '' : 'none';
+      }});
     }}
     </script>
     """
