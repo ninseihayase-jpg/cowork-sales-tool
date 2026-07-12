@@ -131,6 +131,24 @@ def test_backfill_lists(con, acc_id):
     assert [l["name"] for l in sfa_db.list_unclassified_lost_leads(con)] == ["L1"]
 
 
+def test_bulk_tag_appt_by_label(con, acc_id):
+    mk = lambda **k: sfa_db.upsert_deal(con, account_id=acc_id, **k)
+    a = mk(deal_name="対象", next_milestone_date="2026-07-20", next_milestone_label="初回アポ 13:00", status="open")
+    mk(deal_name="当日以前", next_milestone_date="2026-07-13", next_milestone_label="初回アポ", status="open")
+    mk(deal_name="別ラベル", next_milestone_date="2026-07-20", next_milestone_label="状況フォロー", status="open")
+    mk(deal_name="既にタスク", next_milestone_date="2026-07-20", next_milestone_label="初回アポ",
+       next_milestone_type="タスク", status="open")
+    mk(deal_name="クローズ", next_milestone_date="2026-07-20", next_milestone_label="初回アポ", status="closed")
+    con.commit()
+
+    n = sfa_db.bulk_tag_appt_by_label(con, after_date="2026-07-13")
+    assert n == 1                                              # 対象のみ
+    assert sfa_db.get_deal(con, a)["next_milestone_type"] == "アポ"
+    # 既にタスクのものは上書きされない
+    row = [d for d in sfa_db.list_deals(con, status="open") if d["deal_name"] == "既にタスク"][0]
+    assert row["next_milestone_type"] == "タスク"
+
+
 def test_weekly_numbers_and_wow(con, acc_id):
     # 先週スナップショット（前週比の基準）
     sfa_db.save_weekly_snapshot(con, "2026-06-29",

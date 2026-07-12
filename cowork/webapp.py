@@ -1710,11 +1710,14 @@ def overdue_deals_page(con, *, owner: str | None = None) -> str:
     """
 
 
-def _tag_select(js_call: str, values: list[str]) -> str:
-    """タグ付け用セレクト。onchange属性は二重引用符、JS側の文字列引数は単引用符で衝突回避。"""
-    opts = "".join(f'<option value="{html.escape(v)}">{html.escape(v)}</option>' for v in values)
-    return ('<select onchange="' + js_call + '" style="font-size:12px;padding:3px 6px">'
-            '<option value="">— 選択 —</option>' + opts + '</select>')
+def _tag_buttons(make_onclick, values: list[str]) -> str:
+    """タグ付け用のワンクリック・ボタン群。押すと即保存し「✓値」表示に変わる（ドロップダウン不要）。
+    make_onclick(value) が各ボタンの onclick 文字列を返す。onclick属性は二重引用符・JS引数は単引用符で衝突回避。"""
+    btns = "".join(
+        '<button type="button" class="tagbtn" onclick="' + make_onclick(v) + '">' + html.escape(v) + '</button>'
+        for v in values
+    )
+    return '<div class="tagbtns">' + btns + '</div>'
 
 
 def data_tagging_page(con) -> str:
@@ -1736,70 +1739,78 @@ def data_tagging_page(con) -> str:
 
     ms_list = []
     for d in ms_deals:
-        did = d["id"]; rid = f"ms{did}"
-        js = "tagDeal(" + str(did) + ",'next_milestone_type',this,'" + rid + "')"
-        sel = _tag_select(js, sfa_db.NEXT_MS_TYPES)
+        did = d["id"]
+        btns = _tag_buttons(lambda v, i=did: f"tagDeal({i},'next_milestone_type','{v}',this)", sfa_db.NEXT_MS_TYPES)
         ms_list.append(
-            f'<tr id="{rid}">'
+            f'<tr>'
             f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a></td>'
             f'<td>{_esc(d.get("deal_name"))}</td>'
+            f'<td>{btns}</td>'
             f'<td style="white-space:nowrap">{_esc(d.get("next_milestone_date"))}</td>'
-            f'<td>{_esc(d.get("next_milestone_label"))}</td>'
-            f'<td>{sel}</td></tr>'
+            f'<td>{_esc(d.get("next_milestone_label"))}</td></tr>'
         )
     ms_rows = "".join(ms_list) or '<tr><td colspan=5 class=muted>未タグの次回MSはありません。</td></tr>'
 
     cd_list = []
     for d in closed_deals:
-        did = d["id"]; rid = f"cd{did}"
-        js = "tagDeal(" + str(did) + ",'close_reason',this,'" + rid + "')"
-        sel = _tag_select(js, sfa_db.CLOSE_REASONS)
+        did = d["id"]
+        btns = _tag_buttons(lambda v, i=did: f"tagDeal({i},'close_reason','{v}',this)", sfa_db.CLOSE_REASONS)
         cd_list.append(
-            f'<tr id="{rid}">'
+            f'<tr>'
             f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a><br>'
             f'<span class="muted" style="font-size:.85em">{_esc(d.get("deal_name"))} / {_esc(d.get("stage"))}</span></td>'
-            f'<td style="font-size:.85em;max-width:420px">{_note_preview(d.get("note"))}</td>'
-            f'<td>{sel}</td></tr>'
+            f'<td>{btns}</td>'
+            f'<td style="font-size:.85em;max-width:420px">{_note_preview(d.get("note"))}</td></tr>'
         )
     cd_rows = "".join(cd_list) or '<tr><td colspan=3 class=muted>未分類のクローズ商談はありません。</td></tr>'
 
     ll_list = []
     for l in lost_leads:
-        lid = l["id"]; rid = f"ll{lid}"
-        js = "tagLead(" + str(lid) + ",this,'" + rid + "')"
-        sel = _tag_select(js, sfa_db.CLOSE_REASONS)
+        lid = l["id"]
+        btns = _tag_buttons(lambda v, i=lid: f"tagLead({i},'{v}',this)", sfa_db.CLOSE_REASONS)
         ll_list.append(
-            f'<tr id="{rid}">'
+            f'<tr>'
             f'<td><a href="/leads/{lid}">{_esc(l.get("name"))}</a><br>'
             f'<span class="muted" style="font-size:.85em">{_esc(l.get("company"))}</span></td>'
-            f'<td style="font-size:.85em;max-width:420px">{_note_preview(l.get("notes"))}</td>'
-            f'<td>{sel}</td></tr>'
+            f'<td>{btns}</td>'
+            f'<td style="font-size:.85em;max-width:420px">{_note_preview(l.get("notes"))}</td></tr>'
         )
     ll_rows = "".join(ll_list) or '<tr><td colspan=3 class=muted>未分類の lost リードはありません。</td></tr>'
 
     return f"""
+    <style>
+      .tagbtns{{display:flex;flex-wrap:wrap;gap:5px}}
+      .tagbtn{{font-size:12px;padding:5px 11px;border:1px solid #cbd5e1;border-radius:15px;
+        background:#fff;color:#334155;cursor:pointer;white-space:nowrap}}
+      .tagbtn:hover{{border-color:#2f6fed;color:#2f6fed;background:#eef4ff}}
+      .tagged-ok{{color:#166534;font-weight:700;font-size:13px;white-space:nowrap}}
+    </style>
     <div class="card">
       <h2>データ整備 — タグ付け</h2>
-      <p class="muted" style="margin:0 0 4px">既存データを遡ってタグ付けします。選ぶと即保存され、行が薄くなります（完了の印）。</p>
+      <p class="muted" style="margin:0 0 4px">選択肢を<b>クリックすると即保存</b>され「✓ 値」に変わります（ドロップダウンを開く必要はありません）。</p>
       <p class="muted" style="margin:0">残り：次回MS種別 <b>{len(ms_deals)}</b>件／終了理由(商談) <b>{len(closed_deals)}</b>件／終了理由(リード) <b>{len(lost_leads)}</b>件</p>
     </div>
 
     <div class="card">
       <h2>① 次回MSの種別が未設定（{len(ms_deals)}件）</h2>
-      <p class="muted" style="margin:0 0 8px">「タスク」を選ぶとSlack翌日アポ通知から除外されます（未設定は投稿されます）。</p>
+      <p class="muted" style="margin:0 0 8px">「タスク」にするとSlack翌日アポ通知から除外されます（未設定は投稿されます）。</p>
+      <form method="post" action="/data-tagging/bulk-appt" style="margin:0 0 12px"
+        onsubmit="return confirm('次回MSが明日以降（7/14以降）で、ラベルに「初回アポ」を含む未タグの商談を、まとめて「アポ」にします。よろしいですか？')">
+        <button class="btn sec" type="submit" style="font-size:12px">⚡ 「初回アポ」を含む未タグ（明日以降）を一括でアポにする</button>
+      </form>
       <div style="overflow:auto;max-height:60vh">
       <table style="min-width:700px"><tr>
-        {_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('次回MS日')}{_sticky_th('ラベル')}{_sticky_th('種別')}</tr>
+        {_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('種別')}{_sticky_th('次回MS日')}{_sticky_th('ラベル')}</tr>
       {ms_rows}
       </table></div>
     </div>
 
     <div class="card">
       <h2>② 終了理由が未設定のクローズ商談（{len(closed_deals)}件）</h2>
-      <p class="muted" style="margin:0 0 8px">メモを見て5区分から選択。展示会ファネルの有効母数（ニーズなし除外）に反映されます。</p>
+      <p class="muted" style="margin:0 0 8px">5区分から選択。展示会ファネルの有効母数（ニーズなし除外）に反映されます。</p>
       <div style="overflow:auto;max-height:60vh">
-      <table style="min-width:760px"><tr>
-        {_sticky_th('商談')}{_sticky_th('メモ（先頭のみ）')}{_sticky_th('終了理由')}</tr>
+      <table style="min-width:820px"><tr>
+        {_sticky_th('商談')}{_sticky_th('終了理由')}{_sticky_th('メモ（先頭のみ）')}</tr>
       {cd_rows}
       </table></div>
     </div>
@@ -1807,8 +1818,8 @@ def data_tagging_page(con) -> str:
     <div class="card">
       <h2>③ 終了理由が未設定の lost リード（{len(lost_leads)}件）</h2>
       <div style="overflow:auto;max-height:60vh">
-      <table style="min-width:760px"><tr>
-        {_sticky_th('リード')}{_sticky_th('メモ（先頭のみ）')}{_sticky_th('終了理由')}</tr>
+      <table style="min-width:820px"><tr>
+        {_sticky_th('リード')}{_sticky_th('終了理由')}{_sticky_th('メモ（先頭のみ）')}</tr>
       {ll_rows}
       </table></div>
     </div>
@@ -1820,20 +1831,18 @@ def data_tagging_page(con) -> str:
         body:'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)}})
         .then(r => r.json());
     }}
-    function _tagDone(rowId) {{
-      var tr = document.getElementById(rowId);
-      if (tr) {{ tr.style.opacity = '0.4'; tr.style.textDecoration = 'none'; }}
+    function _tagOk(btn, value) {{
+      var box = btn.parentNode;
+      if (box) box.innerHTML = '<span class="tagged-ok">✓ ' + value + '</span>';
     }}
-    function tagDeal(id, field, sel, rowId) {{
-      if (!sel.value) return;
-      _tagPost('/deal/' + id + '/field', field, sel.value)
-        .then(d => {{ if (d.ok) _tagDone(rowId); else alert('更新エラー'); }})
+    function tagDeal(id, field, value, btn) {{
+      _tagPost('/deal/' + id + '/field', field, value)
+        .then(d => {{ if (d.ok) _tagOk(btn, value); else alert('更新エラー'); }})
         .catch(() => alert('通信エラー'));
     }}
-    function tagLead(id, sel, rowId) {{
-      if (!sel.value) return;
-      _tagPost('/leads/' + id + '/field', 'lost_reason', sel.value)
-        .then(d => {{ if (d.ok) _tagDone(rowId); else alert('更新エラー'); }})
+    function tagLead(id, value, btn) {{
+      _tagPost('/leads/' + id + '/field', 'lost_reason', value)
+        .then(d => {{ if (d.ok) _tagOk(btn, value); else alert('更新エラー'); }})
         .catch(() => alert('通信エラー'));
     }}
     </script>
@@ -6946,6 +6955,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             flash=f"テーマDB未同期の商談{pending}件の同期をバックグラウンドで開始しました。"
                                   f"数分後に商談一覧の「連携」列で確認できます。",
                         ))
+
+                elif path == "/data-tagging/bulk-appt":
+                    # 明日以降・ラベルに「初回アポ」を含む未タグ次回MSを一括で「アポ」にする
+                    n = sfa_db.bulk_tag_appt_by_label(con, after_date=date.today().isoformat())
+                    self._send(render(data_tagging_page(con),
+                                      flash=f"「初回アポ」を含む未タグ（明日以降）{n}件を「アポ」にしました。"))
 
                 elif path == "/sync-failures/retry":
                     # 記録済みのHisho同期失敗を1件ずつ再同期し、成功したものは記録から消す

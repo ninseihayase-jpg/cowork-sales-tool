@@ -822,6 +822,20 @@ def list_untyped_milestone_deals(con) -> list[dict]:
            ORDER BY d.next_milestone_date ASC""")]
 
 
+def bulk_tag_appt_by_label(con, *, after_date: str, label_like: str = "初回アポ") -> int:
+    """次回MSが after_date より後 かつ ラベルに label_like を含む 未タグの進行中商談を、
+    まとめて種別「アポ」にする。更新件数を返す（一括バックフィル用）。"""
+    cur = con.execute(
+        "UPDATE deals SET next_milestone_type='アポ', updated_at=datetime('now') "
+        "WHERE (status IS NULL OR status != 'closed') "
+        "AND (next_milestone_type IS NULL OR next_milestone_type = '') "
+        "AND next_milestone_date IS NOT NULL AND next_milestone_date > ? "
+        "AND next_milestone_label LIKE ?",
+        (after_date, f"%{label_like}%"))
+    con.commit()
+    return cur.rowcount
+
+
 def list_unclassified_closed_deals(con) -> list[dict]:
     """終了理由(close_reason)未設定のクローズ済み商談（終了理由バックフィル対象）。noteを添える。"""
     return [dict(r) for r in con.execute(
