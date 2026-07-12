@@ -460,6 +460,16 @@ CREATE TABLE IF NOT EXISTS sync_failures (
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(kind, ref_id)
 );
+
+-- 週次スナップショット（前週比のための時系列記録。週ごと×指標ごとに1行）
+CREATE TABLE IF NOT EXISTS weekly_snapshots (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_start  TEXT NOT NULL,   -- その週の月曜(YYYY-MM-DD)
+    metric_key  TEXT NOT NULL,   -- 例: open_deals / pipeline_lump / stage_count:提案 / leads_active ...
+    metric_value REAL,
+    updated_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(week_start, metric_key)
+);
 """
 
 
@@ -1451,3 +1461,36 @@ def list_sync_failures(con) -> list[dict]:
 
 def count_sync_failures(con) -> int:
     return con.execute("SELECT COUNT(*) c FROM sync_failures").fetchone()["c"]
+
+
+# ---- 週次スナップショット（前週比） ----
+
+def week_start_of(d: date | None = None) -> str:
+    """指定日（省略時は今日）が属する週の月曜をYYYY-MM-DDで返す。"""
+    d = d or date.today()
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def save_weekly_snapshot(con, week_start: str, metrics: dict) -> None:
+    """week_start週の各指標をupsertする（同週の再実行は上書き＝最新状態を保持）。"""
+    for key, val in metrics.items():
+        con.execute(
+            "INSERT INTO weekly_snapshots (week_start, metric_key, metric_value, updated_at) "
+            "VALUES (?,?,?,datetime('now')) "
+            "ON CONFLICT(week_start, metric_key) DO UPDATE SET "
+            "metric_value=excluded.metric_value, updated_at=datetime('now')",
+            (week_start, key, None if val is None else float(val)),
+        )
+    con.commit()
+
+
+def get_weekly_snapshot(con, week_start: str) -> dict:
+    """week_start週のスナップショットを {metric_key: metric_value} で返す（無ければ空dict）。"""
+    return {r["metric_key"]: r["metric_value"] for r in con.execute(
+        "SELECT metric_key, metric_value FROM weekly_snapshots WHERE week_start=?", (week_start,))}
+
+
+def list_snapshot_weeks(con) -> list[str]:
+    """記録済みの週(week_start)を新しい順で返す。"""
+    return [r["week_start"] for r in con.execute(
+        "SELECT DISTINCT week_start FROM weekly_snapshots ORDER BY week_start DESC")]

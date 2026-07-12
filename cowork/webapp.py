@@ -825,11 +825,107 @@ def dashboard_page(con) -> str:
       </table>
         <p style="margin-top:10px">
         <a class="btn sec" href="/deals">すべての商談を見る</a>
+        <a class="btn sec" href="/weekly-numbers" style="margin-left:8px">📊 週次レポート数字</a>
         <a class="btn ext" href="{hisho_url}" target="_blank" style="margin-left:8px">Inproc Dashboard ↗</a>
       </p>
     </div>
     <div style="text-align:right;margin-top:-10px;margin-bottom:6px">
       <a class="btn sec" href="/masters" style="font-size:12px;padding:5px 10px;opacity:0.7">⚙ 入力マスタの編集</a>
+    </div>"""
+
+
+def _wow_note(delta) -> str:
+    """前週比の注記（Noneや未確定は空文字）。"""
+    if delta is None:
+        return ""
+    d = round(delta)
+    sign = "±" if d == 0 else ("+" if d > 0 else "−")
+    return f'<span class="muted" style="font-size:.85em">（前週比 {sign}{abs(d):g}）</span>'
+
+
+def weekly_numbers_page(con) -> str:
+    """週次レポート②の数字パック。開くと今週分スナップショットを自動記録し、貼れるテキストも生成。"""
+    import cowork.weekly_report as weekly_report
+    # 今週分スナップショットを自動記録（前週比の「時計」を回す。同週再訪は上書き）
+    try:
+        weekly_report.record_snapshot(con)
+    except Exception as exc:  # noqa: BLE001 — 記録失敗でもレポート表示は続ける
+        print(f"[weekly_numbers] snapshot record failed: {exc}", flush=True)
+    r = weekly_report.compute_weekly_numbers(con)
+    flow, stock, wow = r["flow"], r["stock"], r["wow"]
+    exh = r["cohort"]["exhibition"]
+    wk = f'{r["week_start"]} 〜 {r["week_end"]}'
+
+    def dlt(key):
+        return _wow_note(wow.get(key)) if wow.get("available") else ""
+
+    # フロー前週比（フローは日付から都度計算するのでスナップショット無しでも出せる）
+    mtg_d = flow["meetings"] - flow["prev"]["meetings"]
+    lead_d = flow["new_leads"] - flow["prev"]["new_leads"]
+
+    exh_src = flow["new_leads_by_source"].get("exhibition", 0)
+
+    funnel_rows = "".join(
+        f'<tr><td>{_esc(f["stage"])}</td><td style="text-align:right">{f["count"]}</td>'
+        f'<td style="text-align:right">{f["lump"]:,.0f}</td>'
+        f'<td style="text-align:right">{f["recurring"]:,.0f}</td>'
+        f'<td>{_wow_note((wow.get("funnel") or {}).get(f["stage"])) if wow.get("available") else ""}</td></tr>'
+        for f in stock["funnel"])
+    closing_rows = "".join(
+        f'<tr><td>{_esc(c.get("account"))}</td><td>{_esc(c.get("deal_name"))}</td>'
+        f'<td style="text-align:right">{(c.get("lump") or 0):,.0f}</td>'
+        f'<td>{_esc(c.get("ms_date") or "—")}</td><td>{_esc(c.get("owner") or "—")}</td></tr>'
+        for c in stock["closing_deals"]) or '<tr><td colspan=5 class=muted>クロージング商談なし</td></tr>'
+
+    wow_banner = ("" if wow.get("available")
+                  else '<p class="muted">※ 前週比は来週号から表示されます（今週が最初のスナップショット記録）。</p>')
+
+    # ②に貼れるプレーンテキスト（温度ゼロ・事実のみ）
+    def sgn(x):
+        x = round(x); return "±0" if x == 0 else (f"+{x:g}" if x > 0 else f"−{abs(x):g}")
+    wow_pipe = f"（前週比 {sgn(wow['pipeline_lump'])}万）" if wow.get("available") else ""
+    fn = {f["stage"]: f["count"] for f in stock["funnel"]}
+    paste = (
+        f"② 今週の数字（{wk}）\n"
+        f"・面談：{flow['meetings']}件（相手 {flow['meeting_companies']}社）"
+        f"{'（前週比 ' + sgn(mtg_d) + '）' if True else ''}\n"
+        f"・新規リード：{flow['new_leads']}件（うち展示会 {exh_src}件）\n"
+        f"・新規商談：{flow['new_deals']}件\n"
+        f"・現ファネル：初回アポ {fn.get('初回アポ実施',0)}／要件詰め {fn.get('要件詰め',0)}"
+        f"／提案 {fn.get('提案',0)}／クロージング {fn.get('クロージング',0)}\n"
+        f"・パイプライン総額：{stock['pipeline_lump']:,.0f}万円{wow_pipe}\n"
+        f"・展示会ファネル：商談化 {exh['total']} → 初回面談 {exh['first_meeting']} "
+        f"→ 次商談 {exh['second_meeting']} → 受注 {exh['won']}\n"
+        f"※キャンセル率・ニーズなしは手元集計とマージ"
+    )
+
+    return f"""
+    <div class="card">
+      <h2>週次レポート 数字パック <span class="muted" style="font-size:.6em">{_esc(wk)}</span></h2>
+      {wow_banner}
+      <h3>今週の動き（フロー）</h3>
+      <ul>
+        <li>面談：<b>{flow['meetings']}件</b>（相手 {flow['meeting_companies']}社） {_wow_note(mtg_d)}</li>
+        <li>新規リード：<b>{flow['new_leads']}件</b>（うち展示会 {exh_src}件） {_wow_note(lead_d)}</li>
+        <li>新規商談：<b>{flow['new_deals']}件</b></li>
+      </ul>
+      <h3>現ファネル（ストック）　パイプライン単発総額 <b>{stock['pipeline_lump']:,.0f}万円</b> {dlt('pipeline_lump')}</h3>
+      <table>
+        <tr><th>ステージ</th><th>件数</th><th>単発計(万)</th><th>継続月額計(万)</th><th>前週比</th></tr>
+        {funnel_rows}
+      </table>
+      <h3>クロージング商談</h3>
+      <table>
+        <tr><th>アカウント</th><th>案件名</th><th>単発(万)</th><th>次回MS</th><th>担当</th></tr>
+        {closing_rows}
+      </table>
+      <h3>展示会ファネル（コホート）</h3>
+      <p>商談化 <b>{exh['total']}</b> → 初回面談到達 <b>{exh['first_meeting']}</b>
+         → 次の商談に進んだ <b>{exh['second_meeting']}</b> → 受注 <b>{exh['won']}</b>
+         <span class="muted" style="font-size:.85em">（キャンセル率・ニーズなしは手元集計/終了理由タグとマージ予定）</span></p>
+      <h3>レポート②に貼れるテキスト</h3>
+      <textarea rows="12" style="width:100%;font-family:monospace;font-size:13px"
+        onclick="this.select()">{_esc(paste)}</textarea>
     </div>"""
 
 
@@ -5383,6 +5479,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(masters_page(con)))
                 elif path == "/sync-health":
                     self._send(render(sync_health_page(con, theme_client)))
+                elif path == "/weekly-numbers":
+                    self._send(render(weekly_numbers_page(con)))
                 elif path == "/backups":
                     self._send(render(backups_page(db_path)))
                 elif path == "/backups/download":
