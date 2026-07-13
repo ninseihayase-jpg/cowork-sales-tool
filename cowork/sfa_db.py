@@ -456,6 +456,19 @@ CREATE TABLE IF NOT EXISTS deal_attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_deal_attachments_deal ON deal_attachments(deal_id);
 
+-- 開発案件の「追加ツールリンク」（主リンクは dev_projects.tool_url。2つ目以降をここに複数保持）。
+-- 主リンクのみHishoへ同期し、追加リンクはSFA内表示専用（連携契約を崩さないための分離）。
+CREATE TABLE IF NOT EXISTS dev_project_tools (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    dev_project_id INTEGER NOT NULL REFERENCES dev_projects(id) ON DELETE CASCADE,
+    label          TEXT,
+    url            TEXT NOT NULL,
+    login_id       TEXT,
+    login_pass     TEXT,
+    created_at     TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dev_project_tools_dp ON dev_project_tools(dev_project_id);
+
 -- Hisho同期の失敗記録（printで消えていた失敗を永続化し、後から再同期・可視化する）
 CREATE TABLE IF NOT EXISTS sync_failures (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1490,6 +1503,42 @@ def get_deal_attachment(con, attachment_id: int) -> dict | None:
 
 def delete_deal_attachment(con, attachment_id: int) -> None:
     con.execute("DELETE FROM deal_attachments WHERE id=?", (int(attachment_id),))
+    con.commit()
+
+
+# ---- 開発案件の追加ツールリンク（dev_project_tools） ----
+
+def list_dev_project_tools(con, dev_project_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM dev_project_tools WHERE dev_project_id=? ORDER BY created_at ASC, id ASC",
+        (int(dev_project_id),))]
+
+
+def list_dev_project_tools_for(con, dev_project_ids: list[int]) -> dict:
+    """複数開発案件の追加リンクを一括取得し {dev_project_id: [rows]} で返す（一覧のN+1回避）。"""
+    out: dict = {}
+    ids = [int(i) for i in dev_project_ids if i is not None]
+    if not ids:
+        return out
+    ph = ",".join("?" for _ in ids)
+    for r in con.execute(
+        f"SELECT * FROM dev_project_tools WHERE dev_project_id IN ({ph}) ORDER BY created_at ASC, id ASC", ids):
+        out.setdefault(r["dev_project_id"], []).append(dict(r))
+    return out
+
+
+def add_dev_project_tool(con, *, dev_project_id: int, url: str,
+                         label: str | None = None, login_id: str | None = None,
+                         login_pass: str | None = None) -> int:
+    cur = con.execute(
+        "INSERT INTO dev_project_tools (dev_project_id, label, url, login_id, login_pass) VALUES (?,?,?,?,?)",
+        (int(dev_project_id), label or None, url, login_id or None, login_pass or None))
+    con.commit()
+    return cur.lastrowid
+
+
+def delete_dev_project_tool(con, tool_id: int) -> None:
+    con.execute("DELETE FROM dev_project_tools WHERE id=?", (int(tool_id),))
     con.commit()
 
 

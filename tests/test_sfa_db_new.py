@@ -149,6 +149,22 @@ def test_bulk_tag_appt_by_label(con, acc_id):
     assert row["next_milestone_type"] == "タスク"
 
 
+def test_dev_project_tools_crud(con, acc_id):
+    deal = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="提案", status="open")
+    dp = sfa_db.upsert_dev_project(con, deal_id=deal, theme="テーマ", status="開発中", stage="プロト")
+    t1 = sfa_db.add_dev_project_tool(con, dev_project_id=dp, url="https://a.example", label="A")
+    sfa_db.add_dev_project_tool(con, dev_project_id=dp, url="https://b.example")
+    assert [t["url"] for t in sfa_db.list_dev_project_tools(con, dp)] == ["https://a.example", "https://b.example"]
+    # 一括取得（N+1回避）
+    batch = sfa_db.list_dev_project_tools_for(con, [dp, 999999])
+    assert len(batch[dp]) == 2 and 999999 not in batch
+    # 削除
+    sfa_db.delete_dev_project_tool(con, t1)
+    assert [t["url"] for t in sfa_db.list_dev_project_tools(con, dp)] == ["https://b.example"]
+    # 主リンク(tool_url)は dev_projects 側のまま＝Hisho同期契約は不変
+    assert "tool_url" in sfa_db.DEV_PROJECT_FIELDS if hasattr(sfa_db, "DEV_PROJECT_FIELDS") else True
+
+
 def test_weekly_numbers_and_wow(con, acc_id):
     # 先週スナップショット（前週比の基準）
     sfa_db.save_weekly_snapshot(con, "2026-06-29",

@@ -2519,6 +2519,23 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
             return f'<a href="/hearing/result/{latest["id"]}">📋ヒアリング（{n}）</a>'
         return f'<a class="muted" href="/hearing/new?target=deal:{deal_id}">ヒアリング未実施</a>'
 
+    _tools_by_dp = sfa_db.list_dev_project_tools_for(con, [p["id"] for p in projects])
+
+    def _tool_cell(p):
+        parts = []
+        primary = _tool_link_btn(p.get("tool_url"), tool_id=p.get("tool_login_id"),
+                                 tool_password=p.get("tool_login_pass"))
+        if primary:
+            parts.append(primary)
+        for t in _tools_by_dp.get(p["id"], []):
+            parts.append(_tool_link_btn(
+                t.get("url"), label="🔧 " + (_esc(t.get("label")) or "リンク"),
+                tool_id=t.get("login_id"), tool_password=t.get("login_pass")))
+        if not parts:
+            return "—"
+        return ('<div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">'
+                + "".join(parts) + '</div>')
+
     rows = "".join(
         f'<tr><td style="width:28px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
         f'<td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
@@ -2532,7 +2549,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         f'<td>{_esc(p.get("dev_owner"))}</td>'
         f'<td>{_esc(p.get("sales_owner"))}{(" / " + _esc(p["sales_sub_owner"])) if p.get("sales_sub_owner") else ""}</td>'
         f'<td>{_esc(p.get("deadline") or "—")}</td>'
-        f'<td>{_tool_link_btn(p.get("tool_url"), tool_id=p.get("tool_login_id"), tool_password=p.get("tool_login_pass")) or "—"}</td>'
+        f'<td>{_tool_cell(p)}</td>'
         f'<td><form method="post" action="/dev-project/{p["id"]}/delete" style="display:inline" '
         f'onsubmit="return confirm(\'削除しますか？\')">'
         f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
@@ -2618,6 +2635,37 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         f'<div class="muted" style="margin-bottom:6px">{sales_owner_text}</div>'
     )
 
+    # 追加ツールリンク（主リンク=tool_urlに加えて2つ目以降。編集時のみ登録可能＝dev_project_idが要る）
+    if is_edit:
+        _extras = sfa_db.list_dev_project_tools(con, p["id"])
+        _erows = ""
+        for t in _extras:
+            _lbl = "🔧 " + (_esc(t.get("label")) or "リンク")
+            _erows += (
+                '<div style="display:flex;align-items:center;gap:6px;margin-top:4px;justify-content:flex-end">'
+                + _tool_link_btn(t.get("url"), label=_lbl, tool_id=t.get("login_id"), tool_password=t.get("login_pass"))
+                + f'<form method="post" action="/dev-project/{p["id"]}/tools/{t["id"]}/delete" style="margin:0" '
+                  'onsubmit="return confirm(\'この追加リンクを削除しますか？\')">'
+                  '<button class="btn sec" type="submit" style="font-size:10px;padding:1px 6px;color:#991b1b;border-color:#fecaca">×</button>'
+                  '</form></div>'
+            )
+        extra_links_html = (
+            '<div style="margin-top:8px;border-top:1px dashed #d5dae3;padding-top:6px">'
+            '<label style="font-size:11px;color:#6b7689;display:block;margin-bottom:3px">追加のツールリンク</label>'
+            + (_erows or '<span class="muted" style="font-size:11px">なし</span>')
+            + f'<form method="post" action="/dev-project/{p["id"]}/tools/add" '
+              'style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">'
+              '<input type="url" name="url" required placeholder="追加リンク https://..." style="width:220px;font-size:12px;padding:4px 6px">'
+              '<input type="text" name="label" placeholder="表示名(任意)" style="width:100px;font-size:11px;padding:4px 6px">'
+              '<input type="text" name="login_id" placeholder="ID(任意)" style="width:78px;font-size:11px;padding:4px 6px">'
+              '<input type="text" name="login_pass" placeholder="PASS(任意)" style="width:78px;font-size:11px;padding:4px 6px">'
+              '<button class="btn sec" type="submit" style="font-size:11px">＋追加</button></form>'
+            '</div>'
+        )
+    else:
+        extra_links_html = ('<p class="muted" style="font-size:11px;margin:6px 0 0;text-align:right">'
+                            '追加リンクは保存後に登録できます</p>')
+
     return f"""
     <div class="card" style="max-width:900px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
@@ -2626,7 +2674,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
           <h2 style="margin:0">{'開発案件を編集' if is_edit else '開発案件 新規入力'}</h2>
         </div>
         <div style="text-align:right">
-          <label style="font-size:11px;color:#6b7689;margin:0 0 2px;display:block">制作したツールのリンク</label>
+          <label style="font-size:11px;color:#6b7689;margin:0 0 2px;display:block">制作したツールのリンク（主）</label>
           <input type="url" name="tool_url" form="dpForm" placeholder="https://..."
             value="{_esc(p.get('tool_url'))}" style="width:220px;font-size:12px;padding:5px 8px">
           <div style="display:flex;gap:4px;margin-top:4px">
@@ -2635,6 +2683,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
             <input type="text" name="tool_login_pass" form="dpForm" placeholder="PASS（必要な場合）"
               value="{_esc(p.get('tool_login_pass'))}" style="width:106px;font-size:11px;padding:4px 6px">
           </div>
+          {extra_links_html}
         </div>
       </div>
       <form method="post" action="{action}" id="dpForm">
@@ -6324,6 +6373,31 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             print(f"[dev_project_link] sync_dev_project failed: {exc}")
                     _return_to = f.get("return_to") or ""
                     self._redirect(_return_to if _return_to.startswith("/") else f"/deal/{existing['deal_id']}")
+
+                # 追加ツールリンクの削除（汎用 /delete より先に置く＝先勝ち）
+                elif path.startswith("/dev-project/") and "/tools/" in path and path.endswith("/delete"):
+                    parts = path.split("/")  # ['', 'dev-project', '{id}', 'tools', '{tool_id}', 'delete']
+                    if len(parts) == 6 and parts[2].isdigit() and parts[4].isdigit():
+                        sfa_db.delete_dev_project_tool(con, int(parts[4]))
+                        self._redirect(f"/dev-project/{parts[2]}/edit")
+                    else:
+                        self._redirect("/dev-projects")
+
+                # 追加ツールリンクの追加
+                elif path.startswith("/dev-project/") and path.endswith("/tools/add"):
+                    parts = path.split("/")  # ['', 'dev-project', '{id}', 'tools', 'add']
+                    if len(parts) == 5 and parts[2].isdigit():
+                        pid = int(parts[2])
+                        url = (f.get("url") or "").strip()
+                        if url and url.lower().startswith(("http://", "https://")):
+                            sfa_db.add_dev_project_tool(
+                                con, dev_project_id=pid, url=url,
+                                label=f.get("label") or None,
+                                login_id=f.get("login_id") or None,
+                                login_pass=f.get("login_pass") or None)
+                        self._redirect(f"/dev-project/{pid}/edit")
+                    else:
+                        self._redirect("/dev-projects")
 
                 elif path.startswith("/dev-project/") and path.endswith("/delete"):
                     try:
