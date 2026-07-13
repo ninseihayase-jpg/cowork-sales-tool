@@ -2543,14 +2543,14 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
             f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
             for v in values)
         return (f'<select onchange="updateDevProjectField({pid}, \'{field}\', this.value)"'
-                f' style="font-size:11px;padding:1px 3px;max-width:96px">'
+                f' style="font-size:12px;padding:3px 4px;min-width:80px;width:100%">'
                 f'<option value=""></option>{opts}</select>')
 
     rows = "".join(
         f'<tr><td style="width:28px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
-        f'<td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
-        f'<div class="muted">{_esc(p.get("theme_detail") or "")}</div></td>'
-        f'<td><a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
+        f'<td style="max-width:320px"><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
+        f'<div class="muted" style="font-size:11px;white-space:normal;word-break:break-word">{_esc(p.get("theme_detail") or "")}</div></td>'
+        f'<td style="max-width:190px;white-space:normal;word-break:break-word"><a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
         f'<div class="muted">{_esc(p.get("deal_name"))}</div>'
         f'<div style="font-size:11px;margin-top:2px">{_hearing_link(p["deal_id"])}</div></td>'
         f'<td>{_dsel(p["id"], "stage", sfa_db.DEV_PROJECT_STAGES, p.get("stage") or "")}</td>'
@@ -2574,11 +2574,11 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
       {filter_row}
       <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
-      <table>
+      <table style="min-width:1240px">
         <tr><th class="sticky" style="width:28px"><input type="checkbox" id="dp_chk_all" title="全選択"
               onchange="document.querySelectorAll('#dp_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            {_sticky_th('開発テーマ')}{_sticky_th('商談')}{_sticky_th('ステージ')}{_sticky_th('状況')}{_sticky_th('受注余地')}
-            {_sticky_th('開発担当')}{_sticky_th('営業担当')}{_sticky_th('期限')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
+            {_sticky_th('開発テーマ', '320px')}{_sticky_th('商談', '190px')}{_sticky_th('ステージ', '92px')}{_sticky_th('状況', '92px')}{_sticky_th('受注余地', '84px')}
+            {_sticky_th('開発担当', '96px')}{_sticky_th('営業担当', '96px')}{_sticky_th('期限', '96px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
         {rows}
       </table>
       </div>
@@ -2660,7 +2660,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         for t in _extras:
             _lbl = "🔧 " + (_esc(t.get("label")) or "リンク")
             _erows += (
-                '<div style="display:flex;align-items:center;gap:6px;margin-top:4px;justify-content:flex-end">'
+                '<div style="display:flex;align-items:center;gap:6px;margin-top:4px;justify-content:flex-start">'
                 + _tool_link_btn(t.get("url"), label=_lbl, tool_id=t.get("login_id"), tool_password=t.get("login_pass"))
                 + f'<form method="post" action="/dev-project/{p["id"]}/tools/{t["id"]}/delete" style="margin:0" '
                   'onsubmit="return confirm(\'この追加リンクを削除しますか？\')">'
@@ -2668,11 +2668,11 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
                   '</form></div>'
             )
         extra_links_html = (
-            '<div style="margin-top:8px;border-top:1px dashed #d5dae3;padding-top:6px">'
-            '<label style="font-size:11px;color:#6b7689;display:block;margin-bottom:3px">追加のツールリンク</label>'
+            '<div style="margin:4px 0 14px;padding:8px 10px;background:#f8f9fb;border:1px solid #e6e9f0;border-radius:8px">'
+            '<label style="font-size:11px;color:#6b7689;display:block;margin-bottom:4px">追加のツールリンク（主リンクの他に複数登録できます）</label>'
             + (_erows or '<span class="muted" style="font-size:11px">なし</span>')
             + f'<form method="post" action="/dev-project/{p["id"]}/tools/add" '
-              'style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">'
+              'style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-start">'
               '<input type="url" name="url" required placeholder="追加リンク https://..." style="width:220px;font-size:12px;padding:4px 6px">'
               '<input type="text" name="label" placeholder="表示名(任意)" style="width:100px;font-size:11px;padding:4px 6px">'
               '<input type="text" name="login_id" placeholder="ID(任意)" style="width:78px;font-size:11px;padding:4px 6px">'
@@ -2701,9 +2701,9 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
             <input type="text" name="tool_login_pass" form="dpForm" placeholder="PASS（必要な場合）"
               value="{_esc(p.get('tool_login_pass'))}" style="width:106px;font-size:11px;padding:4px 6px">
           </div>
-          {extra_links_html}
         </div>
       </div>
+      {extra_links_html}
       <form method="post" action="{action}" id="dpForm">
         {return_to_field}
         <label>商談</label>
