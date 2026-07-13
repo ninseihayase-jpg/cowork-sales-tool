@@ -249,9 +249,9 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <title>Inproc Salesforce</title>
 <style>
  body{{font-family:system-ui,'Segoe UI','Hiragino Kaku Gothic ProN',sans-serif;margin:0;background:#f4f6f9;color:#1d2430}}
- header{{background:#1f2a44;color:#fff;padding:9px 14px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;position:sticky;top:0;z-index:100}}
- header h1{{font-size:16px;margin:0;white-space:nowrap}} header a{{color:#cdd7ff;text-decoration:none;font-size:13px;white-space:nowrap}}
- .nav-sep{{width:1px;height:16px;background:rgba(255,255,255,.2);margin:0 -3px}}
+ header{{background:#1f2a44;color:#fff;padding:10px 18px;display:flex;align-items:center;gap:15px;flex-wrap:wrap;position:sticky;top:0;z-index:100}}
+ header h1{{font-size:16px;margin:0 4px 0 0;white-space:nowrap}} header a{{color:#cdd7ff;text-decoration:none;font-size:13px;white-space:nowrap}}
+ .nav-sep{{width:1px;height:16px;background:rgba(255,255,255,.22);margin:0}}
  .nav-menu{{position:relative}}
  .nav-menu>summary{{list-style:none;cursor:pointer;color:#cdd7ff;font-size:12px;opacity:.75}}
  .nav-menu>summary::-webkit-details-marker{{display:none}}
@@ -338,9 +338,9 @@ function escH(s) {{
       <a href="/backups">🗄 バックアップ</a>
     </div>
   </details>
-  <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 9px;font-size:11px;font-weight:600;color:#e0e8ff;text-decoration:none">InProc dashboard ↗</a>
-  <a href="/dashboard" style="margin-left:6px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 9px;font-size:11px;font-weight:600;color:#cdd7ff;text-decoration:none">📊 SFA dashboard</a>
-  <a href="/reports" style="margin-left:6px;background:rgba(224,178,122,.16);border:1px solid rgba(224,178,122,.4);border-radius:6px;padding:4px 9px;font-size:11px;font-weight:600;color:#f0d9be;text-decoration:none">📰 週次レポート</a>
+  <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#e0e8ff;text-decoration:none">InProc dashboard ↗</a>
+  <a href="/dashboard" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#cdd7ff;text-decoration:none">📊 SFA dashboard</a>
+  <a href="/reports" style="background:rgba(224,178,122,.16);border:1px solid rgba(224,178,122,.4);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#f0d9be;text-decoration:none">📰 週次レポート</a>
 </header>
 <main>{flash}{body}</main></body></html>"""
 
