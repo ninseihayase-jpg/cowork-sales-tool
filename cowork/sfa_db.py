@@ -90,11 +90,13 @@ DEV_WORK_TYPE_SEED = [
 
 
 def compute_dev_points(con, *, work_type, stage, difficulty) -> float | None:
-    """作業種別の基準点数 × 既存分類係数(プロト/PoC/本番) × 難易度係数。マスタ未登録ならNone。"""
+    """作業種別の基準点数 × 既存分類係数(プロト/PoC/本番) × 難易度係数。マスタ未登録ならNone。
+    係数は dev_coefficient（管理画面で編集可）を優先し、無ければ定数の既定値を使う。"""
     base = get_dev_point_base(con, work_type or "")
     if base is None:
         return None
-    coef = DEV_STAGE_COEF.get(stage or "", 1.0) * DEV_DIFFICULTY_COEF.get(difficulty or "", 1.0)
+    coefs = get_dev_coefs(con)
+    coef = coefs["stage"].get(stage or "", 1.0) * coefs["difficulty"].get(difficulty or "", 1.0)
     return round(base * coef, 1)
 
 # 社内論点管理
@@ -545,6 +547,15 @@ CREATE TABLE IF NOT EXISTS dev_owner_capacity (
     weekly_max_points REAL NOT NULL,      -- 週次上限点数
     updated_at        TEXT DEFAULT (datetime('now'))
 );
+
+-- 開発点数の係数マスタ（既存分類/難易度の係数を管理画面で編集可能にする。#41-②）
+CREATE TABLE IF NOT EXISTS dev_coefficient (
+    coef_type  TEXT NOT NULL,             -- 'stage' | 'difficulty'
+    coef_key   TEXT NOT NULL,             -- プロト/PoC/本番 | 易/中/難
+    coef_value REAL NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (coef_type, coef_key)
+);
 """
 
 
@@ -719,8 +730,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         wr_cols = {r[1] for r in con.execute("PRAGMA table_info(weekly_reports)")}
         if wr_cols and "cover_image" not in wr_cols:
             con.execute("ALTER TABLE weekly_reports ADD COLUMN cover_image TEXT")
-        # 開発点数マスタの初期シード（空のときのみ・#41）
+        # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
+        seed_dev_coefficients(con)
         # deal_issues.deal_id を NOT NULL → NULL可に変更（商談共通の論点に対応）。
         # SQLiteはNOT NULL制約を直接ALTERできないため、テーブルを作り直す。
         issue_deal_id_col = next(
@@ -1535,6 +1547,38 @@ def set_owner_capacity(con, owner: str, weekly_max_points: float) -> None:
         "ON CONFLICT(owner) DO UPDATE SET "
         "weekly_max_points=excluded.weekly_max_points, updated_at=datetime('now')",
         (owner, float(weekly_max_points)))
+    con.commit()
+
+
+def seed_dev_coefficients(con) -> None:
+    """係数マスタが空なら定数の既定値を投入（初回のみ）。"""
+    if con.execute("SELECT COUNT(*) c FROM dev_coefficient").fetchone()["c"]:
+        return
+    for k, v in DEV_STAGE_COEF.items():
+        con.execute("INSERT OR IGNORE INTO dev_coefficient (coef_type, coef_key, coef_value) "
+                    "VALUES ('stage',?,?)", (k, v))
+    for k, v in DEV_DIFFICULTY_COEF.items():
+        con.execute("INSERT OR IGNORE INTO dev_coefficient (coef_type, coef_key, coef_value) "
+                    "VALUES ('difficulty',?,?)", (k, v))
+    con.commit()
+
+
+def get_dev_coefs(con) -> dict:
+    """{'stage': {key:val}, 'difficulty': {key:val}} を返す。DB値を定数の既定に上書き。"""
+    coefs = {"stage": dict(DEV_STAGE_COEF), "difficulty": dict(DEV_DIFFICULTY_COEF)}
+    for r in con.execute("SELECT coef_type, coef_key, coef_value FROM dev_coefficient"):
+        if r["coef_type"] in coefs:
+            coefs[r["coef_type"]][r["coef_key"]] = float(r["coef_value"])
+    return coefs
+
+
+def set_dev_coef(con, coef_type: str, coef_key: str, coef_value: float) -> None:
+    con.execute(
+        "INSERT INTO dev_coefficient (coef_type, coef_key, coef_value, updated_at) "
+        "VALUES (?,?,?,datetime('now')) "
+        "ON CONFLICT(coef_type, coef_key) DO UPDATE SET "
+        "coef_value=excluded.coef_value, updated_at=datetime('now')",
+        (coef_type, coef_key, float(coef_value)))
     con.commit()
 
 

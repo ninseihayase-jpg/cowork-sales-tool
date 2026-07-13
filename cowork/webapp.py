@@ -2836,6 +2836,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         f'<td>{_dsel(p["id"], "stage", sfa_db.DEV_PROJECT_STAGES, p.get("stage") or "")}</td>'
         f'<td>{_dsel(p["id"], "dev_audience", sfa_db.DEV_AUDIENCES, p.get("dev_audience") or "")}</td>'
         f'<td>{_dsel(p["id"], "work_type", _dp_worktypes, p.get("work_type") or "")}</td>'
+        f'<td>{_dsel(p["id"], "difficulty", sfa_db.DEV_DIFFICULTIES, p.get("difficulty") or "")}</td>'
         f'<td>{_dsel(p["id"], "status", sfa_db.DEV_PROJECT_STATUSES, p.get("status") or "")}</td>'
         f'<td>{_dsel(p["id"], "order_potential", sfa_db.DEV_ORDER_POTENTIALS, p.get("order_potential") or "")}</td>'
         f'<td style="text-align:right;font-variant-numeric:tabular-nums" title="自動計算（作業種別×分類×難易度）">'
@@ -2848,7 +2849,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         f'onsubmit="return confirm(\'削除しますか？\')">'
         f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
         for p in projects
-    ) or '<tr><td colspan=14 class=muted>開発案件がまだありません</td></tr>'
+    ) or '<tr><td colspan=15 class=muted>開発案件がまだありません</td></tr>'
     _pts_total = sum(float(p.get("dev_points") or 0) for p in projects)
     return f"""
     <div class="card">
@@ -2859,11 +2860,11 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
       {filter_row}
       <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
-      <table style="min-width:1500px">
+      <table style="min-width:1580px">
         <tr><th class="sticky" style="width:28px"><input type="checkbox" id="dp_chk_all" title="全選択"
               onchange="document.querySelectorAll('#dp_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            {_sticky_th('開発テーマ', '300px')}{_sticky_th('商談', '180px')}{_sticky_th('ステージ', '88px')}{_sticky_th('提供先', '92px')}{_sticky_th('作業種別', '150px')}{_sticky_th('状況', '88px')}{_sticky_th('受注余地', '80px')}{_sticky_th('点数', '58px')}
-            {_sticky_th('開発担当', '92px')}{_sticky_th('営業担当', '92px')}{_sticky_th('期限', '92px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
+            {_sticky_th('開発テーマ', '280px')}{_sticky_th('商談', '170px')}{_sticky_th('ステージ', '86px')}{_sticky_th('提供先', '90px')}{_sticky_th('作業種別', '146px')}{_sticky_th('難易度', '78px')}{_sticky_th('状況', '86px')}{_sticky_th('受注余地', '78px')}{_sticky_th('点数', '56px')}
+            {_sticky_th('開発担当', '90px')}{_sticky_th('営業担当', '90px')}{_sticky_th('期限', '90px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
         {rows}
       </table>
       </div>
@@ -2929,8 +2930,17 @@ def dev_point_master_page(con) -> str:
     master = sfa_db.list_dev_point_master(con)
     caps = sfa_db.get_owner_capacities(con)
     owners = sfa_db.get_master_list(con, "owners")
-    stage_txt = " / ".join(f"{k}×{v:g}" for k, v in sfa_db.DEV_STAGE_COEF.items())
-    diff_txt = " / ".join(f"{k}×{v:g}" for k, v in sfa_db.DEV_DIFFICULTY_COEF.items())
+    coefs = sfa_db.get_dev_coefs(con)
+    stage_coef_inputs = "".join(
+        f'<div style="display:inline-block;margin-right:14px">{_esc(k)} ×'
+        f'<input type="number" step="0.1" name="cf__stage__{_esc(k)}" '
+        f'value="{coefs["stage"].get(k, 1):g}" style="width:64px;margin-left:4px"></div>'
+        for k in sfa_db.DEV_PROJECT_STAGES)
+    diff_coef_inputs = "".join(
+        f'<div style="display:inline-block;margin-right:14px">{_esc(k)} ×'
+        f'<input type="number" step="0.1" name="cf__difficulty__{_esc(k)}" '
+        f'value="{coefs["difficulty"].get(k, 1):g}" style="width:64px;margin-left:4px"></div>'
+        for k in sfa_db.DEV_DIFFICULTIES)
     mrows = ""
     for m in master:
         mid = m["id"]
@@ -2950,7 +2960,7 @@ def dev_point_master_page(con) -> str:
     <div class="card" style="max-width:760px">
       <p style="margin:0 0 10px"><a href="/dev-projects">← 開発案件一覧</a></p>
       <h2 style="margin:0 0 4px">開発点数マスタ（作業種別）</h2>
-      <p class="muted" style="margin:0 0 6px">実際の点数 = <b>作業種別の基準点数</b> × 既存分類係数（{stage_txt}）× 難易度係数（{diff_txt}）。</p>
+      <p class="muted" style="margin:0 0 6px">実際の点数 = <b>作業種別の基準点数</b> × 既存分類係数（プロト/PoC/本番）× 難易度係数。</p>
       <p class="muted" style="margin:0 0 12px">目安: <b>約20点 ≒ 1 FTE（1人分の稼働）</b>。経験曲線＝速くなったら基準点数を下げる（<b>新規案件のみ</b>反映・過去は据え置き）。</p>
       <form method="post" action="/dev-point-master/save">
         <table><tr><th>作業種別</th><th>基準点数</th><th></th></tr>{mrows}
@@ -2958,6 +2968,13 @@ def dev_point_master_page(con) -> str:
               <td><input type="number" step="0.1" name="new_base_points" placeholder="点数" style="width:90px"></td><td></td></tr>
         </table>
         <button class="btn" type="submit" style="margin-top:12px">点数マスタを保存</button>
+      </form>
+      <h2 style="margin:28px 0 4px">係数（既存分類・難易度）</h2>
+      <p class="muted" style="margin:0 0 12px">作業種別の基準点数に掛かる倍率。</p>
+      <form method="post" action="/dev-point-master/coef">
+        <div style="margin-bottom:8px"><b style="font-size:13px">既存分類（ステージ）</b><br>{stage_coef_inputs}</div>
+        <div><b style="font-size:13px">難易度</b><br>{diff_coef_inputs}</div>
+        <button class="btn" type="submit" style="margin-top:12px">係数を保存</button>
       </form>
       <h2 style="margin:28px 0 4px">開発担当の週次キャパ</h2>
       <p class="muted" style="margin:0 0 12px">週次上限点数（<b>約20点 ≒ 1 FTE</b>）。負荷率＝その週の割当点数 ÷ この上限（Hishoの点数ダッシュボードで使用）。</p>
@@ -2978,11 +2995,12 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
     is_edit = project is not None
     p = project or {}
     owners = sfa_db.get_master_list(con, "owners")
-    # 点数のライブ算出用（作業種別→基準点数＋各係数）
+    # 点数のライブ算出用（作業種別→基準点数＋各係数。係数はマスタ画面で編集された値を反映）
     _pt_base_json = json.dumps({m["work_type"]: m["base_points"] for m in sfa_db.list_dev_point_master(con)},
                                ensure_ascii=False)
-    _stage_coef_json = json.dumps(sfa_db.DEV_STAGE_COEF, ensure_ascii=False)
-    _diff_coef_json = json.dumps(sfa_db.DEV_DIFFICULTY_COEF, ensure_ascii=False)
+    _coefs = sfa_db.get_dev_coefs(con)
+    _stage_coef_json = json.dumps(_coefs["stage"], ensure_ascii=False)
+    _diff_coef_json = json.dumps(_coefs["difficulty"], ensure_ascii=False)
     return_to_field = f'<input type="hidden" name="return_to" value="{_esc(return_to)}">' if return_to else ""
 
     if is_edit:
@@ -6559,6 +6577,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _mid = (f.get("id") or "").strip()
                     if _mid.isdigit():
                         sfa_db.delete_dev_point_master_by_id(con, int(_mid))
+                    self._redirect("/dev-point-master")
+                elif path == "/dev-point-master/coef":
+                    for k, v in f.items():
+                        if not k.startswith("cf__") or not str(v).strip():
+                            continue
+                        _p = k[4:].split("__", 1)
+                        if len(_p) != 2 or _p[0] not in ("stage", "difficulty"):
+                            continue
+                        try:
+                            sfa_db.set_dev_coef(con, _p[0], _p[1], float(v))
+                        except ValueError:
+                            continue
                     self._redirect("/dev-point-master")
                 elif path == "/dev-point-master/capacity":
                     for k, v in f.items():

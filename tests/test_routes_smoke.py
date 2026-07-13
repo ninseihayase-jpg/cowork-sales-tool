@@ -327,6 +327,11 @@ def test_dev_points_auto_recalc_and_master(server, db_path):
     assert sfa_db.get_dev_point_base(con2, "図面OCR研究") == 5.0
     _post(server + "/dev-point-master/capacity", {"cap__早瀬": "20"}, headers=_auth_header())
     assert sfa_db.get_owner_capacities(con2).get("早瀬") == 20.0
+    # 係数の編集
+    _post(server + "/dev-point-master/coef",
+          {"cf__stage__本番": "2.0", "cf__difficulty__難": "1.5"}, headers=_auth_header())
+    _c = sfa_db.get_dev_coefs(con2)
+    assert _c["stage"]["本番"] == 2.0 and _c["difficulty"]["難"] == 1.5
     con2.close()
     con.close()
 
