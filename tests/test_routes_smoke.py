@@ -101,6 +101,31 @@ def test_data_tagging_route_200(server):
     assert len(resp.read()) > 0
 
 
+def test_dev_project_inline_field_persist(server, db_path):
+    """開発案件一覧のインライン編集(stage/status/order_potential)が実HTTPで保存され、不正値は拒否される。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('DP社')").lastrowid
+    con.commit()
+    deal = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案", status="open")
+    dp = sfa_db.upsert_dev_project(con, deal_id=deal, theme="T", status="開発中", stage="プロト")
+    con.commit()
+
+    assert _post(server + f"/dev-project/{dp}/field", {"field": "stage", "value": "PoC"},
+                 headers=_auth_header())[0] == 200
+    assert _post(server + f"/dev-project/{dp}/field", {"field": "status", "value": "完成"},
+                 headers=_auth_header())[0] == 200
+    assert _post(server + f"/dev-project/{dp}/field", {"field": "order_potential", "value": "高"},
+                 headers=_auth_header())[0] == 200
+    # 不正値は拒否（値が変わらない）
+    _post(server + f"/dev-project/{dp}/field", {"field": "stage", "value": "でたらめ"}, headers=_auth_header())
+
+    con2 = sfa_db.connect(db_path)
+    row = sfa_db.get_dev_project(con2, dp)
+    assert row["stage"] == "PoC" and row["status"] == "完成" and row["order_potential"] == "高"
+    con2.close()
+    con.close()
+
+
 def test_inline_close_reason_and_ms_type_persist(server, db_path):
     """データ整備タグ付けが依存するインライン更新(close_reason/next_milestone_type/lost_reason)の
     保存と、不正値の拒否を実HTTPで検証する。"""

@@ -2536,6 +2536,16 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         return ('<div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">'
                 + "".join(parts) + '</div>')
 
+    _dp_owners = sfa_db.get_master_list(con, "owners")
+
+    def _dsel(pid, field, values, current):
+        opts = "".join(
+            f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
+            for v in values)
+        return (f'<select onchange="updateDevProjectField({pid}, \'{field}\', this.value)"'
+                f' style="font-size:11px;padding:1px 3px;max-width:96px">'
+                f'<option value=""></option>{opts}</select>')
+
     rows = "".join(
         f'<tr><td style="width:28px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
         f'<td><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
@@ -2543,10 +2553,10 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         f'<td><a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
         f'<div class="muted">{_esc(p.get("deal_name"))}</div>'
         f'<div style="font-size:11px;margin-top:2px">{_hearing_link(p["deal_id"])}</div></td>'
-        f'<td><span class="stage">{_esc(p.get("stage"))}</span></td>'
-        f'<td style="white-space:nowrap">{_esc(p.get("status"))}</td>'
-        f'<td>{_esc(p.get("order_potential"))}</td>'
-        f'<td>{_esc(p.get("dev_owner"))}</td>'
+        f'<td>{_dsel(p["id"], "stage", sfa_db.DEV_PROJECT_STAGES, p.get("stage") or "")}</td>'
+        f'<td>{_dsel(p["id"], "status", sfa_db.DEV_PROJECT_STATUSES, p.get("status") or "")}</td>'
+        f'<td>{_dsel(p["id"], "order_potential", sfa_db.DEV_ORDER_POTENTIALS, p.get("order_potential") or "")}</td>'
+        f'<td>{_dsel(p["id"], "dev_owner", _dp_owners, p.get("dev_owner") or "")}</td>'
         f'<td>{_esc(p.get("sales_owner"))}{(" / " + _esc(p["sales_sub_owner"])) if p.get("sales_sub_owner") else ""}</td>'
         f'<td>{_esc(p.get("deadline") or "—")}</td>'
         f'<td>{_tool_cell(p)}</td>'
@@ -2584,6 +2594,14 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
       if (!ids.length) {{ alert('削除する開発案件を選択してください。'); return; }}
       if (!confirm(ids.length + '件の開発案件を削除します。この操作は取り消せません。')) return;
       document.getElementById('dp_bulk_form').submit();
+    }}
+    function updateDevProjectField(id, field, value) {{
+      fetch('/dev-project/' + id + '/field', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+      }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー: ' + (d.error || '')); }})
+        .catch(() => alert('通信エラー'));
     }}
     </script>"""
 
@@ -6666,7 +6684,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(_resp, ctype="application/json")
 
                 elif path.startswith("/dev-project/") and path.endswith("/field"):
-                    _DEV_PROJECT_ALLOWED_FIELDS = {"dev_owner"}
+                    _DEV_PROJECT_ALLOWED_FIELDS = {"dev_owner", "stage", "status", "order_potential"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -6676,6 +6694,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         value = f.get("value", "")
                         if field not in _DEV_PROJECT_ALLOWED_FIELDS:
                             _err = "不正なフィールド"
+                        elif field == "stage" and value and value not in sfa_db.DEV_PROJECT_STAGES:
+                            _err = "不正なステージ値"
+                        elif field == "status" and value and value not in sfa_db.DEV_PROJECT_STATUSES:
+                            _err = "不正な状況値"
+                        elif field == "order_potential" and value and value not in sfa_db.DEV_ORDER_POTENTIALS:
+                            _err = "不正な受注余地値"
                         else:
                             con.execute(
                                 f"UPDATE dev_projects SET {field}=?, updated_at=datetime('now') WHERE id=?",
