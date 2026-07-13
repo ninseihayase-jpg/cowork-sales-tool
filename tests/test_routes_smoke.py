@@ -394,7 +394,7 @@ def test_post_deal_save_returns_303_without_redirect_following(server):
 def test_unified_deal_table_has_dev_project_link(db_path):
     """商談一覧の共通テーブル(unified_deal_table)に開発案件への導線が出ること。
     開発案件が無い商談は「＋開発案件」新規追加リンク(deal_id/return_to付き)、
-    有る商談は当該開発案件へのリンクを出す。"""
+    有る商談は当該開発案件へのリンク＋（複数付くため）追加リンクの両方を出す。"""
     con = sfa_db.connect(db_path)
     acc = con.execute("INSERT INTO accounts(name) VALUES('UT社')").lastrowid
     con.commit()
@@ -416,4 +416,6 @@ def test_unified_deal_table_has_dev_project_link(db_path):
     # 既存開発案件がある商談側: その案件の編集リンクとテーマ名
     assert "/dev-project/" in html_out and "/edit?return_to=" in html_out
     assert "UTテーマ" in html_out
+    # 1商談に複数つくため、既存があっても「＋開発案件」追加リンクを出す
+    assert f"/dev-projects/new?deal_id={d_has}&return_to=" in html_out
     con.close()

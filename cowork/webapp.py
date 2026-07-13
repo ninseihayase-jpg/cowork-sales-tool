@@ -508,7 +508,7 @@ img{max-width:100%;height:auto;display:block}
   border-radius:16px;padding:clamp(1.8rem,4vw,3rem) clamp(1.4rem,4vw,2.6rem);}
 h1.art-title{font-size:clamp(1.7rem,4.6vw,2.5rem);font-weight:700;line-height:1.42;margin:.6rem 0 0;
   text-wrap:balance;letter-spacing:.02em;}
-.art{max-width:40rem;margin:0 auto;}
+.art{max-width:46rem;margin:0 auto;}
 .art .lead{font-size:clamp(1.16rem,2.1vw,1.36rem);line-height:2.1;margin:0 0 2.6rem;text-wrap:pretty;color:var(--ink);}
 .art p{margin:0 0 1.4rem;text-wrap:pretty;}
 .art h2{font-family:var(--serif);font-size:1.28rem;font-weight:700;letter-spacing:.06em;
@@ -1643,7 +1643,8 @@ def _udeal_sel(deal_id, field, values, current, *, sel_id=None, cascade_l1=False
         onchange = f'updateDealL1({deal_id}, this.value)'
     else:
         onchange = f"updateDealField({deal_id}, '{field}', this.value)"
-    return (f'<select{id_attr} onchange="{onchange}" style="font-size:11px;padding:1px 2px;max-width:96px">'
+    return (f'<select{id_attr} onchange="{onchange}" '
+            f'style="font-size:11px;padding:1px 2px;min-width:84px;max-width:120px">'
             f'<option value=""></option>{opts}</select>')
 
 
@@ -1691,22 +1692,25 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             for dp in dev_by_deal.get(did, [])
             if dp.get("tool_url") and dp.get("status") != "中止"
         ) or "—"
-        # 開発案件への導線: 既存があればその案件へのリンク、無ければ「＋開発案件」新規追加リンク。
+        # 開発案件への導線: 既存の案件リンクを並べ、その後に必ず「＋開発案件」を出す
+        # （1商談に複数の開発案件がつくため、既存があっても追加できるようにする）。
         # いずれも return_to に現在の一覧URLを渡し、遷移後に一覧へ戻れるようにする。
         _dev_pill = ('display:inline-block;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;'
                      'border-radius:6px;padding:2px 8px;font-size:11px;white-space:nowrap;text-decoration:none')
+        _add_pill = ('display:inline-block;background:#f5f3ff;color:#6d28d9;border:1px dashed #c4b5fd;'
+                     'border-radius:6px;padding:2px 8px;font-size:11px;white-space:nowrap;text-decoration:none')
         _ret_q = urllib.parse.quote(return_to_url, safe="")
         _devs = dev_by_deal.get(did, [])
-        if _devs:
-            dev_links = " ".join(
-                f'<a href="/dev-project/{dp["id"]}/edit?return_to={_ret_q}" title="開発案件を開く" '
-                f'style="{_dev_pill}">🛠 {_esc(dp.get("theme") or "開発案件")}</a>'
-                for dp in _devs
-            )
-        else:
-            dev_links = (f'<a href="/dev-projects/new?deal_id={did}&return_to={_ret_q}" '
-                         f'title="この商談に開発案件を新規追加" style="{_dev_pill}">＋開発案件</a>')
-        tool_cell = f'{tool_btns}<div style="margin-top:4px">{dev_links}</div>'
+        dev_links = "".join(
+            f'<a href="/dev-project/{dp["id"]}/edit?return_to={_ret_q}" title="開発案件を開く" '
+            f'style="{_dev_pill}">🛠 {_esc(dp.get("theme") or "開発案件")}</a>'
+            for dp in _devs
+        )
+        dev_links += (f'<a href="/dev-projects/new?deal_id={did}&return_to={_ret_q}" '
+                      f'title="この商談に開発案件を新規追加" style="{_add_pill}">＋開発案件</a>')
+        tool_cell = (f'<div style="min-width:150px;display:flex;flex-direction:column;gap:4px;align-items:flex-start">'
+                     f'<div>{tool_btns}</div>'
+                     f'<div style="display:flex;flex-wrap:wrap;gap:4px">{dev_links}</div></div>')
         if d.get("status") != "closed":
             close_btn = (f'<button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;'
                          f'background:#c53030;color:#fff;border-color:#c53030"'
@@ -1731,7 +1735,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'<td>{tool_cell}</td><td>{close_btn}</td></tr>'
         )
     body = "".join(rows) or f'<tr><td colspan={16 if bulk else 15} class=muted>商談がありません。</td></tr>'
-    return (f'<div style="overflow:auto;max-height:70vh"><table style="min-width:1400px">'
+    return (f'<div style="overflow:auto;max-height:70vh"><table style="min-width:1560px">'
             f'{header}{body}</table></div>')
 
 
