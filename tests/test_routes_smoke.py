@@ -210,6 +210,68 @@ def test_get_main_routes_return_200(server, path):
     assert len(body) > 0
 
 
+_REP_MARKER = "REPORT_BODY_MARKER_X1Y2Z3"
+
+
+def _seed_report(db_path, slug="2026-07-12"):
+    con = sfa_db.connect(db_path)
+    sfa_db.upsert_weekly_report(
+        con, slug, "2026.7.6 – 7.12", "展示会が終わって、最初の一週間",
+        "「そんなことができるんですか」。",
+        f"<!doctype html><html><body>{_REP_MARKER}</body></html>",
+    )
+    con.close()
+
+
+def test_reports_index_200(server):
+    code, resp = _get(server + "/reports", headers=_auth_header())
+    assert code == 200
+    assert "アーカイブ".encode() in resp.read()
+
+
+def test_reports_known_slug_serves_body_raw(server, db_path):
+    """DBに登録済みのslugは、その号の本文HTMLをPAGE雛形を挟まず直接返す。"""
+    _seed_report(db_path)
+    code, resp = _get(server + "/reports/2026-07-12", headers=_auth_header())
+    assert code == 200
+    body = resp.read()
+    assert _REP_MARKER.encode() in body
+    # renderのPAGE雛形（共通ナビ/モーダル）ではなく、本文だけを直接返していること
+    assert b"openToolModal" not in body
+    assert "Inproc Salesforce".encode() not in body
+
+
+def test_reports_unknown_slug_redirects_to_index(server, db_path):
+    """未知/不正なslugは本文を返さず、一覧へリダイレクト（トラバーサル防止）。"""
+    _seed_report(db_path)
+    for bad in ["/reports/nonexistent", "/reports/..%2f..%2fetc"]:
+        code, resp = _get(server + bad, headers=_auth_header())
+        assert code == 200, f"{bad} -> {code}"
+        assert _REP_MARKER.encode() not in resp.read(), bad
+
+
+def test_reports_manage_save_and_delete(server, db_path):
+    """管理画面から新規保存→本文が返る→削除で消える。"""
+    code, _ = _get(server + "/reports/manage", headers=_auth_header())
+    assert code == 200
+    # 保存
+    code, _ = _post(server + "/reports/manage/save",
+                    {"slug": "2099-01-01", "report_date": "2099.1.1", "title": "テスト号",
+                     "lead": "リード", "html_body": f"<html>{_REP_MARKER}</html>"},
+                    headers=_auth_header())
+    assert code == 200  # 303→追従で号本文(200)
+    con = sfa_db.connect(db_path)
+    assert sfa_db.get_weekly_report(con, "2099-01-01") is not None
+    # 不正slugは保存されない
+    _post(server + "/reports/manage/save",
+          {"slug": "../etc", "html_body": "x"}, headers=_auth_header())
+    assert sfa_db.get_weekly_report(con, "../etc") is None
+    # 削除
+    _post(server + "/reports/manage/delete", {"slug": "2099-01-01"}, headers=_auth_header())
+    assert sfa_db.get_weekly_report(con, "2099-01-01") is None
+    con.close()
+
+
 def test_health_ok_without_auth(server):
     code, resp = _get(server + "/health")
     assert code == 200

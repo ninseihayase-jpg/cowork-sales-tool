@@ -488,6 +488,19 @@ CREATE TABLE IF NOT EXISTS weekly_snapshots (
     updated_at  TEXT DEFAULT (datetime('now')),
     UNIQUE(week_start, metric_key)
 );
+
+-- 週次営業レポートの本文（社外秘: クライアント名・金額を含むためGitには置かず、
+-- 永続ディスク上のこのDBにのみ格納する。/reports で既存Basic認証越しに配信）
+CREATE TABLE IF NOT EXISTS weekly_reports (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug        TEXT NOT NULL UNIQUE,   -- URLスラッグ（英数と-_のみ）例: 2026-07-12
+    report_date TEXT,                   -- 一覧表示用の期間文字列 例: 2026.7.6 – 7.12
+    title       TEXT,                   -- 号の表題
+    lead        TEXT,                   -- 一覧に出す「一言」
+    html_body   TEXT NOT NULL,          -- 号の読み物HTML（確定デザインの単体HTMLをそのまま保持）
+    created_at  TEXT DEFAULT (datetime('now')),
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -1614,3 +1627,39 @@ def list_snapshot_weeks(con) -> list[str]:
     """記録済みの週(week_start)を新しい順で返す。"""
     return [r["week_start"] for r in con.execute(
         "SELECT DISTINCT week_start FROM weekly_snapshots ORDER BY week_start DESC")]
+
+
+# ---- 週次営業レポート（本文はDBのみに格納。Git(public)には置かない） ----
+
+def list_weekly_reports(con) -> list[dict]:
+    """レポートの号一覧（本文は除きメタのみ）を新しい順(slug降順)で返す。"""
+    return [dict(r) for r in con.execute(
+        "SELECT slug, report_date, title, lead, updated_at FROM weekly_reports "
+        "ORDER BY slug DESC")]
+
+
+def get_weekly_report(con, slug: str) -> dict | None:
+    """slugの号を返す（本文html_body含む）。無ければNone。"""
+    r = con.execute(
+        "SELECT slug, report_date, title, lead, html_body, created_at, updated_at "
+        "FROM weekly_reports WHERE slug=?", (slug,)).fetchone()
+    return dict(r) if r else None
+
+
+def upsert_weekly_report(con, slug: str, report_date: str, title: str,
+                         lead: str, html_body: str) -> None:
+    """号を作成/更新（slug一致で上書き）。"""
+    con.execute(
+        "INSERT INTO weekly_reports (slug, report_date, title, lead, html_body, updated_at) "
+        "VALUES (?,?,?,?,?,datetime('now')) "
+        "ON CONFLICT(slug) DO UPDATE SET "
+        "report_date=excluded.report_date, title=excluded.title, lead=excluded.lead, "
+        "html_body=excluded.html_body, updated_at=datetime('now')",
+        (slug, report_date, title, lead, html_body),
+    )
+    con.commit()
+
+
+def delete_weekly_report(con, slug: str) -> None:
+    con.execute("DELETE FROM weekly_reports WHERE slug=?", (slug,))
+    con.commit()

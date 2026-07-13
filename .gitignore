@@ -10,6 +10,10 @@ service_account.json
 seed/
 *.xlsx
 
+# 週次レポート本文（社外秘）はGitに置かず、本番DB(weekly_reports)にのみ格納する。
+# ローカルの下書きHTMLの置き場としてのみ使い、コミットはしない。
+reports/
+
 
 # 営業情報DB（ローカルデータ）
 *.db

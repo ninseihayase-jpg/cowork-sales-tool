@@ -193,24 +193,27 @@ def _content_disposition(filename: str) -> str:
 
 def _tool_link_btn(url, label: str = "🔧 ツール", *, tool_id=None, tool_password=None) -> str:
     """開発案件の「制作したツールのリンク」を、邪魔にならない小さなボタンとして描画する。
-    ID/PASSが設定されている場合は、カーソルを合わせるとコピペ可能な状態で表示する。
-    一覧・商談詳細など複数画面で共通利用する。"""
+    ID/PASSが設定されている場合は、いきなり遷移せずモーダルを開き、ID/PASSをコピー可能な状態で
+    表示してから「ツールを開く」導線を出す（`_TOOL_MODAL_HTML`／`openToolModal`）。
+    ID/PASSが無い場合は従来どおり直接リンクへ遷移する。一覧・商談詳細など複数画面で共通利用する。"""
     if not url:
         return ""
-    link = (
-        f'<a href="{_esc(url)}" target="_blank" rel="noopener" title="制作したツールを開く" '
-        f'style="display:inline-block;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;'
-        f'border-radius:6px;padding:2px 8px;font-size:11px;text-decoration:none;white-space:nowrap">'
-        f'{label}</a>'
+    _pill = (
+        'display:inline-block;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;'
+        'border-radius:6px;padding:2px 8px;font-size:11px;white-space:nowrap'
     )
     if not tool_id and not tool_password:
-        return link
-    cred_lines = ""
-    if tool_id:
-        cred_lines += f'<div>ID: {_esc(tool_id)}</div>'
-    if tool_password:
-        cred_lines += f'<div>PASS: {_esc(tool_password)}</div>'
-    return f'<span class="tool-link-wrap">{link}<div class="tool-link-cred">{cred_lines}</div></span>'
+        return (
+            f'<a href="{_esc(url)}" target="_blank" rel="noopener" title="制作したツールを開く" '
+            f'style="{_pill};text-decoration:none">{label}</a>'
+        )
+    # ID/PASSあり → クリックでモーダル（コピペ可能なID/PASS＋「ツールを開く」）
+    return (
+        f'<button type="button" title="クリックでログイン情報を表示" '
+        f'data-url="{_esc(url)}" data-id="{_esc(tool_id or "")}" data-pass="{_esc(tool_password or "")}" '
+        f'onclick="openToolModal(this)" style="{_pill};cursor:pointer;font-family:inherit">'
+        f'{label} 🔑</button>'
+    )
 
 
 def _chips(values) -> str:
@@ -304,6 +307,7 @@ function escH(s) {{
   <a href="/dev-projects" style="opacity:.8;font-size:13px">開発案件</a>
   <a href="/deal-issues" style="opacity:.8;font-size:13px">論点</a>
   <a href="/email-draft" style="opacity:.8;font-size:13px">メール</a>
+  <a href="/reports" style="opacity:.8;font-size:13px">📰 週次レポート</a>
   <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
   <a href="/backups" style="opacity:.65;font-size:12px">🗄 バックアップ</a>
   <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Inproc Dashboard ↗</a>
@@ -366,9 +370,141 @@ _CLOSE_MODAL_HTML = (
 )
 
 
+_TOOL_MODAL_HTML = (
+    '<div id="toolModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;'
+    'align-items:center;justify-content:center" onclick="if(event.target===this)closeToolModal()">'
+    '<div style="background:#fff;border-radius:12px;padding:20px 22px;max-width:440px;width:92%;'
+    'box-shadow:0 10px 40px rgba(0,0,0,.25)">'
+    '<h3 style="margin:0 0 14px">制作ツールのログイン情報</h3>'
+    '<div id="toolModalIdRow" style="display:flex;align-items:center;gap:8px;margin:0 0 10px">'
+    '<span style="width:44px;color:#7a7266;font-size:12px;flex:none">ID</span>'
+    '<code id="toolModalIdVal" style="flex:1;background:#f4f6f9;padding:6px 8px;border-radius:6px;'
+    'font-size:13px;word-break:break-all"></code>'
+    '<button type="button" id="toolModalIdCopy" class="btn sec" style="font-size:12px;padding:4px 10px;flex:none">コピー</button>'
+    '</div>'
+    '<div id="toolModalPassRow" style="display:flex;align-items:center;gap:8px;margin:0 0 10px">'
+    '<span style="width:44px;color:#7a7266;font-size:12px;flex:none">PASS</span>'
+    '<code id="toolModalPassVal" style="flex:1;background:#f4f6f9;padding:6px 8px;border-radius:6px;'
+    'font-size:13px;word-break:break-all"></code>'
+    '<button type="button" id="toolModalPassCopy" class="btn sec" style="font-size:12px;padding:4px 10px;flex:none">コピー</button>'
+    '</div>'
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">'
+    '<button type="button" class="btn sec" onclick="closeToolModal()">閉じる</button>'
+    '<a id="toolModalOpen" href="#" target="_blank" rel="noopener" class="btn" '
+    'style="text-decoration:none">ツールを開く ↗</a>'
+    '</div></div></div>'
+    '<script>'
+    'function _tmCopyFallback(txt){var t=document.createElement("textarea");t.value=txt;'
+    't.style.position="fixed";t.style.opacity="0";document.body.appendChild(t);t.focus();t.select();'
+    'try{document.execCommand("copy");}catch(e){}document.body.removeChild(t);}'
+    'function _tmCopy(txt,btn){var done=function(){var o=btn.textContent;btn.textContent="✓ コピー済";'
+    'setTimeout(function(){btn.textContent=o;},1200);};'
+    'if(navigator.clipboard&&navigator.clipboard.writeText){'
+    'navigator.clipboard.writeText(txt).then(done,function(){_tmCopyFallback(txt);done();});}'
+    'else{_tmCopyFallback(txt);done();}}'
+    'function openToolModal(btn){'
+    ' var url=btn.getAttribute("data-url")||"",id=btn.getAttribute("data-id")||"",pass=btn.getAttribute("data-pass")||"";'
+    ' var idRow=document.getElementById("toolModalIdRow"),passRow=document.getElementById("toolModalPassRow");'
+    ' if(id){document.getElementById("toolModalIdVal").textContent=id;idRow.style.display="flex";'
+    '  document.getElementById("toolModalIdCopy").onclick=function(){_tmCopy(id,this);};}else{idRow.style.display="none";}'
+    ' if(pass){document.getElementById("toolModalPassVal").textContent=pass;passRow.style.display="flex";'
+    '  document.getElementById("toolModalPassCopy").onclick=function(){_tmCopy(pass,this);};}else{passRow.style.display="none";}'
+    ' var open=document.getElementById("toolModalOpen");'
+    ' if(url){open.href=url;open.style.display="";}else{open.style.display="none";}'
+    ' document.getElementById("toolModal").style.display="flex";'
+    '}'
+    'function closeToolModal(){document.getElementById("toolModal").style.display="none";}'
+    'document.addEventListener("keydown",function(e){if(e.key==="Escape")closeToolModal();});'
+    '</script>'
+)
+
+
 def render(body: str, flash: str = "") -> bytes:
     flash_html = f'<div class="flash">{html.escape(flash)}</div>' if flash else ""
-    return PAGE.format(body=body + _CLOSE_MODAL_HTML, flash=flash_html).encode("utf-8")
+    return PAGE.format(body=body + _CLOSE_MODAL_HTML + _TOOL_MODAL_HTML, flash=flash_html).encode("utf-8")
+
+
+# ── 週次レポートのアーカイブ ─────────────────────────────────────────────
+# 本文（社外秘: クライアント名・金額）はGit(public)には置かず、永続ディスク上のDB
+# (weekly_reports)にのみ格納する。閲覧・編集は既存Basic認証越し（社内限定）。
+_SLUG_RE = re.compile(r"[0-9A-Za-z_-]+")
+
+
+def reports_index_page(con) -> str:
+    """週次レポートの号一覧（新しい順）。各号は /reports/<slug> の読み物へ。"""
+    entries = sfa_db.list_weekly_reports(con)
+    if not entries:
+        items = '<p class="muted" style="margin:0">まだレポートがありません。</p>'
+    else:
+        items = "".join(
+            f'<a href="/reports/{_esc(r.get("slug"))}" style="display:block;text-decoration:none;color:inherit;'
+            f'border:1px solid #e6e9f0;border-radius:10px;padding:14px 18px;margin-bottom:10px">'
+            f'<div class="muted" style="font-size:12px;letter-spacing:.08em">{_esc(r.get("report_date") or "")}</div>'
+            f'<div style="font-size:16px;font-weight:700;margin:3px 0 5px;color:#1d2430">{_esc(r.get("title") or r.get("slug"))}</div>'
+            f'<div class="muted" style="font-size:13px">{_esc(r.get("lead") or "")}</div></a>'
+            for r in entries
+        )
+    return f"""
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <h2 style="margin:0">営業週次レポート アーカイブ</h2>
+        <a class="btn sec" href="/reports/manage" style="font-size:13px">＋ 新規／編集</a>
+      </div>
+      <p class="muted" style="margin:8px 0 14px">毎週末の営業レポートです（社外秘・このツールにログインできる人のみ閲覧可）。</p>
+      {items}
+    </div>"""
+
+
+def reports_manage_page(con, slug: str = "") -> str:
+    """レポートの新規作成／編集フォーム。slug指定時は既存号を読み込んで前埋め。
+    本文（html_body）は確定デザインの単体HTMLをそのまま貼り付けて保存する。"""
+    rep = sfa_db.get_weekly_report(con, slug) if slug else None
+    v_slug = _esc(rep["slug"]) if rep else ""
+    v_date = _esc(rep["report_date"] or "") if rep else ""
+    v_title = _esc(rep["title"] or "") if rep else ""
+    v_lead = _esc(rep["lead"] or "") if rep else ""
+    v_body = _esc(rep["html_body"] or "") if rep else ""
+    slug_readonly = "readonly" if rep else ""
+    heading = f"レポートを編集: {v_slug}" if rep else "レポートを新規作成"
+    del_btn = ""
+    if rep:
+        del_btn = (
+            f'<form method="post" action="/reports/manage/delete" style="display:inline" '
+            f'onsubmit="return confirm(\'この号を削除します。よろしいですか？\')">'
+            f'<input type="hidden" name="slug" value="{v_slug}">'
+            f'<button type="submit" class="btn sec" style="color:#c53030">この号を削除</button></form>'
+        )
+    others = "".join(
+        f'<a href="/reports/manage?slug={_esc(r["slug"])}" class="btn sec" '
+        f'style="font-size:12px;margin:0 6px 6px 0">{_esc(r["slug"])}</a>'
+        for r in sfa_db.list_weekly_reports(con)
+    )
+    others_block = f'<p class="muted" style="margin:0 0 6px">既存号を編集:</p>{others}' if others else ""
+    return f"""
+    <div class="card">
+      <p style="margin:0 0 10px"><a href="/reports">← レポート一覧</a></p>
+      <h2 style="margin:0 0 4px">{heading}</h2>
+      <p class="muted" style="margin:0 0 14px">本文は確定デザインの単体HTMLをそのまま貼り付けてください（そのまま配信されます）。社外秘のためGitには保存されず、このDB（永続ディスク）にのみ保存されます。</p>
+      <form method="post" action="/reports/manage/save">
+        <label>スラッグ（URL・英数と-_のみ）＊必須</label>
+        <input type="text" name="slug" value="{v_slug}" required pattern="[0-9A-Za-z_-]+"
+               placeholder="2026-07-12" {slug_readonly}>
+        <label>期間（一覧表示用）</label>
+        <input type="text" name="report_date" value="{v_date}" placeholder="2026.7.6 – 7.12">
+        <label>表題</label>
+        <input type="text" name="title" value="{v_title}" placeholder="展示会が終わって、最初の一週間">
+        <label>一言（一覧のリード）</label>
+        <input type="text" name="lead" value="{v_lead}" placeholder="「そんなことができるんですか」。今週、その一言を何度も聞きました。">
+        <label>本文HTML（単体HTML全体）＊必須</label>
+        <textarea name="html_body" rows="18" required
+                  style="font-family:monospace;font-size:11px;background:#fff;white-space:pre">{v_body}</textarea>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+          {del_btn}
+          <button type="submit" class="btn">保存</button>
+        </div>
+      </form>
+      <div style="margin-top:18px;padding-top:14px;border-top:1px solid #e6e9f0">{others_block}</div>
+    </div>"""
 
 
 # ── メールパターン管理 ───────────────────────────────────────────────────────────
@@ -5733,6 +5869,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(weekly_numbers_page(con)))
                 elif path == "/data-tagging":
                     self._send(render(data_tagging_page(con)))
+                elif path == "/reports":
+                    self._send(render(reports_index_page(con)))
+                elif path == "/reports/manage":
+                    _slug = (self._qs().get("slug", [""])[0] or "")
+                    self._send(render(reports_manage_page(con, _slug)))
+                elif path.startswith("/reports/"):
+                    _slug = path[len("/reports/"):].strip("/")
+                    _rep = sfa_db.get_weekly_report(con, _slug) if _SLUG_RE.fullmatch(_slug or "") else None
+                    if _rep:
+                        self._send(_rep["html_body"].encode("utf-8"))
+                    else:
+                        self._redirect("/reports")
                 elif path == "/backups":
                     self._send(render(backups_page(db_path)))
                 elif path == "/backups/download":
@@ -5948,6 +6096,27 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         values = [v.strip() for v in values if v.strip()]
                         sfa_db.set_master_list(con, key, values)
                     self._redirect("/")
+
+                # ── 週次レポート（本文はDBのみ・Git非保存） ──
+                elif path == "/reports/manage/save":
+                    _slug = (f.get("slug", "") or "").strip()
+                    _body = f.get("html_body", "") or ""
+                    if not _SLUG_RE.fullmatch(_slug) or not _body.strip():
+                        self._redirect("/reports/manage")
+                    else:
+                        sfa_db.upsert_weekly_report(
+                            con, _slug,
+                            (f.get("report_date", "") or "").strip(),
+                            (f.get("title", "") or "").strip(),
+                            (f.get("lead", "") or "").strip(),
+                            _body,
+                        )
+                        self._redirect(f"/reports/{_slug}")
+                elif path == "/reports/manage/delete":
+                    _slug = (f.get("slug", "") or "").strip()
+                    if _SLUG_RE.fullmatch(_slug):
+                        sfa_db.delete_weekly_report(con, _slug)
+                    self._redirect("/reports")
 
                 # ── バックアップ ──
                 elif path == "/backups/create":
