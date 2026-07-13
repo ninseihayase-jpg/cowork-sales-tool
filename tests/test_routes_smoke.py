@@ -389,3 +389,31 @@ def test_post_deal_save_returns_303_without_redirect_following(server):
     resp = opener.open(req, timeout=10)
     assert resp.getcode() == 303
     assert resp.headers.get("Location", "").startswith("/deal/")
+
+
+def test_unified_deal_table_has_dev_project_link(db_path):
+    """商談一覧の共通テーブル(unified_deal_table)に開発案件への導線が出ること。
+    開発案件が無い商談は「＋開発案件」新規追加リンク(deal_id/return_to付き)、
+    有る商談は当該開発案件へのリンクを出す。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('UT社')").lastrowid
+    con.commit()
+    # 開発案件なしの商談
+    d_none = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件なし", stage="提案", status="open")
+    # 開発案件ありの商談
+    d_has = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件あり", stage="提案", status="open")
+    sfa_db.upsert_dev_project(con, deal_id=d_has, theme="UTテーマ", status="開発中", stage="プロト")
+    con.commit()
+
+    deals = sfa_db.list_deals(con, status="open")
+    html_out = webapp.unified_deal_table(con, deals, return_to_url="/deals?owner=X")
+
+    # 新規追加リンク（無い商談側）: deal_id と return_to を含む
+    assert f"/dev-projects/new?deal_id={d_none}&return_to=" in html_out
+    assert "＋開発案件" in html_out
+    # return_to は現在の一覧URLがエスケープされて渡る
+    assert "return_to=%2Fdeals%3Fowner%3DX" in html_out
+    # 既存開発案件がある商談側: その案件の編集リンクとテーマ名
+    assert "/dev-project/" in html_out and "/edit?return_to=" in html_out
+    assert "UTテーマ" in html_out
+    con.close()
