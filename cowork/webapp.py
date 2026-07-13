@@ -307,10 +307,10 @@ function escH(s) {{
   <a href="/dev-projects" style="opacity:.8;font-size:13px">開発案件</a>
   <a href="/deal-issues" style="opacity:.8;font-size:13px">論点</a>
   <a href="/email-draft" style="opacity:.8;font-size:13px">メール</a>
-  <a href="/reports" style="opacity:.8;font-size:13px">📰 週次レポート</a>
   <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
   <a href="/backups" style="opacity:.65;font-size:12px">🗄 バックアップ</a>
-  <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Inproc Dashboard ↗</a>
+  <a href="/reports" style="margin-left:auto;background:rgba(224,178,122,.16);border:1px solid rgba(224,178,122,.4);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#f0d9be;text-decoration:none">📰 週次レポート</a>
+  <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:8px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Inproc Dashboard ↗</a>
 </header>
 <main>{flash}{body}</main></body></html>"""
 
@@ -424,46 +424,250 @@ def render(body: str, flash: str = "") -> bytes:
     return PAGE.format(body=body + _CLOSE_MODAL_HTML + _TOOL_MODAL_HTML, flash=flash_html).encode("utf-8")
 
 
-# ── 週次レポートのアーカイブ ─────────────────────────────────────────────
+# ── 週次レポートのアーカイブ（読み物サイト） ─────────────────────────────────
 # 本文（社外秘: クライアント名・金額）はGit(public)には置かず、永続ディスク上のDB
 # (weekly_reports)にのみ格納する。閲覧・編集は既存Basic認証越し（社内限定）。
+# 一覧・記事はCRM本体のガワを使わず、この専用の読み物デザイン(_reports_doc)で配信する。
 _SLUG_RE = re.compile(r"[0-9A-Za-z_-]+")
+
+_REPORTS_CSS = """
+:root{
+  --paper:#f7f4ec; --card:#fffdf8; --ink:#2b2620; --muted:#7c7264; --faint:#a99f8d;
+  --accent:#a9743f; --accent-soft:#c39a68; --rule:#e7dfce; --tint:#efe9db; --shadow:rgba(60,45,25,.10);
+  --serif:"Hiragino Mincho ProN","Yu Mincho","YuMincho","Noto Serif JP",serif;
+  --sans:system-ui,-apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic","Meiryo",sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root{--paper:#1c1916; --card:#252019; --ink:#ece4d5; --muted:#a99d8a; --faint:#7d7261;
+    --accent:#cba06a; --accent-soft:#b3854f; --rule:#38301f; --tint:#282216; --shadow:rgba(0,0,0,.42);}
+}
+:root[data-theme="light"]{--paper:#f7f4ec; --card:#fffdf8; --ink:#2b2620; --muted:#7c7264; --faint:#a99f8d;
+  --accent:#a9743f; --accent-soft:#c39a68; --rule:#e7dfce; --tint:#efe9db; --shadow:rgba(60,45,25,.10);}
+:root[data-theme="dark"]{--paper:#1c1916; --card:#252019; --ink:#ece4d5; --muted:#a99d8a; --faint:#7d7261;
+  --accent:#cba06a; --accent-soft:#b3854f; --rule:#38301f; --tint:#282216; --shadow:rgba(0,0,0,.42);}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);
+  font-size:clamp(1.02rem,.96rem + .35vw,1.14rem);line-height:2.02;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  font-feature-settings:"palt" 1;letter-spacing:.02em;}
+a{color:var(--accent)}
+img{max-width:100%;height:auto;display:block}
+.rwrap{max-width:64rem;margin:0 auto;padding:0 clamp(1.2rem,5vw,2.6rem);}
+.rmast{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+  padding:clamp(1.8rem,4vw,2.8rem) 0 1.3rem;border-bottom:1px solid var(--rule);margin-bottom:clamp(1.8rem,4vw,3rem);}
+.rmark{font-family:var(--serif);font-weight:700;font-size:clamp(1.15rem,2.6vw,1.5rem);
+  letter-spacing:.06em;color:var(--ink);text-decoration:none;display:flex;align-items:center;gap:.5rem;}
+.rmark .dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--accent);flex:none;}
+.rtag{font-family:var(--sans);font-size:.74rem;color:var(--faint);letter-spacing:.06em;margin-top:.35rem;}
+.rnav{display:flex;gap:1.1rem;font-family:var(--sans);font-size:.82rem;}
+.rnav a{color:var(--muted);text-decoration:none;letter-spacing:.04em;padding-bottom:.15rem;
+  border-bottom:1.5px solid transparent;transition:color .15s,border-color .15s;}
+.rnav a:hover{color:var(--ink);border-color:var(--accent);}
+.rfoot{margin:clamp(3rem,6vw,5rem) 0 3rem;padding-top:1.4rem;border-top:1px solid var(--rule);
+  font-family:var(--sans);font-size:.76rem;color:var(--faint);display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;}
+.rfoot a{color:var(--muted);text-decoration:none;}
+.kicker{font-family:var(--sans);font-size:.74rem;letter-spacing:.2em;color:var(--accent);
+  font-variant-numeric:tabular-nums;text-transform:uppercase;}
+/* ── 一覧 ── */
+.feat{display:grid;grid-template-columns:1.15fr 1fr;gap:clamp(1.4rem,3vw,2.6rem);align-items:stretch;
+  margin-bottom:clamp(2.4rem,5vw,3.6rem);}
+@media (max-width:44rem){.feat{grid-template-columns:1fr}}
+.feat-cover{border-radius:14px;min-height:15rem;background-size:cover;background-position:center;
+  box-shadow:0 10px 30px var(--shadow);}
+.feat-body{align-self:center;}
+.feat-body h2{font-size:clamp(1.5rem,3.6vw,2.15rem);line-height:1.48;margin:.5rem 0 .7rem;
+  text-wrap:balance;letter-spacing:.02em;}
+.feat-body .lead{color:var(--muted);margin:0 0 1.1rem;line-height:1.95;text-wrap:pretty;}
+.readmore{font-family:var(--sans);font-size:.86rem;font-weight:700;color:var(--accent);text-decoration:none;letter-spacing:.04em;}
+.readmore:hover{text-decoration:underline;}
+.bn-h{font-family:var(--serif);font-size:1.05rem;font-weight:700;letter-spacing:.1em;color:var(--ink);
+  display:flex;align-items:center;gap:.7rem;margin:0 0 1.3rem;}
+.bn-h::before{content:"";width:1.4rem;height:2px;background:var(--accent);border-radius:2px;flex:none;}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(15rem,1fr));gap:clamp(1.1rem,2.5vw,1.8rem);}
+.rcard{display:block;text-decoration:none;color:inherit;background:var(--card);border:1px solid var(--rule);
+  border-radius:12px;overflow:hidden;transition:transform .16s ease,box-shadow .16s ease;}
+.rcard:hover{transform:translateY(-3px);box-shadow:0 12px 26px var(--shadow);}
+.rcard-cover{height:8.5rem;background-size:cover;background-position:center;}
+.rcard-body{padding:.9rem 1.1rem 1.2rem;}
+.rcard-body h3{font-size:1.08rem;font-weight:700;line-height:1.5;margin:.3rem 0 .4rem;letter-spacing:.02em;}
+.rcard-body .lead{font-family:var(--sans);font-size:.8rem;color:var(--muted);line-height:1.7;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.empty{color:var(--muted);text-align:center;padding:4rem 0;font-family:var(--sans);}
+/* ── 記事 ── */
+.hero{border-radius:0 0 18px 18px;margin-bottom:clamp(1.8rem,4vw,2.8rem);position:relative;overflow:hidden;}
+.hero.has-cover{min-height:clamp(15rem,40vw,24rem);display:flex;align-items:flex-end;
+  background-size:cover;background-position:center;color:#fff;}
+.hero.has-cover::after{content:"";position:absolute;inset:0;
+  background:linear-gradient(180deg,rgba(0,0,0,.05) 0%,rgba(0,0,0,.15) 45%,rgba(0,0,0,.72) 100%);}
+.hero.has-cover .hero-inner{position:relative;z-index:1;padding:clamp(1.6rem,4vw,2.8rem);}
+.hero.has-cover .kicker{color:#f2d9bd;}
+.hero.has-cover h1{color:#fff;}
+.hero.plain{background:linear-gradient(135deg,var(--tint),var(--card));border:1px solid var(--rule);
+  border-radius:16px;padding:clamp(1.8rem,4vw,3rem) clamp(1.4rem,4vw,2.6rem);}
+h1.art-title{font-size:clamp(1.7rem,4.6vw,2.5rem);font-weight:700;line-height:1.42;margin:.6rem 0 0;
+  text-wrap:balance;letter-spacing:.02em;}
+.art{max-width:40rem;margin:0 auto;}
+.art .lead{font-size:clamp(1.16rem,2.1vw,1.36rem);line-height:2.1;margin:0 0 2.6rem;text-wrap:pretty;color:var(--ink);}
+.art p{margin:0 0 1.4rem;text-wrap:pretty;}
+.art h2{font-family:var(--serif);font-size:1.28rem;font-weight:700;letter-spacing:.06em;
+  margin:3rem 0 1.3rem;display:flex;align-items:center;gap:.7rem;scroll-margin-top:1.5rem;}
+.art h2::before{content:"";width:1.5rem;height:2px;background:var(--accent);border-radius:2px;flex:none;}
+.art h3{font-size:1.16rem;font-weight:700;margin:2rem 0 .5rem;letter-spacing:.02em;}
+.art .who{font-family:var(--sans);font-size:.86rem;color:var(--muted);letter-spacing:.02em;margin:0 0 .4rem;}
+.art figure{margin:1.8rem 0;}
+.art figure img{width:100%;border-radius:12px;box-shadow:0 8px 24px var(--shadow);}
+.art figcaption{font-family:var(--sans);font-size:.78rem;color:var(--faint);margin-top:.55rem;text-align:center;letter-spacing:.02em;}
+.art blockquote,.art .pull{margin:2rem 0;padding:0 0 0 1.2rem;border-left:3px solid var(--accent-soft);
+  font-size:1.16rem;line-height:1.9;color:var(--ink);font-style:normal;}
+.art .note{background:var(--tint);border-radius:10px;padding:1rem 1.2rem;color:var(--muted);
+  font-family:var(--sans);font-size:.92rem;line-height:1.9;margin:1.6rem 0;}
+.art hr{border:none;border-top:1px solid var(--rule);margin:2.6rem 0;}
+.sign{margin-top:2.6rem;text-align:right;color:var(--muted);letter-spacing:.16em;}
+/* 数字パック（本文中に置ける） */
+.numbers{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:.7rem;margin:1.8rem 0 2.2rem;}
+.numbers .n{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:.85rem 1rem;}
+.numbers .k{font-family:var(--sans);font-size:.72rem;color:var(--muted);letter-spacing:.02em;line-height:1.5;}
+.numbers .v{font-family:var(--sans);font-weight:700;font-size:1.5rem;color:var(--ink);
+  font-variant-numeric:tabular-nums;line-height:1.3;margin-top:.15rem;}
+.numbers .v .u{font-size:.72rem;font-weight:500;color:var(--muted);margin-left:.2em;}
+.funnel{display:flex;flex-wrap:wrap;gap:.5rem 1.4rem;font-family:var(--sans);margin:0 0 1.4rem;
+  padding:.9rem 1.1rem;background:var(--tint);border-radius:10px;}
+.funnel span{font-size:.82rem;color:var(--muted);font-variant-numeric:tabular-nums;}
+.funnel b{color:var(--ink);font-weight:700;margin-left:.35em;}
+@media (prefers-reduced-motion:no-preference){
+  .art>*,.feat,.grid>*{animation:rrise .7s cubic-bezier(.2,.6,.2,1) both}
+  @keyframes rrise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+}
+"""
+
+
+def _cover_bg(data_uri: str) -> str:
+    """cover_image(data: URI)を background-image スタイル値に。安全な data:image/ のみ許可。"""
+    v = (data_uri or "").strip()
+    if v.startswith("data:image/") and '"' not in v and ")" not in v.split(",", 1)[0]:
+        return f"background-image:url('{v}')"
+    return ""
+
+
+def _reports_doc(inner: str, *, page_title: str) -> str:
+    """読み物サイト共通のガワ（standalone HTML）。一覧・記事の両方をこれで包む。"""
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{_esc(page_title)}</title>
+<style>{_REPORTS_CSS}</style>
+</head><body>
+<div class="rwrap">
+  <header class="rmast">
+    <div>
+      <a class="rmark" href="/reports"><span class="dot"></span>InProc 営業レポート</a>
+      <div class="rtag">現場で、いま何が起きているか。</div>
+    </div>
+    <nav class="rnav">
+      <a href="/reports">一覧</a>
+      <a href="/reports/manage">＋ 号を書く</a>
+      <a href="/">SFA ↗</a>
+    </nav>
+  </header>
+  {inner}
+  <footer class="rfoot">
+    <span>InProc 営業週次レポート（社外秘・社内限定）</span>
+    <a href="/reports">レポート一覧へ</a>
+  </footer>
+</div>
+</body></html>"""
 
 
 def reports_index_page(con) -> str:
-    """週次レポートの号一覧（新しい順）。各号は /reports/<slug> の読み物へ。"""
+    """週次レポートの号一覧（読み物サイトのトップ）。最新号をフィーチャー＋バックナンバー。"""
     entries = sfa_db.list_weekly_reports(con)
     if not entries:
-        items = '<p class="muted" style="margin:0">まだレポートがありません。</p>'
+        inner = ('<div class="empty">まだレポートがありません。'
+                 '<br><br><a class="readmore" href="/reports/manage">＋ 最初の号を書く</a></div>')
+        return _reports_doc(inner, page_title="InProc 営業レポート")
+
+    def _card(r, featured=False):
+        slug = _esc(r.get("slug"))
+        date = _esc(r.get("report_date") or "")
+        title = _esc(r.get("title") or r.get("slug"))
+        lead = _esc(r.get("lead") or "")
+        bg = _cover_bg(r.get("cover_image") or "")
+        if featured:
+            cover = (f'<a href="/reports/{slug}" class="feat-cover" style="{bg}"></a>' if bg
+                     else f'<a href="/reports/{slug}" class="feat-cover" style="background:linear-gradient(135deg,var(--accent-soft),var(--tint))"></a>')
+            return f"""
+            <div class="feat">
+              {cover}
+              <div class="feat-body">
+                <div class="kicker">{date}</div>
+                <h2><a href="/reports/{slug}" style="color:inherit;text-decoration:none">{title}</a></h2>
+                <p class="lead">{lead}</p>
+                <a class="readmore" href="/reports/{slug}">この号を読む →</a>
+              </div>
+            </div>"""
+        cover = (f'<div class="rcard-cover" style="{bg}"></div>' if bg
+                 else '<div class="rcard-cover" style="background:linear-gradient(135deg,var(--tint),var(--accent-soft))"></div>')
+        return f"""
+        <a class="rcard" href="/reports/{slug}">
+          {cover}
+          <div class="rcard-body">
+            <div class="kicker">{date}</div>
+            <h3>{title}</h3>
+            <div class="lead">{lead}</div>
+          </div>
+        </a>"""
+
+    featured = _card(entries[0], featured=True)
+    rest = entries[1:]
+    back = ""
+    if rest:
+        cards = "".join(_card(r) for r in rest)
+        back = f'<h2 class="bn-h">バックナンバー</h2><div class="grid">{cards}</div>'
+    return _reports_doc(featured + back, page_title="InProc 営業レポート")
+
+
+def report_article_html(rep: dict) -> str:
+    """1号の読み物ページ。旧・単体HTML本文は後方互換でそのまま返し、
+    新形式（本文fragment）は読み物サイトのガワに包んで返す。"""
+    body = rep.get("html_body") or ""
+    low = body.lower()
+    if "<!doctype" in low or "<html" in low:
+        return body  # 旧形式（単体HTML）はそのまま配信
+    date = _esc(rep.get("report_date") or "")
+    title = _esc(rep.get("title") or rep.get("slug"))
+    lead = rep.get("lead") or ""
+    lead_html = f'<p class="lead">{_esc(lead)}</p>' if lead else ""
+    bg = _cover_bg(rep.get("cover_image") or "")
+    if bg:
+        hero = (f'<div class="hero has-cover" style="{bg}"><div class="hero-inner">'
+                f'<div class="kicker">{date}</div><h1 class="art-title">{title}</h1></div></div>')
     else:
-        items = "".join(
-            f'<a href="/reports/{_esc(r.get("slug"))}" style="display:block;text-decoration:none;color:inherit;'
-            f'border:1px solid #e6e9f0;border-radius:10px;padding:14px 18px;margin-bottom:10px">'
-            f'<div class="muted" style="font-size:12px;letter-spacing:.08em">{_esc(r.get("report_date") or "")}</div>'
-            f'<div style="font-size:16px;font-weight:700;margin:3px 0 5px;color:#1d2430">{_esc(r.get("title") or r.get("slug"))}</div>'
-            f'<div class="muted" style="font-size:13px">{_esc(r.get("lead") or "")}</div></a>'
-            for r in entries
-        )
-    return f"""
-    <div class="card">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-        <h2 style="margin:0">営業週次レポート アーカイブ</h2>
-        <a class="btn sec" href="/reports/manage" style="font-size:13px">＋ 新規／編集</a>
-      </div>
-      <p class="muted" style="margin:8px 0 14px">毎週末の営業レポートです（社外秘・このツールにログインできる人のみ閲覧可）。</p>
-      {items}
-    </div>"""
+        hero = (f'<div class="hero plain"><div class="kicker">{date}</div>'
+                f'<h1 class="art-title">{title}</h1></div>')
+    inner = f"""
+    <p style="margin:-.6rem 0 1.2rem"><a class="readmore" href="/reports">← レポート一覧</a></p>
+    {hero}
+    <article class="art">
+      {lead_html}
+      {body}
+    </article>"""
+    return _reports_doc(inner, page_title=f"{title}｜InProc 営業レポート")
 
 
 def reports_manage_page(con, slug: str = "") -> str:
-    """レポートの新規作成／編集フォーム。slug指定時は既存号を読み込んで前埋め。
-    本文（html_body）は確定デザインの単体HTMLをそのまま貼り付けて保存する。"""
+    """レポートの新規作成／編集フォーム（CRM側のガワ内・管理用）。
+    本文は記事の中身HTML（fragment）を書く。カバー画像・本文中画像は
+    ブラウザ側でリサイズしdata URI化して埋め込む（サーバはテキスト保存のみ）。"""
     rep = sfa_db.get_weekly_report(con, slug) if slug else None
     v_slug = _esc(rep["slug"]) if rep else ""
     v_date = _esc(rep["report_date"] or "") if rep else ""
     v_title = _esc(rep["title"] or "") if rep else ""
     v_lead = _esc(rep["lead"] or "") if rep else ""
     v_body = _esc(rep["html_body"] or "") if rep else ""
+    v_cover = _esc(rep["cover_image"] or "") if rep else ""
+    cover_prev = (f'<img id="coverPreview" src="{v_cover}" style="max-height:120px;border-radius:8px;margin-top:8px">'
+                  if v_cover else '<img id="coverPreview" style="display:none;max-height:120px;border-radius:8px;margin-top:8px">')
     slug_readonly = "readonly" if rep else ""
     heading = f"レポートを編集: {v_slug}" if rep else "レポートを新規作成"
     del_btn = ""
@@ -482,21 +686,31 @@ def reports_manage_page(con, slug: str = "") -> str:
     others_block = f'<p class="muted" style="margin:0 0 6px">既存号を編集:</p>{others}' if others else ""
     return f"""
     <div class="card">
-      <p style="margin:0 0 10px"><a href="/reports">← レポート一覧</a></p>
+      <p style="margin:0 0 10px"><a href="/reports">← レポート一覧を見る</a></p>
       <h2 style="margin:0 0 4px">{heading}</h2>
-      <p class="muted" style="margin:0 0 14px">本文は確定デザインの単体HTMLをそのまま貼り付けてください（そのまま配信されます）。社外秘のためGitには保存されず、このDB（永続ディスク）にのみ保存されます。</p>
-      <form method="post" action="/reports/manage/save">
+      <p class="muted" style="margin:0 0 6px">本文は「記事の単体HTML」をそのまま貼り付けます（前回のデザインの読み物HTMLをそのまま配信します）。
+        本文中に写真を入れる場合は、その単体HTMLの中に画像を埋め込んでおいてください。</p>
+      <p class="muted" style="margin:0 0 14px">カバー画像は<b>一覧ページのサムネイル用</b>です（記事本体には影響しません）。
+        選ぶと自動で縮小し、Gitには置かずこのDBに埋め込みます（社外秘・社内限定）。</p>
+      <form method="post" action="/reports/manage/save" id="repForm">
         <label>スラッグ（URL・英数と-_のみ）＊必須</label>
         <input type="text" name="slug" value="{v_slug}" required pattern="[0-9A-Za-z_-]+"
                placeholder="2026-07-12" {slug_readonly}>
-        <label>期間（一覧表示用）</label>
+        <label>期間（一覧カードの日付表示）</label>
         <input type="text" name="report_date" value="{v_date}" placeholder="2026.7.6 – 7.12">
-        <label>表題</label>
+        <label>表題（一覧カードの見出し）</label>
         <input type="text" name="title" value="{v_title}" placeholder="展示会が終わって、最初の一週間">
-        <label>一言（一覧のリード）</label>
+        <label>一言（一覧カードのリード）</label>
         <input type="text" name="lead" value="{v_lead}" placeholder="「そんなことができるんですか」。今週、その一言を何度も聞きました。">
-        <label>本文HTML（単体HTML全体）＊必須</label>
-        <textarea name="html_body" rows="18" required
+
+        <label>カバー画像（一覧カードのサムネ用・任意）</label>
+        <input type="file" accept="image/*" id="coverFile" onchange="onCoverPick(this)">
+        <button type="button" class="btn sec" style="font-size:12px;margin-top:6px" onclick="clearCover()">カバーを外す</button>
+        <input type="hidden" name="cover_image" id="coverData" value="{v_cover}">
+        {cover_prev}
+
+        <label style="margin-top:14px">本文HTML（記事の単体HTMLをそのまま貼り付け）＊必須</label>
+        <textarea name="html_body" id="repBody" rows="18" required
                   style="font-family:monospace;font-size:11px;background:#fff;white-space:pre">{v_body}</textarea>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
           {del_btn}
@@ -504,7 +718,37 @@ def reports_manage_page(con, slug: str = "") -> str:
         </div>
       </form>
       <div style="margin-top:18px;padding-top:14px;border-top:1px solid #e6e9f0">{others_block}</div>
-    </div>"""
+    </div>
+    <script>
+    // 画像をブラウザ側で最大1600pxに縮小しJPEG(data URI)化。Gitに置かずDBにテキスト保存する。
+    function _resizeToDataURL(file, maxDim, cb){{
+      var reader=new FileReader();
+      reader.onload=function(e){{
+        var img=new Image();
+        img.onload=function(){{
+          var w=img.width,h=img.height;
+          if(w>maxDim||h>maxDim){{var s=maxDim/Math.max(w,h);w=Math.round(w*s);h=Math.round(h*s);}}
+          var c=document.createElement('canvas');c.width=w;c.height=h;
+          c.getContext('2d').drawImage(img,0,0,w,h);
+          cb(c.toDataURL('image/jpeg',0.85));
+        }};
+        img.src=e.target.result;
+      }};
+      reader.readAsDataURL(file);
+    }}
+    function onCoverPick(input){{
+      if(!input.files||!input.files[0])return;
+      _resizeToDataURL(input.files[0],1600,function(d){{
+        document.getElementById('coverData').value=d;
+        var p=document.getElementById('coverPreview');p.src=d;p.style.display='';
+      }});
+    }}
+    function clearCover(){{
+      document.getElementById('coverData').value='';
+      var p=document.getElementById('coverPreview');p.src='';p.style.display='none';
+      document.getElementById('coverFile').value='';
+    }}
+    </script>"""
 
 
 # ── メールパターン管理 ───────────────────────────────────────────────────────────
@@ -5870,7 +6114,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/data-tagging":
                     self._send(render(data_tagging_page(con)))
                 elif path == "/reports":
-                    self._send(render(reports_index_page(con)))
+                    self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":
                     _slug = (self._qs().get("slug", [""])[0] or "")
                     self._send(render(reports_manage_page(con, _slug)))
@@ -5878,7 +6122,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _slug = path[len("/reports/"):].strip("/")
                     _rep = sfa_db.get_weekly_report(con, _slug) if _SLUG_RE.fullmatch(_slug or "") else None
                     if _rep:
-                        self._send(_rep["html_body"].encode("utf-8"))
+                        self._send(report_article_html(_rep).encode("utf-8"))
                     else:
                         self._redirect("/reports")
                 elif path == "/backups":
@@ -6104,12 +6348,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if not _SLUG_RE.fullmatch(_slug) or not _body.strip():
                         self._redirect("/reports/manage")
                     else:
+                        _cover = f.get("cover_image", "") or ""
+                        if not _cover.startswith("data:image/"):
+                            _cover = ""
                         sfa_db.upsert_weekly_report(
                             con, _slug,
                             (f.get("report_date", "") or "").strip(),
                             (f.get("title", "") or "").strip(),
                             (f.get("lead", "") or "").strip(),
                             _body,
+                            _cover,
                         )
                         self._redirect(f"/reports/{_slug}")
                 elif path == "/reports/manage/delete":

@@ -213,32 +213,48 @@ def test_get_main_routes_return_200(server, path):
 _REP_MARKER = "REPORT_BODY_MARKER_X1Y2Z3"
 
 
-def _seed_report(db_path, slug="2026-07-12"):
+def _seed_report(db_path, slug="2026-07-12", body=None, cover=""):
     con = sfa_db.connect(db_path)
     sfa_db.upsert_weekly_report(
         con, slug, "2026.7.6 – 7.12", "展示会が終わって、最初の一週間",
         "「そんなことができるんですか」。",
-        f"<!doctype html><html><body>{_REP_MARKER}</body></html>",
+        body if body is not None else f"<p>{_REP_MARKER}</p>",
+        cover,
     )
     con.close()
 
 
-def test_reports_index_200(server):
+def test_reports_index_200(server, db_path):
+    _seed_report(db_path)
     code, resp = _get(server + "/reports", headers=_auth_header())
     assert code == 200
-    assert "アーカイブ".encode() in resp.read()
+    body = resp.read()
+    # 読み物サイトのガワ（CRMのガワではない）で配信されていること
+    assert "InProc 営業レポート".encode() in body
+    assert "Inproc Salesforce".encode() not in body  # CRMの共通ナビは出さない
 
 
-def test_reports_known_slug_serves_body_raw(server, db_path):
-    """DBに登録済みのslugは、その号の本文HTMLをPAGE雛形を挟まず直接返す。"""
+def test_reports_article_wraps_fragment_in_reading_shell(server, db_path):
+    """本文fragmentは読み物サイトのガワに包んで配信（CRMのガワは挟まない）。"""
     _seed_report(db_path)
     code, resp = _get(server + "/reports/2026-07-12", headers=_auth_header())
     assert code == 200
     body = resp.read()
     assert _REP_MARKER.encode() in body
-    # renderのPAGE雛形（共通ナビ/モーダル）ではなく、本文だけを直接返していること
-    assert b"openToolModal" not in body
-    assert "Inproc Salesforce".encode() not in body
+    assert 'class="rmast"'.encode() in body          # 読み物サイトのヘッダー
+    assert b"openToolModal" not in body               # CRMの共通モーダルは無い
+    assert "Inproc Salesforce".encode() not in body   # CRMの共通ナビは無い
+
+
+def test_reports_legacy_fulldoc_served_raw(server, db_path):
+    """旧形式（<!doctype>を含む単体HTML本文）は後方互換でそのまま配信する。"""
+    _seed_report(db_path, slug="2025-01-01",
+                 body=f"<!doctype html><html><body>{_REP_MARKER}</body></html>")
+    code, resp = _get(server + "/reports/2025-01-01", headers=_auth_header())
+    assert code == 200
+    body = resp.read()
+    assert _REP_MARKER.encode() in body
+    assert 'class="rmast"'.encode() not in body  # ガワを足さず生のまま返す
 
 
 def test_reports_unknown_slug_redirects_to_index(server, db_path):
@@ -251,17 +267,23 @@ def test_reports_unknown_slug_redirects_to_index(server, db_path):
 
 
 def test_reports_manage_save_and_delete(server, db_path):
-    """管理画面から新規保存→本文が返る→削除で消える。"""
+    """管理画面から新規保存(カバー画像込み)→本文が返る→削除で消える。"""
     code, _ = _get(server + "/reports/manage", headers=_auth_header())
     assert code == 200
-    # 保存
+    cover = "data:image/jpeg;base64,/9j/AAAQSkZJRg=="
     code, _ = _post(server + "/reports/manage/save",
                     {"slug": "2099-01-01", "report_date": "2099.1.1", "title": "テスト号",
-                     "lead": "リード", "html_body": f"<html>{_REP_MARKER}</html>"},
+                     "lead": "リード", "html_body": f"<p>{_REP_MARKER}</p>", "cover_image": cover},
                     headers=_auth_header())
     assert code == 200  # 303→追従で号本文(200)
     con = sfa_db.connect(db_path)
-    assert sfa_db.get_weekly_report(con, "2099-01-01") is not None
+    rep = sfa_db.get_weekly_report(con, "2099-01-01")
+    assert rep is not None and rep["cover_image"] == cover
+    # data:image/ 以外のcover_imageは弾いて空に
+    _post(server + "/reports/manage/save",
+          {"slug": "2099-01-01", "html_body": f"<p>{_REP_MARKER}</p>",
+           "cover_image": "javascript:alert(1)"}, headers=_auth_header())
+    assert sfa_db.get_weekly_report(con, "2099-01-01")["cover_image"] == ""
     # 不正slugは保存されない
     _post(server + "/reports/manage/save",
           {"slug": "../etc", "html_body": "x"}, headers=_auth_header())
