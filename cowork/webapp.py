@@ -1447,6 +1447,22 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             for dp in dev_by_deal.get(did, [])
             if dp.get("tool_url") and dp.get("status") != "中止"
         ) or "—"
+        # 開発案件への導線: 既存があればその案件へのリンク、無ければ「＋開発案件」新規追加リンク。
+        # いずれも return_to に現在の一覧URLを渡し、遷移後に一覧へ戻れるようにする。
+        _dev_pill = ('display:inline-block;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;'
+                     'border-radius:6px;padding:2px 8px;font-size:11px;white-space:nowrap;text-decoration:none')
+        _ret_q = urllib.parse.quote(return_to_url, safe="")
+        _devs = dev_by_deal.get(did, [])
+        if _devs:
+            dev_links = " ".join(
+                f'<a href="/dev-project/{dp["id"]}/edit?return_to={_ret_q}" title="開発案件を開く" '
+                f'style="{_dev_pill}">🛠 {_esc(dp.get("theme") or "開発案件")}</a>'
+                for dp in _devs
+            )
+        else:
+            dev_links = (f'<a href="/dev-projects/new?deal_id={did}&return_to={_ret_q}" '
+                         f'title="この商談に開発案件を新規追加" style="{_dev_pill}">＋開発案件</a>')
+        tool_cell = f'{tool_btns}<div style="margin-top:4px">{dev_links}</div>'
         if d.get("status") != "closed":
             close_btn = (f'<button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;'
                          f'background:#c53030;color:#fff;border-color:#c53030"'
@@ -1468,7 +1484,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'<td>{_udeal_sel(did, "business_type_l2", l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{did}")}</td>'
             f'<td>{inp_budget}</td><td>{inp_total}</td>'
             f'<td>{inp_ms_date}</td><td>{inp_ms_label}</td>'
-            f'<td>{tool_btns}</td><td>{close_btn}</td></tr>'
+            f'<td>{tool_cell}</td><td>{close_btn}</td></tr>'
         )
     body = "".join(rows) or f'<tr><td colspan={16 if bulk else 15} class=muted>商談がありません。</td></tr>'
     return (f'<div style="overflow:auto;max-height:70vh"><table style="min-width:1400px">'
