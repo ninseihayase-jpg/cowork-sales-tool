@@ -4867,12 +4867,14 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
                        for s in sfa_db.LEAD_SOURCES))
 
     filter_form = f"""<form method="get" action="/leads" class="filter-row">
-      <select name="status">{status_opts}</select>
-      <select name="source">{source_opts}</select>
-      <input name="q" placeholder="氏名・会社検索" value="{_esc(q)}" style="min-width:150px">
-      <button class="btn sec" type="submit">絞り込み</button>
+      <select name="status" onchange="this.form.submit()">{status_opts}</select>
+      <select name="source" onchange="this.form.submit()">{source_opts}</select>
       <a class="btn sec" href="/leads">リセット</a>
-    </form>"""
+    </form>
+    <div style="margin:8px 0 10px">
+      <input type="text" id="leadSearch" placeholder="🔍 氏名・会社で絞り込み（入力すると即座に絞られます）"
+        oninput="filterLeads()" style="max-width:320px">
+    </div>"""
 
     # マスタデータ取得（インライン編集・バルク編集用）
     owners_list = sfa_db.get_master_list(con, "owners")
@@ -4926,8 +4928,9 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
         sel_owner = _inline_select_master(ld["id"], "assigned_to", owners_list, ld.get("assigned_to") or "")
         sel_industry = _inline_select_master(ld["id"], "industry", industries_list, ld.get("industry") or "")
         sel_company_size = _inline_select_master(ld["id"], "company_size", company_sizes_list, ld.get("company_size") or "")
+        _search_key = f'{(ld.get("name") or "")} {(ld.get("company") or "")}'.lower()
         rows.append(
-            f'<tr>'
+            f'<tr data-search="{_esc(_search_key)}">'
             f'<td style="width:32px"><input type="checkbox" name="ids" value="{ld["id"]}"></td>'
             f'<td><a href="/leads/{ld["id"]}">{_esc(ld["name"])}</a>{deal_badge}<br>'
             f'<span class="muted">{_esc(ld.get("company"))}</span></td>'
@@ -5016,6 +5019,12 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
     }}
     document.getElementById('bulk_field').addEventListener('change', repopulateBulkValue);
     repopulateBulkValue();
+    function filterLeads() {{
+      var q = (document.getElementById('leadSearch').value || '').toLowerCase();
+      document.querySelectorAll('tr[data-search]').forEach(function(tr) {{
+        tr.style.display = tr.getAttribute('data-search').indexOf(q) >= 0 ? '' : 'none';
+      }});
+    }}
     </script>"""
 
 
