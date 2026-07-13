@@ -2522,19 +2522,21 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
     _tools_by_dp = sfa_db.list_dev_project_tools_for(con, [p["id"] for p in projects])
 
     def _tool_cell(p):
+        pid = p["id"]
         parts = []
         primary = _tool_link_btn(p.get("tool_url"), tool_id=p.get("tool_login_id"),
                                  tool_password=p.get("tool_login_pass"))
         if primary:
             parts.append(primary)
-        for t in _tools_by_dp.get(p["id"], []):
+        for t in _tools_by_dp.get(pid, []):
             parts.append(_tool_link_btn(
                 t.get("url"), label="🔧 " + (_esc(t.get("label")) or "リンク"),
                 tool_id=t.get("login_id"), tool_password=t.get("login_pass")))
-        if not parts:
-            return "—"
+        links = "".join(parts) or '<span class="muted" style="font-size:11px">—</span>'
+        add_btn = (f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 7px;margin-top:3px"'
+                   f' onclick="openLinkModal({pid})">＋リンク</button>')
         return ('<div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">'
-                + "".join(parts) + '</div>')
+                + links + add_btn + '</div>')
 
     _dp_owners = sfa_db.get_master_list(con, "owners")
 
@@ -2588,7 +2590,40 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
       </div>
       </form>
     </div>
+
+    <div id="linkModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;
+      align-items:center;justify-content:center" onclick="if(event.target===this)closeLinkModal()">
+      <div style="background:#fff;border-radius:12px;padding:20px 22px;max-width:440px;width:92%;box-shadow:0 10px 40px rgba(0,0,0,.25)">
+        <h3 style="margin:0 0 12px">ツールリンクを追加</h3>
+        <form id="linkModalForm" method="post">
+          <input type="hidden" name="return_to" value="/dev-projects">
+          <label style="font-size:12px;color:#6b7689">URL *</label>
+          <input type="url" name="url" required placeholder="https://..." style="width:100%;margin:2px 0 8px">
+          <label style="font-size:12px;color:#6b7689">表示名（任意）</label>
+          <input type="text" name="label" placeholder="例: 設計書、管理画面" style="width:100%;margin:2px 0 8px">
+          <div style="display:flex;gap:8px;margin-bottom:14px">
+            <div style="flex:1"><label style="font-size:12px;color:#6b7689">ID（任意）</label>
+              <input type="text" name="login_id" style="width:100%;margin-top:2px"></div>
+            <div style="flex:1"><label style="font-size:12px;color:#6b7689">PASS（任意）</label>
+              <input type="text" name="login_pass" style="width:100%;margin-top:2px"></div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button type="button" class="btn sec" onclick="closeLinkModal()">キャンセル</button>
+            <button type="submit" class="btn">追加</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <script>
+    function openLinkModal(pid) {{
+      var f = document.getElementById('linkModalForm');
+      f.reset();
+      f.action = '/dev-project/' + pid + '/tools/add';
+      document.getElementById('linkModal').style.display = 'flex';
+    }}
+    function closeLinkModal() {{ document.getElementById('linkModal').style.display = 'none'; }}
+    document.addEventListener('keydown', function(e) {{ if (e.key === 'Escape') closeLinkModal(); }});
     function dpBulkDelete() {{
       var ids = Array.from(document.querySelectorAll('#dp_bulk_form [name=ids]:checked')).map(function(c){{return c.value;}});
       if (!ids.length) {{ alert('削除する開発案件を選択してください。'); return; }}
@@ -6413,7 +6448,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 label=f.get("label") or None,
                                 login_id=f.get("login_id") or None,
                                 login_pass=f.get("login_pass") or None)
-                        self._redirect(f"/dev-project/{pid}/edit")
+                        _rt = f.get("return_to") or ""
+                        self._redirect(_rt if _rt.startswith("/") else f"/dev-project/{pid}/edit")
                     else:
                         self._redirect("/dev-projects")
 

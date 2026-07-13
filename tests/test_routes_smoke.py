@@ -101,6 +101,29 @@ def test_data_tagging_route_200(server):
     assert len(resp.read()) > 0
 
 
+def test_dev_project_tool_add_via_http(server, db_path):
+    """開発案件一覧のモーダルからの追加リンク登録（/tools/add）が実HTTPで保存される。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('T社')").lastrowid
+    con.commit()
+    deal = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案", status="open")
+    dp = sfa_db.upsert_dev_project(con, deal_id=deal, theme="T", status="開発中", stage="プロト")
+    con.commit()
+
+    code, _ = _post(server + f"/dev-project/{dp}/tools/add",
+                    {"url": "https://tool.example", "label": "設計", "return_to": "/dev-projects"},
+                    headers=_auth_header())
+    assert code != 500
+    con2 = sfa_db.connect(db_path)
+    tools = sfa_db.list_dev_project_tools(con2, dp)
+    assert len(tools) == 1 and tools[0]["url"] == "https://tool.example" and tools[0]["label"] == "設計"
+    # http以外は登録しない
+    _post(server + f"/dev-project/{dp}/tools/add", {"url": "javascript:alert(1)"}, headers=_auth_header())
+    assert len(sfa_db.list_dev_project_tools(con2, dp)) == 1
+    con2.close()
+    con.close()
+
+
 def test_dev_project_inline_field_persist(server, db_path):
     """開発案件一覧のインライン編集(stage/status/order_potential)が実HTTPで保存され、不正値は拒否される。"""
     con = sfa_db.connect(db_path)
