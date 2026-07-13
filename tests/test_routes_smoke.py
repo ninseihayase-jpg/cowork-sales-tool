@@ -101,6 +101,28 @@ def test_data_tagging_route_200(server):
     assert len(resp.read()) > 0
 
 
+def test_close_requires_reason(server, db_path):
+    """クローズ(=リード戻し)は終了理由が必須。理由なしはクローズされず、理由ありでクローズ＋記録。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('C社')").lastrowid
+    con.commit()
+    deal = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案", status="open")
+    con.commit()
+
+    # 理由なし → クローズされない
+    _post(server + f"/deal/{deal}/revert_to_lead", {"memo": "x"}, headers=_auth_header())
+    con2 = sfa_db.connect(db_path)
+    assert con2.execute("SELECT status FROM deals WHERE id=?", (deal,)).fetchone()[0] != "closed"
+
+    # 理由あり → クローズ＋close_reason記録
+    _post(server + f"/deal/{deal}/revert_to_lead",
+          {"close_reason": "ニーズなし", "memo": "詳細メモ"}, headers=_auth_header())
+    row = con2.execute("SELECT status, close_reason FROM deals WHERE id=?", (deal,)).fetchone()
+    assert row[0] == "closed" and row[1] == "ニーズなし"
+    con2.close()
+    con.close()
+
+
 def test_dev_project_tool_add_via_http(server, db_path):
     """開発案件一覧のモーダルからの追加リンク登録（/tools/add）が実HTTPで保存される。"""
     con = sfa_db.connect(db_path)

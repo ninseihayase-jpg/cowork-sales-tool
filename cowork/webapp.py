@@ -311,9 +311,44 @@ function escH(s) {{
 <main>{flash}{body}</main></body></html>"""
 
 
+# 全ページ共通の「商談クローズ（リードに戻す）」モーダル。各画面のボタンから openCloseModal(id, returnTo)
+# で開き、理由(必須)＋詳細(任意)を入力して /deal/{id}/revert_to_lead へPOSTする。運用をこの1本に統一。
+_CLOSE_REASON_OPTS = "".join(
+    f'<option value="{html.escape(r)}">{html.escape(r)}</option>' for r in sfa_db.CLOSE_REASONS
+)
+_CLOSE_MODAL_HTML = (
+    '<div id="closeModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;'
+    'align-items:center;justify-content:center" onclick="if(event.target===this)closeCloseModal()">'
+    '<div style="background:#fff;border-radius:12px;padding:20px 22px;max-width:460px;width:92%;'
+    'box-shadow:0 10px 40px rgba(0,0,0,.25)">'
+    '<h3 style="margin:0 0 12px">商談をクローズ（リードに戻す）</h3>'
+    '<form id="closeModalForm" method="post">'
+    '<input type="hidden" name="return_to" id="closeModalReturn" value="">'
+    '<label>終了理由 <span style="color:#c53030">＊必須</span></label>'
+    f'<select name="close_reason" id="closeModalReason" required><option value="">選択してください</option>{_CLOSE_REASON_OPTS}</select>'
+    '<label>詳細（任意）</label>'
+    '<textarea name="memo" rows="3" placeholder="補足があれば"></textarea>'
+    '<p class="muted" style="font-size:11px;margin:8px 0 12px">この商談はクローズされ、リード（フォロー中）に戻ります。</p>'
+    '<div style="display:flex;gap:8px;justify-content:flex-end">'
+    '<button type="button" class="btn sec" onclick="closeCloseModal()">キャンセル</button>'
+    '<button type="submit" class="btn" style="background:#c53030">クローズする</button>'
+    '</div></form></div></div>'
+    '<script>'
+    'function openCloseModal(id, returnTo){'
+    ' var f=document.getElementById("closeModalForm"); f.reset();'
+    ' f.action="/deal/"+id+"/revert_to_lead";'
+    ' document.getElementById("closeModalReturn").value=returnTo||"";'
+    ' document.getElementById("closeModal").style.display="flex";'
+    '}'
+    'function closeCloseModal(){document.getElementById("closeModal").style.display="none";}'
+    'document.addEventListener("keydown",function(e){if(e.key==="Escape")closeCloseModal();});'
+    '</script>'
+)
+
+
 def render(body: str, flash: str = "") -> bytes:
     flash_html = f'<div class="flash">{html.escape(flash)}</div>' if flash else ""
-    return PAGE.format(body=body, flash=flash_html).encode("utf-8")
+    return PAGE.format(body=body + _CLOSE_MODAL_HTML, flash=flash_html).encode("utf-8")
 
 
 # ── メールパターン管理 ───────────────────────────────────────────────────────────
@@ -1527,11 +1562,9 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
             tool_html = "—"
         if d.get("status") != "closed":
             revert_html = (
-                f'<form method="post" action="/deal/{did}/revert_to_lead" style="margin:0" onsubmit="return revertToLead(this)">'
-                f'<input type="hidden" name="memo" value="">'
-                f'<input type="hidden" name="return_to" value="{_esc(return_to_url)}">'
-                f'<button type="submit" class="btn sec" style="font-size:11px;padding:4px 8px;'
-                f'background:#f59e0b22;color:#92400e;border-color:#f59e0b44">↩ リードに戻す</button></form>'
+                f'<button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;'
+                f'background:#f59e0b22;color:#92400e;border-color:#f59e0b44"'
+                f' onclick="openCloseModal({did}, \'{return_to_url}\')">クローズ</button>'
             )
         else:
             revert_html = '<span class="muted">—</span>'
@@ -1577,13 +1610,6 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
         headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
         body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
       }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー'); }}).catch(() => alert('通信エラー'));
-    }}
-    function revertToLead(form) {{
-      if (!confirm('アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。')) return false;
-      var memo = prompt('リードに戻す理由・メモがあれば入力してください（任意）:', '');
-      if (memo === null) return false;
-      form.memo.value = memo;
-      return true;
     }}
     </script>
     """
@@ -1673,11 +1699,9 @@ def overdue_deals_page(con, *, owner: str | None = None) -> str:
             )
             tool_html = "—"
         revert_html = (
-            f'<form method="post" action="/deal/{did}/revert_to_lead" style="margin:0" onsubmit="return revertToLead(this)">'
-            f'<input type="hidden" name="memo" value="">'
-            f'<input type="hidden" name="return_to" value="{_esc(return_to_url)}">'
-            f'<button type="submit" class="btn sec" style="font-size:11px;padding:4px 8px;'
-            f'background:#f59e0b22;color:#92400e;border-color:#f59e0b44">↩ リードに戻す</button></form>'
+            f'<button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;'
+            f'background:#f59e0b22;color:#92400e;border-color:#f59e0b44"'
+            f' onclick="openCloseModal({did}, \'{return_to_url}\')">クローズ</button>'
         )
         _acc = (d.get("account_name") or "")
         rows.append(
@@ -2350,25 +2374,11 @@ def deal_form(con, deal=None) -> str:
     revert_btn = ""
     close_btn = ""
     if deal.get("id") and deal.get("status") != "closed":
+        # クローズは共通モーダル(理由必須＋詳細任意)に一本化。押すと商談はクローズされリードに戻る。
         revert_btn = (
-            f'<form method="post" action="/deal/{deal["id"]}/revert_to_lead" style="margin-top:8px;display:inline-block"'
-            ' onsubmit="return revertToLead(this)">'
-            '<input type="hidden" name="memo" value="">'
-            '<select name="close_reason" style="font-size:12px;padding:5px;margin-right:4px">'
-            f'<option value="">終了理由（任意）</option>{_opt(sfa_db.CLOSE_REASONS, deal.get("close_reason"))}</select>'
-            '<button type="submit" class="btn" style="background:#f59e0b;font-size:12px;padding:6px 12px">'
-            '↩ リードに戻す（アポ獲得前に戻る）'
-            '</button></form>'
-        )
-        close_btn = (
-            f'<form method="post" action="/deal/{deal["id"]}/close" style="margin-top:8px;margin-left:8px;display:inline-block"'
-            ' onsubmit="return closeDeal(this)">'
-            '<input type="hidden" name="memo" value="">'
-            '<select name="close_reason" style="font-size:12px;padding:5px;margin-right:4px">'
-            f'<option value="">終了理由（任意）</option>{_opt(sfa_db.CLOSE_REASONS, deal.get("close_reason"))}</select>'
-            '<button type="submit" class="btn" style="background:#c53030;font-size:12px;padding:6px 12px">'
-            '🗑 商談をクローズする'
-            '</button></form>'
+            f'<button type="button" class="btn" style="background:#c53030;font-size:12px;padding:8px 14px;margin-top:8px"'
+            f' onclick="openCloseModal({deal["id"]}, \'/deal/{deal["id"]}\')">'
+            '商談をクローズ（リードに戻す）</button>'
         )
     return f"""
     <div class="card">
@@ -2409,9 +2419,8 @@ def deal_form(con, deal=None) -> str:
         <div><label>重要度</label>
           <select name="importance">{_opt(sfa_db.IMPORTANCE_OPTIONS, deal.get('importance'))}</select></div>
         <div><label>ステータス</label>
-          <select name="status">{_opt(['open', 'closed'], deal.get('status') or 'open')}</select></div>
-        <div><label>終了理由 <span class="muted" style="font-weight:400;font-size:.8em">（失注/クローズ時）</span></label>
-          <select name="close_reason"><option value="">（なし）</option>{_opt(sfa_db.CLOSE_REASONS, deal.get('close_reason'))}</select></div>
+          <div style="padding:7px 0"><span class="stage">{'クローズ済' if deal.get('status') == 'closed' else '進行中'}</span>
+          <span class="muted" style="font-size:11px;margin-left:6px">クローズは画面上部の「クローズ」ボタンから</span></div></div>
         <div><label>次回MS日</label>
           <input type="date" name="next_milestone_date" value="{_esc(deal.get('next_milestone_date'))}"></div>
         <div><label>次回MSラベル</label>
@@ -2452,20 +2461,6 @@ def deal_form(con, deal=None) -> str:
       sel.innerHTML = '<option value=""></option>' +
         (L2_MAP[l1] || []).map(v => `<option value="${{escH(v)}}"${{v===cur?' selected':''}}>${{escH(v)}}</option>`).join('');
       document.getElementById('cost_section').style.display = l1 === 'コスト削減' ? '' : 'none';
-    }}
-    function revertToLead(form) {{
-      if (!confirm('アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。')) return false;
-      var memo = prompt('リードに戻す理由・メモがあれば入力してください（任意）:', '');
-      if (memo === null) return false;
-      form.memo.value = memo;
-      return true;
-    }}
-    function closeDeal(form) {{
-      if (!confirm('この商談をクローズします。\\nリードには戻さず、この商談の状態を「クローズ」にします。')) return false;
-      var memo = prompt('クローズ理由・メモがあれば入力してください（任意）:', '');
-      if (memo === null) return false;
-      form.memo.value = memo;
-      return true;
     }}
     </script></div>
     {other_deals_html}
@@ -6285,6 +6280,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _deal_id_in = int(f["id"]) if f.get("id") else None
                     except ValueError:
                         _deal_id_in = None
+                    # クローズはモーダル経由に一本化したため、編集フォームはstatusを送らない。
+                    # 既存商談のstatus（open/closed）は保持し、編集で誤って再オープンしない。
+                    _keep_status = "open"
+                    if _deal_id_in:
+                        _ex_deal = sfa_db.get_deal(con, _deal_id_in)
+                        if _ex_deal:
+                            _keep_status = _ex_deal.get("status") or "open"
                     did = sfa_db.upsert_deal(
                         con, id=_deal_id_in,
                         account_id=deal_account_id,
@@ -6305,7 +6307,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         note=f.get("note") or None,
                         goal=f.get("goal") or None,
                         importance=f.get("importance") or None,
-                        status=f.get("status") or "open",
+                        status=_keep_status,
                         cost_stage=f.get("cost_stage") or None,
                         approach_value=num("approach_value"),
                         approach_rate=num("approach_rate"),
@@ -7317,6 +7319,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _memo = (f.get("memo") or "").strip()
                             _cr = (f.get("close_reason") or "").strip()
                             _cr = _cr if _cr in sfa_db.CLOSE_REASONS else None
+                            if _cr is None:
+                                # 終了理由は必須。未選択ならクローズせずに戻す（直POST等への防御）
+                                _rt0 = f.get("return_to") or ""
+                                self._redirect(_rt0 if _rt0.startswith("/") else f"/deal/{_did}")
+                                return
                             _acct_row = con.execute(
                                 "SELECT * FROM accounts WHERE id=?", (_deal.get("account_id"),)
                             ).fetchone()
@@ -7383,34 +7390,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 _redirect_to = f"/leads/{_lid}"
                     self._redirect(_redirect_to)
 
-                # ── 商談クローズ（リードには戻さず終了扱いにする）──
-                elif path.endswith("/close") and "/deal/" in path:
-                    deal_id_str = path.split("/deal/")[1].split("/")[0]
-                    _redirect_to = "/deals"
-                    if deal_id_str.isdigit():
-                        _did = int(deal_id_str)
-                        _deal = sfa_db.get_deal(con, _did)
-                        if _deal and _deal.get("status") != "closed":
-                            _memo = (f.get("memo") or "").strip()
-                            _close_line = "商談をクローズしました。"
-                            _existing_note = _deal.get("note") or ""
-                            _body = f"{_existing_note}\n{_close_line}" if _existing_note else _close_line
-                            _new_note = f"[クローズ時のメモ] {_memo}\n{_body}" if _memo else _body
-                            _cr = (f.get("close_reason") or "").strip()
-                            _cr = _cr if _cr in sfa_db.CLOSE_REASONS else None
-                            con.execute(
-                                "UPDATE deals SET status='closed', note=?, "
-                                "close_reason=COALESCE(?, close_reason), updated_at=datetime('now') WHERE id=?",
-                                (_new_note, _cr, _did),
-                            )
-                            con.commit()
-                            if theme_client is not None:
-                                try:
-                                    theme_link.sync_deal(theme_client, con, _did)
-                                except Exception as _exc:
-                                    print(f"[theme_link] sync_deal failed: {_exc}")
-                            _redirect_to = f"/deal/{_did}"
-                    self._redirect(_redirect_to)
+                # 旧「商談クローズ（リードに戻さない）」は廃止。クローズは /deal/{id}/revert_to_lead に一本化。
 
                 # ── メモ保存 ──
                 elif path == "/api/memo/save":
