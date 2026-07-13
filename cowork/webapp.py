@@ -977,6 +977,37 @@ def sync_health_page(con, theme_client) -> str:
         lambda d: f'<tr><td><a href="/deal/{d["id"]}">{_esc(d.get("deal_name"))}</a></td><td></td></tr>',
         "商談一覧の「テーマDB未同期 N件を同期」で解消できます。")
 
+    # 記録済みの同期失敗（エラー文つき）。再同期しても消えない＝原因が要る失敗の中身を見える化。
+    _kind_label = {"deal": "商談", "dev_project": "開発案件", "dev_project_delete": "開発案件(削除)"}
+
+    def _fail_row(frec):
+        kind = frec.get("kind", "")
+        ref = frec.get("ref_id")
+        label = _kind_label.get(kind, kind)
+        if kind == "deal":
+            ref_html = f'<a href="/deal/{ref}">商談 #{ref}</a>'
+        elif kind == "dev_project":
+            ref_html = f'<a href="/dev-project/{ref}/edit">開発案件 #{ref}</a>'
+        else:
+            ref_html = f'{_esc(label)} #{ref}'
+        return (f'<tr><td style="white-space:nowrap">{_esc(label)}<br>{ref_html}</td>'
+                f'<td style="font-size:.85em;color:#991b1b;word-break:break-all">{_esc(frec.get("error") or "—")}</td>'
+                f'<td class="muted" style="white-space:nowrap;font-size:.8em">{_esc((frec.get("created_at") or "")[:16])}</td></tr>')
+
+    failures = sfa_db.list_sync_failures(con)
+    if failures:
+        fail_rows = "".join(_fail_row(fr) for fr in failures)
+        failures_html = (
+            '<div class="card"><h2>同期失敗の詳細 '
+            f'<span class="stage" style="background:#fee2e2;color:#991b1b">{len(failures)}件</span></h2>'
+            '<p class="muted" style="margin:0 0 8px">再同期しても解消しない失敗の中身です。エラー文から原因を特定してください。</p>'
+            '<table><tr><th>対象</th><th>エラー</th><th>記録日時</th></tr>' + fail_rows + '</table></div>'
+        )
+    else:
+        failures_html = ('<div class="card"><h2>同期失敗の詳細 '
+                         '<span class="stage" style="background:#dcfce7;color:#166534">0件</span></h2>'
+                         '<p class="muted" style="margin:0">記録された同期失敗はありません。</p></div>')
+
     total = (len(diag["dev_unsynced"]) + len(diag["dev_broken_link"])
              + len(diag["dev_orphan_hisho"]) + len(diag["deal_unsynced"]))
     banner_bg = "#dcfce7" if total == 0 else "#fff7ed"
@@ -988,7 +1019,7 @@ def sync_health_page(con, theme_client) -> str:
       <h2>🔍 SFA ↔ Hisho 同期チェック</h2>
       <p class="muted" style="margin:0">{summary} このページを開くたびにHishoへ最新状態を照会します。</p>
     </div>
-    {unsynced}{broken}{orphan}{deal_unsynced}"""
+    {unsynced}{broken}{orphan}{deal_unsynced}{failures_html}"""
 
 
 def backups_page(db_path: str) -> str:
