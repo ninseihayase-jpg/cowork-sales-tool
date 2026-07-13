@@ -294,6 +294,43 @@ def test_reports_manage_save_and_delete(server, db_path):
     con.close()
 
 
+def test_dev_points_auto_recalc_and_master(server, db_path):
+    """開発点数: 作業種別×分類係数×難易度係数で自動付与→変更で再計算→手動上書き、マスタ/キャパ保存。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('点数社')").lastrowid
+    con.commit()
+    deal = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案", status="open")
+    # 自動付与: 本番向けツール(base8)×本番(1.6)×難(1.3)=16.6
+    dp = sfa_db.upsert_dev_project(con, deal_id=deal, theme="T", status="開発中",
+                                   stage="本番", dev_audience="社外向け",
+                                   work_type="本番向けツール", difficulty="難")
+    con.commit()
+    con2 = sfa_db.connect(db_path)
+    val = lambda: con2.execute("SELECT dev_points FROM dev_projects WHERE id=?", (dp,)).fetchone()[0]
+    assert val() == 16.6
+    assert _get(server + "/dev-point-master", headers=_auth_header())[0] == 200
+    # インライン作業種別変更(新規フロントエンド base3) → 3×本番1.6×難1.3=6.2 に再計算
+    assert _post(server + f"/dev-project/{dp}/field", {"field": "work_type", "value": "新規フロントエンド"},
+                 headers=_auth_header())[0] == 200
+    assert val() == 6.2
+    # 点数の手動上書き
+    _post(server + f"/dev-project/{dp}/field", {"field": "dev_points", "value": "7.5"},
+          headers=_auth_header())
+    assert val() == 7.5
+    # 点数マスタ保存(既存をid基準で更新＋新規追加)・担当キャパ保存
+    _mid = [m["id"] for m in sfa_db.list_dev_point_master(con2) if m["work_type"] == "本番向けツール"][0]
+    _post(server + "/dev-point-master/save",
+          {f"wt__{_mid}": "本番向けツール", f"bp__{_mid}": "10",
+           "new_work_type": "図面OCR研究", "new_base_points": "5"},
+          headers=_auth_header())
+    assert sfa_db.get_dev_point_base(con2, "本番向けツール") == 10.0
+    assert sfa_db.get_dev_point_base(con2, "図面OCR研究") == 5.0
+    _post(server + "/dev-point-master/capacity", {"cap__早瀬": "20"}, headers=_auth_header())
+    assert sfa_db.get_owner_capacities(con2).get("早瀬") == 20.0
+    con2.close()
+    con.close()
+
+
 def test_health_ok_without_auth(server):
     code, resp = _get(server + "/health")
     assert code == 200

@@ -72,6 +72,30 @@ DEV_RESOLUTIONS = ["〇", "△", "×"]
 DEV_BUDGET_CONFIRMED = ["〇", "×"]
 DEV_DIFFICULTIES = ["易", "中", "難"]
 DEV_HAS_BACKEND = ["有り", "無し"]
+# 開発点数(工数)機能（#41）
+# 点数マスタ＝「作業種別」ごとの基準点数。既存分類(プロト/PoC/本番)と難易度は「係数」として掛ける。
+DEV_AUDIENCES = ["社外向け", "社内向け", "研究"]  # 提供先。研究=図面OCR等の技術シード
+DEV_PRICINGS = ["無償", "有償"]                    # 課金（分類ディメンション・点数計算には未使用）
+DEV_DIFFICULTY_COEF = {"易": 0.8, "中": 1.0, "難": 1.3}     # 難易度係数
+DEV_STAGE_COEF = {"プロト": 1.0, "PoC": 1.3, "本番": 1.6}   # 既存分類=係数（仮値・後で調整）
+# 作業種別の初期シード（仮値。マスタ画面で付け直す前提）
+DEV_WORK_TYPE_SEED = [
+    ("既存デモ+input改変", 1),
+    ("既存デモの改変", 2),
+    ("新規フロントエンド", 3),
+    ("バックエンド含むデモ", 5),
+    ("本番向けツール", 8),
+    ("研究テーマ", 5),
+]
+
+
+def compute_dev_points(con, *, work_type, stage, difficulty) -> float | None:
+    """作業種別の基準点数 × 既存分類係数(プロト/PoC/本番) × 難易度係数。マスタ未登録ならNone。"""
+    base = get_dev_point_base(con, work_type or "")
+    if base is None:
+        return None
+    coef = DEV_STAGE_COEF.get(stage or "", 1.0) * DEV_DIFFICULTY_COEF.get(difficulty or "", 1.0)
+    return round(base * coef, 1)
 
 # 社内論点管理
 DEAL_ISSUE_STATUSES = ["議論中", "議論済み", "取り消し"]
@@ -405,6 +429,10 @@ CREATE TABLE IF NOT EXISTS dev_projects (
     budget_confirmed TEXT,                 -- 予算確認: 〇/×
     difficulty       TEXT,                 -- 実現難易度: 易/中/難
     has_backend      TEXT,                 -- バックエンド有無: 有り/無し
+    dev_audience     TEXT,                 -- 提供先: 社外向け/社内向け/研究（#41）
+    work_type        TEXT,                 -- 作業種別（点数マスタのキー。例: 新規フロントエンド・本番向けツール等・#41）
+    pricing          TEXT,                 -- 課金: 無償/有償（分類ディメンション・点数計算には未使用・#41）
+    dev_points       REAL,                 -- 開発点数(工数)。作業種別×分類係数×難易度係数で自動付与→手動調整可（#41）
     dev_owner        TEXT,                 -- 開発担当（メンバー選択）
     tech_support     TEXT,                 -- 技術サポート（自由記述）
     dev_milestone    TEXT,                 -- 開発MS（自由記述ラベル）
@@ -501,6 +529,21 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
     html_body   TEXT NOT NULL,          -- 号の本文HTML（アプリ共通ガワの中に差し込む本文fragment）
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- 開発点数マスタ（作業種別→基準点数。#41。経験曲線＝この基準値を手動で下げていく）
+CREATE TABLE IF NOT EXISTS dev_point_master (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_type   TEXT NOT NULL UNIQUE,     -- 作業種別（例: 新規フロントエンド・本番向けツール）
+    base_points REAL NOT NULL,            -- 基準点数（分類係数=1・難易度=中の想定）
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- 開発担当の週次キャパ（週次上限点数。#41。負荷率＝週配分点数÷上限）
+CREATE TABLE IF NOT EXISTS dev_owner_capacity (
+    owner             TEXT PRIMARY KEY,   -- 開発担当名（owners マスタの値）
+    weekly_max_points REAL NOT NULL,      -- 週次上限点数
+    updated_at        TEXT DEFAULT (datetime('now'))
 );
 """
 
@@ -667,10 +710,17 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE dev_projects ADD COLUMN tool_login_id TEXT")
         if "tool_login_pass" not in dp_cols:
             con.execute("ALTER TABLE dev_projects ADD COLUMN tool_login_pass TEXT")
+        # 開発点数機能（#41）: 提供先/作業種別/課金/点数を後方互換追加
+        for col, typedef in (("dev_audience", "TEXT"), ("work_type", "TEXT"),
+                             ("pricing", "TEXT"), ("dev_points", "REAL")):
+            if col not in dp_cols:
+                con.execute(f"ALTER TABLE dev_projects ADD COLUMN {col} {typedef}")
         # weekly_reports に cover_image を後方互換追加（前回デプロイ時は列が無かった）
         wr_cols = {r[1] for r in con.execute("PRAGMA table_info(weekly_reports)")}
         if wr_cols and "cover_image" not in wr_cols:
             con.execute("ALTER TABLE weekly_reports ADD COLUMN cover_image TEXT")
+        # 開発点数マスタの初期シード（空のときのみ・#41）
+        seed_dev_point_master(con)
         # deal_issues.deal_id を NOT NULL → NULL可に変更（商談共通の論点に対応）。
         # SQLiteはNOT NULL制約を直接ALTERできないため、テーブルを作り直す。
         issue_deal_id_col = next(
@@ -1316,7 +1366,8 @@ def count_hearing_results(con, deal_id: int) -> int:
 
 DEV_PROJECT_FIELDS = [
     "deal_id", "theme", "theme_detail", "status", "stage", "order_potential",
-    "resolution", "budget_confirmed", "difficulty", "has_backend", "dev_owner",
+    "resolution", "budget_confirmed", "difficulty", "has_backend",
+    "dev_audience", "work_type", "pricing", "dev_points", "dev_owner",
     "tech_support", "dev_milestone", "dev_milestone_date", "deadline", "dev_start_date",
     "dev_end_date", "dev_policy", "tool_url", "tool_login_id", "tool_login_pass",
 ]
@@ -1380,6 +1431,17 @@ def upsert_dev_project(con, *, id=None, commit: bool = True, **fields) -> int:
         resolution=data.get("resolution"),
         difficulty=data.get("difficulty"),
     )
+    # 点数の自動付与: 明示値が無いときのみ 作業種別×分類係数×難易度係数 で算出（＝手動調整を尊重）
+    if data.get("dev_points") in (None, ""):
+        _pts = compute_dev_points(
+            con, work_type=data.get("work_type"), stage=data.get("stage"),
+            difficulty=data.get("difficulty"))
+        data["dev_points"] = _pts
+    else:
+        try:
+            data["dev_points"] = float(data["dev_points"])
+        except (TypeError, ValueError):
+            data["dev_points"] = None
     if id is not None:
         sets = ", ".join(f"{k}=?" for k in DEV_PROJECT_FIELDS) + ", updated_at=datetime('now')"
         con.execute(f"UPDATE dev_projects SET {sets} WHERE id=?",
@@ -1398,6 +1460,81 @@ def upsert_dev_project(con, *, id=None, commit: bool = True, **fields) -> int:
 
 def delete_dev_project(con, id: int) -> None:
     con.execute("DELETE FROM dev_projects WHERE id=?", (int(id),))
+    con.commit()
+
+
+# ---- 開発点数マスタ / 担当キャパ（#41） ----
+
+def seed_dev_point_master(con) -> None:
+    """点数マスタ（作業種別→基準点数）が空なら既定の作業種別を投入（初回のみ・仮値）。"""
+    if con.execute("SELECT COUNT(*) c FROM dev_point_master").fetchone()["c"]:
+        return
+    for work_type, base in DEV_WORK_TYPE_SEED:
+        con.execute(
+            "INSERT OR IGNORE INTO dev_point_master (work_type, base_points) VALUES (?,?)",
+            (work_type, base))
+    con.commit()
+
+
+def get_dev_point_base(con, work_type: str) -> float | None:
+    """作業種別の基準点数を引く（無ければNone）。"""
+    r = con.execute("SELECT base_points FROM dev_point_master WHERE work_type=?",
+                    (work_type or "",)).fetchone()
+    return float(r["base_points"]) if r else None
+
+
+def list_dev_point_master(con) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT id, work_type, base_points FROM dev_point_master ORDER BY base_points, work_type")]
+
+
+def update_dev_point_master(con, id: int, work_type: str, base_points: float) -> None:
+    """既存の作業種別行を id 指定で更新（名称の変更も可）。"""
+    con.execute(
+        "UPDATE dev_point_master SET work_type=?, base_points=?, updated_at=datetime('now') WHERE id=?",
+        (work_type, float(base_points), int(id)))
+    con.commit()
+
+
+def delete_dev_point_master_by_id(con, id: int) -> None:
+    con.execute("DELETE FROM dev_point_master WHERE id=?", (int(id),))
+    con.commit()
+
+
+def dev_work_types(con) -> list[str]:
+    """マスタに登録済みの作業種別一覧（フォームのセレクト用）。"""
+    return [r["work_type"] for r in con.execute(
+        "SELECT work_type FROM dev_point_master ORDER BY base_points, work_type")]
+
+
+def upsert_dev_point_master(con, work_type: str, base_points: float) -> None:
+    con.execute(
+        "INSERT INTO dev_point_master (work_type, base_points, updated_at) "
+        "VALUES (?,?,datetime('now')) "
+        "ON CONFLICT(work_type) DO UPDATE SET "
+        "base_points=excluded.base_points, updated_at=datetime('now')",
+        (work_type, float(base_points)))
+    con.commit()
+
+
+def delete_dev_point_master(con, work_type: str) -> None:
+    con.execute("DELETE FROM dev_point_master WHERE work_type=?", (work_type,))
+    con.commit()
+
+
+def get_owner_capacities(con) -> dict:
+    """{担当名: 週次上限点数} を返す。"""
+    return {r["owner"]: float(r["weekly_max_points"])
+            for r in con.execute("SELECT owner, weekly_max_points FROM dev_owner_capacity")}
+
+
+def set_owner_capacity(con, owner: str, weekly_max_points: float) -> None:
+    con.execute(
+        "INSERT INTO dev_owner_capacity (owner, weekly_max_points, updated_at) "
+        "VALUES (?,?,datetime('now')) "
+        "ON CONFLICT(owner) DO UPDATE SET "
+        "weekly_max_points=excluded.weekly_max_points, updated_at=datetime('now')",
+        (owner, float(weekly_max_points)))
     con.commit()
 
 
