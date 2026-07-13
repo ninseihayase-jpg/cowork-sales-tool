@@ -249,8 +249,22 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <title>Inproc Salesforce</title>
 <style>
  body{{font-family:system-ui,'Segoe UI','Hiragino Kaku Gothic ProN',sans-serif;margin:0;background:#f4f6f9;color:#1d2430}}
- header{{background:#1f2a44;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;position:sticky;top:0;z-index:100}}
- header h1{{font-size:18px;margin:0}} header a{{color:#cdd7ff;text-decoration:none;font-size:14px}}
+ header{{background:#1f2a44;color:#fff;padding:9px 14px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;position:sticky;top:0;z-index:100}}
+ header h1{{font-size:16px;margin:0;white-space:nowrap}} header a{{color:#cdd7ff;text-decoration:none;font-size:13px;white-space:nowrap}}
+ .nav-sep{{width:1px;height:16px;background:rgba(255,255,255,.2);margin:0 -3px}}
+ .nav-menu{{position:relative}}
+ .nav-menu>summary{{list-style:none;cursor:pointer;color:#cdd7ff;font-size:12px;opacity:.75}}
+ .nav-menu>summary::-webkit-details-marker{{display:none}}
+ .nav-menu[open]>summary{{opacity:1}}
+ .nav-menu-panel{{position:absolute;left:0;top:160%;z-index:300;background:#fff;border:1px solid #e6e9f0;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.28);padding:6px;min-width:184px;display:flex;flex-direction:column}}
+ .nav-menu-panel a{{color:#1d2430;font-size:13px;padding:7px 10px;border-radius:6px;white-space:nowrap}}
+ .nav-menu-panel a:hover{{background:#f1f4f9}}
+ .tb-menu{{position:relative;display:inline-block}}
+ .tb-menu>summary{{list-style:none;cursor:pointer}}
+ .tb-menu>summary::-webkit-details-marker{{display:none}}
+ .tb-panel{{position:absolute;right:0;top:112%;z-index:300;background:#fff;border:1px solid #e6e9f0;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.16);padding:6px;min-width:172px;display:flex;flex-direction:column}}
+ .tb-panel a{{color:#1d2430;text-decoration:none;font-size:13px;padding:8px 10px;border-radius:6px;white-space:nowrap}}
+ .tb-panel a:hover{{background:#f1f4f9}}
  main{{max-width:1440px;margin:20px auto;padding:0 16px}}
  .card{{background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
  h2{{font-size:15px;margin:0 0 12px;color:#3a4760}}
@@ -300,17 +314,33 @@ function escH(s) {{
 </head><body>
 <header>
   <h1>Inproc Salesforce</h1>
-  <a href="/">ホーム</a>
-  <a href="/deals">商談一覧</a>
-  <a href="/leads">リード</a>
-  <a href="/hearings" style="opacity:.8;font-size:13px">ヒアリング</a>
-  <a href="/dev-projects" style="opacity:.8;font-size:13px">開発案件</a>
-  <a href="/deal-issues" style="opacity:.8;font-size:13px">論点</a>
-  <a href="/email-draft" style="opacity:.8;font-size:13px">メール</a>
-  <a href="/masters" style="opacity:.65;font-size:12px">⚙ マスタ編集</a>
-  <a href="/backups" style="opacity:.65;font-size:12px">🗄 バックアップ</a>
-  <a href="/reports" style="margin-left:auto;background:rgba(224,178,122,.16);border:1px solid rgba(224,178,122,.4);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#f0d9be;text-decoration:none">📰 週次レポート</a>
-  <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:8px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;color:#e0e8ff;text-decoration:none">Inproc Dashboard ↗</a>
+  <!-- 日常: 商談(ホーム)・開発案件・Delivery(稼働案件スプシ) -->
+  <a href="/deals">商談</a>
+  <a href="/dev-projects">開発</a>
+  <a href="{delivery_url}" target="_blank" style="opacity:.85;font-size:13px">🚚 Delivery ↗</a>
+  <span class="nav-sep"></span>
+  <!-- 次: ヒアリング・論点 -->
+  <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
+  <a href="/deal-issues" style="opacity:.85;font-size:13px">論点</a>
+  <span class="nav-sep"></span>
+  <!-- クライアント管理: リード・アカウント -->
+  <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
+  <a href="/accounts" style="opacity:.85;font-size:13px">アカウント</a>
+  <span class="nav-sep"></span>
+  <!-- 発信 -->
+  <a href="/email-draft" style="opacity:.85;font-size:13px">メール</a>
+  <!-- 管理（まとめ） -->
+  <details class="nav-menu">
+    <summary>⚙ 管理 ▾</summary>
+    <div class="nav-menu-panel">
+      <a href="/sync-health">🔍 同期チェック</a>
+      <a href="/masters">⚙ マスタ編集</a>
+      <a href="/backups">🗄 バックアップ</a>
+    </div>
+  </details>
+  <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 9px;font-size:11px;font-weight:600;color:#e0e8ff;text-decoration:none">InProc dashboard ↗</a>
+  <a href="/dashboard" style="margin-left:6px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 9px;font-size:11px;font-weight:600;color:#cdd7ff;text-decoration:none">📊 SFA dashboard</a>
+  <a href="/reports" style="margin-left:6px;background:rgba(224,178,122,.16);border:1px solid rgba(224,178,122,.4);border-radius:6px;padding:4px 9px;font-size:11px;font-weight:600;color:#f0d9be;text-decoration:none">📰 週次レポート</a>
 </header>
 <main>{flash}{body}</main></body></html>"""
 
@@ -421,7 +451,13 @@ _TOOL_MODAL_HTML = (
 
 def render(body: str, flash: str = "") -> bytes:
     flash_html = f'<div class="flash">{html.escape(flash)}</div>' if flash else ""
-    return PAGE.format(body=body + _CLOSE_MODAL_HTML + _TOOL_MODAL_HTML, flash=flash_html).encode("utf-8")
+    _sid = os.environ.get("SALES_SHEET_ID", "")
+    delivery_url = f"https://docs.google.com/spreadsheets/d/{_sid}/edit" if _sid else "#"
+    return PAGE.format(
+        body=body + _CLOSE_MODAL_HTML + _TOOL_MODAL_HTML,
+        flash=flash_html,
+        delivery_url=delivery_url,
+    ).encode("utf-8")
 
 
 # ── 週次レポートのアーカイブ（読み物サイト） ─────────────────────────────────
@@ -1238,20 +1274,19 @@ def email_draft_page(con, *, status_filter=None, q=None) -> str:
 # ── ダッシュボード ──────────────────────────────────────────────────────────────
 
 def dashboard_page(con) -> str:
+    """SFA内部の俯瞰ダッシュボード。数値サマリ（アカウント/リード/商談）＋直近5日間の次回MS。"""
     deals = sfa_db.list_deals(con, status="open")
     accounts = sfa_db.list_accounts(con)
     leads = sfa_db.list_leads(con)
-    sheet_id = os.environ.get("SALES_SHEET_ID", "")
-    sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit" if sheet_id else "#"
     hisho_url = os.environ.get("THEME_API_URL", "https://hisho-ohxe.onrender.com").rstrip("/") + "/dashboard"
 
-    # 当日〜1週間以内に次回MSがある商談
+    # 当日〜5日以内に次回MSがある商談
     today_str = date.today().isoformat()
-    week_later_str = (date.today() + timedelta(days=7)).isoformat()
+    horizon_str = (date.today() + timedelta(days=5)).isoformat()
     recent_deals = sorted(
         [d for d in deals
          if d.get("next_milestone_date")
-         and today_str <= d["next_milestone_date"] <= week_later_str],
+         and today_str <= d["next_milestone_date"] <= horizon_str],
         key=lambda d: d["next_milestone_date"],
     )
     recent_rows = ""
@@ -1270,71 +1305,31 @@ def dashboard_page(con) -> str:
             f'<td>{ms}</td></tr>'
         )
 
+    def _stat(icon, label, n, href):
+        return (f'<div class="dash-card"><div class="icon">{icon}</div><h3>{label}</h3>'
+                f'<div class="count">{n}</div>'
+                f'<div class="actions"><a class="btn sec" href="{href}">一覧</a></div></div>')
+
     return f"""
-    <div class="dash-grid">
-      <div class="dash-card">
-        <div class="icon">🎯</div>
-        <h3>リード</h3>
-        <p class="desc">展示会・SNS・初回接触など、<br>まだ関係が薄い相手の接触記録。<br><span style="color:#2f6fed;font-size:11px">紹介・既存顧客は商談から直接追加</span></p>
-        <div class="count">{len(leads)}</div>
-        <div class="actions">
-          <a class="btn sec" href="/leads">一覧</a>
-          <a class="btn" href="/leads/new">＋追加</a>
-        </div>
-      </div>
-      <div class="dash-card">
-        <div class="icon">💼</div>
-        <h3>商談</h3>
-        <p class="desc">Sales案件の進捗管理。<br><span style="color:#2f6fed;font-size:11px">紹介・既存顧客はここから直接追加。<br>リードからの商談化はリード画面から。</span></p>
-        <div class="count">{len(deals)}</div>
-        <div class="actions">
-          <a class="btn sec" href="/deals">一覧</a>
-          <a class="btn" href="/deal/new">＋追加</a>
-        </div>
-      </div>
-      <div class="dash-card">
-        <div class="icon">📝</div>
-        <h3>活動履歴</h3>
-        <p class="desc">面談・電話・メール等の記録。<br>商談の現状メモ・次回MSも同時更新できます。</p>
-        <div class="count" style="font-size:18px;padding-top:6px">商談を<br>選んで記録</div>
-        <div class="actions" style="margin-top:10px">
-          <a class="btn" href="/activity/new">＋活動を追加</a>
-        </div>
-      </div>
-      <div class="dash-card">
-        <div class="icon">🏢</div>
-        <h3>アカウント</h3>
-        <p class="desc">取引先企業。基本はリード追加時に自動作成されます。<br>手動追加は既存企業との取引開始時のみ。</p>
-        <div class="count">{len(accounts)}</div>
-        <div class="actions">
-          <a class="btn sec" href="/accounts">一覧</a>
-          <a class="btn sec" href="/account/new">＋手動追加</a>
-        </div>
-      </div>
-      <div class="dash-card">
-        <div class="icon">🚚</div>
-        <h3>Delivery案件</h3>
-        <p class="desc">稼働中・完了済のDelivery案件はスプシで管理。<br>編集後はsync_cli.pyでテーマDBへ反映。</p>
-        <div class="count" style="font-size:14px;color:#5b21b6;padding-top:4px">スプシで管理</div>
-        <div class="actions" style="margin-top:10px">
-          <a class="btn ext" href="{sheet_url}" target="_blank">スプシを開く ↗</a>
-        </div>
+    <div class="card">
+      <h2 style="margin-top:0">ダッシュボード</h2>
+      <div class="dash-grid">
+        {_stat("🏢", "アカウント", len(accounts), "/accounts")}
+        {_stat("🎯", "リード", len(leads), "/leads")}
+        {_stat("💼", "商談（進行中）", len(deals), "/deals")}
       </div>
     </div>
     <div class="card">
-      <h2>進行中の商談（直近1週間）</h2>
+      <h2>直近5日間の次回MS</h2>
       <table>
         <tr><th>アカウント</th><th>案件名</th><th>ステージ</th><th>次回MS</th></tr>
-        {recent_rows or '<tr><td colspan=4 class=muted>今週1週間以内に次回MSがある商談はありません</td></tr>'}
+        {recent_rows or '<tr><td colspan=4 class=muted>直近5日以内に次回MSがある商談はありません</td></tr>'}
       </table>
-        <p style="margin-top:10px">
+      <p style="margin-top:10px">
         <a class="btn sec" href="/deals">すべての商談を見る</a>
         <a class="btn sec" href="/weekly-numbers" style="margin-left:8px">📊 週次レポート数字</a>
         <a class="btn ext" href="{hisho_url}" target="_blank" style="margin-left:8px">Inproc Dashboard ↗</a>
       </p>
-    </div>
-    <div style="text-align:right;margin-top:-10px;margin-bottom:6px">
-      <a class="btn sec" href="/masters" style="font-size:12px;padding:5px 10px;opacity:0.7">⚙ 入力マスタの編集</a>
     </div>"""
 
 
@@ -1871,15 +1866,25 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     return f"""
     <div class="card"><h2 style="display:flex;justify-content:space-between;align-items:center">
       <span>商談 ({len(deals)})</span>
-      <span style="display:flex;gap:8px;flex-wrap:wrap">
+      <span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         {sync_fail_btn}
         {sync_btn}
-        <a class="btn sec" href="/sync-health">🔍 同期チェック</a>
-        <a class="btn sec" href="/data-tagging">🏷 データ整備</a>
-        <a class="btn sec" href="/deals/import">CSV取込</a>
-        <a class="btn sec" href="/dev-projects/new">＋新規開発案件</a>
-        <a class="btn sec" href="/hearing/new">＋新規ヒアリング</a>
-        <a class="btn sec" href="/deal-issue/new">＋新規論点</a>
+        <details class="tb-menu">
+          <summary class="btn sec">＋ 新規 ▾</summary>
+          <div class="tb-panel">
+            <a href="/dev-projects/new">＋ 開発案件</a>
+            <a href="/hearing/new">＋ ヒアリング</a>
+            <a href="/deal-issue/new">＋ 論点</a>
+          </div>
+        </details>
+        <details class="tb-menu">
+          <summary class="btn sec">取込・整備 ▾</summary>
+          <div class="tb-panel">
+            <a href="/deals/import">📥 CSV取込</a>
+            <a href="/data-tagging">🏷 データ整備</a>
+            <a href="/sync-health">🔍 同期チェック</a>
+          </div>
+        </details>
         <a class="btn" href="/deal/new">＋商談追加</a>
       </span>
     </h2>
@@ -5967,6 +5972,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         """).fetchall()
                         self._send_cors_json(json.dumps([dict(r) for r in rows], ensure_ascii=False, default=str).encode())
                 elif path == "/":
+                    # ホーム=商談一覧に統合（#38）。ダッシュボードは /dashboard へ。
+                    qs = self._qs()
+                    def _qs1(k): return (qs.get(k, [None])[0] or None)
+                    _d = _qs1("date")
+                    if _d:
+                        try:
+                            date.fromisoformat(_d)
+                        except ValueError:
+                            _d = None
+                    self._send(render(deals_page(
+                        con, tab=_qs1("tab") or "active", owner=_qs1("owner"),
+                        status_filter=_qs1("status"), stage_filter=_qs1("stage"), date=_d,
+                    )))
+                elif path == "/dashboard":
                     self._send(render(dashboard_page(con)))
                 # ── メールパターン ──
                 elif path == "/email-patterns":
