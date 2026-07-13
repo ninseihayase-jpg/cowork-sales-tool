@@ -342,6 +342,26 @@ _CLOSE_MODAL_HTML = (
     '}'
     'function closeCloseModal(){document.getElementById("closeModal").style.display="none";}'
     'document.addEventListener("keydown",function(e){if(e.key==="Escape")closeCloseModal();});'
+    # 全ページ共通のインライン更新（商談一覧の各タブで共有）
+    'function updateDealField(id,field,value){'
+    ' return fetch("/deal/"+id+"/field",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},'
+    ' body:"field="+encodeURIComponent(field)+"&value="+encodeURIComponent(value)})'
+    ' .then(function(r){return r.json();}).then(function(d){if(!d.ok)alert("更新エラー: "+(d.error||""));return d;})'
+    ' .catch(function(){alert("通信エラー");});'
+    '}'
+    'function updateDevProjectField(id,field,value){'
+    ' return fetch("/dev-project/"+id+"/field",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},'
+    ' body:"field="+encodeURIComponent(field)+"&value="+encodeURIComponent(value)})'
+    ' .then(function(r){return r.json();}).then(function(d){if(!d.ok)alert("更新エラー");return d;})'
+    ' .catch(function(){alert("通信エラー");});'
+    '}'
+    # 事業種別L1変更時はL2の選択肢が変わるため、保存後にリロードして再描画（シンプル・確実）
+    'function updateDealL1(id,l1){updateDealField(id,"business_type_l1",l1).then(function(){location.reload();});}'
+    'function filterDealsByAccount(){'
+    ' var i=document.getElementById("accSearchInput"); if(!i)return; var q=(i.value||"").toLowerCase();'
+    ' document.querySelectorAll("tr[data-account]").forEach(function(tr){'
+    '  tr.style.display=tr.getAttribute("data-account").indexOf(q)>=0?"":"none";});'
+    '}'
     '</script>'
 )
 
@@ -1233,6 +1253,92 @@ def activity_deal_picker(con) -> str:
 
 # ── 既存ページ（商談・アカウント）─────────────────────────────────────────────
 
+def _udeal_sel(deal_id, field, values, current, *, sel_id=None, cascade_l1=False):
+    """商談一覧の共通インライン編集セレクト。cascade_l1=Trueなら事業種別L1(保存後リロード)。"""
+    opts = "".join(
+        f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
+        for v in values)
+    id_attr = f' id="{sel_id}"' if sel_id else ""
+    if cascade_l1:
+        onchange = f'updateDealL1({deal_id}, this.value)'
+    else:
+        onchange = f"updateDealField({deal_id}, '{field}', this.value)"
+    return (f'<select{id_attr} onchange="{onchange}" style="font-size:11px;padding:1px 2px;max-width:96px">'
+            f'<option value=""></option>{opts}</select>')
+
+
+def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = False) -> str:
+    """商談一覧の共通テーブル（全タブ同一の14列・全インライン編集・全行クローズ）を返す。
+    bulk=Trueで先頭に一括選択チェックボックス列を出す（呼び出し側が<form>で包む）。"""
+    stages = sfa_db.get_master_list(con, "deal_stages")
+    owners = sfa_db.get_master_list(con, "owners")
+    l1_list = sfa_db.get_master_list(con, "business_type_l1")
+    # ツール表示用に、開発案件を商談ごとにまとめる（1クエリ）
+    dev_by_deal: dict = {}
+    for dp in sfa_db.list_dev_projects(con):
+        dev_by_deal.setdefault(dp.get("deal_id"), []).append(dp)
+
+    cb_th = ('<th class="sticky" style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択"'
+             ' onchange="var v=this.checked;document.querySelectorAll(\'[name=ids]\').forEach(function(c){c.checked=v;});">'
+             '</th>') if bulk else ""
+    _th_total = _sticky_th("提案総額<br><span style='font-size:10px;color:#8893a8'>(万円)</span>")
+    header = (
+        f'<tr>{cb_th}{_sticky_th("#")}{_sticky_th("アカウント")}{_sticky_th("案件名")}{_sticky_th("ステージ")}'
+        f'{_sticky_th("主担当")}{_sticky_th("サブ担当")}{_sticky_th("種別L1")}{_sticky_th("種別L2")}'
+        f'{_sticky_th("予算")}{_th_total}'
+        f'{_sticky_th("次回MS日")}{_sticky_th("次回MS")}{_sticky_th("ツール")}{_sticky_th("クローズ")}</tr>'
+    )
+
+    rows = []
+    for d in deals:
+        did = d["id"]
+        l2_values = sfa_db.BUSINESS_TYPE_L2_BY_L1.get(d.get("business_type_l1") or "", [])
+        inp_budget = (f'<input type="text" value="{_esc(d.get("client_budget") or "")}"'
+                      f' onchange="updateDealField({did}, \'client_budget\', this.value)"'
+                      f' style="font-size:11px;padding:1px 2px;width:72px">')
+        inp_total = (f'<input type="number" step="0.1" value="{_esc(d.get("value_lumpsum") or "")}"'
+                     f' onchange="updateDealField({did}, \'value_lumpsum\', this.value)"'
+                     f' style="font-size:11px;padding:1px 2px;width:72px">')
+        inp_ms_date = (f'<input type="date" value="{_esc(d.get("next_milestone_date"))}"'
+                       f' onchange="updateDealField({did}, \'next_milestone_date\', this.value)"'
+                       f' style="font-size:11px;padding:1px 2px">')
+        inp_ms_label = (f'<input type="text" value="{_esc(d.get("next_milestone_label"))}"'
+                        f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
+                        f' style="font-size:11px;padding:1px 2px;width:130px"><br>'
+                        + _udeal_sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES, d.get("next_milestone_type") or ""))
+        tool_btns = " ".join(
+            _tool_link_btn(dp.get("tool_url"), tool_id=dp.get("tool_login_id"), tool_password=dp.get("tool_login_pass"))
+            for dp in dev_by_deal.get(did, [])
+            if dp.get("tool_url") and dp.get("status") != "中止"
+        ) or "—"
+        if d.get("status") != "closed":
+            close_btn = (f'<button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;'
+                         f'background:#c53030;color:#fff;border-color:#c53030"'
+                         f' onclick="openCloseModal({did}, \'{return_to_url}\')">クローズ</button>')
+        else:
+            close_btn = '<span class="muted">クローズ済</span>'
+        cb_td = (f'<td style="width:28px"><input type="checkbox" name="ids" value="{did}"></td>') if bulk else ""
+        rows.append(
+            f'<tr class="deal-row" data-account="{_esc((d.get("account_name") or "").lower())}">'
+            f'{cb_td}'
+            f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}</td>'
+            f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a></td>'
+            f'<td><input type="text" value="{_esc(d.get("deal_name"))}" '
+            f'onchange="updateDealField({did}, \'deal_name\', this.value)" style="font-size:12px;padding:2px 4px;width:150px"></td>'
+            f'<td>{_udeal_sel(did, "stage", stages, d.get("stage") or "")}</td>'
+            f'<td>{_udeal_sel(did, "owner", owners, d.get("owner") or "")}</td>'
+            f'<td>{_udeal_sel(did, "sub_owner", owners, d.get("sub_owner") or "")}</td>'
+            f'<td>{_udeal_sel(did, "business_type_l1", l1_list, d.get("business_type_l1") or "", cascade_l1=True)}</td>'
+            f'<td>{_udeal_sel(did, "business_type_l2", l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{did}")}</td>'
+            f'<td>{inp_budget}</td><td>{inp_total}</td>'
+            f'<td>{inp_ms_date}</td><td>{inp_ms_label}</td>'
+            f'<td>{tool_btns}</td><td>{close_btn}</td></tr>'
+        )
+    body = "".join(rows) or f'<tr><td colspan={16 if bulk else 15} class=muted>商談がありません。</td></tr>'
+    return (f'<div style="overflow:auto;max-height:70vh"><table style="min-width:1400px">'
+            f'{header}{body}</table></div>')
+
+
 def home_page(con, owner: str | None = None, status_filter: str | None = None,
               stage_filter: str | None = None) -> str:
     # デフォルトでclosedを除外（NULLもopenとして扱う）。"all"は全件表示
@@ -1262,18 +1368,6 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <button class="btn sec" type="submit">絞り込み</button>
       <a class="btn sec" href="/deals">リセット</a>
     </form>"""
-    def _deal_inline_select(deal_id, field, values, current, sel_id=None):
-        opts = "".join(
-            f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
-            for v in values
-        )
-        id_attr = f' id="{sel_id}"' if sel_id else ""
-        onchange = (f"updateDealL1({deal_id}, this.value)" if field == "business_type_l1"
-                    else f"updateDealField({deal_id}, '{field}', this.value)")
-        return (f'<select{id_attr} onchange="{onchange}"'
-                f' style="font-size:11px;padding:1px 2px;max-width:90px">'
-                f'<option value=""></option>{opts}</select>')
-
     # バルク編集用JSオブジェクト構築
     deal_bulk_options = {
         "stage": [["", "（変更なし）"]] + [[s, s] for s in stages],
@@ -1283,63 +1377,6 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     }
     deal_bulk_options_json = json.dumps(deal_bulk_options, ensure_ascii=False)
 
-    # N+1回避: 全開発案件を1クエリで取得しdeal_idでグルーピング（商談ごとの都度クエリを廃止）
-    _dev_by_deal: dict = {}
-    for _dp in sfa_db.list_dev_projects(con):
-        _dev_by_deal.setdefault(_dp["deal_id"], []).append(_dp)
-
-    rows = []
-    for d in deals:
-        val = d.get("value_lumpsum") or d.get("value_recurring") or ""
-        linked = "🔗" if d.get("theme_id") else "—"
-        ms = ""
-        if d.get("next_milestone_date"):
-            ms = _esc(d["next_milestone_date"])
-            if d.get("next_milestone_label"):
-                ms += f'<br><span class="muted" style="font-size:.85em">{_esc(d["next_milestone_label"])}</span>'
-        elif d.get("next_milestone_label"):
-            ms = f'<span class="muted">{_esc(d["next_milestone_label"])}</span>'
-        sel_stage = _deal_inline_select(d["id"], "stage", stages, d.get("stage") or "")
-        sel_owner = _deal_inline_select(d["id"], "owner", owners, d.get("owner") or "")
-        sel_sub_owner = _deal_inline_select(d["id"], "sub_owner", owners, d.get("sub_owner") or "")
-        sel_biz_l1 = _deal_inline_select(d["id"], "business_type_l1", biz_l1_list, d.get("business_type_l1") or "")
-        biz_l2_values = sfa_db.BUSINESS_TYPE_L2_BY_L1.get(d.get("business_type_l1") or "", [])
-        sel_biz_l2 = _deal_inline_select(d["id"], "business_type_l2", biz_l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{d['id']}")
-        did = d["id"]
-        cb_val = d.get("client_budget") or ""
-        vl_val = d.get("value_lumpsum") or ""
-        inp_client_budget = (
-            f'<input type="text" value="{_esc(cb_val)}"'
-            f' onchange="updateDealField({did}, \'client_budget\', this.value)"'
-            f' style="font-size:11px;padding:1px 2px;width:75px">'
-        )
-        inp_value_lumpsum = (
-            f'<input type="number" step="0.1" value="{_esc(vl_val)}"'
-            f' onchange="updateDealField({did}, \'value_lumpsum\', this.value)"'
-            f' style="font-size:11px;padding:1px 2px;width:75px">'
-        )
-        tool_btns = " ".join(
-            _tool_link_btn(dp.get("tool_url"), tool_id=dp.get("tool_login_id"), tool_password=dp.get("tool_login_pass"))
-            for dp in _dev_by_deal.get(d["id"], [])
-            if dp.get("tool_url") and dp.get("status") != "中止"
-        ) or "—"
-        rows.append(
-            f'<tr class="deal-row" data-account="{_esc((d.get("account_name") or "").lower())}">'
-            f'<td style="width:32px"><input type="checkbox" name="ids" value="{d["id"]}"></td>'
-            f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{d["id"]}</td>'
-            f'<td><a href="/deal/{d["id"]}">{_esc(d.get("account_name"))}</a></td>'
-            f'<td>{_esc(d.get("deal_name"))}</td>'
-            f'<td>{sel_stage}</td>'
-            f'<td>{sel_owner}</td>'
-            f'<td>{sel_sub_owner}</td>'
-            f'<td>{sel_biz_l1}</td>'
-            f'<td>{sel_biz_l2}</td>'
-            f'<td>{inp_client_budget}</td>'
-            f'<td>{inp_value_lumpsum}</td>'
-            f'<td>{ms}</td>'
-            f'<td>{tool_btns}</td>'
-            f'<td class="right" title="テーマDB連携">{linked}</td></tr>'
-        )
     accounts = sfa_db.list_accounts(con)
     acc_rows = "".join(
         f'<tr><td><a href="/account/{a["id"]}">{_esc(a["name"])}</a></td>'
@@ -1383,17 +1420,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         oninput="filterDealsByAccount()" style="max-width:280px">
     </div>
     <form id="deal_bulk_form" method="post" action="/deals/bulk_edit">
-    <div style="overflow:auto;max-height:70vh">
-    <table style="min-width:900px"><tr>
-      <th class="sticky" style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択"
-            onchange="document.querySelectorAll('#deal_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-      {_sticky_th('#')}{_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('ステージ')}{_sticky_th('主担当')}{_sticky_th('サブ担当')}
-      {_sticky_th('種別L1')}{_sticky_th('種別L2')}
-      {_sticky_th('予算<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span>')}
-      {_sticky_th('提案総額<br><span style="font-size:10px;font-weight:normal;color:#8893a8">(万円)</span>')}
-      {_sticky_th('次回MS')}{_sticky_th('ツール')}<th class="right sticky">連携</th></tr>
-    {''.join(rows) or '<tr><td colspan=14 class=muted>商談がありません。</td></tr>'}
-    </table></div>
+    {unified_deal_table(con, deals, return_to_url="/deals", bulk=True)}
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
       <select id="deal_bulk_field" name="field" style="width:auto">
         <option value="stage">ステージ</option>
@@ -1499,119 +1526,17 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     )
     return_to_url = f"/deals?{_return_qs}"
 
-    deals = sfa_db.list_deals_by_date(con, target_date, owner=owner)
-    today_str = date.today().isoformat()
-
-    def _sel(row_id, field, values, current, fn):
-        opts = "".join(
-            f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
-            for v in values
-        )
-        return (f'<select onchange="{fn}({row_id}, \'{field}\', this.value)"'
-                f' style="font-size:11px;padding:1px 2px;max-width:90px">'
-                f'<option value=""></option>{opts}</select>')
-
-    rows = []
-    for d in deals:
-        did = d["id"]
-        sel_stage = _sel(did, "stage", stages, d.get("stage") or "", "updateDealField")
-        sel_owner = _sel(did, "owner", owners, d.get("owner") or "", "updateDealField")
-        sel_sub_owner = _sel(did, "sub_owner", owners, d.get("sub_owner") or "", "updateDealField")
-        inp_deal_name = (
-            f'<input type="text" value="{_esc(d.get("deal_name"))}"'
-            f' onchange="updateDealField({did}, \'deal_name\', this.value)"'
-            f' style="font-size:12px;padding:2px 4px;width:160px">'
-        )
-        ms_overdue = bool(d.get("next_milestone_date")) and d["next_milestone_date"] <= today_str
-        ms_date_style = "background:#fee2e2;border-color:#ef4444;color:#991b1b" if ms_overdue else ""
-        ms_title = ' title="次回MSが未更新です（本日以前）。更新してください"' if ms_overdue else ""
-        inp_ms_date = (
-            f'<input type="date" value="{_esc(d.get("next_milestone_date"))}"'
-            f' onchange="updateDealField({did}, \'next_milestone_date\', this.value)"'
-            f' style="font-size:12px;padding:2px 4px;{ms_date_style}"{ms_title}>'
-        )
-        inp_ms_label = (
-            f'<input type="text" value="{_esc(d.get("next_milestone_label"))}"'
-            f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
-            f' style="font-size:12px;padding:2px 4px;width:140px">'
-            f'<br>' + _sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES,
-                           d.get("next_milestone_type") or "", "updateDealField")
-        )
-        dps = [p for p in sfa_db.list_dev_projects(con, deal_id=did) if p.get("status") != "中止"]
-        if dps:
-            dev_owner_html = "".join(
-                f'<div style="margin-bottom:2px">{_sel(p["id"], "dev_owner", owners, p.get("dev_owner") or "", "updateDevProjectField")}</div>'
-                for p in dps
-            )
-            dev_link_html = "".join(
-                f'<div style="margin-bottom:2px"><a href="/dev-project/{p["id"]}/edit?return_to={urllib.parse.quote(return_to_url, safe="")}">{_esc(p.get("theme"))}</a></div>'
-                for p in dps
-            )
-            tool_html = "".join(
-                f'<div style="margin-bottom:2px">'
-                f'{_tool_link_btn(p.get("tool_url"), tool_id=p.get("tool_login_id"), tool_password=p.get("tool_login_pass")) or "—"}'
-                f'</div>'
-                for p in dps
-            )
-        else:
-            dev_owner_html = '<span class="muted">—</span>'
-            dev_link_html = (
-                f'<a class="muted" href="/dev-projects/new?deal_id={did}'
-                f'&return_to={urllib.parse.quote(return_to_url, safe="")}">＋追加</a>'
-            )
-            tool_html = "—"
-        if d.get("status") != "closed":
-            revert_html = (
-                f'<button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;'
-                f'background:#f59e0b22;color:#92400e;border-color:#f59e0b44"'
-                f' onclick="openCloseModal({did}, \'{return_to_url}\')">クローズ</button>'
-            )
-        else:
-            revert_html = '<span class="muted">—</span>'
-        rows.append(
-            f'<tr>'
-            f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}</td>'
-            f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a></td>'
-            f'<td>{inp_deal_name}</td>'
-            f'<td>{sel_stage}</td>'
-            f'<td>{sel_owner}</td>'
-            f'<td>{sel_sub_owner}</td>'
-            f'<td>{inp_ms_date}</td>'
-            f'<td>{inp_ms_label}</td>'
-            f'<td>{dev_owner_html}</td>'
-            f'<td>{dev_link_html}</td>'
-            f'<td>{tool_html}</td>'
-            f'<td>{revert_html}</td>'
-            f'</tr>'
-        )
+    deals = [dict(d) for d in sfa_db.list_deals_by_date(con, target_date, owner=owner)]
 
     return f"""
     <div class="card"><h2>特定日の商談（{_esc(target_date)}） {len(deals)}件</h2>
     {form}
-    <div style="overflow:auto;max-height:70vh">
-    <table style="min-width:1200px"><tr>
-      {_sticky_th('#')}{_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('ステージ')}
-      {_sticky_th('主担当')}{_sticky_th('サブ担当')}{_sticky_th('次回MS日付')}{_sticky_th('次回MS')}
-      {_sticky_th('開発担当')}{_sticky_th('開発案件名')}{_sticky_th('ツール')}{_sticky_th('操作')}</tr>
-    {''.join(rows) or '<tr><td colspan=12 class=muted>該当する商談がありません。</td></tr>'}
-    </table></div>
+    <div style="margin-bottom:10px">
+      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
+        oninput="filterDealsByAccount()" style="max-width:280px">
     </div>
-    <script>
-    function updateDealField(id, field, value) {{
-      fetch('/deal/' + id + '/field', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
-        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
-      }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー'); }}).catch(() => alert('通信エラー'));
-    }}
-    function updateDevProjectField(id, field, value) {{
-      fetch('/dev-project/' + id + '/field', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
-        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
-      }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー'); }}).catch(() => alert('通信エラー'));
-    }}
-    </script>
+    {unified_deal_table(con, deals, return_to_url=return_to_url, bulk=False)}
+    </div>
     """
 
 
@@ -1631,137 +1556,19 @@ def overdue_deals_page(con, *, owner: str | None = None) -> str:
       <input type="hidden" name="tab" value="overdue">
       <select name="owner">{owner_opts}</select>
       <button class="btn sec" type="submit">担当で絞り込み</button>
-      <input type="text" id="ovAccSearch" placeholder="🔍 アカウント名で検索..."
-        oninput="filterOverdueByAccount()" style="max-width:260px;margin-left:8px">
+      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
+        oninput="filterDealsByAccount()" style="max-width:260px;margin-left:8px">
     </form>"""
     _return_qs = urllib.parse.urlencode({"tab": "overdue", "owner": owner or ""})
     return_to_url = f"/deals?{_return_qs}"
 
-    deals = sfa_db.list_overdue_deals(con, owner=owner)
-    today_str = date.today().isoformat()
-
-    def _sel(row_id, field, values, current, fn):
-        opts = "".join(
-            f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
-            for v in values
-        )
-        return (f'<select onchange="{fn}({row_id}, \'{field}\', this.value)"'
-                f' style="font-size:11px;padding:1px 2px;max-width:90px">'
-                f'<option value=""></option>{opts}</select>')
-
-    rows = []
-    for d in deals:
-        did = d["id"]
-        sel_stage = _sel(did, "stage", stages, d.get("stage") or "", "updateDealField")
-        sel_owner = _sel(did, "owner", owners, d.get("owner") or "", "updateDealField")
-        sel_sub_owner = _sel(did, "sub_owner", owners, d.get("sub_owner") or "", "updateDealField")
-        inp_deal_name = (
-            f'<input type="text" value="{_esc(d.get("deal_name"))}"'
-            f' onchange="updateDealField({did}, \'deal_name\', this.value)"'
-            f' style="font-size:12px;padding:2px 4px;width:160px">'
-        )
-        # このタブは定義上すべて超過なので、次回MS日は赤で強調する
-        ms_date_style = "background:#fee2e2;border-color:#ef4444;color:#991b1b"
-        inp_ms_date = (
-            f'<input type="date" value="{_esc(d.get("next_milestone_date"))}"'
-            f' onchange="updateDealField({did}, \'next_milestone_date\', this.value)"'
-            f' style="font-size:12px;padding:2px 4px;{ms_date_style}"'
-            f' title="次回MSが本日以前です。更新してください">'
-        )
-        inp_ms_label = (
-            f'<input type="text" value="{_esc(d.get("next_milestone_label"))}"'
-            f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
-            f' style="font-size:12px;padding:2px 4px;width:140px">'
-            f'<br>' + _sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES,
-                           d.get("next_milestone_type") or "", "updateDealField")
-        )
-        dps = [p for p in sfa_db.list_dev_projects(con, deal_id=did) if p.get("status") != "中止"]
-        if dps:
-            dev_owner_html = "".join(
-                f'<div style="margin-bottom:2px">{_sel(p["id"], "dev_owner", owners, p.get("dev_owner") or "", "updateDevProjectField")}</div>'
-                for p in dps
-            )
-            dev_link_html = "".join(
-                f'<div style="margin-bottom:2px"><a href="/dev-project/{p["id"]}/edit?return_to={urllib.parse.quote(return_to_url, safe="")}">{_esc(p.get("theme"))}</a></div>'
-                for p in dps
-            )
-            tool_html = "".join(
-                f'<div style="margin-bottom:2px">'
-                f'{_tool_link_btn(p.get("tool_url"), tool_id=p.get("tool_login_id"), tool_password=p.get("tool_login_pass")) or "—"}'
-                f'</div>'
-                for p in dps
-            )
-        else:
-            dev_owner_html = '<span class="muted">—</span>'
-            dev_link_html = (
-                f'<a class="muted" href="/dev-projects/new?deal_id={did}'
-                f'&return_to={urllib.parse.quote(return_to_url, safe="")}">＋追加</a>'
-            )
-            tool_html = "—"
-        revert_html = (
-            f'<button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;'
-            f'background:#f59e0b22;color:#92400e;border-color:#f59e0b44"'
-            f' onclick="openCloseModal({did}, \'{return_to_url}\')">クローズ</button>'
-        )
-        _acc = (d.get("account_name") or "")
-        rows.append(
-            f'<tr data-acc="{_esc(_acc.lower())}">'
-            f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}</td>'
-            f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a></td>'
-            f'<td>{inp_deal_name}</td>'
-            f'<td>{sel_stage}</td>'
-            f'<td>{sel_owner}</td>'
-            f'<td>{sel_sub_owner}</td>'
-            f'<td>{inp_ms_date}</td>'
-            f'<td>{inp_ms_label}</td>'
-            f'<td>{dev_owner_html}</td>'
-            f'<td>{dev_link_html}</td>'
-            f'<td>{tool_html}</td>'
-            f'<td>{revert_html}</td>'
-            f'</tr>'
-        )
-
+    deals = [dict(d) for d in sfa_db.list_overdue_deals(con, owner=owner)]
     return f"""
     <div class="card"><h2>MS超過の商談 {len(deals)}件</h2>
-    <p class="muted" style="margin:0 0 10px">次回MS日が本日（{_esc(today_str)}）以前の進行中商談です。遅れている順に並んでいます。</p>
+    <p class="muted" style="margin:0 0 10px">次回MS日が本日以前の進行中商談です。遅れている順に並んでいます。</p>
     {form}
-    <div style="overflow:auto;max-height:70vh">
-    <table style="min-width:1200px"><tr>
-      {_sticky_th('#')}{_sticky_th('アカウント')}{_sticky_th('案件名')}{_sticky_th('ステージ')}
-      {_sticky_th('主担当')}{_sticky_th('サブ担当')}{_sticky_th('次回MS日付')}{_sticky_th('次回MS')}
-      {_sticky_th('開発担当')}{_sticky_th('開発案件名')}{_sticky_th('ツール')}{_sticky_th('操作')}</tr>
-    {''.join(rows) or '<tr><td colspan=12 class=muted>MS超過の商談はありません。</td></tr>'}
-    </table></div>
+    {unified_deal_table(con, deals, return_to_url=return_to_url, bulk=False)}
     </div>
-    <script>
-    function updateDealField(id, field, value) {{
-      fetch('/deal/' + id + '/field', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
-        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
-      }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー'); }}).catch(() => alert('通信エラー'));
-    }}
-    function updateDevProjectField(id, field, value) {{
-      fetch('/dev-project/' + id + '/field', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
-        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
-      }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー'); }}).catch(() => alert('通信エラー'));
-    }}
-    function revertToLead(form) {{
-      if (!confirm('アポ獲得前の状態（リード）に戻します。\\n商談はクローズされます。')) return false;
-      var memo = prompt('リードに戻す理由・メモがあれば入力してください（任意）:', '');
-      if (memo === null) return false;
-      form.memo.value = memo;
-      return true;
-    }}
-    function filterOverdueByAccount() {{
-      var q = (document.getElementById('ovAccSearch').value || '').toLowerCase();
-      document.querySelectorAll('tr[data-acc]').forEach(function(tr) {{
-        tr.style.display = tr.getAttribute('data-acc').indexOf(q) >= 0 ? '' : 'none';
-      }});
-    }}
-    </script>
     """
 
 
