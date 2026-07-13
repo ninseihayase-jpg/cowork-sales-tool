@@ -234,27 +234,27 @@ def test_reports_index_200(server, db_path):
     assert "Inproc Salesforce".encode() not in body  # CRMの共通ナビは出さない
 
 
-def test_reports_article_wraps_fragment_in_reading_shell(server, db_path):
-    """本文fragmentは読み物サイトのガワに包んで配信（CRMのガワは挟まない）。"""
+def test_reports_article_wraps_fragment_in_magazine(server, db_path):
+    """本文fragmentは記事の2カラム・マガジン設計(アプリ側CSS＋メタ由来の見出し)に包んで配信。"""
     _seed_report(db_path)
     code, resp = _get(server + "/reports/2026-07-12", headers=_auth_header())
     assert code == 200
     body = resp.read()
     assert _REP_MARKER.encode() in body
-    assert 'class="rmast"'.encode() in body          # 読み物サイトのヘッダー
-    assert b"openToolModal" not in body               # CRMの共通モーダルは無い
-    assert "Inproc Salesforce".encode() not in body   # CRMの共通ナビは無い
+    assert 'class="mast"'.encode() in body             # アプリが付ける号見出し
+    assert "展示会が終わって、最初の一週間".encode() in body  # メタ(title)由来の見出し
+    assert b"openToolModal" not in body                # CRMの共通モーダルは無い
+    assert "Inproc Salesforce".encode() not in body    # CRMの共通ナビは無い
 
 
 def test_reports_legacy_fulldoc_served_raw(server, db_path):
-    """旧形式（<!doctype>を含む単体HTML本文）は後方互換でそのまま配信する。"""
-    _seed_report(db_path, slug="2025-01-01",
-                 body=f"<!doctype html><html><body>{_REP_MARKER}</body></html>")
+    """旧形式（<!doctype>始まりの単体HTML本文）は後方互換でそのまま配信する。"""
+    doc = f"<!doctype html><html><body>{_REP_MARKER}</body></html>"
+    _seed_report(db_path, slug="2025-01-01", body=doc)
     code, resp = _get(server + "/reports/2025-01-01", headers=_auth_header())
     assert code == 200
     body = resp.read()
-    assert _REP_MARKER.encode() in body
-    assert 'class="rmast"'.encode() not in body  # ガワを足さず生のまま返す
+    assert body == doc.encode()  # ガワを足さず生のまま返す
 
 
 def test_reports_unknown_slug_redirects_to_index(server, db_path):

@@ -627,32 +627,101 @@ def reports_index_page(con) -> str:
     return _reports_doc(featured + back, page_title="InProc 営業レポート")
 
 
+# 記事(号)の読み物デザイン。artifactの2カラム・マガジン設計をアプリ側が保持し、
+# 本文は「中身のfragment(.cols)」だけをDBに置く。フォント等の調整はここ(コード)で完結し、
+# 貼り直し不要にする。フォントはフル幅ブラウザでも読みやすいサイズに調整済み。
+_REPORT_ARTICLE_CSS = """
+:root{
+  --paper:#f5f2ea; --ink:#2a2622; --muted:#7a7266; --faint:#a99f8f;
+  --ai:#9c7b4f; --rule:#e6dfd1; --tint:#efeade;
+  --serif:"Hiragino Mincho ProN","Yu Mincho","YuMincho","Noto Serif JP",serif;
+  --sans:system-ui,-apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic","Meiryo",sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root{--paper:#211d18; --ink:#ece5d8; --muted:#aba08e; --faint:#867c6c;
+    --ai:#c6a578; --rule:#372f26; --tint:#282219;}
+}
+:root[data-theme="light"]{--paper:#f5f2ea; --ink:#2a2622; --muted:#7a7266; --faint:#a99f8f;
+  --ai:#9c7b4f; --rule:#e6dfd1; --tint:#efeade;}
+:root[data-theme="dark"]{--paper:#211d18; --ink:#ece5d8; --muted:#aba08e; --faint:#867c6c;
+  --ai:#c6a578; --rule:#372f26; --tint:#282219;}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);
+  font-size:clamp(.9rem,.87rem + .18vw,1.0rem);line-height:1.95;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  font-feature-settings:"palt" 1;letter-spacing:.02em;}
+.wrap{max-width:60rem;margin:0 auto;padding:clamp(1.8rem,4vw,3.2rem) clamp(1.2rem,4vw,2.4rem) 4rem;}
+.backlink{font-family:var(--sans);font-size:.76rem;color:var(--faint);text-decoration:none;letter-spacing:.05em;}
+.backlink:hover{color:var(--ai);}
+.mast{border-bottom:1px solid var(--rule);padding-bottom:1.3rem;margin:1rem 0 2.4rem;}
+.date{font-family:var(--sans);font-size:.72rem;letter-spacing:.2em;color:var(--faint);font-variant-numeric:tabular-nums;}
+h1{font-size:clamp(1.35rem,2.6vw,1.75rem);font-weight:700;line-height:1.5;margin:.7rem 0 0;text-wrap:balance;letter-spacing:.03em;}
+.cols{display:grid;grid-template-columns:13rem 1fr;gap:clamp(1.8rem,3.5vw,3rem);}
+.rail{align-self:start;position:sticky;top:2rem;}
+@media (max-width:52rem){
+  .cols{grid-template-columns:1fr;gap:0}
+  .rail{position:static;top:auto;margin-bottom:2.4rem;padding-bottom:2rem;border-bottom:1px solid var(--rule);}
+  .toc{display:none}
+}
+.toc{margin-bottom:1.8rem;}
+.toc a{display:block;font-family:var(--serif);font-size:.86rem;color:var(--muted);text-decoration:none;
+  padding:.3rem 0;letter-spacing:.03em;border-left:2px solid transparent;padding-left:.8rem;transition:color .15s,border-color .15s;}
+.toc a:hover,.toc a:focus-visible{color:var(--ink);border-left-color:var(--ai);outline:none;}
+.rail-h{display:flex;align-items:center;gap:.6rem;font-family:var(--serif);font-size:.9rem;font-weight:700;letter-spacing:.06em;color:var(--ink);margin:0 0 .9rem;}
+.rail-h::before{content:"";width:1.2rem;height:2px;background:var(--ai);border-radius:2px;flex:none;}
+.rail-h.sub{margin-top:1.6rem;}
+.stat{padding:.5rem 0;border-bottom:1px solid var(--rule);}
+.stat:first-of-type{border-top:1px solid var(--rule);}
+.stat .k{font-family:var(--sans);font-size:.72rem;color:var(--muted);letter-spacing:.03em;}
+.stat .v{font-family:var(--sans);font-weight:700;font-size:1.08rem;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1.4;margin-top:.1rem;}
+.stat .v .u{font-size:.68rem;font-weight:500;color:var(--muted);margin-left:.15em;}
+.stat .v .ar{color:var(--muted);margin:0 .22em;}
+.fn{display:flex;justify-content:space-between;font-family:var(--sans);font-size:.78rem;color:var(--muted);padding:.3rem 0;font-variant-numeric:tabular-nums;}
+.fn b{color:var(--ink);font-weight:700;}
+.article{min-width:0;max-width:40rem;}
+.lead{font-size:clamp(1.02rem,1.4vw,1.16rem);line-height:2.0;margin:0 0 2.6rem;text-wrap:pretty;}
+.lead .q{color:var(--ink);font-weight:600;}
+.article p{margin:0 0 1.3rem;text-wrap:pretty;}
+.label{display:flex;align-items:center;gap:.7rem;font-family:var(--serif);font-size:.98rem;font-weight:700;letter-spacing:.08em;color:var(--ink);margin:3rem 0 1.3rem;scroll-margin-top:1.5rem;}
+.label::before{content:"";width:1.5rem;height:2px;background:var(--ai);border-radius:2px;flex:none;}
+#lead{scroll-margin-top:1.5rem;}
+.story{margin:0 0 1.8rem;}
+.story .who{font-family:var(--serif);font-size:.88rem;color:var(--muted);letter-spacing:.02em;margin-bottom:.5rem;}
+.story h3{font-size:1.05rem;font-weight:700;margin:0 0 .5rem;letter-spacing:.02em;}
+.note{background:var(--tint);border-radius:10px;padding:.9rem 1.1rem;color:var(--muted);font-family:var(--sans);font-size:.86rem;line-height:1.9;margin:0 0 1.3rem;}
+.sign{margin-top:2.6rem;padding-top:1.4rem;border-top:1px solid var(--rule);font-size:.98rem;color:var(--muted);text-align:right;letter-spacing:.14em;}
+@media (prefers-reduced-motion:no-preference){
+  .article>*{animation:arise .7s cubic-bezier(.2,.6,.2,1) both}
+  .article>*:nth-child(2){animation-delay:.05s}
+  .article>*:nth-child(3){animation-delay:.1s}
+  @keyframes arise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+}
+"""
+
+
 def report_article_html(rep: dict) -> str:
     """1号の読み物ページ。旧・単体HTML本文は後方互換でそのまま返し、
-    新形式（本文fragment）は読み物サイトのガワに包んで返す。"""
+    新形式（本文fragment=.cols の中身）はアプリ側の2カラム・マガジン設計に包んで返す。
+    デザイン・フォント調整は _REPORT_ARTICLE_CSS 側で完結する（本文の貼り直し不要）。"""
     body = rep.get("html_body") or ""
-    low = body.lower()
-    if "<!doctype" in low or "<html" in low:
+    low = body.lstrip().lower()
+    if low.startswith("<!doctype") or low.startswith("<html"):
         return body  # 旧形式（単体HTML）はそのまま配信
     date = _esc(rep.get("report_date") or "")
     title = _esc(rep.get("title") or rep.get("slug"))
-    lead = rep.get("lead") or ""
-    lead_html = f'<p class="lead">{_esc(lead)}</p>' if lead else ""
-    bg = _cover_bg(rep.get("cover_image") or "")
-    if bg:
-        hero = (f'<div class="hero has-cover" style="{bg}"><div class="hero-inner">'
-                f'<div class="kicker">{date}</div><h1 class="art-title">{title}</h1></div></div>')
-    else:
-        hero = (f'<div class="hero plain"><div class="kicker">{date}</div>'
-                f'<h1 class="art-title">{title}</h1></div>')
-    inner = f"""
-    <p style="margin:-.6rem 0 1.2rem"><a class="readmore" href="/reports">← レポート一覧</a></p>
-    {hero}
-    <article class="art">
-      {lead_html}
-      {body}
-    </article>"""
-    return _reports_doc(inner, page_title=f"{title}｜InProc 営業レポート")
+    return (
+        '<!doctype html><html lang="ja"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>{title}｜InProc 営業レポート</title>'
+        f'<style>{_REPORT_ARTICLE_CSS}</style></head><body>'
+        '<div class="wrap">'
+        '<a class="backlink" href="/reports">← レポート一覧</a>'
+        f'<header class="mast"><p class="date">営業週次レポート ・ {date}</p><h1>{title}</h1></header>'
+        f'{body}'
+        '</div></body></html>'
+    )
 
 
 def reports_manage_page(con, slug: str = "") -> str:
