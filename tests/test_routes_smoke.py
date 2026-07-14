@@ -309,10 +309,14 @@ def test_dev_points_auto_recalc_and_master(server, db_path):
     val = lambda: con2.execute("SELECT dev_points FROM dev_projects WHERE id=?", (dp,)).fetchone()[0]
     assert val() == 16.6
     assert _get(server + "/dev-point-master", headers=_auth_header())[0] == 200
-    # インライン作業種別変更(新規フロントエンド base3) → 3×本番1.6×難1.3=6.2 に再計算
+    # インライン作業種別変更(新規フロントエンド base3) → (3+0)×本番1.6×難1.3=6.2 に再計算
     assert _post(server + f"/dev-project/{dp}/field", {"field": "work_type", "value": "新規フロントエンド"},
                  headers=_auth_header())[0] == 200
     assert val() == 6.2
+    # バックエンド有り → 加点+2: (3+2)×1.6×1.3=10.4
+    assert _post(server + f"/dev-project/{dp}/field", {"field": "has_backend", "value": "有り"},
+                 headers=_auth_header())[0] == 200
+    assert val() == 10.4
     # 点数の手動上書き
     _post(server + f"/dev-project/{dp}/field", {"field": "dev_points", "value": "7.5"},
           headers=_auth_header())

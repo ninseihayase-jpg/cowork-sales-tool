@@ -78,6 +78,7 @@ DEV_AUDIENCES = ["社外向け", "社内向け", "研究"]  # 提供先。研究
 DEV_PRICINGS = ["無償", "有償"]                    # 課金（分類ディメンション・点数計算には未使用）
 DEV_DIFFICULTY_COEF = {"易": 0.8, "中": 1.0, "難": 1.3}     # 難易度係数
 DEV_STAGE_COEF = {"プロト": 1.0, "PoC": 1.3, "本番": 1.6}   # 既存分類=係数（仮値・後で調整）
+DEV_BACKEND_BONUS = {"有り": 2, "無し": 0}                   # バックエンド加点（係数を掛ける前に基準点数へ加算）
 # 作業種別の初期シード（仮値。マスタ画面で付け直す前提）
 DEV_WORK_TYPE_SEED = [
     ("既存デモ+input改変", 1),
@@ -89,15 +90,16 @@ DEV_WORK_TYPE_SEED = [
 ]
 
 
-def compute_dev_points(con, *, work_type, stage, difficulty) -> float | None:
-    """作業種別の基準点数 × 既存分類係数(プロト/PoC/本番) × 難易度係数。マスタ未登録ならNone。
-    係数は dev_coefficient（管理画面で編集可）を優先し、無ければ定数の既定値を使う。"""
+def compute_dev_points(con, *, work_type, stage, difficulty, has_backend=None) -> float | None:
+    """点数 = (作業種別の基準点数 ＋ バックエンド加点) × 既存分類係数(プロト/PoC/本番) × 難易度係数。
+    マスタ未登録ならNone。係数・加点は dev_coefficient（管理画面で編集可）を優先し、無ければ定数の既定値。"""
     base = get_dev_point_base(con, work_type or "")
     if base is None:
         return None
     coefs = get_dev_coefs(con)
+    bonus = coefs["backend"].get(has_backend or "", 0.0)
     coef = coefs["stage"].get(stage or "", 1.0) * coefs["difficulty"].get(difficulty or "", 1.0)
-    return round(base * coef, 1)
+    return round((base + bonus) * coef, 1)
 
 # 社内論点管理
 DEAL_ISSUE_STATUSES = ["議論中", "議論済み", "取り消し"]
@@ -1447,7 +1449,7 @@ def upsert_dev_project(con, *, id=None, commit: bool = True, **fields) -> int:
     if data.get("dev_points") in (None, ""):
         _pts = compute_dev_points(
             con, work_type=data.get("work_type"), stage=data.get("stage"),
-            difficulty=data.get("difficulty"))
+            difficulty=data.get("difficulty"), has_backend=data.get("has_backend"))
         data["dev_points"] = _pts
     else:
         try:
@@ -1560,12 +1562,16 @@ def seed_dev_coefficients(con) -> None:
     for k, v in DEV_DIFFICULTY_COEF.items():
         con.execute("INSERT OR IGNORE INTO dev_coefficient (coef_type, coef_key, coef_value) "
                     "VALUES ('difficulty',?,?)", (k, v))
+    for k, v in DEV_BACKEND_BONUS.items():
+        con.execute("INSERT OR IGNORE INTO dev_coefficient (coef_type, coef_key, coef_value) "
+                    "VALUES ('backend',?,?)", (k, v))
     con.commit()
 
 
 def get_dev_coefs(con) -> dict:
-    """{'stage': {key:val}, 'difficulty': {key:val}} を返す。DB値を定数の既定に上書き。"""
-    coefs = {"stage": dict(DEV_STAGE_COEF), "difficulty": dict(DEV_DIFFICULTY_COEF)}
+    """{'stage':{k:v}, 'difficulty':{k:v}, 'backend':{k:加点}} を返す。DB値を定数の既定に上書き。"""
+    coefs = {"stage": dict(DEV_STAGE_COEF), "difficulty": dict(DEV_DIFFICULTY_COEF),
+             "backend": dict(DEV_BACKEND_BONUS)}
     for r in con.execute("SELECT coef_type, coef_key, coef_value FROM dev_coefficient"):
         if r["coef_type"] in coefs:
             coefs[r["coef_type"]][r["coef_key"]] = float(r["coef_value"])

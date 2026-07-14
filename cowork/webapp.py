@@ -274,6 +274,9 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  tr:hover td{{background:#fafbfd}}
  /* 縦スクロール時に見出しを固定表示する共通クラス（旧: 各thへの直書きstyleを置換） */
  th.sticky{{position:sticky;top:0;background:#fff;z-index:2}}
+ /* 開発案件一覧: 左側カラム(テーマ〜商談)を横スクロールでも固定表示 */
+ #dpTable td.frz{{position:sticky;background:#fff;z-index:3;box-shadow:1px 0 0 #e6e9f0}}
+ #dpTable th.frz{{position:sticky;top:0;background:#fff;z-index:5;box-shadow:1px 0 0 #e6e9f0}}
  .stage{{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;background:#e8edf7;color:#33406b;white-space:nowrap}}
  .tool-link-wrap{{position:relative;display:inline-block}}
  .tool-link-cred{{display:none;position:absolute;top:100%;left:0;z-index:20;background:#fff;
@@ -2827,16 +2830,20 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
                 f'<option value=""></option>{opts}</select>')
 
     rows = "".join(
-        f'<tr><td style="width:28px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
-        f'<td style="max-width:320px"><a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
+        f'<tr><td class="frz" style="left:0;width:28px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
+        f'<td class="frz" style="left:28px;width:240px;max-width:240px;white-space:normal;word-break:break-word">'
+        f'<a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
         f'<div class="muted" style="font-size:11px;white-space:normal;word-break:break-word">{_esc(p.get("theme_detail") or "")}</div></td>'
-        f'<td style="max-width:190px;white-space:normal;word-break:break-word"><a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
+        f'<td class="frz" style="left:268px;width:150px;max-width:150px;white-space:normal;word-break:break-word">'
+        f'<a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
         f'<div class="muted">{_esc(p.get("deal_name"))}</div>'
         f'<div style="font-size:11px;margin-top:2px">{_hearing_link(p["deal_id"])}</div></td>'
         f'<td>{_dsel(p["id"], "stage", sfa_db.DEV_PROJECT_STAGES, p.get("stage") or "")}</td>'
         f'<td>{_dsel(p["id"], "dev_audience", sfa_db.DEV_AUDIENCES, p.get("dev_audience") or "")}</td>'
         f'<td>{_dsel(p["id"], "work_type", _dp_worktypes, p.get("work_type") or "")}</td>'
         f'<td>{_dsel(p["id"], "difficulty", sfa_db.DEV_DIFFICULTIES, p.get("difficulty") or "")}</td>'
+        f'<td>{_dsel(p["id"], "has_backend", sfa_db.DEV_HAS_BACKEND, p.get("has_backend") or "")}</td>'
+        f'<td>{_dsel(p["id"], "pricing", sfa_db.DEV_PRICINGS, p.get("pricing") or "")}</td>'
         f'<td>{_dsel(p["id"], "status", sfa_db.DEV_PROJECT_STATUSES, p.get("status") or "")}</td>'
         f'<td>{_dsel(p["id"], "order_potential", sfa_db.DEV_ORDER_POTENTIALS, p.get("order_potential") or "")}</td>'
         f'<td style="text-align:right;font-variant-numeric:tabular-nums" title="自動計算（作業種別×分類×難易度）">'
@@ -2849,7 +2856,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         f'onsubmit="return confirm(\'削除しますか？\')">'
         f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
         for p in projects
-    ) or '<tr><td colspan=15 class=muted>開発案件がまだありません</td></tr>'
+    ) or '<tr><td colspan=17 class=muted>開発案件がまだありません</td></tr>'
     _pts_total = sum(float(p.get("dev_points") or 0) for p in projects)
     return f"""
     <div class="card">
@@ -2860,11 +2867,11 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
       {filter_row}
       <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
-      <table style="min-width:1580px">
-        <tr><th class="sticky" style="width:28px"><input type="checkbox" id="dp_chk_all" title="全選択"
+      <table id="dpTable" style="min-width:1740px">
+        <tr><th class="sticky frz" style="left:0;width:28px"><input type="checkbox" id="dp_chk_all" title="全選択"
               onchange="document.querySelectorAll('#dp_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            {_sticky_th('開発テーマ', '280px')}{_sticky_th('商談', '170px')}{_sticky_th('ステージ', '86px')}{_sticky_th('提供先', '90px')}{_sticky_th('作業種別', '146px')}{_sticky_th('難易度', '78px')}{_sticky_th('状況', '86px')}{_sticky_th('受注余地', '78px')}{_sticky_th('点数', '56px')}
-            {_sticky_th('開発担当', '90px')}{_sticky_th('営業担当', '90px')}{_sticky_th('期限', '90px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
+            <th class="sticky frz" style="left:28px;width:240px">開発テーマ</th><th class="sticky frz" style="left:268px;width:150px">商談</th>{_sticky_th('ステージ', '84px')}{_sticky_th('提供先', '88px')}{_sticky_th('作業種別', '144px')}{_sticky_th('難易度', '76px')}{_sticky_th('BE有無', '80px')}{_sticky_th('課金', '78px')}{_sticky_th('状況', '84px')}{_sticky_th('受注余地', '76px')}{_sticky_th('点数', '56px')}
+            {_sticky_th('開発担当', '88px')}{_sticky_th('営業担当', '88px')}{_sticky_th('期限', '88px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
         {rows}
       </table>
       </div>
@@ -2941,6 +2948,11 @@ def dev_point_master_page(con) -> str:
         f'<input type="number" step="0.1" name="cf__difficulty__{_esc(k)}" '
         f'value="{coefs["difficulty"].get(k, 1):g}" style="width:64px;margin-left:4px"></div>'
         for k in sfa_db.DEV_DIFFICULTIES)
+    backend_bonus_inputs = "".join(
+        f'<div style="display:inline-block;margin-right:14px">{_esc(k)} ＋'
+        f'<input type="number" step="0.1" name="cf__backend__{_esc(k)}" '
+        f'value="{coefs["backend"].get(k, 0):g}" style="width:64px;margin-left:4px"> 点</div>'
+        for k in sfa_db.DEV_HAS_BACKEND)
     mrows = ""
     for m in master:
         mid = m["id"]
@@ -2969,12 +2981,13 @@ def dev_point_master_page(con) -> str:
         </table>
         <button class="btn" type="submit" style="margin-top:12px">点数マスタを保存</button>
       </form>
-      <h2 style="margin:28px 0 4px">係数（既存分類・難易度）</h2>
-      <p class="muted" style="margin:0 0 12px">作業種別の基準点数に掛かる倍率。</p>
+      <h2 style="margin:28px 0 4px">加点・係数</h2>
+      <p class="muted" style="margin:0 0 12px">点数 = <b>(作業種別の基準点数 ＋ バックエンド加点) × ステージ係数 × 難易度係数</b>。</p>
       <form method="post" action="/dev-point-master/coef">
-        <div style="margin-bottom:8px"><b style="font-size:13px">既存分類（ステージ）</b><br>{stage_coef_inputs}</div>
-        <div><b style="font-size:13px">難易度</b><br>{diff_coef_inputs}</div>
-        <button class="btn" type="submit" style="margin-top:12px">係数を保存</button>
+        <div style="margin-bottom:8px"><b style="font-size:13px">バックエンド加点（基準点数に加算）</b><br>{backend_bonus_inputs}</div>
+        <div style="margin-bottom:8px"><b style="font-size:13px">既存分類（ステージ）係数</b><br>{stage_coef_inputs}</div>
+        <div><b style="font-size:13px">難易度係数</b><br>{diff_coef_inputs}</div>
+        <button class="btn" type="submit" style="margin-top:12px">加点・係数を保存</button>
       </form>
       <h2 style="margin:28px 0 4px">開発担当の週次キャパ</h2>
       <p class="muted" style="margin:0 0 12px">週次上限点数（<b>約20点 ≒ 1 FTE</b>）。負荷率＝その週の割当点数 ÷ この上限（Hishoの点数ダッシュボードで使用）。</p>
@@ -3001,6 +3014,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
     _coefs = sfa_db.get_dev_coefs(con)
     _stage_coef_json = json.dumps(_coefs["stage"], ensure_ascii=False)
     _diff_coef_json = json.dumps(_coefs["difficulty"], ensure_ascii=False)
+    _backend_bonus_json = json.dumps(_coefs["backend"], ensure_ascii=False)
     return_to_field = f'<input type="hidden" name="return_to" value="{_esc(return_to)}">' if return_to else ""
 
     if is_edit:
@@ -3111,7 +3125,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
           <div><label>ステージ</label><select name="stage" id="dpStage" onchange="dpRecalcPoints()">{_opt(sfa_db.DEV_PROJECT_STAGES, p.get('stage'))}</select></div>
           <div><label>課金</label><select name="pricing">{_opt(sfa_db.DEV_PRICINGS, p.get('pricing'))}</select></div>
           <div><label>作業種別（点数の基準）</label><select name="work_type" id="dpWorkType" onchange="dpRecalcPoints()">{_opt(sfa_db.dev_work_types(con), p.get('work_type'))}</select></div>
-          <div><label>バックエンド有無</label><select name="has_backend">{_opt(sfa_db.DEV_HAS_BACKEND, p.get('has_backend'))}</select></div>
+          <div><label>バックエンド有無</label><select name="has_backend" id="dpBackend" onchange="dpRecalcPoints()">{_opt(sfa_db.DEV_HAS_BACKEND, p.get('has_backend'))}</select></div>
           <div><label>解像度</label><select name="resolution" id="dpResolution" onchange="dpRecalcPotential()">{_opt(sfa_db.DEV_RESOLUTIONS, p.get('resolution'))}</select></div>
           <div><label>実現難易度</label><select name="difficulty" id="dpDifficulty" onchange="dpRecalcPotential();dpRecalcPoints()">{_opt(sfa_db.DEV_DIFFICULTIES, p.get('difficulty'))}</select></div>
           <div><label>予算確認</label><select name="budget_confirmed" id="dpBudget" onchange="dpRecalcPotential()">{_opt(sfa_db.DEV_BUDGET_CONFIRMED, p.get('budget_confirmed'))}</select></div>
@@ -3165,14 +3179,17 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
     var DP_BASE = {_pt_base_json};
     var DP_STAGE_COEF = {_stage_coef_json};
     var DP_DIFF_COEF = {_diff_coef_json};
+    var DP_BACKEND_BONUS = {_backend_bonus_json};
     function dpRecalcPoints() {{
       var wt = document.getElementById('dpWorkType').value;
       var st = document.getElementById('dpStage').value;
       var df = document.getElementById('dpDifficulty').value;
+      var be = document.getElementById('dpBackend').value;
       var el = document.getElementById('dpPoints');
       var base = DP_BASE[wt];
       if (base == null) {{ el.textContent = '—'; return; }}
-      var p = Math.round(base * (DP_STAGE_COEF[st] || 1) * (DP_DIFF_COEF[df] || 1) * 10) / 10;
+      var bonus = DP_BACKEND_BONUS[be] || 0;
+      var p = Math.round((base + bonus) * (DP_STAGE_COEF[st] || 1) * (DP_DIFF_COEF[df] || 1) * 10) / 10;
       el.textContent = p + '点（≈' + (p / 20).toFixed(1) + 'FTE）';
     }}
     (function() {{
@@ -6583,7 +6600,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         if not k.startswith("cf__") or not str(v).strip():
                             continue
                         _p = k[4:].split("__", 1)
-                        if len(_p) != 2 or _p[0] not in ("stage", "difficulty"):
+                        if len(_p) != 2 or _p[0] not in ("stage", "difficulty", "backend"):
                             continue
                         try:
                             sfa_db.set_dev_coef(con, _p[0], _p[1], float(v))
@@ -7224,11 +7241,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 elif path.startswith("/dev-project/") and path.endswith("/field"):
                     _DEV_PROJECT_ALLOWED_FIELDS = {
-                        "dev_owner", "stage", "status", "order_potential",
-                        "dev_audience", "work_type", "pricing", "difficulty", "dev_points",
+                        "dev_owner", "stage", "status", "order_potential", "dev_audience",
+                        "work_type", "pricing", "difficulty", "has_backend", "dev_points",
                     }
-                    # 変わったら点数を再計算する対象（作業種別×分類係数×難易度係数）
-                    _RECALC_FIELDS = {"work_type", "stage", "difficulty"}
+                    # 変わったら点数を再計算する対象（(基準+BE加点)×分類係数×難易度係数）
+                    _RECALC_FIELDS = {"work_type", "stage", "difficulty", "has_backend"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -7250,6 +7267,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _err = "不正な課金値"
                         elif field == "difficulty" and value and value not in sfa_db.DEV_DIFFICULTIES:
                             _err = "不正な難易度値"
+                        elif field == "has_backend" and value and value not in sfa_db.DEV_HAS_BACKEND:
+                            _err = "不正なバックエンド値"
                         if not _err and field == "dev_points":
                             # 点数の手動上書き（数値のみ）
                             try:
@@ -7272,7 +7291,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 if _row:
                                     _pts = sfa_db.compute_dev_points(
                                         con, work_type=_row.get("work_type"), stage=_row.get("stage"),
-                                        difficulty=_row.get("difficulty"))
+                                        difficulty=_row.get("difficulty"), has_backend=_row.get("has_backend"))
                                     if _pts is not None:
                                         con.execute("UPDATE dev_projects SET dev_points=? WHERE id=?", (_pts, pid))
                             con.commit()
