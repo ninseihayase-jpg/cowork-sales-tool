@@ -2762,7 +2762,7 @@ def deal_form(con, deal=None) -> str:
 
 # ── 開発案件（商談に紐づく開発テーマ管理）───────────────────────────────────────
 
-def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: str | None = None,
+def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = None, sales_owner: str | None = None,
                             status: str | None = None, stage: str | None = None,
                             order_potential: str | None = None, deadline_week: str | None = None) -> str:
     owners = sfa_db.get_master_list(con, "owners")
@@ -2783,7 +2783,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
 
     # 自己修復バックフィル: 分類は入っているのに点数が未設定の行を、開いた時点で自動計算して埋める。
     # （点数付きの行は据え置き＝経験曲線の「過去は据え置き」を尊重。埋めるのは未設定のみ）
-    _bf = False
+    _backfilled = []
     for p in projects:
         if p.get("dev_points") is None and p.get("work_type"):
             _pts = sfa_db.compute_dev_points(
@@ -2792,9 +2792,17 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
             if _pts is not None:
                 con.execute("UPDATE dev_projects SET dev_points=? WHERE id=?", (_pts, p["id"]))
                 p["dev_points"] = _pts
-                _bf = True
-    if _bf:
+                _backfilled.append(p["id"])
+    if _backfilled:
         con.commit()
+        # 埋めた点数はHishoへ自動同期（手動再同期を不要にする）
+        if theme_client is not None:
+            for _bid in _backfilled:
+                try:
+                    dev_project_link.sync_dev_project(theme_client, con, _bid)
+                    sfa_db.clear_sync_failure(con, "dev_project", _bid)
+                except Exception as _exc:  # noqa: BLE001
+                    sfa_db.record_sync_failure(con, "dev_project", _bid, str(_exc))
 
     def _fopt(values, current):
         return '<option value="">全て</option>' + "".join(
@@ -6441,6 +6449,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con, dev_owner=qs1("dev_owner"), sales_owner=qs1("sales_owner"),
                         status=qs1("status"), stage=qs1("stage"),
                         order_potential=qs1("order_potential"), deadline_week=qs1("deadline_week"),
+                        theme_client=theme_client,
                     )))
                 elif path == "/dev-projects/new":
                     qs = self._qs()
