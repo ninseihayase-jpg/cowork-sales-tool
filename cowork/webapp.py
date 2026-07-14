@@ -2872,7 +2872,8 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
                 f'<option value=""></option>{opts}</select>')
 
     rows = "".join(
-        f'<tr><td class="frz" style="left:0;width:34px;min-width:34px;max-width:34px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
+        f'<tr data-search="{_esc(" ".join(str(p.get(k) or "") for k in ("account_name", "deal_name", "theme", "theme_detail", "dev_owner", "sales_owner")).lower())}">'
+        f'<td class="frz" style="left:0;width:34px;min-width:34px;max-width:34px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
         f'<td class="frz" style="left:34px;width:240px;min-width:240px;max-width:240px;white-space:normal;word-break:break-word">'
         f'<a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
         f'<div class="muted dp-detail" title="{_esc(p.get("theme_detail") or "")}" '
@@ -2914,6 +2915,11 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
         </span>
       </h2>
       {filter_row}
+      <div style="margin:4px 0 10px">
+        <input type="text" id="dpSearch" placeholder="🔍 アカウント・商談・開発テーマ・担当で検索…"
+          oninput="filterDevProjects()" style="width:100%;max-width:420px;padding:7px 10px">
+        <span class="muted" id="dpSearchCount" style="font-size:12px;margin-left:8px"></span>
+      </div>
       <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
       <table id="dpTable" style="min-width:1740px">
@@ -2969,6 +2975,18 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
       if (!ids.length) {{ alert('削除する開発案件を選択してください。'); return; }}
       if (!confirm(ids.length + '件の開発案件を削除します。この操作は取り消せません。')) return;
       document.getElementById('dp_bulk_form').submit();
+    }}
+    function filterDevProjects() {{
+      var q = (document.getElementById('dpSearch').value || '').toLowerCase().trim();
+      var shown = 0, total = 0;
+      document.querySelectorAll('#dpTable tr[data-search]').forEach(function(tr) {{
+        total++;
+        var hit = !q || tr.getAttribute('data-search').indexOf(q) >= 0;
+        tr.style.display = hit ? '' : 'none';
+        if (hit) shown++;
+      }});
+      var c = document.getElementById('dpSearchCount');
+      if (c) c.textContent = q ? (shown + ' / ' + total + ' 件') : '';
     }}
     function dpRefreshTotal() {{
       var sum = 0;
