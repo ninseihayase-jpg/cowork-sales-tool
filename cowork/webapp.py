@@ -2781,6 +2781,21 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         deadline_from=deadline_from, deadline_to=deadline_to,
     )
 
+    # 自己修復バックフィル: 分類は入っているのに点数が未設定の行を、開いた時点で自動計算して埋める。
+    # （点数付きの行は据え置き＝経験曲線の「過去は据え置き」を尊重。埋めるのは未設定のみ）
+    _bf = False
+    for p in projects:
+        if p.get("dev_points") is None and p.get("work_type"):
+            _pts = sfa_db.compute_dev_points(
+                con, work_type=p.get("work_type"), stage=p.get("stage"),
+                difficulty=p.get("difficulty"), has_backend=p.get("has_backend"))
+            if _pts is not None:
+                con.execute("UPDATE dev_projects SET dev_points=? WHERE id=?", (_pts, p["id"]))
+                p["dev_points"] = _pts
+                _bf = True
+    if _bf:
+        con.commit()
+
     def _fopt(values, current):
         return '<option value="">全て</option>' + "".join(
             f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
