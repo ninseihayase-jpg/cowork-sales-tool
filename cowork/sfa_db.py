@@ -194,8 +194,9 @@ def add_business_days(d: date, n: int) -> date:
 
 
 def dev_period_days(stage: str | None, has_backend: str | None, difficulty: str | None) -> int:
-    """開発期間（営業日）。"""
-    mult = 4 if stage == "PoC" else 2 if stage == "本番" else 1
+    """開発期間（営業日）。ステージ倍率: プロト×1 / PoC×2 / 本番×2。
+    ※Hisho側 dashboard.html devPeriodDays() と必ず同一係数に保つこと（INTEGRATION.md (b)）。"""
+    mult = 2 if stage == "PoC" else 2 if stage == "本番" else 1
     days = 2
     if has_backend == "有り":
         days += 3

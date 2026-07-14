@@ -2783,6 +2783,10 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
 
     # 自己修復バックフィル: 分類は入っているのに点数が未設定の行を、開いた時点で自動計算して埋める。
     # （点数付きの行は据え置き＝経験曲線の「過去は据え置き」を尊重。埋めるのは未設定のみ）
+    # あわせて、保存済みの開発開始/終了日が現行の逆算式(dev_period_days)とズレている行は再計算する。
+    # dev_start/end はSFA側では式由来のみ（ユーザー編集不可）で、人手の期間調整はHisho側の
+    # gantt_*_override（devProjectDatesで最優先・当処理では不変）に載るため、再計算は安全。
+    # これにより係数変更や分類変更が既存カードへ自動反映される（手動再同期を不要にする）。
     _backfilled = []
     for p in projects:
         if p.get("dev_points") is None and p.get("work_type"):
@@ -2792,7 +2796,17 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
             if _pts is not None:
                 con.execute("UPDATE dev_projects SET dev_points=? WHERE id=?", (_pts, p["id"]))
                 p["dev_points"] = _pts
-                _backfilled.append(p["id"])
+                if p["id"] not in _backfilled:
+                    _backfilled.append(p["id"])
+        if p.get("deadline"):
+            _ns, _ne = sfa_db.compute_dev_schedule(
+                p.get("deadline"), p.get("stage"), p.get("has_backend"), p.get("difficulty"))
+            if _ns and (_ns != p.get("dev_start_date") or _ne != p.get("dev_end_date")):
+                con.execute("UPDATE dev_projects SET dev_start_date=?, dev_end_date=? WHERE id=?",
+                            (_ns, _ne, p["id"]))
+                p["dev_start_date"], p["dev_end_date"] = _ns, _ne
+                if p["id"] not in _backfilled:
+                    _backfilled.append(p["id"])
     if _backfilled:
         con.commit()
         # 埋めた点数はHishoへ自動同期（手動再同期を不要にする）
