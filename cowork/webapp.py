@@ -2852,7 +2852,8 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
         f'<td>{_dsel(p["id"], "pricing", sfa_db.DEV_PRICINGS, p.get("pricing") or "")}</td>'
         f'<td>{_dsel(p["id"], "status", sfa_db.DEV_PROJECT_STATUSES, p.get("status") or "")}</td>'
         f'<td>{_dsel(p["id"], "order_potential", sfa_db.DEV_ORDER_POTENTIALS, p.get("order_potential") or "")}</td>'
-        f'<td style="text-align:right;font-variant-numeric:tabular-nums" title="自動計算（作業種別×分類×難易度）">'
+        f'<td id="dppts{p["id"]}" data-pts="{p.get("dev_points") if p.get("dev_points") is not None else ""}" '
+        f'style="text-align:right;font-variant-numeric:tabular-nums" title="自動計算（作業種別×分類×難易度）">'
         f'{(p.get("dev_points") if p.get("dev_points") is not None else "—")}</td>'
         f'<td>{_dsel(p["id"], "dev_owner", _dp_owners, p.get("dev_owner") or "")}</td>'
         f'<td>{_esc(p.get("sales_owner"))}{(" / " + _esc(p["sales_sub_owner"])) if p.get("sales_sub_owner") else ""}</td>'
@@ -2867,7 +2868,7 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <span>開発案件一覧（{len(projects)}件）<span class="muted" style="font-size:13px;font-weight:400;margin-left:10px">合計点数 {_pts_total:g}（≈ {_pts_total/20:.1f} FTE・20点≒1人）</span></span>
+        <span>開発案件一覧（{len(projects)}件）<span class="muted" style="font-size:13px;font-weight:400;margin-left:10px">合計点数 <span id="dpPtsTotal">{_pts_total:g}</span>（≈ <span id="dpPtsFte">{_pts_total/20:.1f}</span> FTE・20点≒1人）</span></span>
         <a class="btn" href="/dev-projects/new">＋新規入力</a>
       </h2>
       {filter_row}
@@ -2927,12 +2928,31 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
       if (!confirm(ids.length + '件の開発案件を削除します。この操作は取り消せません。')) return;
       document.getElementById('dp_bulk_form').submit();
     }}
+    function dpRefreshTotal() {{
+      var sum = 0;
+      document.querySelectorAll('#dpTable td[data-pts]').forEach(function(c) {{
+        var v = parseFloat(c.getAttribute('data-pts'));
+        if (!isNaN(v)) sum += v;
+      }});
+      var t = document.getElementById('dpPtsTotal'); if (t) t.textContent = (Math.round(sum * 10) / 10);
+      var fe = document.getElementById('dpPtsFte'); if (fe) fe.textContent = (sum / 20).toFixed(1);
+    }}
     function updateDevProjectField(id, field, value) {{
       fetch('/dev-project/' + id + '/field', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
         body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
-      }}).then(r => r.json()).then(d => {{ if (!d.ok) alert('更新エラー: ' + (d.error || '')); }})
+      }}).then(r => r.json()).then(d => {{
+        if (!d.ok) {{ alert('更新エラー: ' + (d.error || '')); return; }}
+        // 再計算された点数をセルに即反映（サーバが自動計算した値）
+        var cell = document.getElementById('dppts' + id);
+        if (cell && d.dev_points !== undefined) {{
+          var v = d.dev_points;
+          cell.setAttribute('data-pts', (v === null || v === undefined) ? '' : v);
+          cell.textContent = (v === null || v === undefined) ? '—' : v;
+          dpRefreshTotal();
+        }}
+      }})
         .catch(() => alert('通信エラー'));
     }}
     </script>"""
@@ -7309,7 +7329,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 print(f"[dev_project_link] sync_dev_project failed: {_exc}")
                     else:
                         _err = "不正なリクエスト"
-                    _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
+                    if _ok:
+                        # 再計算後の点数を返し、一覧の点数セルを即更新できるようにする
+                        _r2 = con.execute("SELECT dev_points FROM dev_projects WHERE id=?", (pid,)).fetchone()
+                        _dp_val = _r2["dev_points"] if _r2 else None
+                        _resp = json.dumps({"ok": True, "dev_points": _dp_val}).encode("utf-8")
+                    else:
+                        _resp = json.dumps({"ok": False, "error": _err}).encode("utf-8")
                     self._send(_resp, ctype="application/json")
 
                 # ── メールパターン ──
