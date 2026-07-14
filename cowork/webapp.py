@@ -1855,11 +1855,14 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         for s in stages
     )
     # 選択するだけで自動絞り込み（onchangeで即送信・「絞り込み」ボタンは廃止）
+    # フィルタUIは全タブで「サーバ側select群 → 次回MS種別 → 🔍アカウント検索 → リセット」の順で統一。
     filter_row = f"""<form method="get" action="/deals" class="filter-row">
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="status" onchange="this.form.submit()">{status_opts}</select>
       <select name="stage" onchange="this.form.submit()">{stage_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
+      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
+        oninput="filterDealsByAccount()" style="max-width:220px">
       <a class="btn sec" href="/deals">リセット</a>
     </form>"""
     # バルク編集用JSオブジェクト構築
@@ -1919,10 +1922,6 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       </span>
     </h2>
     {filter_row}
-    <div style="margin-bottom:10px">
-      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
-        oninput="filterDealsByAccount()" style="max-width:280px">
-    </div>
     <form id="deal_bulk_form" method="post" action="/deals/bulk_edit">
     {unified_deal_table(con, deals, return_to_url="/deals", bulk=True)}
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
@@ -1985,7 +1984,8 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
 
 
 def deals_page(con, *, tab: str = "active", owner: str | None = None, status_filter: str | None = None,
-               stage_filter: str | None = None, date: str | None = None, ms_type: str | None = None) -> str:
+               stage_filter: str | None = None, date: str | None = None, ms_type: str | None = None,
+               week: str | None = None) -> str:
     """商談一覧をタブ化: 「進行中の商談」(既存home_page)・「特定日の商談」・「MS超過の商談」。"""
     is_by_date = tab == "byDate"
     is_overdue = tab == "overdue"
@@ -1998,51 +1998,83 @@ def deals_page(con, *, tab: str = "active", owner: str | None = None, status_fil
     if is_overdue:
         body = overdue_deals_page(con, owner=owner, ms_type=ms_type)
     elif is_by_date:
-        body = deals_by_date_page(con, target_date=date, owner=owner, ms_type=ms_type)
+        body = deals_by_date_page(con, target_date=date, owner=owner, ms_type=ms_type, week=week)
     else:
         body = home_page(con, owner=owner, status_filter=status_filter, stage_filter=stage_filter, ms_type=ms_type)
     return tab_nav + body
 
 
 def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None = None,
-                       ms_type: str | None = None) -> str:
-    """指定日が次回MSまたは活動履歴にある商談の一覧・その場編集画面。日付未指定時は当日を表示する。"""
-    target_date = target_date or date.today().isoformat()
+                       ms_type: str | None = None, week: str | None = None) -> str:
+    """特定日 または 特定週 に次回MS日付または活動がある商談の一覧・その場編集画面。
+    week(YYYY-Www)が指定されればその週(月〜日)、無ければ日付(既定は当日)で表示する。"""
     owners = sfa_db.get_master_list(con, "owners")
-    stages = sfa_db.get_master_list(con, "deal_stages")
     owner_opts = '<option value="">全担当</option>' + "".join(
         f'<option value="{html.escape(o)}"{" selected" if o == owner else ""}>{html.escape(o)}</option>'
         for o in owners
     )
-    _cur_date_obj = date.fromisoformat(target_date)
-    _prev_date = (_cur_date_obj - timedelta(days=1)).isoformat()
-    _next_date = (_cur_date_obj + timedelta(days=1)).isoformat()
+    # 週モード判定（YYYY-Www）。妥当なら月曜〜日曜を算出。
+    week_mode = False
+    wk_start = wk_end = None
+    if week and "-W" in week:
+        try:
+            _y, _w = week.split("-W")
+            wk_start = date.fromisocalendar(int(_y), int(_w), 1)
+            wk_end = date.fromisocalendar(int(_y), int(_w), 7)
+            week_mode = True
+        except (ValueError, TypeError):
+            week_mode = False
+    target_date = target_date or date.today().isoformat()
+    try:
+        _cur = date.fromisoformat(target_date)
+    except ValueError:
+        _cur = date.today()
+        target_date = _cur.isoformat()
+
     _owner_qs = f"&owner={urllib.parse.quote(owner)}" if owner else ""
     _mstype_qs = f"&ms_type={urllib.parse.quote(ms_type)}" if ms_type else ""
-    # 選択するだけで自動絞り込み（onchangeで即送信・「表示」ボタンは廃止）
+    if week_mode:
+        _prev_href = f"/deals?tab=byDate&week={(wk_start - timedelta(days=7)).strftime('%G-W%V')}{_owner_qs}{_mstype_qs}"
+        _next_href = f"/deals?tab=byDate&week={(wk_start + timedelta(days=7)).strftime('%G-W%V')}{_owner_qs}{_mstype_qs}"
+        _prev_lbl, _next_lbl = "◀ 前週", "翌週 ▶"
+    else:
+        _prev_href = f"/deals?tab=byDate&date={(_cur - timedelta(days=1)).isoformat()}{_owner_qs}{_mstype_qs}"
+        _next_href = f"/deals?tab=byDate&date={(_cur + timedelta(days=1)).isoformat()}{_owner_qs}{_mstype_qs}"
+        _prev_lbl, _next_lbl = "◀ 前日", "翌日 ▶"
+    _date_val = "" if week_mode else target_date
+    _week_val = week if week_mode else ""
+    # 日入力・週入力は片方を選ぶともう片方をクリアして自動送信（選択即反映・「表示」ボタン廃止）
     form = f"""<form method="get" action="/deals" class="filter-row">
       <input type="hidden" name="tab" value="byDate">
-      <a class="btn sec" href="/deals?tab=byDate&date={_prev_date}{_owner_qs}{_mstype_qs}">◀ 前日</a>
-      <input type="date" name="date" value="{_esc(target_date)}" required onchange="this.form.submit()">
-      <a class="btn sec" href="/deals?tab=byDate&date={_next_date}{_owner_qs}{_mstype_qs}">翌日 ▶</a>
+      <a class="btn sec" href="{_prev_href}">{_prev_lbl}</a>
+      <input type="date" name="date" value="{_esc(_date_val)}" title="日で表示"
+        onchange="this.form.week.value='';this.form.submit()">
+      <input type="week" name="week" value="{_esc(_week_val)}" title="週で表示"
+        onchange="this.form.date.value='';this.form.submit()">
+      <a class="btn sec" href="{_next_href}">{_next_lbl}</a>
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
+      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
+        oninput="filterDealsByAccount()" style="max-width:220px">
+      <a class="btn sec" href="/deals?tab=byDate">リセット</a>
     </form>"""
-    _return_qs = urllib.parse.urlencode(
-        {"tab": "byDate", "date": target_date or "", "owner": owner or "", "ms_type": ms_type or ""}
-    )
-    return_to_url = f"/deals?{_return_qs}"
 
-    deals = [dict(d) for d in sfa_db.list_deals_by_date(con, target_date, owner=owner)]
+    if week_mode:
+        deals = [dict(d) for d in sfa_db.list_deals_by_week(
+            con, wk_start.isoformat(), wk_end.isoformat(), owner=owner)]
+        _title = (f"特定週の商談（{wk_start.month}/{wk_start.day}〜{wk_end.month}/{wk_end.day}"
+                  f"・{_esc(week)}）")
+        _ret = {"tab": "byDate", "week": week or "", "owner": owner or "", "ms_type": ms_type or ""}
+    else:
+        deals = [dict(d) for d in sfa_db.list_deals_by_date(con, target_date, owner=owner)]
+        _title = f"特定日の商談（{_esc(target_date)}）"
+        _ret = {"tab": "byDate", "date": target_date or "", "owner": owner or "", "ms_type": ms_type or ""}
     deals = _filter_deals_by_ms_type(deals, ms_type)
+    return_to_url = f"/deals?{urllib.parse.urlencode(_ret)}"
 
     return f"""
-    <div class="card"><h2>特定日の商談（{_esc(target_date)}） {len(deals)}件</h2>
+    <div class="card"><h2>{_title} {len(deals)}件</h2>
     {form}
-    <div style="margin-bottom:10px">
-      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
-        oninput="filterDealsByAccount()" style="max-width:280px">
-    </div>
     {unified_deal_table(con, deals, return_to_url=return_to_url, bulk=False)}
     </div>
     """
@@ -2061,12 +2093,14 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
         for o in owners
     )
     # 選択するだけで自動絞り込み（onchangeで即送信・「担当で絞り込み」ボタンは廃止）
+    # フィルタUIの並びは全タブ統一（サーバ側select群 → 次回MS種別 → 🔍アカウント検索 → リセット）。
     form = f"""<form method="get" action="/deals" class="filter-row">
       <input type="hidden" name="tab" value="overdue">
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
-        oninput="filterDealsByAccount()" style="max-width:260px;margin-left:8px">
+        oninput="filterDealsByAccount()" style="max-width:220px">
+      <a class="btn sec" href="/deals?tab=overdue">リセット</a>
     </form>"""
     _return_qs = urllib.parse.urlencode({"tab": "overdue", "owner": owner or "", "ms_type": ms_type or ""})
     return_to_url = f"/deals?{_return_qs}"
@@ -6228,7 +6262,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(deals_page(
                         con, tab=_qs1("tab") or "active", owner=_qs1("owner"),
                         status_filter=_qs1("status"), stage_filter=_qs1("stage"), date=_d,
-                        ms_type=_qs1("ms_type"),
+                        ms_type=_qs1("ms_type"), week=_qs1("week"),
                     )))
                 elif path == "/dashboard":
                     self._send(render(dashboard_page(con)))
@@ -6439,7 +6473,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(deals_page(
                         con, tab=qs1("tab") or "active", owner=qs1("owner"),
                         status_filter=qs1("status"), stage_filter=qs1("stage"), date=_date_q,
-                        ms_type=qs1("ms_type"),
+                        ms_type=qs1("ms_type"), week=qs1("week"),
                     )))
                 elif path == "/deals/import":
                     self._send(render(deals_import_page(con)))

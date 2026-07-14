@@ -85,6 +85,21 @@ def test_list_overdue_deals(con, acc_id):
     assert [d["deal_name"] for d in sfa_db.list_overdue_deals(con, owner="中島", today="2026-07-13")] == ["超過当日"]
 
 
+def test_list_deals_by_week(con, acc_id):
+    mk = lambda **k: sfa_db.upsert_deal(con, account_id=acc_id, **k)
+    # 2026-W29 = 2026-07-13(月)〜2026-07-19(日)
+    mk(deal_name="週内月", owner="早瀬", next_milestone_date="2026-07-13", status="open")
+    mk(deal_name="週内日", owner="早瀬", next_milestone_date="2026-07-19", status="open")
+    mk(deal_name="週外前", owner="早瀬", next_milestone_date="2026-07-12", status="open")
+    mk(deal_name="週外後", owner="中島", next_milestone_date="2026-07-20", status="open")
+    con.commit()
+    got = {d["deal_name"] for d in sfa_db.list_deals_by_week(con, "2026-07-13", "2026-07-19")}
+    assert got == {"週内月", "週内日"}
+    # 担当フィルタ
+    assert {d["deal_name"] for d in sfa_db.list_deals_by_week(
+        con, "2026-07-13", "2026-07-19", owner="早瀬")} == {"週内月", "週内日"}
+
+
 # ---- 週次スナップショット / 数字パック ----
 
 def test_weekly_snapshot_roundtrip(con):

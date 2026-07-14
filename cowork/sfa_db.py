@@ -894,6 +894,24 @@ def list_deals_by_date(con, date: str, owner: str | None = None) -> list[dict]:
     return [dict(r) for r in con.execute(q, params)]
 
 
+def list_deals_by_week(con, week_start: str, week_end: str, owner: str | None = None) -> list[dict]:
+    """週(week_start〜week_end, 両端含む)に次回MS日付 または 活動実施日 が含まれる商談を返す。"""
+    q = """SELECT DISTINCT d.*, a.name AS account_name, a.industry, a.company_size
+           FROM deals d
+           LEFT JOIN accounts a ON a.id = d.account_id
+           WHERE (d.status IS NULL OR d.status != 'closed')
+                 AND ((d.next_milestone_date BETWEEN ? AND ?)
+                      OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id
+                                 AND act.occurred_on BETWEEN ? AND ?))"""
+    params: list = [week_start, week_end, week_start, week_end]
+    if owner:
+        q += " AND (d.owner = ? OR d.sub_owner = ?)"
+        params.append(owner)
+        params.append(owner)
+    q += " ORDER BY d.next_milestone_date, a.name"
+    return [dict(r) for r in con.execute(q, params)]
+
+
 def list_overdue_deals(con, owner: str | None = None, today: str | None = None) -> list[dict]:
     """次回MSが超過した、または次回MSが未設定の進行中商談を返す（＝要フォロー一覧）。
 
