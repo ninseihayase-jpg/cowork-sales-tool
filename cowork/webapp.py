@@ -2884,7 +2884,12 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>開発案件一覧（{len(projects)}件）<span class="muted" style="font-size:13px;font-weight:400;margin-left:10px">合計点数 <span id="dpPtsTotal">{_pts_total:g}</span>（≈ <span id="dpPtsFte">{_pts_total/20:.1f}</span> FTE・20点≒1人）</span></span>
-        <a class="btn" href="/dev-projects/new">＋新規入力</a>
+        <span style="display:flex;gap:8px">
+          <form method="post" action="/dev-projects/resync-hisho" style="margin:0"
+            onsubmit="return confirm('全開発案件の点数・分類をHishoダッシュボードへ再同期します。よろしいですか？')">
+            <button class="btn sec" type="submit" style="font-size:12px">🔄 Hishoへ再同期</button></form>
+          <a class="btn" href="/dev-projects/new">＋新規入力</a>
+        </span>
       </h2>
       {filter_row}
       <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
@@ -7076,6 +7081,24 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             except Exception as exc:  # noqa: BLE001
                                 print(f"[dev_project_link] delete_dev_project_remote failed: {exc}")
                     self._redirect("/dev-projects")
+
+                elif path == "/dev-projects/resync-hisho":
+                    # 全開発案件をHishoへ再同期（点数・分類を反映。既存はsync漏れがあるため）
+                    if theme_client is None:
+                        self._send(render(dev_projects_list_page(con),
+                                          flash="テーマDB連携が無効です（THEME_API_TOKEN未設定）。"))
+                    else:
+                        _ok = _ng = 0
+                        for _p in sfa_db.list_dev_projects(con):
+                            try:
+                                dev_project_link.sync_dev_project(theme_client, con, _p["id"])
+                                sfa_db.clear_sync_failure(con, "dev_project", _p["id"])
+                                _ok += 1
+                            except Exception as _exc:  # noqa: BLE001
+                                sfa_db.record_sync_failure(con, "dev_project", _p["id"], str(_exc))
+                                _ng += 1
+                        self._send(render(dev_projects_list_page(con),
+                                          flash=f"Hishoへ再同期しました（成功{_ok}件 / 失敗{_ng}件）。"))
 
                 # ── 社内論点 ──
                 elif path == "/deal-issue/new":
