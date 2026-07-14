@@ -251,6 +251,9 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  body{{font-family:system-ui,'Segoe UI','Hiragino Kaku Gothic ProN',sans-serif;margin:0;background:#f4f6f9;color:#1d2430}}
  header{{background:#1f2a44;color:#fff;padding:10px 18px;display:flex;align-items:center;gap:15px;flex-wrap:wrap;position:sticky;top:0;z-index:100}}
  header h1{{font-size:16px;margin:0 4px 0 0;white-space:nowrap}} header a{{color:#cdd7ff;text-decoration:none;font-size:13px;white-space:nowrap}}
+ /* 個別編集/入力フォームの上部固定・保存バー（スクロールしても常に保存できる） */
+ .save-bar{{position:sticky;top:50px;z-index:40;background:#fff;padding:8px 0;margin:0 0 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #e6e9f0}}
+ .save-bar .sb-title{{font-weight:700;font-size:15px;margin-right:auto}}
  .nav-sep{{width:1px;height:16px;background:rgba(255,255,255,.22);margin:0}}
  .nav-menu{{position:relative}}
  .nav-menu>summary{{list-style:none;cursor:pointer;color:#cdd7ff;font-size:12px;opacity:.75}}
@@ -1831,6 +1834,15 @@ def _filter_deals_by_ms_type(deals: list, ms_type: str | None) -> list:
     return deals
 
 
+def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, label: str = "💾 保存") -> str:
+    """個別編集/入力フォーム上部の固定・保存バー。ボタンは form="<id>" で対象フォームを送信する
+    （HTML5のform属性。バー自体は<form>の外にあってよい）。"""
+    t = f'<span class="sb-title">{_esc(title)}</span>' if title else ""
+    cancel = f'<a class="btn sec" href="{_esc(cancel_url)}">キャンセル</a>' if cancel_url else ""
+    return (f'<div class="save-bar">{t}'
+            f'<button class="btn" type="submit" form="{form_id}">{label}</button>{cancel}</div>')
+
+
 def home_page(con, owner: str | None = None, status_filter: str | None = None,
               stage_filter: str | None = None, ms_type: str | None = None) -> str:
     # デフォルトでclosedを除外（NULLもopenとして扱う）。"all"は全件表示
@@ -2260,7 +2272,8 @@ def account_form(con, acc=None) -> str:
     cancel_url = f"/account/{acc['id']}" if acc.get("id") else "/accounts"
     return f"""
     <div class="card"><h2>{'アカウント編集' if acc.get('id') else '新規アカウント'}</h2>
-    <form method="post" action="/account/save">
+    {_save_bar('accForm', cancel_url=cancel_url)}
+    <form id="accForm" method="post" action="/account/save">
       <input type="hidden" name="id" value="{_esc(acc.get('id'))}">
       <label>企業名 *</label><input name="name" required value="{_esc(acc.get('name'))}">
       <div class="grid">
@@ -2737,9 +2750,10 @@ def deal_form(con, deal=None) -> str:
       <span>{'商談編集' if deal.get('id') else '新規商談'}</span>
       {attachments_widget}
     </h2>
+    {_save_bar('dealForm', cancel_url=('/deal/' + str(deal['id']) if deal.get('id') else '/deals'))}
     {top_action_buttons}
     {lead_picker_html}
-    <form method="post" action="/deal/save">
+    <form id="dealForm" method="post" action="/deal/save">
       <input type="hidden" name="id" value="{_esc(deal.get('id'))}">
       <div class="grid">
         <div><label>アカウント{"" if not deal.get("id") else " *"}</label>
@@ -3256,6 +3270,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
           </div>
         </div>
       </div>
+      {_save_bar('dpForm', cancel_url=back_href)}
       {extra_links_html}
       <form method="post" action="{action}" id="dpForm">
         {return_to_field}
@@ -3650,7 +3665,8 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
     <div class="card" style="max-width:700px">
       <p style="margin:0 0 10px"><a class="btn sec" href="{_esc(back_href)}">← 戻る</a></p>
       <h2>{'論点を編集' if is_edit else '論点 新規入力'}</h2>
-      <form method="post" action="{action}">
+      {_save_bar('issueForm', cancel_url=back_href)}
+      <form method="post" action="{action}" id="issueForm">
         {return_to_field}
         <label>商談</label>
         {deal_field_html}
@@ -4640,6 +4656,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
             <strong style="color:#3a4760">テンプレート:</strong> {_esc(template.get('name', ''))}
           </div>
         </div>
+        <button class="btn" type="submit" form="hearing_form" style="white-space:nowrap;align-self:center">💾 保存</button>
         {guide_html}
       </div>
     </div>
@@ -5845,8 +5862,9 @@ def lead_form(con, lead=None) -> str:
     return f"""
     <div class="card">
       <h2>{'リード編集' if lead.get('id') else '新規リード'}</h2>
+      {_save_bar('leadForm', cancel_url=('/leads/' + str(lead['id']) if lead.get('id') else '/leads'))}
       {status_btns}
-      <form method="post" action="/leads/save">
+      <form method="post" action="/leads/save" id="leadForm">
         <input type="hidden" name="id" value="{_esc(lead.get('id'))}">
         <div class="grid">
           <div><label>氏名 *</label>
