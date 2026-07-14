@@ -3006,9 +3006,15 @@ def dev_point_master_page(con) -> str:
                   f'</form></td></tr>')
     cap_rows = ""
     for o in owners:
-        cap_rows += (f'<tr><td>{_esc(o)}</td>'
-                     f'<td><input type="number" step="0.1" name="cap__{_esc(o)}" '
-                     f'value="{caps.get(o, "")}" placeholder="例: 20" style="width:90px"></td></tr>')
+        cp = caps.get(o) or {}
+        _b = cp.get("base") if cp else ""
+        _fr = cp.get("from") or ""
+        _p2 = cp.get("base2") if cp.get("base2") is not None else ""
+        cap_rows += (
+            f'<tr><td>{_esc(o)}</td>'
+            f'<td><input type="number" step="0.1" name="cap__{_esc(o)}__base" value="{_b}" placeholder="例: 20" style="width:80px"></td>'
+            f'<td><input type="date" name="cap__{_esc(o)}__from" value="{_esc(_fr)}" style="width:150px"></td>'
+            f'<td><input type="number" step="0.1" name="cap__{_esc(o)}__p2" value="{_p2}" placeholder="変更後" style="width:80px"></td></tr>')
     return f"""
     <div class="card" style="max-width:760px">
       <p style="margin:0 0 10px"><a href="/dev-projects">← 開発案件一覧</a></p>
@@ -3031,9 +3037,10 @@ def dev_point_master_page(con) -> str:
         <button class="btn" type="submit" style="margin-top:12px">加点・係数を保存</button>
       </form>
       <h2 style="margin:28px 0 4px">開発担当の週次キャパ</h2>
-      <p class="muted" style="margin:0 0 12px">週次上限点数（<b>約20点 ≒ 1 FTE</b>）。負荷率＝その週の割当点数 ÷ この上限（Hishoの点数ダッシュボードで使用）。</p>
+      <p class="muted" style="margin:0 0 12px">週次上限点数（<b>約20点 ≒ 1 FTE</b>）。負荷率＝その週の割当点数 ÷ この上限（Hishoの点数ダッシュボードで使用）。
+        「上限変更週(from)」を入れると、その週以降は「変更後上限」を使います（例: 増員/離任で途中から上限が変わる場合）。</p>
       <form method="post" action="/dev-point-master/capacity">
-        <table><tr><th>担当</th><th>週次上限点数</th></tr>{cap_rows or '<tr><td colspan=2 class=muted>担当マスタ(owners)が空です</td></tr>'}</table>
+        <table><tr><th>担当</th><th>週次上限点数</th><th>上限変更週(from)</th><th>変更後上限点数</th></tr>{cap_rows or '<tr><td colspan=4 class=muted>担当マスタ(owners)が空です</td></tr>'}</table>
         <button class="btn" type="submit" style="margin-top:12px">キャパを保存</button>
       </form>
     </div>"""
@@ -6111,6 +6118,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         ).fetchall()
                         result = {str(row["theme_id"]): row["id"] for row in rows}
                         self._send_cors_json(json.dumps(result, ensure_ascii=False).encode())
+                elif path == "/api/dev_capacity":
+                    # ダッシュボード用: 開発担当の週次キャパ {owner: {base, from, base2}}（#42）
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        self._send_cors_json(json.dumps(sfa_db.get_owner_capacities(con), ensure_ascii=False).encode())
                 elif path == "/api/memo/list_all":
                     # スプシ出力用: 全メモ + deals/accounts JOIN
                     qs = self._qs()
@@ -6649,14 +6664,29 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             continue
                     self._redirect("/dev-point-master")
                 elif path == "/dev-point-master/capacity":
+                    _capin: dict = {}
                     for k, v in f.items():
-                        if not k.startswith("cap__") or not str(v).strip():
+                        if not k.startswith("cap__") or "__" not in k[5:]:
+                            continue
+                        _owner, _sub = k[5:].rsplit("__", 1)
+                        _capin.setdefault(_owner, {})[_sub] = v
+                    for _owner, _d in _capin.items():
+                        _base = (_d.get("base") or "").strip()
+                        if not _base:
                             continue
                         try:
-                            _mp = float(v)
+                            _bv = float(_base)
                         except ValueError:
                             continue
-                        sfa_db.set_owner_capacity(con, k[5:], _mp)
+                        _from = (_d.get("from") or "").strip() or None
+                        _p2s = (_d.get("p2") or "").strip()
+                        _p2v = None
+                        if _p2s:
+                            try:
+                                _p2v = float(_p2s)
+                            except ValueError:
+                                _p2v = None
+                        sfa_db.set_owner_capacity(con, _owner, _bv, _from, _p2v)
                     self._redirect("/dev-point-master")
 
                 # ── 週次レポート（本文はDBのみ・Git非保存） ──

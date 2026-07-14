@@ -544,10 +544,13 @@ CREATE TABLE IF NOT EXISTS dev_point_master (
 );
 
 -- 開発担当の週次キャパ（週次上限点数。#41。負荷率＝週配分点数÷上限）
+-- 特定週以降で上限が変わるケースに対応（change_from_week 以降は weekly_max_points2 を使う）
 CREATE TABLE IF NOT EXISTS dev_owner_capacity (
-    owner             TEXT PRIMARY KEY,   -- 開発担当名（owners マスタの値）
-    weekly_max_points REAL NOT NULL,      -- 週次上限点数
-    updated_at        TEXT DEFAULT (datetime('now'))
+    owner              TEXT PRIMARY KEY,  -- 開発担当名（owners マスタの値）
+    weekly_max_points  REAL NOT NULL,     -- 週次上限点数（基準）
+    change_from_week   TEXT,              -- 上限変更週(from)。この週(を含む週)以降 points2 を使う（YYYY-MM-DD）
+    weekly_max_points2 REAL,              -- 変更後の週次上限点数
+    updated_at         TEXT DEFAULT (datetime('now'))
 );
 
 -- 開発点数の係数マスタ（既存分類/難易度の係数を管理画面で編集可能にする。#41-②）
@@ -732,6 +735,12 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         wr_cols = {r[1] for r in con.execute("PRAGMA table_info(weekly_reports)")}
         if wr_cols and "cover_image" not in wr_cols:
             con.execute("ALTER TABLE weekly_reports ADD COLUMN cover_image TEXT")
+        # dev_owner_capacity に上限変更(2段階)列を後方互換追加（#42）
+        _cap_cols = {r[1] for r in con.execute("PRAGMA table_info(dev_owner_capacity)")}
+        if _cap_cols and "change_from_week" not in _cap_cols:
+            con.execute("ALTER TABLE dev_owner_capacity ADD COLUMN change_from_week TEXT")
+        if _cap_cols and "weekly_max_points2" not in _cap_cols:
+            con.execute("ALTER TABLE dev_owner_capacity ADD COLUMN weekly_max_points2 REAL")
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -1537,18 +1546,39 @@ def delete_dev_point_master(con, work_type: str) -> None:
 
 
 def get_owner_capacities(con) -> dict:
-    """{担当名: 週次上限点数} を返す。"""
-    return {r["owner"]: float(r["weekly_max_points"])
-            for r in con.execute("SELECT owner, weekly_max_points FROM dev_owner_capacity")}
+    """{担当名: {'base':週次上限, 'from':上限変更週(YYYY-MM-DD/None), 'base2':変更後上限/None}} を返す。"""
+    out = {}
+    for r in con.execute(
+            "SELECT owner, weekly_max_points, change_from_week, weekly_max_points2 "
+            "FROM dev_owner_capacity"):
+        out[r["owner"]] = {
+            "base": float(r["weekly_max_points"]),
+            "from": r["change_from_week"] or None,
+            "base2": (float(r["weekly_max_points2"]) if r["weekly_max_points2"] is not None else None),
+        }
+    return out
 
 
-def set_owner_capacity(con, owner: str, weekly_max_points: float) -> None:
+def owner_cap_for_week(cap: dict | None, week_start: str) -> float | None:
+    """担当キャパ辞書(get_owner_capacitiesの1要素)と週(YYYY-MM-DDの月曜)から、その週の上限を返す。"""
+    if not cap:
+        return None
+    if cap.get("from") and cap.get("base2") is not None and week_start >= cap["from"]:
+        return cap["base2"]
+    return cap.get("base")
+
+
+def set_owner_capacity(con, owner: str, weekly_max_points: float,
+                       change_from_week: str | None = None,
+                       weekly_max_points2: float | None = None) -> None:
     con.execute(
-        "INSERT INTO dev_owner_capacity (owner, weekly_max_points, updated_at) "
-        "VALUES (?,?,datetime('now')) "
+        "INSERT INTO dev_owner_capacity (owner, weekly_max_points, change_from_week, weekly_max_points2, updated_at) "
+        "VALUES (?,?,?,?,datetime('now')) "
         "ON CONFLICT(owner) DO UPDATE SET "
-        "weekly_max_points=excluded.weekly_max_points, updated_at=datetime('now')",
-        (owner, float(weekly_max_points)))
+        "weekly_max_points=excluded.weekly_max_points, change_from_week=excluded.change_from_week, "
+        "weekly_max_points2=excluded.weekly_max_points2, updated_at=datetime('now')",
+        (owner, float(weekly_max_points), change_from_week or None,
+         (float(weekly_max_points2) if weekly_max_points2 not in (None, "") else None)))
     con.commit()
 
 

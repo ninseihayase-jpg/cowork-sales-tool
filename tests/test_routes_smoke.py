@@ -329,8 +329,14 @@ def test_dev_points_auto_recalc_and_master(server, db_path):
           headers=_auth_header())
     assert sfa_db.get_dev_point_base(con2, "本番向けツール") == 10.0
     assert sfa_db.get_dev_point_base(con2, "図面OCR研究") == 5.0
-    _post(server + "/dev-point-master/capacity", {"cap__早瀬": "20"}, headers=_auth_header())
-    assert sfa_db.get_owner_capacities(con2).get("早瀬") == 20.0
+    _post(server + "/dev-point-master/capacity",
+          {"cap__早瀬__base": "20", "cap__早瀬__from": "2026-08-01", "cap__早瀬__p2": "30"},
+          headers=_auth_header())
+    _cap = sfa_db.get_owner_capacities(con2).get("早瀬")
+    assert _cap["base"] == 20.0 and _cap["from"] == "2026-08-01" and _cap["base2"] == 30.0
+    # 週で上限が切り替わる
+    assert sfa_db.owner_cap_for_week(_cap, "2026-07-14") == 20.0
+    assert sfa_db.owner_cap_for_week(_cap, "2026-08-04") == 30.0
     # 係数の編集
     _post(server + "/dev-point-master/coef",
           {"cf__stage__本番": "2.0", "cf__difficulty__難": "1.5"}, headers=_auth_header())
