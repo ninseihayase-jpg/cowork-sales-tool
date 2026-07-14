@@ -1812,16 +1812,31 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'{header}{body}</table></div>')
 
 
+def _ms_type_opts(ms_type: str | None) -> str:
+    """次回MS種別の絞り込み<select>用<option>群（全MS種別／各種別／未設定）。"""
+    return (
+        '<option value="">全MS種別</option>'
+        + "".join(f'<option value="{html.escape(t)}"{" selected" if t == ms_type else ""}>{html.escape(t)}</option>'
+                  for t in sfa_db.NEXT_MS_TYPES)
+        + f'<option value="none"{" selected" if ms_type == "none" else ""}>未設定</option>'
+    )
+
+
+def _filter_deals_by_ms_type(deals: list, ms_type: str | None) -> list:
+    """次回MS種別で商談リストを後段フィルタ（"none"=未設定・未指定はそのまま）。"""
+    if ms_type == "none":
+        return [d for d in deals if not (d.get("next_milestone_type"))]
+    if ms_type in sfa_db.NEXT_MS_TYPES:
+        return [d for d in deals if (d.get("next_milestone_type") or "") == ms_type]
+    return deals
+
+
 def home_page(con, owner: str | None = None, status_filter: str | None = None,
               stage_filter: str | None = None, ms_type: str | None = None) -> str:
     # デフォルトでclosedを除外（NULLもopenとして扱う）。"all"は全件表示
     effective_status = None if status_filter == "all" else (status_filter or "open")
     deals = sfa_db.list_deals(con, status=effective_status, owner=owner, stage=stage_filter)
-    # 次回MS種別で絞り込み（"none"=未設定）。list_dealsに列が無いためPython側で後段フィルタ。
-    if ms_type == "none":
-        deals = [d for d in deals if not (d.get("next_milestone_type"))]
-    elif ms_type in sfa_db.NEXT_MS_TYPES:
-        deals = [d for d in deals if (d.get("next_milestone_type") or "") == ms_type]
+    deals = _filter_deals_by_ms_type(deals, ms_type)  # 次回MS種別で後段フィルタ
     pending_sync = con.execute("SELECT COUNT(*) c FROM deals WHERE theme_id IS NULL").fetchone()["c"]
     owners = sfa_db.get_master_list(con, "owners")
     stages = sfa_db.get_master_list(con, "deal_stages")
@@ -1839,18 +1854,12 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         f'<option value="{html.escape(s)}"{" selected" if s == stage_filter else ""}>{html.escape(s)}</option>'
         for s in stages
     )
-    ms_type_opts = (
-        '<option value="">全MS種別</option>'
-        + "".join(f'<option value="{html.escape(t)}"{" selected" if t == ms_type else ""}>{html.escape(t)}</option>'
-                  for t in sfa_db.NEXT_MS_TYPES)
-        + f'<option value="none"{" selected" if ms_type == "none" else ""}>未設定</option>'
-    )
     # 選択するだけで自動絞り込み（onchangeで即送信・「絞り込み」ボタンは廃止）
     filter_row = f"""<form method="get" action="/deals" class="filter-row">
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="status" onchange="this.form.submit()">{status_opts}</select>
       <select name="stage" onchange="this.form.submit()">{stage_opts}</select>
-      <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{ms_type_opts}</select>
+      <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <a class="btn sec" href="/deals">リセット</a>
     </form>"""
     # バルク編集用JSオブジェクト構築
@@ -1987,15 +1996,16 @@ def deals_page(con, *, tab: str = "active", owner: str | None = None, status_fil
       <a class="{'btn' if is_overdue else 'btn sec'}" href="/deals?tab=overdue">MS超過の商談</a>
     </div>"""
     if is_overdue:
-        body = overdue_deals_page(con, owner=owner)
+        body = overdue_deals_page(con, owner=owner, ms_type=ms_type)
     elif is_by_date:
-        body = deals_by_date_page(con, target_date=date, owner=owner)
+        body = deals_by_date_page(con, target_date=date, owner=owner, ms_type=ms_type)
     else:
         body = home_page(con, owner=owner, status_filter=status_filter, stage_filter=stage_filter, ms_type=ms_type)
     return tab_nav + body
 
 
-def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None = None) -> str:
+def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None = None,
+                       ms_type: str | None = None) -> str:
     """指定日が次回MSまたは活動履歴にある商談の一覧・その場編集画面。日付未指定時は当日を表示する。"""
     target_date = target_date or date.today().isoformat()
     owners = sfa_db.get_master_list(con, "owners")
@@ -2008,20 +2018,23 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     _prev_date = (_cur_date_obj - timedelta(days=1)).isoformat()
     _next_date = (_cur_date_obj + timedelta(days=1)).isoformat()
     _owner_qs = f"&owner={urllib.parse.quote(owner)}" if owner else ""
+    _mstype_qs = f"&ms_type={urllib.parse.quote(ms_type)}" if ms_type else ""
+    # 選択するだけで自動絞り込み（onchangeで即送信・「表示」ボタンは廃止）
     form = f"""<form method="get" action="/deals" class="filter-row">
       <input type="hidden" name="tab" value="byDate">
-      <a class="btn sec" href="/deals?tab=byDate&date={_prev_date}{_owner_qs}">◀ 前日</a>
-      <input type="date" name="date" value="{_esc(target_date)}" required>
-      <a class="btn sec" href="/deals?tab=byDate&date={_next_date}{_owner_qs}">翌日 ▶</a>
-      <select name="owner">{owner_opts}</select>
-      <button class="btn sec" type="submit">表示</button>
+      <a class="btn sec" href="/deals?tab=byDate&date={_prev_date}{_owner_qs}{_mstype_qs}">◀ 前日</a>
+      <input type="date" name="date" value="{_esc(target_date)}" required onchange="this.form.submit()">
+      <a class="btn sec" href="/deals?tab=byDate&date={_next_date}{_owner_qs}{_mstype_qs}">翌日 ▶</a>
+      <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
+      <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
     </form>"""
     _return_qs = urllib.parse.urlencode(
-        {"tab": "byDate", "date": target_date or "", "owner": owner or ""}
+        {"tab": "byDate", "date": target_date or "", "owner": owner or "", "ms_type": ms_type or ""}
     )
     return_to_url = f"/deals?{_return_qs}"
 
     deals = [dict(d) for d in sfa_db.list_deals_by_date(con, target_date, owner=owner)]
+    deals = _filter_deals_by_ms_type(deals, ms_type)
 
     return f"""
     <div class="card"><h2>特定日の商談（{_esc(target_date)}） {len(deals)}件</h2>
@@ -2035,10 +2048,10 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     """
 
 
-def overdue_deals_page(con, *, owner: str | None = None) -> str:
+def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = None) -> str:
     """次回MSが超過した進行中商談の一覧・その場編集。当日 >= 次回MS日（＝next_milestone_date <= 当日）。
 
-    担当フィルタ（サーバ側）＋アカウント名検索（クライアント側）＋インライン編集。
+    担当・次回MS種別フィルタ（サーバ側）＋アカウント名検索（クライアント側）＋インライン編集。
     見せ方・編集挙動は「特定日の商談」タブに揃えている。
     """
     owners = sfa_db.get_master_list(con, "owners")
@@ -2047,17 +2060,19 @@ def overdue_deals_page(con, *, owner: str | None = None) -> str:
         f'<option value="{html.escape(o)}"{" selected" if o == owner else ""}>{html.escape(o)}</option>'
         for o in owners
     )
+    # 選択するだけで自動絞り込み（onchangeで即送信・「担当で絞り込み」ボタンは廃止）
     form = f"""<form method="get" action="/deals" class="filter-row">
       <input type="hidden" name="tab" value="overdue">
-      <select name="owner">{owner_opts}</select>
-      <button class="btn sec" type="submit">担当で絞り込み</button>
+      <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
+      <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:260px;margin-left:8px">
     </form>"""
-    _return_qs = urllib.parse.urlencode({"tab": "overdue", "owner": owner or ""})
+    _return_qs = urllib.parse.urlencode({"tab": "overdue", "owner": owner or "", "ms_type": ms_type or ""})
     return_to_url = f"/deals?{_return_qs}"
 
     deals = [dict(d) for d in sfa_db.list_overdue_deals(con, owner=owner)]
+    deals = _filter_deals_by_ms_type(deals, ms_type)
     return f"""
     <div class="card"><h2>MS超過の商談 {len(deals)}件</h2>
     <p class="muted" style="margin:0 0 10px">次回MS日が本日以前の進行中商談です。遅れている順に並んでいます。</p>
