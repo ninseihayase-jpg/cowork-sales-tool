@@ -132,31 +132,33 @@ def build_message(owner: str, follow_deals: list[dict]) -> str:
     no_ms = [d for d in follow_deals if not (d.get("next_milestone_date") or "").strip()]
 
     lines = [
-        "【週次・要フォロー商談】",
-        f"{owner}さん、次回MSが「超過」または「未入力」の商談です。",
-        "シンプルに次回MSを更新してください🙏",
+        f"{owner}さん、おつかれさまです。週次の商談フォローのお願いです。",
         "",
-        f"⚠️ 要フォロー: {len(follow_deals)}件（超過 {len(overdue)} ／ 未入力 {len(no_ms)}）",
+        f"担当商談のうち、次回マイルストーン（次に何を・いつやるか）が"
+        f"未設定・期限切れのものが *{len(follow_deals)}件* あります。",
+        "商談を止めないよう、下記から次回MSの設定・更新をお願いします🙏",
+        "",
+        f"■ 要対応 {len(follow_deals)}件（期限切れ {len(overdue)}／未設定 {len(no_ms)}）",
     ]
-    # 超過（古い順）→ 未入力 の順に、最大10件だけ列挙
+    # 期限切れ（古い順）→ 未設定 の順に、最大10件だけ列挙
     overdue_sorted = sorted(overdue, key=lambda d: d.get("next_milestone_date") or "")
     shown = 0
     for d in overdue_sorted + no_ms:
         if shown >= 10:
             break
         ms = (d.get("next_milestone_date") or "").strip()
-        tag = f"→ {ms}（超過）" if ms else "→ 未入力"
-        lines.append(f"  • {d.get('deal_name','')}（{d.get('stage','')}） {tag}")
+        tag = f"期限切れ {ms}" if ms else "次回MS未設定"
+        lines.append(f"　• {d.get('deal_name','')}（{d.get('stage','') or '—'}）… {tag}")
         shown += 1
     if len(follow_deals) > 10:
-        lines.append(f"  …他 {len(follow_deals) - 10}件")
+        lines.append(f"　…ほか {len(follow_deals) - 10}件")
 
     lines.append("")
     if tab_url:
-        lines.append(f"🔗 一覧を開いて更新: {tab_url}")
+        lines.append(f"▶ ここから更新（あなたの担当分のみ表示）:\n{tab_url}")
     lines.extend([
         "",
-        "金曜18:00までに、上記リンクから次回MSを更新してください。",
+        "今週金曜18:00を目安にお願いします。",
     ])
     return "\n".join(lines)
 
