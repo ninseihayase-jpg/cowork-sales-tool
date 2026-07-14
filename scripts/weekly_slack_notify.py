@@ -21,10 +21,22 @@ import sqlite3
 import sys
 import urllib.request
 import urllib.error
+import urllib.parse
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# JST基準の当日（水17:30 JST=08:30 UTC実行。超過判定は当日以前）
+JST = timezone(timedelta(hours=9))
+TODAY = datetime.now(JST).date().isoformat()
+
+
+def is_follow_up(d: dict) -> bool:
+    """要フォロー＝次回MSが超過(<=当日) または 未入力(空)。"""
+    ms = (d.get("next_milestone_date") or "").strip()
+    return (not ms) or (ms <= TODAY)
 
 SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SHEET_ID = os.environ.get("WEEKLY_SHEET_ID", "")
@@ -113,37 +125,40 @@ def get_deals_by_owner(db_path: str) -> dict[str, list[dict]]:
     return result
 
 
-def build_message(owner: str, deals: list[dict]) -> str:
-    sheet_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit" if SHEET_ID else ""
-    tool_url = f"{TOOL_URL}/deals?owner={urllib.parse.quote(owner)}" if TOOL_URL else ""
+def build_message(owner: str, follow_deals: list[dict]) -> str:
+    """要フォロー商談（次回MS超過 or 未入力）だけをまとめ、要フォロータブへのリンクを送る。"""
+    tab_url = f"{TOOL_URL}/deals?tab=overdue&owner={urllib.parse.quote(owner)}" if TOOL_URL else ""
+    overdue = [d for d in follow_deals if (d.get("next_milestone_date") or "").strip()]
+    no_ms = [d for d in follow_deals if not (d.get("next_milestone_date") or "").strip()]
 
     lines = [
-        f"【週次商談確認依頼】",
-        f"{owner}さん、担当商談の状況確認をお願いします。",
+        "【週次・要フォロー商談】",
+        f"{owner}さん、次回MSが「超過」または「未入力」の商談です。",
+        "シンプルに次回MSを更新してください🙏",
         "",
-        f"📋 担当中の商談: {len(deals)}件",
+        f"⚠️ 要フォロー: {len(follow_deals)}件（超過 {len(overdue)} ／ 未入力 {len(no_ms)}）",
     ]
-    for d in deals[:10]:  # 最大10件表示
-        ms = d.get("next_milestone_date") or ""
-        label = d.get("next_milestone_label") or ""
-        ms_str = f" → {ms}" if ms else ""
-        lines.append(f"  • {d['deal_name']} ({d.get('stage','')}){ms_str}")
-    if len(deals) > 10:
-        lines.append(f"  ...他 {len(deals)-10}件")
+    # 超過（古い順）→ 未入力 の順に、最大10件だけ列挙
+    overdue_sorted = sorted(overdue, key=lambda d: d.get("next_milestone_date") or "")
+    shown = 0
+    for d in overdue_sorted + no_ms:
+        if shown >= 10:
+            break
+        ms = (d.get("next_milestone_date") or "").strip()
+        tag = f"→ {ms}（超過）" if ms else "→ 未入力"
+        lines.append(f"  • {d.get('deal_name','')}（{d.get('stage','')}） {tag}")
+        shown += 1
+    if len(follow_deals) > 10:
+        lines.append(f"  …他 {len(follow_deals) - 10}件")
 
-    lines.extend([""])
-    if sheet_url:
-        lines.append(f"🔗 スプシ: {sheet_url}")
-    if tool_url:
-        lines.append(f"✏️ 営業支援ツール: {tool_url}")
+    lines.append("")
+    if tab_url:
+        lines.append(f"🔗 一覧を開いて更新: {tab_url}")
     lines.extend([
         "",
-        "金曜18:00までに営業支援ツールで最新状況を更新してください。",
+        "金曜18:00までに、上記リンクから次回MSを更新してください。",
     ])
     return "\n".join(lines)
-
-
-import urllib.parse
 
 
 def main():
@@ -166,6 +181,10 @@ def main():
     for owner, deals in deals_by_owner.items():
         if test_owner and owner != test_owner:
             print(f"[SKIP] {owner}: TEST_OWNER={test_owner} のためスキップ")
+            continue
+        follow_deals = [d for d in deals if is_follow_up(d)]
+        if not follow_deals:
+            print(f"[SKIP] {owner}: 要フォロー商談なし（超過/未入力ゼロ）")
             continue
         email = owner_map.get(owner)
         if not email:
