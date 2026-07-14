@@ -279,6 +279,9 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  #dpTable td.frz,#dpTable th.frz{{box-sizing:border-box}}
  #dpTable td.frz{{position:sticky;background:#fff;z-index:3;box-shadow:1px 0 0 #e6e9f0}}
  #dpTable th.frz{{position:sticky;top:0;background:#fff;z-index:5;box-shadow:1px 0 0 #e6e9f0}}
+ /* 開発テーマ詳細は3行までにクランプ（縦伸び防止）。全文はカーソルを合わせるとtitleツールチップで読める */
+ #dpTable td.frz{{vertical-align:top}}
+ .dp-detail{{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;line-height:1.45;cursor:help}}
  .stage{{display:inline-block;padding:2px 9px;border-radius:12px;font-size:12px;background:#e8edf7;color:#33406b;white-space:nowrap}}
  .tool-link-wrap{{position:relative;display:inline-block}}
  .tool-link-cred{{display:none;position:absolute;top:100%;left:0;z-index:20;background:#fff;
@@ -2832,11 +2835,12 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
                 f'<option value=""></option>{opts}</select>')
 
     rows = "".join(
-        f'<tr><td class="frz" style="left:0;width:34px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
-        f'<td class="frz" style="left:34px;width:240px;white-space:normal;word-break:break-word">'
+        f'<tr><td class="frz" style="left:0;width:34px;min-width:34px;max-width:34px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
+        f'<td class="frz" style="left:34px;width:240px;min-width:240px;max-width:240px;white-space:normal;word-break:break-word">'
         f'<a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
-        f'<div class="muted" style="font-size:11px;white-space:normal;word-break:break-word">{_esc(p.get("theme_detail") or "")}</div></td>'
-        f'<td class="frz" style="left:274px;width:150px;white-space:normal;word-break:break-word">'
+        f'<div class="muted dp-detail" title="{_esc(p.get("theme_detail") or "")}" '
+        f'style="font-size:11px;word-break:break-word">{_esc(p.get("theme_detail") or "")}</div></td>'
+        f'<td class="frz" style="left:274px;width:150px;min-width:150px;max-width:150px;white-space:normal;word-break:break-word">'
         f'<a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
         f'<div class="muted">{_esc(p.get("deal_name"))}</div>'
         f'<div style="font-size:11px;margin-top:2px">{_hearing_link(p["deal_id"])}</div></td>'
@@ -2870,9 +2874,9 @@ def dev_projects_list_page(con, *, dev_owner: str | None = None, sales_owner: st
       <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
       <table id="dpTable" style="min-width:1740px">
-        <tr><th class="sticky frz" style="left:0;width:34px"><input type="checkbox" id="dp_chk_all" title="全選択"
+        <tr><th class="sticky frz" style="left:0;width:34px;min-width:34px;max-width:34px"><input type="checkbox" id="dp_chk_all" title="全選択"
               onchange="document.querySelectorAll('#dp_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            <th class="sticky frz" style="left:34px;width:240px">開発テーマ</th><th class="sticky frz" style="left:274px;width:150px">商談</th>{_sticky_th('ステージ', '84px')}{_sticky_th('提供先', '88px')}{_sticky_th('作業種別', '144px')}{_sticky_th('難易度', '76px')}{_sticky_th('BE有無', '80px')}{_sticky_th('課金', '78px')}{_sticky_th('状況', '84px')}{_sticky_th('受注余地', '76px')}{_sticky_th('点数', '56px')}
+            <th class="sticky frz" style="left:34px;width:240px;min-width:240px;max-width:240px">開発テーマ</th><th class="sticky frz" style="left:274px;width:150px;min-width:150px;max-width:150px">商談</th>{_sticky_th('ステージ', '84px')}{_sticky_th('提供先', '88px')}{_sticky_th('作業種別', '144px')}{_sticky_th('難易度', '76px')}{_sticky_th('BE有無', '80px')}{_sticky_th('課金', '78px')}{_sticky_th('状況', '84px')}{_sticky_th('受注余地', '76px')}{_sticky_th('点数', '56px')}
             {_sticky_th('開発担当', '88px')}{_sticky_th('営業担当', '88px')}{_sticky_th('期限', '88px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
         {rows}
       </table>
