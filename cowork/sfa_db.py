@@ -43,6 +43,14 @@ INDUSTRIES = [
     "官公庁・公共・非営利", "コンサル・専門サービス", "ファンド", "その他",
 ]
 
+# 開発案件で使う「必要な技術シード」の初期候補（マスタ編集で増減可）
+TECH_SEEDS = [
+    "LLM/生成AI", "RAG(社内文書検索)", "AIエージェント", "画像認識", "音声認識/文字起こし",
+    "OCR/帳票読取", "需要予測/予測モデル", "最適化/数理計画", "レコメンド",
+    "スクレイピング/データ収集", "業務自動化(RPA)", "データ基盤/ETL", "BI/ダッシュボード",
+    "Web/業務アプリ開発", "外部API連携", "スプレッドシート連携",
+]
+
 # マスタ編集対象キー → デフォルト値のマッピング
 MASTER_KEYS = {
     "owners":            OWNERS,
@@ -52,6 +60,7 @@ MASTER_KEYS = {
     "industries":        INDUSTRIES,
     "company_sizes":     COMPANY_SIZES,
     "activity_types":    ACTIVITY_TYPES,
+    "tech_seeds":        TECH_SEEDS,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -61,6 +70,7 @@ MASTER_LABELS = {
     "industries":        "業界",
     "company_sizes":     "企業規模",
     "activity_types":    "活動種別",
+    "tech_seeds":        "技術シード（開発案件）",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -446,6 +456,7 @@ CREATE TABLE IF NOT EXISTS dev_projects (
     dev_start_date   TEXT,                 -- 開発開始日（起票時に期限から自動計算。以後はHisho側の手動調整に委ねる）
     dev_end_date     TEXT,                 -- 開発終了日（起票時のデフォルトは期限と同値）
     dev_policy       TEXT,                 -- 開発方針（自由記述）
+    tech_seeds       TEXT,                 -- 必要な技術シード（マスタ tech_seeds からの複数選択・カンマ区切り, #46）
     tool_url         TEXT,                 -- 制作したツールのリンク
     tool_login_id    TEXT,                 -- 制作したツールのログインID（必要な場合のみ）
     tool_login_pass  TEXT,                 -- 制作したツールのログインパスワード（必要な場合のみ）
@@ -732,6 +743,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
                              ("pricing", "TEXT"), ("dev_points", "REAL")):
             if col not in dp_cols:
                 con.execute(f"ALTER TABLE dev_projects ADD COLUMN {col} {typedef}")
+        # 技術シード機能（#46）: 必要な技術シード（カンマ区切り）を後方互換追加
+        if "tech_seeds" not in dp_cols:
+            con.execute("ALTER TABLE dev_projects ADD COLUMN tech_seeds TEXT")
         # weekly_reports に cover_image を後方互換追加（前回デプロイ時は列が無かった）
         wr_cols = {r[1] for r in con.execute("PRAGMA table_info(weekly_reports)")}
         if wr_cols and "cover_image" not in wr_cols:
@@ -1414,7 +1428,7 @@ DEV_PROJECT_FIELDS = [
     "resolution", "budget_confirmed", "difficulty", "has_backend",
     "dev_audience", "work_type", "pricing", "dev_points", "dev_owner",
     "tech_support", "dev_milestone", "dev_milestone_date", "deadline", "dev_start_date",
-    "dev_end_date", "dev_policy", "tool_url", "tool_login_id", "tool_login_pass",
+    "dev_end_date", "dev_policy", "tech_seeds", "tool_url", "tool_login_id", "tool_login_pass",
 ]
 
 _DEV_PROJECT_SELECT = (

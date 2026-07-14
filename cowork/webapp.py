@@ -216,6 +216,15 @@ def _tool_link_btn(url, label: str = "🔧 ツール", *, tool_id=None, tool_pas
     )
 
 
+def _seed_line(seeds: str | None) -> str:
+    """開発案件一覧向け: 技術シード(カンマ区切り)を1行・省略表示（行高を変えない）。"""
+    s = (seeds or "").strip()
+    if not s:
+        return ""
+    return (f'<div class="muted" style="font-size:10px;white-space:nowrap;overflow:hidden;'
+            f'text-overflow:ellipsis" title="{_esc(s)}">🔧 {_esc(s.replace(",", " / "))}</div>')
+
+
 def _chips(values) -> str:
     """CSV一括取込ページ向け: 選択肢一覧をチップ表示するHTMLを生成。"""
     return "".join(
@@ -2952,7 +2961,8 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
         f'<td class="frz" style="left:34px;width:240px;min-width:240px;max-width:240px;white-space:normal;word-break:break-word">'
         f'<a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
         f'<div class="muted dp-detail" title="{_esc(p.get("theme_detail") or "")}" '
-        f'style="font-size:11px;word-break:break-word">{_esc(p.get("theme_detail") or "")}</div></td>'
+        f'style="font-size:11px;word-break:break-word">{_esc(p.get("theme_detail") or "")}</div>'
+        f'{_seed_line(p.get("tech_seeds"))}</td>'
         f'<td class="frz" style="left:274px;width:150px;min-width:150px;max-width:150px;white-space:normal;word-break:break-word">'
         f'<a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
         f'<div class="muted">{_esc(p.get("deal_name"))}</div>'
@@ -3251,6 +3261,16 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         extra_links_html = ('<p class="muted" style="font-size:11px;margin:6px 0 0;text-align:right">'
                             '追加リンクは保存後に登録できます</p>')
 
+    # 必要な技術シード（マスタ tech_seeds からの複数選択チェックボックス, #46）
+    _seed_opts = sfa_db.get_master_list(con, "tech_seeds")
+    _seed_sel = {s for s in (p.get("tech_seeds") or "").split(",") if s}
+    tech_seeds_block = "".join(
+        f'<label style="display:inline-flex;align-items:center;gap:4px;margin:0 12px 6px 0;font-weight:400">'
+        f'<input type="checkbox" name="tech_seeds" value="{_esc(s)}"{" checked" if s in _seed_sel else ""}>'
+        f' {_esc(s)}</label>'
+        for s in _seed_opts
+    ) or '<span class="muted">技術シードのマスタが未設定です（管理→マスタで追加できます）</span>'
+
     return f"""
     <div class="card" style="max-width:900px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
@@ -3314,6 +3334,10 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         </div>
         <label>開発方針</label>
         <textarea name="dev_policy" rows="3">{_esc(p.get('dev_policy'))}</textarea>
+        <label>必要な技術シード（複数選択可）</label>
+        <div style="margin:2px 0 4px;padding:8px 10px;border:1px solid #e6e9f0;border-radius:8px;background:#fafbfc">
+          {tech_seeds_block}
+        </div>
         <div style="margin-top:16px">
           <button class="btn" type="submit">保存</button>
           <a class="btn sec" href="{_esc(back_href)}">キャンセル</a>
@@ -7076,6 +7100,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         dev_start_date=_dp_start,
                         dev_end_date=_dp_end,
                         dev_policy=f.get("dev_policy") or None,
+                        tech_seeds=",".join(s for s in f_list.get("tech_seeds", []) if s) or None,
                         tool_url=f.get("tool_url") or None,
                         tool_login_id=f.get("tool_login_id") or None,
                         tool_login_pass=f.get("tool_login_pass") or None,
@@ -7131,6 +7156,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         dev_start_date=_dp_start,
                         dev_end_date=_dp_end,
                         dev_policy=f.get("dev_policy") or None,
+                        tech_seeds=",".join(s for s in f_list.get("tech_seeds", []) if s) or None,
                         tool_url=f.get("tool_url") or None,
                         tool_login_id=f.get("tool_login_id") or None,
                         tool_login_pass=f.get("tool_login_pass") or None,
