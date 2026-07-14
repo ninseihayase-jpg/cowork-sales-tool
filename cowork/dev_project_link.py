@@ -19,6 +19,8 @@ DEV_PROJECT_COLUMNS = [
     "sales_sub_owner", "dev_milestone", "dev_milestone_date", "deadline",
     "dev_start_date", "dev_end_date", "dev_policy",
     "tool_url",
+    # 開発点数機能（#42）: Hisho点数ダッシュボードへ同期
+    "dev_audience", "work_type", "dev_points",
 ]
 
 
@@ -48,6 +50,9 @@ def _fields(p: dict) -> dict:
         "dev_end_date": p.get("dev_end_date"),
         "dev_policy": p.get("dev_policy"),
         "tool_url": p.get("tool_url"),
+        "dev_audience": p.get("dev_audience"),
+        "work_type": p.get("work_type"),
+        "dev_points": p.get("dev_points"),
     }
 
 
