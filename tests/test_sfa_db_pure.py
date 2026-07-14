@@ -78,7 +78,8 @@ def test_dev_period_days_backend_and_difficulty():
 
 def test_dev_period_days_stage_multipliers():
     base = sfa_db.dev_period_days("プロト", "無し", "易")  # 2
-    assert sfa_db.dev_period_days("PoC", "無し", "易") == base * 4
+    # ステージ倍率 プロト×1 / PoC×2 / 本番×2（PoCは4→2に緩和済み・#42）
+    assert sfa_db.dev_period_days("PoC", "無し", "易") == base * 2
     assert sfa_db.dev_period_days("本番", "無し", "易") == base * 2
 
 

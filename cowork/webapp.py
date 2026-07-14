@@ -2049,7 +2049,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
 
 
 def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = None) -> str:
-    """次回MSが超過した進行中商談の一覧・その場編集。当日 >= 次回MS日（＝next_milestone_date <= 当日）。
+    """次回MSが超過した／未設定の進行中商談の一覧・その場編集（要フォロー）。超過=next_milestone_date<=当日。
 
     担当・次回MS種別フィルタ（サーバ側）＋アカウント名検索（クライアント側）＋インライン編集。
     見せ方・編集挙動は「特定日の商談」タブに揃えている。
@@ -2075,7 +2075,7 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
     deals = _filter_deals_by_ms_type(deals, ms_type)
     return f"""
     <div class="card"><h2>MS超過の商談 {len(deals)}件</h2>
-    <p class="muted" style="margin:0 0 10px">次回MS日が本日以前の進行中商談です。遅れている順に並んでいます。</p>
+    <p class="muted" style="margin:0 0 10px">次回MS日が本日以前、または次回MSが未設定の進行中商談です（要フォロー）。超過分を遅れている順に、次回MS未設定は末尾に並べています。</p>
     {form}
     {unified_deal_table(con, deals, return_to_url=return_to_url, bulk=False)}
     </div>

@@ -895,24 +895,27 @@ def list_deals_by_date(con, date: str, owner: str | None = None) -> list[dict]:
 
 
 def list_overdue_deals(con, owner: str | None = None, today: str | None = None) -> list[dict]:
-    """次回MSが超過した進行中商談を返す（当日 >= 次回MS日、つまり next_milestone_date <= 当日）。
+    """次回MSが超過した、または次回MSが未設定の進行中商談を返す（＝要フォロー一覧）。
 
-    商談一覧の赤ハイライト（next_milestone_date <= today）と定義を一致させる。
-    最も遅れているものから順（next_milestone_date 昇順）。
+    - 超過: next_milestone_date <= 当日
+    - 未設定: next_milestone_date が NULL または空文字（次回アクション未定＝止まっている）
+    並び順は「超過（遅れている順に日付昇順）→ 未設定（末尾）」。
     """
     today = today or date.today().isoformat()
     q = """SELECT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d
            LEFT JOIN accounts a ON a.id = d.account_id
            WHERE (d.status IS NULL OR d.status != 'closed')
-                 AND d.next_milestone_date IS NOT NULL
-                 AND d.next_milestone_date <= ?"""
+                 AND (d.next_milestone_date IS NULL OR d.next_milestone_date = ''
+                      OR d.next_milestone_date <= ?)"""
     params: list = [today]
     if owner:
         q += " AND (d.owner = ? OR d.sub_owner = ?)"
         params.append(owner)
         params.append(owner)
-    q += " ORDER BY d.next_milestone_date ASC"
+    # 未設定(NULL/空)は末尾へ。超過分は日付昇順（最も遅れている順）。
+    q += (" ORDER BY (d.next_milestone_date IS NULL OR d.next_milestone_date = '') ASC,"
+          " d.next_milestone_date ASC")
     return [dict(r) for r in con.execute(q, params)]
 
 

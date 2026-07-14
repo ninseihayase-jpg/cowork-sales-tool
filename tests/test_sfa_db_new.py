@@ -79,8 +79,9 @@ def test_list_overdue_deals(con, acc_id):
     con.commit()
 
     got = [d["deal_name"] for d in sfa_db.list_overdue_deals(con, today="2026-07-13")]
-    assert set(got) == {"超過古", "超過当日"}        # 未来/MS無/closed は除外
-    assert got[0] == "超過古"                          # 昇順（最も遅れている順）
+    assert set(got) == {"超過古", "超過当日", "MS無"}   # 未来/closed は除外・MS未設定は含める(#44)
+    assert got[0] == "超過古"                          # 超過分は昇順（最も遅れている順）
+    assert got[-1] == "MS無"                           # 次回MS未設定は末尾
     assert [d["deal_name"] for d in sfa_db.list_overdue_deals(con, owner="中島", today="2026-07-13")] == ["超過当日"]
 
 
