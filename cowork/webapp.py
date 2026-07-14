@@ -1813,10 +1813,15 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
 
 
 def home_page(con, owner: str | None = None, status_filter: str | None = None,
-              stage_filter: str | None = None) -> str:
+              stage_filter: str | None = None, ms_type: str | None = None) -> str:
     # デフォルトでclosedを除外（NULLもopenとして扱う）。"all"は全件表示
     effective_status = None if status_filter == "all" else (status_filter or "open")
     deals = sfa_db.list_deals(con, status=effective_status, owner=owner, stage=stage_filter)
+    # 次回MS種別で絞り込み（"none"=未設定）。list_dealsに列が無いためPython側で後段フィルタ。
+    if ms_type == "none":
+        deals = [d for d in deals if not (d.get("next_milestone_type"))]
+    elif ms_type in sfa_db.NEXT_MS_TYPES:
+        deals = [d for d in deals if (d.get("next_milestone_type") or "") == ms_type]
     pending_sync = con.execute("SELECT COUNT(*) c FROM deals WHERE theme_id IS NULL").fetchone()["c"]
     owners = sfa_db.get_master_list(con, "owners")
     stages = sfa_db.get_master_list(con, "deal_stages")
@@ -1834,11 +1839,18 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         f'<option value="{html.escape(s)}"{" selected" if s == stage_filter else ""}>{html.escape(s)}</option>'
         for s in stages
     )
+    ms_type_opts = (
+        '<option value="">全MS種別</option>'
+        + "".join(f'<option value="{html.escape(t)}"{" selected" if t == ms_type else ""}>{html.escape(t)}</option>'
+                  for t in sfa_db.NEXT_MS_TYPES)
+        + f'<option value="none"{" selected" if ms_type == "none" else ""}>未設定</option>'
+    )
+    # 選択するだけで自動絞り込み（onchangeで即送信・「絞り込み」ボタンは廃止）
     filter_row = f"""<form method="get" action="/deals" class="filter-row">
-      <select name="owner">{owner_opts}</select>
-      <select name="status">{status_opts}</select>
-      <select name="stage">{stage_opts}</select>
-      <button class="btn sec" type="submit">絞り込み</button>
+      <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
+      <select name="status" onchange="this.form.submit()">{status_opts}</select>
+      <select name="stage" onchange="this.form.submit()">{stage_opts}</select>
+      <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{ms_type_opts}</select>
       <a class="btn sec" href="/deals">リセット</a>
     </form>"""
     # バルク編集用JSオブジェクト構築
@@ -1964,7 +1976,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
 
 
 def deals_page(con, *, tab: str = "active", owner: str | None = None, status_filter: str | None = None,
-               stage_filter: str | None = None, date: str | None = None) -> str:
+               stage_filter: str | None = None, date: str | None = None, ms_type: str | None = None) -> str:
     """商談一覧をタブ化: 「進行中の商談」(既存home_page)・「特定日の商談」・「MS超過の商談」。"""
     is_by_date = tab == "byDate"
     is_overdue = tab == "overdue"
@@ -1979,7 +1991,7 @@ def deals_page(con, *, tab: str = "active", owner: str | None = None, status_fil
     elif is_by_date:
         body = deals_by_date_page(con, target_date=date, owner=owner)
     else:
-        body = home_page(con, owner=owner, status_filter=status_filter, stage_filter=stage_filter)
+        body = home_page(con, owner=owner, status_filter=status_filter, stage_filter=stage_filter, ms_type=ms_type)
     return tab_nav + body
 
 
@@ -6201,6 +6213,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(deals_page(
                         con, tab=_qs1("tab") or "active", owner=_qs1("owner"),
                         status_filter=_qs1("status"), stage_filter=_qs1("stage"), date=_d,
+                        ms_type=_qs1("ms_type"),
                     )))
                 elif path == "/dashboard":
                     self._send(render(dashboard_page(con)))
@@ -6411,6 +6424,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(deals_page(
                         con, tab=qs1("tab") or "active", owner=qs1("owner"),
                         status_filter=qs1("status"), stage_filter=qs1("stage"), date=_date_q,
+                        ms_type=qs1("ms_type"),
                     )))
                 elif path == "/deals/import":
                     self._send(render(deals_import_page(con)))
