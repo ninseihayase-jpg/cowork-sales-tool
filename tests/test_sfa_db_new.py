@@ -85,6 +85,37 @@ def test_list_overdue_deals(con, acc_id):
     assert [d["deal_name"] for d in sfa_db.list_overdue_deals(con, owner="中島", today="2026-07-13")] == ["超過当日"]
 
 
+def test_deal_milestones_cache_and_earliest(con, acc_id):
+    did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="複数MS商談", status="open")
+    con.commit()
+    # 3件（1件はdone=完了）。未完了で最古=7/20がキャッシュに載る
+    sfa_db.set_deal_milestones(con, did, [
+        {"date": "2026-08-05", "label": "提案書", "type": "タスク", "done": False},
+        {"date": "2026-07-20", "label": "初回アポ", "type": "アポ", "done": False},
+        {"date": "2026-07-10", "label": "完了分", "type": "アポ", "done": True},
+    ])
+    d = sfa_db.get_deal(con, did)
+    assert d["next_milestone_date"] == "2026-07-20"
+    assert d["next_milestone_label"] == "初回アポ"
+    assert d["next_milestone_type"] == "アポ"
+    assert sfa_db.count_open_milestones(con, [did]).get(did) == 2  # doneは数えない
+
+    # インライン: 最古(7/20)を8/20へ延ばすと、次の最古(8/05)がキャッシュに繰り上がる
+    r = sfa_db.set_earliest_milestone_field(con, did, "date", "2026-08-20")
+    assert r["next_milestone_date"] == "2026-08-05"
+
+    # 現状更新（単一MS入力）: 最古(8/05)の値を上書き
+    sfa_db.upsert_earliest_milestone(con, did, date="2026-08-01", label="キックオフ", ms_type="アポ")
+    d2 = sfa_db.get_deal(con, did)
+    assert d2["next_milestone_date"] == "2026-08-01" and d2["next_milestone_label"] == "キックオフ"
+
+    # 全MS削除→キャッシュも空
+    sfa_db.set_deal_milestones(con, did, [])
+    d3 = sfa_db.get_deal(con, did)
+    assert d3["next_milestone_date"] is None
+    assert sfa_db.count_open_milestones(con, [did]).get(did, 0) == 0
+
+
 def test_list_deals_by_week(con, acc_id):
     mk = lambda **k: sfa_db.upsert_deal(con, account_id=acc_id, **k)
     # 2026-W29 = 2026-07-13(月)〜2026-07-19(日)

@@ -299,6 +299,18 @@ CREATE TABLE IF NOT EXISTS deals (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
+-- 次回マイルストーン（1商談:N。#48）。deals.next_milestone_* は「未完了で最も古い1件」のキャッシュ。
+CREATE TABLE IF NOT EXISTS deal_milestones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id INTEGER REFERENCES deals(id) ON DELETE CASCADE,
+    ms_date TEXT,                     -- YYYY-MM-DD
+    ms_label TEXT,
+    ms_type TEXT,                     -- アポ / タスク
+    done INTEGER DEFAULT 0,           -- 0=未完了 / 1=完了（集計対象は未完了のみ）
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_deal_milestones_deal ON deal_milestones(deal_id);
+
 CREATE TABLE IF NOT EXISTS activities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     deal_id INTEGER REFERENCES deals(id) ON DELETE CASCADE,
@@ -1080,6 +1092,118 @@ def upsert_deal(con, *, id=None, commit: bool = True, **fields) -> int:
     if commit:
         con.commit()
     return cur.lastrowid
+
+
+# ---- 次回マイルストーン（1商談:N。#48） ----
+# deals.next_milestone_date/label/type は「未完了で最も日付の早いMS」のキャッシュ（ミラー）。
+# 集計（MS超過・Slack通知・Hisho同期）は従来どおりキャッシュ列を読むため影響範囲が最小。
+
+def list_deal_milestones(con, deal_id: int) -> list[dict]:
+    """商談のMSを 未完了→完了 / 日付昇順(未設定は末尾) で返す。"""
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM deal_milestones WHERE deal_id=? "
+        "ORDER BY done ASC, (ms_date IS NULL OR ms_date='') ASC, ms_date ASC, id ASC",
+        (int(deal_id),))]
+
+
+def count_open_milestones(con, deal_ids: list[int]) -> dict:
+    """deal_id -> 未完了MS件数。一覧の「ほかN件」バッジ用（0件=レガシー扱い）。"""
+    ids = [int(x) for x in deal_ids if x is not None]
+    if not ids:
+        return {}
+    ph = ",".join("?" for _ in ids)
+    return {r["deal_id"]: r["c"] for r in con.execute(
+        f"SELECT deal_id, COUNT(*) c FROM deal_milestones WHERE done=0 AND deal_id IN ({ph}) "
+        f"GROUP BY deal_id", ids)}
+
+
+def recompute_deal_next_milestone(con, deal_id: int, commit: bool = True) -> None:
+    """未完了で最も日付の早いMSを deals.next_milestone_* に反映（キャッシュ更新）。
+    未完了で日付ありのMSが無ければキャッシュを空にする。"""
+    row = con.execute(
+        "SELECT ms_date, ms_label, ms_type FROM deal_milestones "
+        "WHERE deal_id=? AND done=0 AND ms_date IS NOT NULL AND ms_date!='' "
+        "ORDER BY ms_date ASC, id ASC LIMIT 1", (int(deal_id),)).fetchone()
+    if row:
+        con.execute("UPDATE deals SET next_milestone_date=?, next_milestone_label=?, "
+                    "next_milestone_type=?, updated_at=datetime('now') WHERE id=?",
+                    (row["ms_date"], row["ms_label"], row["ms_type"], int(deal_id)))
+    else:
+        con.execute("UPDATE deals SET next_milestone_date=NULL, next_milestone_label=NULL, "
+                    "next_milestone_type=NULL, updated_at=datetime('now') WHERE id=?", (int(deal_id),))
+    if commit:
+        con.commit()
+
+
+def set_deal_milestones(con, deal_id: int, items: list[dict], commit: bool = True) -> None:
+    """商談のMSを与えられたリストで置き換え（全削除→挿入）→キャッシュ再計算。
+    items各要素: {date,label,type,done}。日付もラベルも空の行はスキップ。"""
+    con.execute("DELETE FROM deal_milestones WHERE deal_id=?", (int(deal_id),))
+    for it in items:
+        d = (it.get("date") or "").strip()
+        lb = (it.get("label") or "").strip()
+        tp = (it.get("type") or "").strip()
+        dn = 1 if it.get("done") else 0
+        if not d and not lb:
+            continue
+        con.execute(
+            "INSERT INTO deal_milestones (deal_id, ms_date, ms_label, ms_type, done) VALUES (?,?,?,?,?)",
+            (int(deal_id), d or None, lb or None, tp or None, dn))
+    recompute_deal_next_milestone(con, deal_id, commit=False)
+    if commit:
+        con.commit()
+
+
+def set_earliest_milestone_field(con, deal_id: int, field: str, value, commit: bool = True) -> dict:
+    """一覧インライン編集用: 未完了で最古のMSの1項目を更新（行が無ければキャッシュ現値を継いで新規作成）。
+    field は 'date'|'label'|'type'。キャッシュ再計算後、新キャッシュ値dictを返す。"""
+    col = {"date": "ms_date", "label": "ms_label", "type": "ms_type"}[field]
+    v = (str(value).strip() or None) if value is not None else None
+    row = con.execute(
+        "SELECT id FROM deal_milestones WHERE deal_id=? AND done=0 "
+        "ORDER BY (ms_date IS NULL OR ms_date='') ASC, ms_date ASC, id ASC LIMIT 1",
+        (int(deal_id),)).fetchone()
+    if row:
+        con.execute(f"UPDATE deal_milestones SET {col}=? WHERE id=?", (v, row["id"]))
+    else:
+        cur = con.execute("SELECT next_milestone_date, next_milestone_label, next_milestone_type "
+                          "FROM deals WHERE id=?", (int(deal_id),)).fetchone()
+        base = {"ms_date": cur["next_milestone_date"] if cur else None,
+                "ms_label": cur["next_milestone_label"] if cur else None,
+                "ms_type": cur["next_milestone_type"] if cur else None}
+        base[col] = v
+        con.execute("INSERT INTO deal_milestones (deal_id, ms_date, ms_label, ms_type, done) "
+                    "VALUES (?,?,?,?,0)",
+                    (int(deal_id), base["ms_date"], base["ms_label"], base["ms_type"]))
+    recompute_deal_next_milestone(con, deal_id, commit=False)
+    if commit:
+        con.commit()
+    r = con.execute("SELECT next_milestone_date, next_milestone_label, next_milestone_type "
+                    "FROM deals WHERE id=?", (int(deal_id),)).fetchone()
+    return dict(r) if r else {}
+
+
+def upsert_earliest_milestone(con, deal_id: int, *, date, label, ms_type, commit: bool = True) -> None:
+    """「現状更新」など単一MS入力用: 未完了で最古のMSを3値で更新（無ければ作成）→キャッシュ再計算。
+    3値すべて空なら何もしない（誤クリア防止）。"""
+    date = (date or "").strip()
+    label = (label or "").strip()
+    ms_type = (ms_type or "").strip()
+    row = con.execute(
+        "SELECT id FROM deal_milestones WHERE deal_id=? AND done=0 "
+        "ORDER BY (ms_date IS NULL OR ms_date='') ASC, ms_date ASC, id ASC LIMIT 1",
+        (int(deal_id),)).fetchone()
+    if not row and not (date or label or ms_type):
+        return
+    if row:
+        con.execute("UPDATE deal_milestones SET ms_date=?, ms_label=?, ms_type=? WHERE id=?",
+                    (date or None, label or None, ms_type or None, row["id"]))
+    else:
+        con.execute("INSERT INTO deal_milestones (deal_id, ms_date, ms_label, ms_type, done) "
+                    "VALUES (?,?,?,?,0)", (int(deal_id), date or None, label or None, ms_type or None))
+    recompute_deal_next_milestone(con, deal_id, commit=False)
+    if commit:
+        con.commit()
 
 
 def add_activity(con, *, deal_id, type=None, occurred_on=None, contact_name=None, body=None) -> int:

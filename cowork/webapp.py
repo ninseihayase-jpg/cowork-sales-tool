@@ -1743,6 +1743,8 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
     dev_by_deal: dict = {}
     for dp in sfa_db.list_dev_projects(con):
         dev_by_deal.setdefault(dp.get("deal_id"), []).append(dp)
+    # 次回MSの本数（#48）: 一覧の「ほかN件」バッジ用（未完了MSが2件以上のとき表示）
+    ms_counts = sfa_db.count_open_milestones(con, [d["id"] for d in deals])
 
     cb_th = ('<th class="sticky" style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択"'
              ' onchange="var v=this.checked;document.querySelectorAll(\'[name=ids]\').forEach(function(c){c.checked=v;});">'
@@ -1768,10 +1770,17 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         inp_ms_date = (f'<input type="date" value="{_esc(d.get("next_milestone_date"))}"'
                        f' onchange="updateDealField({did}, \'next_milestone_date\', this.value)"'
                        f' style="font-size:11px;padding:1px 2px">')
+        _ms_more = ms_counts.get(did, 0)
+        _ms_badge = (f'<a href="/deal/{did}" title="この商談の全MSを見る／編集" '
+                     f'style="display:inline-block;margin-left:5px;font-size:10px;background:#eef2ff;'
+                     f'color:#4338ca;border:1px solid #c7d2fe;border-radius:4px;padding:1px 5px;'
+                     f'text-decoration:none;white-space:nowrap">🔖ほか{_ms_more - 1}件</a>'
+                     if _ms_more >= 2 else "")
         inp_ms_label = (f'<input type="text" value="{_esc(d.get("next_milestone_label"))}"'
                         f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
                         f' style="font-size:11px;padding:1px 2px;width:130px"><br>'
-                        + _udeal_sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES, d.get("next_milestone_type") or ""))
+                        + _udeal_sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES, d.get("next_milestone_type") or "")
+                        + _ms_badge)
         tool_btns = " ".join(
             _tool_link_btn(dp.get("tool_url"), tool_id=dp.get("tool_login_id"), tool_password=dp.get("tool_login_pass"))
             for dp in dev_by_deal.get(did, [])
@@ -1841,6 +1850,51 @@ def _filter_deals_by_ms_type(deals: list, ms_type: str | None) -> list:
     if ms_type in sfa_db.NEXT_MS_TYPES:
         return [d for d in deals if (d.get("next_milestone_type") or "") == ms_type]
     return deals
+
+
+def _ms_type_options(selected: str = "") -> str:
+    """次回MS種別<select>の<option>群（先頭に空選択）。"""
+    return '<option value=""></option>' + "".join(
+        f'<option value="{_esc(t)}"{" selected" if t == selected else ""}>{_esc(t)}</option>'
+        for t in sfa_db.NEXT_MS_TYPES)
+
+
+def _ms_row_html(ms: dict) -> str:
+    """個別商談フォームの次回MS 1行分（日付/ラベル/種別/完了/削除）。"""
+    d = _esc(ms.get("ms_date") or "")
+    lb = _esc(ms.get("ms_label") or "")
+    tp = ms.get("ms_type") or ""
+    done = 1 if ms.get("done") else 0
+    return (
+        '<div class="ms-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap">'
+        f'<input type="date" name="ms_date[]" value="{d}" style="font-size:13px">'
+        f'<input type="text" name="ms_label[]" value="{lb}" placeholder="ラベル（例：初回アポ）" '
+        'style="flex:1;min-width:150px;font-size:13px">'
+        f'<select name="ms_type[]" style="font-size:13px;width:auto">{_ms_type_options(tp)}</select>'
+        '<span style="font-size:12px;display:inline-flex;align-items:center;gap:3px">'
+        f'<input type="checkbox" class="ms-done-chk"{" checked" if done else ""} '
+        "onchange=\"this.parentElement.querySelector('input[type=hidden]').value=this.checked?'1':'0'\">"
+        f'<input type="hidden" name="ms_done[]" value="{done}">完了</span>'
+        '<button type="button" class="btn sec" style="font-size:11px;padding:3px 8px" '
+        "onclick=\"this.closest('.ms-row').remove()\">削除</button>"
+        '</div>'
+    )
+
+
+def _ms_editor_html(milestones: list[dict]) -> str:
+    """個別商談フォームの次回MS複数行エディタ（行群＋追加ボタン＋テンプレ＋JS）。"""
+    rows = "".join(_ms_row_html(m) for m in milestones)
+    tpl = _ms_row_html({})  # 追加用の空行テンプレ
+    js = ("<script>function addMsRow(){"
+          "var w=document.getElementById('msRows');"
+          "var t=document.getElementById('msRowTpl');"
+          "w.insertAdjacentHTML('beforeend', t.innerHTML);}</script>")
+    return (
+        '<label>次回マイルストーン（複数設定可・未完了で最も早い日付が「次回MS」として集計されます）</label>'
+        f'<div id="msRows" style="margin:2px 0 6px">{rows}</div>'
+        '<button type="button" class="btn sec" style="font-size:12px" onclick="addMsRow()">＋ MSを追加</button>'
+        f'<template id="msRowTpl">{tpl}</template>' + js
+    )
 
 
 def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, label: str = "💾 保存") -> str:
@@ -2457,6 +2511,16 @@ def account_detail(con, acc: dict) -> str:
 
 def deal_form(con, deal=None) -> str:
     deal = deal or {}
+    # 次回MS（複数）。既存行があればそれを、無ければキャッシュから1行を仮生成（保存時に実体化）。
+    _ms_list = sfa_db.list_deal_milestones(con, deal["id"]) if deal.get("id") else []
+    if not _ms_list:
+        if deal.get("next_milestone_date") or deal.get("next_milestone_label"):
+            _ms_list = [{"ms_date": deal.get("next_milestone_date"),
+                         "ms_label": deal.get("next_milestone_label"),
+                         "ms_type": deal.get("next_milestone_type"), "done": 0}]
+        else:
+            _ms_list = [{}]  # 空行1つ
+    ms_editor_html = _ms_editor_html(_ms_list)
     accounts = sfa_db.list_accounts(con)
     acc_opts = ['<option value=""></option>']
     for a in accounts:
@@ -2795,13 +2859,8 @@ def deal_form(con, deal=None) -> str:
         <div><label>ステータス</label>
           <div style="padding:7px 0"><span class="stage">{'クローズ済' if deal.get('status') == 'closed' else '進行中'}</span>
           <span class="muted" style="font-size:11px;margin-left:6px">クローズは画面上部の「クローズ」ボタンから</span></div></div>
-        <div><label>次回MS日</label>
-          <input type="date" name="next_milestone_date" value="{_esc(deal.get('next_milestone_date'))}"></div>
-        <div><label>次回MSラベル</label>
-          <input name="next_milestone_label" value="{_esc(deal.get('next_milestone_label'))}"></div>
-        <div><label>次回MS種別 <span class="muted" style="font-weight:400;font-size:.8em">（タスクはSlackアポ通知に出さない）</span></label>
-          <select name="next_milestone_type">{_opt(sfa_db.NEXT_MS_TYPES, deal.get('next_milestone_type') or 'アポ')}</select></div>
       </div>
+      {ms_editor_html}
       <label>現状メモ</label><textarea name="note" rows="2">{_esc(deal.get('note'))}</textarea>
       <label>ゴール</label><textarea name="goal" rows="2">{_esc(deal.get('goal'))}</textarea>
       <div id="cost_section" style="{'display:none' if deal.get('business_type_l1') != 'コスト削減' else ''}">
@@ -7047,6 +7106,30 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         fee_rate=num("fee_rate"),
                         diagnosis_cost=num("diagnosis_cost"),
                     )
+                    # 次回MS（複数, #48）: フォームからのMS行で置き換え→キャッシュ(next_milestone_*)再計算。
+                    # deal_formは ms_*[] 配列を、quick-add等は単一 next_milestone_* を送る。両対応。
+                    _ms_dates = f_list.get("ms_date[]", [])
+                    if _ms_dates or ("ms_label[]" in f_list):
+                        _labels = f_list.get("ms_label[]", [])
+                        _types = f_list.get("ms_type[]", [])
+                        _dones = f_list.get("ms_done[]", [])
+                        _n = max(len(_ms_dates), len(_labels), len(_types))
+                        _items = [{
+                            "date": _ms_dates[i] if i < len(_ms_dates) else "",
+                            "label": _labels[i] if i < len(_labels) else "",
+                            "type": _types[i] if i < len(_types) else "",
+                            "done": (_dones[i] if i < len(_dones) else "0") == "1",
+                        } for i in range(_n)]
+                        sfa_db.set_deal_milestones(con, did, _items)
+                    elif f.get("next_milestone_date") or f.get("next_milestone_label"):
+                        sfa_db.set_deal_milestones(con, did, [{
+                            "date": f.get("next_milestone_date") or "",
+                            "label": f.get("next_milestone_label") or "",
+                            "type": f.get("next_milestone_type") or "",
+                            "done": False}])
+                    else:
+                        # MS欄を持たないフォーム: 既存MS行からキャッシュを復元（upsertのNULL上書きを打ち消す）
+                        sfa_db.recompute_deal_next_milestone(con, did)
                     # 終了理由はDEAL_FIELDS外（部分更新でのNULL上書き事故を避けるため個別UPDATE）。
                     # 送信された時のみ更新（空送信で既存値を消さない）。
                     _cr = f.get("close_reason")
@@ -7432,6 +7515,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 goal=deal.get("goal"),
                                 status=deal.get("status"),
                             )
+                            # 次回MS(複数, #48): 現状更新で入った値を最古MSへ反映（行とキャッシュを整合）
+                            if ms_date or ms_label or f.get("next_milestone_type"):
+                                sfa_db.upsert_earliest_milestone(
+                                    con, did,
+                                    date=ms_date or deal.get("next_milestone_date"),
+                                    label=ms_label or deal.get("next_milestone_label"),
+                                    ms_type=f.get("next_milestone_type") or deal.get("next_milestone_type"))
                     self._redirect(f"/deal/{did}")
 
                 # ── 商談インライン編集 ──
@@ -7464,6 +7554,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 )
                                 con.commit()
                                 _ok = True
+                        elif field in ("next_milestone_date", "next_milestone_label", "next_milestone_type"):
+                            # 次回MSは複数対応（#48）: 未完了で最古のMSを更新（無ければ作成）→キャッシュ再計算
+                            _mf = {"next_milestone_date": "date", "next_milestone_label": "label",
+                                   "next_milestone_type": "type"}[field]
+                            sfa_db.set_earliest_milestone_field(con, deal_id, _mf, value)
+                            _ok = True
                         else:
                             con.execute(
                                 f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
@@ -7778,6 +7874,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 note=update_note or deal.get("note"),
                                 goal=deal.get("goal"), status=deal.get("status"),
                             )
+                            # 次回MS(複数, #48): 現状更新値を最古MSへ反映（行とキャッシュを整合）
+                            if ms_date or ms_label or f.get("next_milestone_type"):
+                                sfa_db.upsert_earliest_milestone(
+                                    con, deal_id,
+                                    date=ms_date or deal.get("next_milestone_date"),
+                                    label=ms_label or deal.get("next_milestone_label"),
+                                    ms_type=f.get("next_milestone_type") or deal.get("next_milestone_type"))
                     if theme_client is not None:
                         try:
                             theme_link.sync_deal(theme_client, con, deal_id)
