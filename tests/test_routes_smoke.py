@@ -352,10 +352,47 @@ def test_health_ok_without_auth(server):
     assert resp.read() == b'{"status":"ok"}'
 
 
-def test_get_root_without_auth_is_401(server):
+def test_get_root_without_auth_redirects_to_login(server):
+    # 未認証GETは /login へ302誘導（ネイティブBasicダイアログは出さない, #54）。
+    # urllibはリダイレクトを追うため最終的にログイン画面(200)に着地する。
     code, resp = _get(server + "/")
+    assert code == 200
+    assert resp.geturl().rstrip("/").endswith("/login") or "/login?" in resp.geturl()
+    body = resp.read().decode("utf-8")
+    assert 'name="password"' in body and "ログイン" in body
+
+
+def test_basic_auth_still_works(server):
+    # 従来のBasic認証は併存（PC等の既存運用を壊さない）。
+    code, resp = _get(server + "/", headers=_auth_header())
+    assert code == 200
+
+
+def test_form_login_sets_cookie_and_grants_access(server):
+    import http.cookies
+    # 誤資格情報→401（ログイン画面再表示）
+    code, _ = _post(server + "/login", {"username": BASIC_USER, "password": "wrong", "next": "/"})
     assert code == 401
-    assert resp.headers.get("WWW-Authenticate") is not None
+    # 正しい資格情報→303 + Set-Cookie（urllibは303を追うのでHTTPErrorにならずcookieを拾えないため手動）
+    body = urllib.parse.urlencode({"username": BASIC_USER, "password": BASIC_PASS, "next": "/"}).encode()
+    req = urllib.request.Request(server + "/login", data=body,
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        opener.open(req, timeout=10)
+        setcookie = None
+    except urllib.error.HTTPError as e:
+        assert e.code == 303
+        setcookie = e.headers.get("Set-Cookie")
+    assert setcookie and "sfa_session=" in setcookie
+    ck = http.cookies.SimpleCookie(setcookie)
+    tok = ck["sfa_session"].value
+    # 取得したセッションCookieで保護ページにアクセスできる
+    code, _ = _get(server + "/", headers={"Cookie": f"sfa_session={tok}"})
+    assert code == 200
 
 
 def test_basic_auth_fails_closed_with_503_when_unset(db_path, monkeypatch):

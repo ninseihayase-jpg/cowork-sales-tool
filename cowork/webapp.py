@@ -9,15 +9,18 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import html
 import json
 import os
 import re
 import threading
+import time
 import urllib.parse
 import urllib.request
 from datetime import date, timedelta
+from http.cookies import SimpleCookie
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -31,9 +34,67 @@ from . import dev_project_link
 
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-# ブラウザ向け全ページのBasic認証（未設定時はfail-closed=全拒否）
+# ブラウザ向け全ページの認証（未設定時はfail-closed=全拒否）。
+# フォームログイン(Cookieセッション)＋従来のBasic認証の両方を受け付ける（#54: モバイルのBasic認証
+# ダイアログでループする問題への対応。ネイティブダイアログを出さずログイン画面へ誘導する）。
 SFA_BASIC_USER = os.environ.get("SFA_BASIC_USER", "")
 SFA_BASIC_PASS = os.environ.get("SFA_BASIC_PASS", "")
+_SESSION_COOKIE = "sfa_session"
+_SESSION_MAX_AGE = 30 * 86400  # 30日
+
+
+def _session_secret() -> bytes:
+    # 署名鍵はパスワードから派生（パスワード変更で既存セッションは自動失効）。
+    return hashlib.sha256(("sfa-session|" + (SFA_BASIC_PASS or "")).encode("utf-8")).digest()
+
+
+def _make_session_token() -> str:
+    exp = int(time.time()) + _SESSION_MAX_AGE
+    sig = hmac.new(_session_secret(), str(exp).encode(), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def _valid_session_token(tok: str) -> bool:
+    try:
+        exp_s, sig = (tok or "").split(".", 1)
+        exp = int(exp_s)
+    except (ValueError, AttributeError):
+        return False
+    if exp < int(time.time()):
+        return False
+    good = hmac.new(_session_secret(), str(exp).encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, good)
+
+
+def login_page(next_url: str = "/", error: str = "") -> bytes:
+    """ネイティブBasic認証ダイアログの代わりに出すログイン画面（モバイル安定）。"""
+    nxt = next_url if next_url.startswith("/") else "/"
+    err_html = (f'<p style="color:#b91c1c;font-size:13px;margin:0 0 10px">{html.escape(error)}</p>'
+                if error else "")
+    body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ログイン ・ Inproc Salesforce</title>
+<style>
+ body{{font-family:system-ui,'Hiragino Kaku Gothic ProN',sans-serif;background:#f4f6f9;margin:0;
+   display:flex;min-height:100vh;align-items:center;justify-content:center;color:#1d2430}}
+ .box{{background:#fff;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.10);padding:28px 26px;width:340px;max-width:92vw}}
+ h1{{font-size:17px;margin:0 0 4px}} .sub{{color:#8893a8;font-size:12px;margin:0 0 18px}}
+ label{{display:block;font-size:12px;color:#6b7689;margin:12px 0 4px}}
+ input{{width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #d4dae4;border-radius:8px;font-size:16px}}
+ button{{width:100%;margin-top:18px;background:#2f6fed;color:#fff;border:0;border-radius:9px;padding:12px;font-size:15px;cursor:pointer}}
+</style></head><body>
+<form class="box" method="post" action="/login">
+  <h1>Inproc Salesforce</h1>
+  <p class="sub">ログインしてください</p>
+  {err_html}
+  <input type="hidden" name="next" value="{html.escape(nxt)}">
+  <label>ユーザー名</label>
+  <input name="username" autocapitalize="off" autocorrect="off" autocomplete="username" spellcheck="false" required>
+  <label>パスワード</label>
+  <input type="password" name="password" autocapitalize="off" autocomplete="current-password" required>
+  <button type="submit">ログイン</button>
+</form></body></html>"""
+    return body.encode("utf-8")
 
 INPROC_MEMBERS = [
     ("吉江", "takuya.yoshie@inproc.org"),
@@ -366,6 +427,7 @@ function escH(s) {{
       <a href="/masters">⚙ マスタ編集</a>
       <a href="/dev-point-master">🎯 開発点数マスタ</a>
       <a href="/backups">🗄 バックアップ</a>
+      <a href="/logout">🚪 ログアウト</a>
     </div>
   </details>
   <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#e0e8ff;text-decoration:none">InProc dashboard ↗</a>
@@ -6370,32 +6432,49 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             return urllib.parse.parse_qs(qs_raw)
 
         def _check_basic_auth(self) -> bool:
-            """ブラウザ向け全ルートのBasic認証。
+            """ブラウザ向け全ルートの認証（フォームCookieセッション or 従来のBasic認証を許可）。
 
-            除外: /health（Render死活監視）、/api/*（トークン認証）、/slack/*（署名検証）。
-            SFA_BASIC_USER/SFA_BASIC_PASS 未設定時はfail-closed（503でアクセス拒否）。
-            認証NGなら401+WWW-Authenticateを返しFalse。呼び出し側は即returnすること。
+            除外: /health, /api/*, /slack/*, /login, /logout, /favicon.ico。
+            SFA_BASIC_USER/SFA_BASIC_PASS 未設定時はfail-closed（503）。
+            未認証: GETは /login へ302誘導（ネイティブBasicダイアログを出さない＝モバイルのループ回避, #54）、
+            それ以外は401 JSON。呼び出し側は即returnすること。
             """
             path = self.path.split("?")[0].rstrip("/") or "/"
-            if path == "/health" or path.startswith("/api/") or path.startswith("/slack/"):
+            if (path in ("/health", "/login", "/logout", "/favicon.ico")
+                    or path.startswith("/api/") or path.startswith("/slack/")):
                 return True
             if not SFA_BASIC_USER or not SFA_BASIC_PASS:
                 body = ("<h1>503</h1><p>SFA_BASIC_USER / SFA_BASIC_PASS が未設定のため"
                         "アクセスを拒否しています（fail-closed）。環境変数を設定してください。</p>").encode("utf-8")
                 self._send(body, status=503)
                 return False
+            # 1) フォームログインの署名Cookieセッション
+            try:
+                ck = SimpleCookie(self.headers.get("Cookie", ""))
+                sess = ck[_SESSION_COOKIE].value if _SESSION_COOKIE in ck else ""
+            except Exception:  # noqa: BLE001 — 壊れたCookieヘッダは未認証扱い
+                sess = ""
+            if sess and _valid_session_token(sess):
+                return True
+            # 2) 従来のBasic認証（PC等の既存運用を壊さないため併存）
             header = self.headers.get("Authorization", "")
             if header.startswith("Basic "):
                 try:
                     userpass = base64.b64decode(header[6:]).decode("utf-8")
-                except Exception:
+                except Exception:  # noqa: BLE001
                     userpass = ""
                 if hmac.compare_digest(userpass, f"{SFA_BASIC_USER}:{SFA_BASIC_PASS}"):
                     return True
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="Inproc Salesforce"')
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+            # 未認証 → ログイン画面へ（ネイティブダイアログは出さない）
+            if self.command == "GET":
+                nxt = urllib.parse.quote(self.path, safe="")
+                self.send_response(302)
+                self.send_header("Location", f"/login?next={nxt}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self._send(json.dumps({"error": "unauthorized"}).encode(), status=401,
+                           ctype="application/json")
             return False
 
         def do_GET(self):
@@ -6406,6 +6485,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             try:
                 if path == "/health":
                     self._send(b'{"status":"ok"}', ctype="application/json")
+                elif path == "/login":
+                    _nxt = self._qs().get("next", ["/"])[0] or "/"
+                    self._send(login_page(_nxt), ctype="text/html; charset=utf-8")
+                elif path == "/logout":
+                    self.send_response(302)
+                    self.send_header("Location", "/login")
+                    self.send_header("Set-Cookie",
+                                     f"{_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
                 elif (path.startswith("/deal/") and path.endswith("/milestones")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     # 一覧のMS管理パネル用: 商談の全MSをJSONで返す（レガシーは初回に実体化）
@@ -6964,8 +7053,30 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     f_list = {k: v for k, v in d.items()}
                     f = {k: (v[0] if v else "") for k, v in d.items()}
 
+                # ── ログイン（フォーム認証・Cookieセッション付与, #54） ──
+                if path == "/login":
+                    _u = f.get("username", "")
+                    _p = f.get("password", "")
+                    _nxt = f.get("next", "/") or "/"
+                    if not _nxt.startswith("/"):
+                        _nxt = "/"
+                    if (SFA_BASIC_USER and SFA_BASIC_PASS
+                            and hmac.compare_digest(_u, SFA_BASIC_USER)
+                            and hmac.compare_digest(_p, SFA_BASIC_PASS)):
+                        _secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "") == "https" else ""
+                        self.send_response(303)
+                        self.send_header("Location", _nxt)
+                        self.send_header("Set-Cookie",
+                                         f"{_SESSION_COOKIE}={_make_session_token()}; Path=/; HttpOnly; "
+                                         f"SameSite=Lax; Max-Age={_SESSION_MAX_AGE}{_secure}")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                    else:
+                        self._send(login_page(_nxt, error="ユーザー名またはパスワードが違います。"),
+                                   status=401, ctype="text/html; charset=utf-8")
+
                 # ── マスタ ──
-                if path == "/masters/save":
+                elif path == "/masters/save":
                     for key in sfa_db.MASTER_KEYS:
                         values = f_list.get(f"{key}[]", [])
                         values = [v.strip() for v in values if v.strip()]
