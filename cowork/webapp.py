@@ -322,7 +322,16 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  .dash-card .count{{font-size:28px;font-weight:700;color:#2f6fed;margin-bottom:10px}}
  .dash-card .actions{{display:flex;gap:8px;flex-wrap:wrap}}
  .btn.ext{{background:#f3f0ff;color:#5b21b6}}
- @media(max-width:640px){{.grid{{grid-template-columns:1fr}}.full{{grid-column:1}}.hide-sm{{display:none}}table{{display:block;overflow-x:auto}}}}
+ /* スマホ対応（#54）: 折返しヘッダー/保存バーが画面を占有しないよう非固定化・余白圧縮・1カラム化 */
+ @media(max-width:640px){{
+   .grid{{grid-template-columns:1fr}} .full{{grid-column:1}} .hide-sm{{display:none}}
+   table{{display:block;overflow-x:auto}}
+   main{{margin:12px auto;padding:0 10px}}
+   header{{position:static;padding:8px 12px;gap:8px 10px}}
+   header h1{{font-size:15px;width:100%}}
+   .save-bar{{position:static}}
+   .card{{padding:14px 14px}}
+ }}
 </style>
 <script>
 /* 全ページ共通: JSでHTMLを組み立てる際のエスケープ（XSS防止）。動的optionやinnerHTML挿入で必ず使う */
