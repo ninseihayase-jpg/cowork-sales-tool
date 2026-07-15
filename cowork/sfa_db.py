@@ -1183,6 +1183,72 @@ def set_earliest_milestone_field(con, deal_id: int, field: str, value, commit: b
     return dict(r) if r else {}
 
 
+def get_deal_milestone(con, ms_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM deal_milestones WHERE id=?", (int(ms_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def add_deal_milestone(con, deal_id: int, *, date=None, label=None, ms_type=None,
+                       done: bool = False, commit: bool = True) -> int:
+    """MSを1件追加→キャッシュ再計算。追加行のidを返す。"""
+    cur = con.execute(
+        "INSERT INTO deal_milestones (deal_id, ms_date, ms_label, ms_type, done) VALUES (?,?,?,?,?)",
+        (int(deal_id), (date or "").strip() or None, (label or "").strip() or None,
+         (ms_type or "").strip() or None, 1 if done else 0))
+    recompute_deal_next_milestone(con, deal_id, commit=False)
+    if commit:
+        con.commit()
+    return cur.lastrowid
+
+
+def update_deal_milestone(con, ms_id: int, field: str, value, commit: bool = True) -> int | None:
+    """MS1件の1項目(date|label|type|done)を更新→キャッシュ再計算。所属deal_idを返す（無ければNone）。"""
+    col = {"date": "ms_date", "label": "ms_label", "type": "ms_type", "done": "done"}.get(field)
+    if not col:
+        return None
+    r = con.execute("SELECT deal_id FROM deal_milestones WHERE id=?", (int(ms_id),)).fetchone()
+    if not r:
+        return None
+    if field == "done":
+        v = 1 if str(value) in ("1", "true", "True", "on") else 0
+    else:
+        v = (str(value).strip() or None) if value is not None else None
+    con.execute(f"UPDATE deal_milestones SET {col}=? WHERE id=?", (v, int(ms_id)))
+    recompute_deal_next_milestone(con, r["deal_id"], commit=False)
+    if commit:
+        con.commit()
+    return r["deal_id"]
+
+
+def delete_deal_milestone(con, ms_id: int, commit: bool = True) -> int | None:
+    """MS1件を削除→キャッシュ再計算。所属deal_idを返す（無ければNone）。"""
+    r = con.execute("SELECT deal_id FROM deal_milestones WHERE id=?", (int(ms_id),)).fetchone()
+    if not r:
+        return None
+    con.execute("DELETE FROM deal_milestones WHERE id=?", (int(ms_id),))
+    recompute_deal_next_milestone(con, r["deal_id"], commit=False)
+    if commit:
+        con.commit()
+    return r["deal_id"]
+
+
+def ensure_milestones_materialized(con, deal_id: int, commit: bool = True) -> None:
+    """MS行が無く、キャッシュ(next_milestone_*)に値があれば1行として実体化する。
+    一覧のMSパネル初回表示で、レガシー/単一入力の商談にも行を用意するため。"""
+    n = con.execute("SELECT COUNT(*) c FROM deal_milestones WHERE deal_id=?", (int(deal_id),)).fetchone()["c"]
+    if n:
+        return
+    d = con.execute("SELECT next_milestone_date, next_milestone_label, next_milestone_type "
+                    "FROM deals WHERE id=?", (int(deal_id),)).fetchone()
+    if d and (d["next_milestone_date"] or d["next_milestone_label"]):
+        con.execute("INSERT INTO deal_milestones (deal_id, ms_date, ms_label, ms_type, done) "
+                    "VALUES (?,?,?,?,0)",
+                    (int(deal_id), d["next_milestone_date"], d["next_milestone_label"],
+                     d["next_milestone_type"]))
+        if commit:
+            con.commit()
+
+
 def upsert_earliest_milestone(con, deal_id: int, *, date, label, ms_type, commit: bool = True) -> None:
     """「現状更新」など単一MS入力用: 未完了で最古のMSを3値で更新（無ければ作成）→キャッシュ再計算。
     3値すべて空なら何もしない（誤クリア防止）。"""

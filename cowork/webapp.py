@@ -1767,20 +1767,21 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         inp_total = (f'<input type="number" step="0.1" value="{_esc(d.get("value_lumpsum") or "")}"'
                      f' onchange="updateDealField({did}, \'value_lumpsum\', this.value)"'
                      f' style="font-size:11px;padding:1px 2px;width:72px">')
-        inp_ms_date = (f'<input type="date" value="{_esc(d.get("next_milestone_date"))}"'
+        inp_ms_date = (f'<input type="date" id="msdate_{did}" value="{_esc(d.get("next_milestone_date"))}"'
                        f' onchange="updateDealField({did}, \'next_milestone_date\', this.value)"'
                        f' style="font-size:11px;padding:1px 2px">')
-        _ms_more = ms_counts.get(did, 0)
-        _ms_badge = (f'<a href="/deal/{did}" title="この商談の全MSを見る／編集" '
-                     f'style="display:inline-block;margin-left:5px;font-size:10px;background:#eef2ff;'
-                     f'color:#4338ca;border:1px solid #c7d2fe;border-radius:4px;padding:1px 5px;'
-                     f'text-decoration:none;white-space:nowrap">🔖ほか{_ms_more - 1}件</a>'
-                     if _ms_more >= 2 else "")
-        inp_ms_label = (f'<input type="text" value="{_esc(d.get("next_milestone_label"))}"'
+        _ms_open = ms_counts.get(did, 0)
+        # 一覧から全MSを確認/追加/編集できるパネルのトリガー（未完了2件以上は強調）
+        _ms_trigger = (
+            f'<button type="button" id="mstrg_{did}" class="ms-trigger{" has-multi" if _ms_open >= 2 else ""}" '
+            f'onclick="openMsPanel({did}, this)" title="この商談の次回MSを一覧・追加・編集">'
+            f'🗂 MS·<span id="mscount_{did}">{_ms_open}</span></button>')
+        inp_ms_label = (f'<input type="text" id="mslabel_{did}" value="{_esc(d.get("next_milestone_label"))}"'
                         f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
                         f' style="font-size:11px;padding:1px 2px;width:130px"><br>'
+                        + f'<span id="mstype_{did}">'
                         + _udeal_sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES, d.get("next_milestone_type") or "")
-                        + _ms_badge)
+                        + '</span> ' + _ms_trigger)
         tool_btns = " ".join(
             _tool_link_btn(dp.get("tool_url"), tool_id=dp.get("tool_login_id"), tool_password=dp.get("tool_login_pass"))
             for dp in dev_by_deal.get(did, [])
@@ -1830,7 +1831,112 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         )
     body = "".join(rows) or f'<tr><td colspan={16 if bulk else 15} class=muted>商談がありません。</td></tr>'
     return (f'<div style="overflow:auto;max-height:70vh"><table style="min-width:1560px">'
-            f'{header}{body}</table></div>')
+            f'{header}{body}</table></div>' + _MS_PANEL_BLOCK)
+
+
+# 一覧の「次回MS」欄から全MSを確認/追加/編集/削除するポップオーバー（#48）。全タブ共通・1回だけ出力。
+_MS_PANEL_BLOCK = """
+<style>
+.ms-trigger{font-size:10px;background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;border-radius:5px;
+  padding:1px 6px;cursor:pointer;white-space:nowrap}
+.ms-trigger:hover{background:#e2e8f0}
+.ms-trigger.has-multi{background:#eef2ff;color:#4338ca;border-color:#c7d2fe;font-weight:700}
+#dealMsPanel{position:fixed;z-index:1200;display:none;background:#fff;border:1px solid #cbd5e1;
+  border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.22);padding:12px 14px;width:430px;max-width:94vw;
+  max-height:70vh;overflow:auto;font-size:12px}
+#dealMsPanel h4{margin:0 0 8px;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+#dealMsPanel .msp-row,#dealMsPanel .msp-add{display:flex;gap:5px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
+#dealMsPanel input[type=date]{font-size:12px;padding:2px 4px}
+#dealMsPanel input[type=text]{font-size:12px;padding:2px 4px;flex:1;min-width:110px}
+#dealMsPanel select{font-size:12px;padding:2px 4px;width:auto}
+#dealMsPanel .msp-add{border-top:1px dashed #e2e8f0;padding-top:8px;margin-top:6px}
+#dealMsPanel .msp-del{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:5px;
+  cursor:pointer;padding:1px 7px;font-size:12px}
+#dealMsPanel .msp-add-btn{background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer;padding:3px 10px;font-size:12px}
+#dealMsPanel .msp-hint{color:#64748b;font-size:10px;margin:0 0 8px}
+</style>
+<div id="dealMsPanel"></div>
+<script>
+(function(){
+  var TYPES=['アポ','タスク'];
+  function esc(s){return (s==null?'':String(s)).replace(/[&<>\\"]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','\\"':'&quot;'}[c];});}
+  function typeOpts(v){var o='<option value=""></option>';TYPES.forEach(function(t){
+    o+='<option value="'+t+'"'+(t===v?' selected':'')+'>'+t+'</option>';});return o;}
+  function panelEl(){var p=document.getElementById('dealMsPanel');return p;}
+  function post(url,body){return fetch(url,{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body}).then(function(r){return r.json();});}
+  function syncInline(d){
+    var did=d.deal_id,c=d.cache||{};
+    var dt=document.getElementById('msdate_'+did); if(dt) dt.value=c.date||'';
+    var lb=document.getElementById('mslabel_'+did); if(lb) lb.value=c.label||'';
+    var tw=document.getElementById('mstype_'+did); if(tw){var s=tw.querySelector('select'); if(s) s.value=c.type||'';}
+    var cnt=document.getElementById('mscount_'+did); if(cnt) cnt.textContent=d.open_count;
+    var trg=document.getElementById('mstrg_'+did); if(trg){ if(d.open_count>=2) trg.classList.add('has-multi'); else trg.classList.remove('has-multi'); }
+  }
+  function render(d, keepPos){
+    var p=panelEl(); window.__msDid=d.deal_id;
+    var rows=(d.milestones||[]).map(function(m){
+      return '<div class="msp-row">'
+        +'<input type="date" data-mid="'+m.id+'" data-mf="date" value="'+esc(m.date)+'">'
+        +'<input type="text" data-mid="'+m.id+'" data-mf="label" value="'+esc(m.label)+'" placeholder="ラベル">'
+        +'<select data-mid="'+m.id+'" data-mf="type">'+typeOpts(m.type)+'</select>'
+        +'<label style="font-size:11px"><input type="checkbox" data-mid="'+m.id+'" data-mf="done"'+(m.done?' checked':'')+'>完了</label>'
+        +'<button type="button" class="msp-del" data-del="'+m.id+'">×</button>'
+        +'</div>';
+    }).join('');
+    if(!rows) rows='<p class="msp-hint">MSはまだありません。下で追加してください。</p>';
+    var add='<div class="msp-add">'
+      +'<input type="date" id="mspNewDate">'
+      +'<input type="text" id="mspNewLabel" placeholder="ラベル（例：初回アポ）">'
+      +'<select id="mspNewType">'+typeOpts('')+'</select>'
+      +'<button type="button" class="msp-add-btn" data-add="1">＋追加</button></div>';
+    p.innerHTML='<h4>次回マイルストーン <span data-close="1" style="cursor:pointer;color:#94a3b8">✕</span></h4>'
+      +'<p class="msp-hint">未完了で最も早い日付が「次回MS」として集計されます。変更は即保存されます。</p>'
+      +rows+add;
+    p.querySelectorAll('[data-mf]').forEach(function(el){
+      el.addEventListener('change',function(){
+        var val=(el.type==='checkbox')?(el.checked?'1':'0'):el.value;
+        post('/milestone/'+el.dataset.mid+'/field','field='+encodeURIComponent(el.dataset.mf)+'&value='+encodeURIComponent(val))
+          .then(function(r){ if(r&&r.ok!==false){ render(r,true); syncInline(r);} });
+      });
+    });
+    p.querySelectorAll('[data-del]').forEach(function(el){
+      el.addEventListener('click',function(){ if(!confirm('このMSを削除しますか？')) return;
+        post('/milestone/'+el.dataset.del+'/delete','').then(function(r){ if(r&&r.ok!==false){ render(r,true); syncInline(r);} });
+      });
+    });
+    var addBtn=p.querySelector('[data-add]');
+    if(addBtn) addBtn.addEventListener('click',function(){
+      var dd=document.getElementById('mspNewDate').value;
+      var ll=document.getElementById('mspNewLabel').value;
+      var tt=document.getElementById('mspNewType').value;
+      if(!dd&&!ll){ alert('日付かラベルを入力してください。'); return; }
+      post('/deal/'+window.__msDid+'/milestones/add','ms_date='+encodeURIComponent(dd)+'&ms_label='+encodeURIComponent(ll)+'&ms_type='+encodeURIComponent(tt))
+        .then(function(r){ if(r&&r.ok!==false){ render(r,true); syncInline(r);} });
+    });
+    var cl=p.querySelector('[data-close]'); if(cl) cl.addEventListener('click',closePanel);
+  }
+  function closePanel(){var p=panelEl(); if(p) p.style.display='none';}
+  window.openMsPanel=function(did, btn){
+    fetch('/deal/'+did+'/milestones').then(function(r){return r.json();}).then(function(d){
+      var p=panelEl(); render(d,false); p.style.display='block';
+      var rc=btn.getBoundingClientRect();
+      var left=Math.min(rc.left, window.innerWidth-p.offsetWidth-10);
+      var top=rc.bottom+6;
+      if(top+p.offsetHeight>window.innerHeight) top=Math.max(8, window.innerHeight-p.offsetHeight-8);
+      p.style.left=Math.max(8,left)+'px'; p.style.top=top+'px';
+    });
+  };
+  document.addEventListener('click',function(e){
+    var p=panelEl(); if(!p||p.style.display!=='block') return;
+    if(p.contains(e.target)) return;
+    if(e.target.closest('.ms-trigger')) return;
+    closePanel();
+  });
+})();
+</script>
+"""
 
 
 def _ms_type_opts(ms_type: str | None) -> str:
@@ -1895,6 +2001,20 @@ def _ms_editor_html(milestones: list[dict]) -> str:
         '<button type="button" class="btn sec" style="font-size:12px" onclick="addMsRow()">＋ MSを追加</button>'
         f'<template id="msRowTpl">{tpl}</template>' + js
     )
+
+
+def _ms_panel_json(con, deal_id: int) -> dict:
+    """一覧のMS管理パネル用JSON（全MS＋キャッシュ＋未完了件数）。"""
+    ms = sfa_db.list_deal_milestones(con, deal_id)
+    d = sfa_db.get_deal(con, deal_id) or {}
+    return {
+        "ok": True, "deal_id": deal_id,
+        "milestones": [{"id": m["id"], "date": m.get("ms_date") or "", "label": m.get("ms_label") or "",
+                        "type": m.get("ms_type") or "", "done": bool(m.get("done"))} for m in ms],
+        "cache": {"date": d.get("next_milestone_date") or "", "label": d.get("next_milestone_label") or "",
+                  "type": d.get("next_milestone_type") or ""},
+        "open_count": sum(1 for m in ms if not m.get("done")),
+    }
 
 
 def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, label: str = "💾 保存") -> str:
@@ -6274,6 +6394,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             try:
                 if path == "/health":
                     self._send(b'{"status":"ok"}', ctype="application/json")
+                elif (path.startswith("/deal/") and path.endswith("/milestones")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # 一覧のMS管理パネル用: 商談の全MSをJSONで返す（レガシーは初回に実体化）
+                    _did = int(path.split("/")[2])
+                    sfa_db.ensure_milestones_materialized(con, _did)
+                    self._send(json.dumps(_ms_panel_json(con, _did), ensure_ascii=False).encode(),
+                               ctype="application/json")
                 elif path == "/api/deals":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
@@ -7576,6 +7703,63 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _err = "不正なリクエスト"
                     _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
                     self._send(_resp, ctype="application/json")
+
+                # ── 次回MS（複数）一覧パネル操作（#48）: 追加/項目更新/削除。応答は最新の全MS ──
+                elif (path.startswith("/deal/") and path.endswith("/milestones/add")
+                      and len(path.split("/")) == 5 and path.split("/")[2].isdigit()):
+                    _did = int(path.split("/")[2])
+                    _mt = f.get("ms_type") or ""
+                    if _mt and _mt not in sfa_db.NEXT_MS_TYPES:
+                        self._send(json.dumps({"ok": False, "error": "不正な種別"}).encode(),
+                                   ctype="application/json")
+                    else:
+                        sfa_db.add_deal_milestone(con, _did, date=f.get("ms_date"),
+                                                  label=f.get("ms_label"), ms_type=_mt)
+                        if theme_client is not None:
+                            try:
+                                theme_link.sync_deal(theme_client, con, _did)
+                            except Exception as _exc:  # noqa: BLE001
+                                print(f"[theme_link] sync_deal failed: {_exc}")
+                        self._send(json.dumps(_ms_panel_json(con, _did), ensure_ascii=False).encode(),
+                                   ctype="application/json")
+
+                elif (path.startswith("/milestone/") and path.endswith("/field")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _mid = int(path.split("/")[2])
+                    _field = f.get("field", "")
+                    _value = f.get("value", "")
+                    if _field == "type" and _value and _value not in sfa_db.NEXT_MS_TYPES:
+                        self._send(json.dumps({"ok": False, "error": "不正な種別"}).encode(),
+                                   ctype="application/json")
+                    else:
+                        _did = sfa_db.update_deal_milestone(con, _mid, _field, _value)
+                        if _did and theme_client is not None:
+                            try:
+                                theme_link.sync_deal(theme_client, con, _did)
+                            except Exception as _exc:  # noqa: BLE001
+                                print(f"[theme_link] sync_deal failed: {_exc}")
+                        if _did:
+                            self._send(json.dumps(_ms_panel_json(con, _did), ensure_ascii=False).encode(),
+                                       ctype="application/json")
+                        else:
+                            self._send(json.dumps({"ok": False, "error": "見つかりません"}).encode(),
+                                       status=404, ctype="application/json")
+
+                elif (path.startswith("/milestone/") and path.endswith("/delete")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _mid = int(path.split("/")[2])
+                    _did = sfa_db.delete_deal_milestone(con, _mid)
+                    if _did and theme_client is not None:
+                        try:
+                            theme_link.sync_deal(theme_client, con, _did)
+                        except Exception as _exc:  # noqa: BLE001
+                            print(f"[theme_link] sync_deal failed: {_exc}")
+                    if _did:
+                        self._send(json.dumps(_ms_panel_json(con, _did), ensure_ascii=False).encode(),
+                                   ctype="application/json")
+                    else:
+                        self._send(json.dumps({"ok": False, "error": "見つかりません"}).encode(),
+                                   status=404, ctype="application/json")
 
                 elif path.startswith("/dev-project/") and path.endswith("/field"):
                     _DEV_PROJECT_ALLOWED_FIELDS = {
