@@ -365,6 +365,8 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  .btn.sec{{background:#e8edf7;color:#33406b}} .btn.sync{{background:#0c9b6a}}
  label{{display:block;font-size:12px;color:#6b7689;margin:10px 0 3px}}
  input,select,textarea{{width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid #d4dae4;border-radius:6px;font-size:13px;font-family:inherit}}
+ /* 自由記述textarea共通: フォーカスで拡大・blurで縮小(ヒアリング欄と統一した挙動) #55 */
+ .ta-expand{{transition:height .15s ease}}
  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}} .full{{grid-column:1/3}}
  .muted{{color:#8893a8;font-size:12px}} .right{{text-align:right}}
  .flash{{background:#e6f7ef;color:#0c6b4a;padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px}}
@@ -400,6 +402,9 @@ function escH(s) {{
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }}
+/* 全ページ共通: 自由記述textareaの挙動。フォーカスで広げ(8行)、離れたら入力ありは4行・空は2行に戻す(#55) */
+function taExpand(el) {{ el.rows = 8; }}
+function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
 </script>
 </head><body>
 <header>
@@ -453,7 +458,7 @@ _CLOSE_MODAL_HTML = (
     '<label>終了理由 <span style="color:#c53030">＊必須</span></label>'
     f'<select name="close_reason" id="closeModalReason" required><option value="">選択してください</option>{_CLOSE_REASON_OPTS}</select>'
     '<label>詳細（任意）</label>'
-    '<textarea name="memo" rows="3" placeholder="補足があれば"></textarea>'
+    '<textarea name="memo" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3" placeholder="補足があれば"></textarea>'
     '<p class="muted" style="font-size:11px;margin:8px 0 12px">この商談はクローズされ、リード（フォロー中）に戻ります。</p>'
     '<div style="display:flex;gap:8px;justify-content:flex-end">'
     '<button type="button" class="btn sec" onclick="closeCloseModal()">キャンセル</button>'
@@ -2539,7 +2544,7 @@ def account_form(con, acc=None) -> str:
           <select name="company_size">{_opt(sfa_db.COMPANY_SIZES, acc.get('company_size'))}</select>
         </div>
       </div>
-      <label>メモ</label><textarea name="note" rows="2">{_esc(acc.get('note'))}</textarea>
+      <label>メモ</label><textarea name="note" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(acc.get('note'))}</textarea>
       <p><button class="btn">保存</button> <a class="btn sec" href="{cancel_url}">キャンセル</a></p>
     </form></div>"""
 
@@ -2865,7 +2870,6 @@ def deal_form(con, deal=None) -> str:
                 </tr>"""
             deal_issues_html = f"""
         <style>
-        .di-autogrow {{ transition: height .15s ease; }}
         {AI_SUMMARY_HOVER_CSS}
         </style>
         <div class="card">
@@ -2879,8 +2883,6 @@ def deal_form(con, deal=None) -> str:
           </table>
         </div>
         <script>
-        function diAutogrow(el) {{ el.rows = 8; }}
-        function diAutoshrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
         {DEAL_ISSUE_INLINE_EDIT_JS}
         </script>"""
         else:
@@ -2956,7 +2958,7 @@ def deal_form(con, deal=None) -> str:
             <div><label>種別</label><select name="type">{_opt(sfa_db.ACTIVITY_TYPES, '面談')}</select></div>
             <div><label>相手</label><input name="contact_name" placeholder="例：田中部長"></div>
           </div>
-          <label>内容・決定事項</label><textarea name="body" rows="3"></textarea>
+          <label>内容・決定事項</label><textarea name="body" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3"></textarea>
           <div style="margin-top:10px;padding:12px;background:#f8f9fa;border-radius:6px">
             <p style="margin:0 0 8px;font-size:.9em;font-weight:600;color:#555">商談の現状を更新</p>
             <div class="grid">
@@ -2964,7 +2966,7 @@ def deal_form(con, deal=None) -> str:
               <div><label>次回MSラベル</label><input name="next_milestone_label" value="{_esc(deal.get('next_milestone_label'))}"></div>
               <div><label>次回MS種別</label><select name="next_milestone_type">{_opt(sfa_db.NEXT_MS_TYPES, deal.get('next_milestone_type') or 'アポ')}</select></div>
             </div>
-            <label>現状メモ</label><textarea name="update_note" rows="2">{_esc(deal.get('note'))}</textarea>
+            <label>現状メモ</label><textarea name="update_note" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(deal.get('note'))}</textarea>
           </div>
           <p><button class="btn sec">活動を追加して更新</button></p>
         </form></div>"""
@@ -3055,8 +3057,8 @@ def deal_form(con, deal=None) -> str:
           <span class="muted" style="font-size:11px;margin-left:6px">クローズは画面上部の「クローズ」ボタンから</span></div></div>
       </div>
       {ms_editor_html}
-      <label>現状メモ</label><textarea name="note" rows="2">{_esc(deal.get('note'))}</textarea>
-      <label>ゴール</label><textarea name="goal" rows="2">{_esc(deal.get('goal'))}</textarea>
+      <label>現状メモ</label><textarea name="note" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(deal.get('note'))}</textarea>
+      <label>ゴール</label><textarea name="goal" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(deal.get('goal'))}</textarea>
       <div id="cost_section" style="{'display:none' if deal.get('business_type_l1') != 'コスト削減' else ''}">
         <hr style="margin:16px 0">
         <p style="font-weight:600;margin-bottom:8px;color:#555">コスト削減モデル詳細</p>
@@ -3560,7 +3562,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
           </div>
         </div>
         <label>開発テーマ詳細</label>
-        <textarea name="theme_detail" rows="3">{_esc(p.get('theme_detail'))}</textarea>
+        <textarea name="theme_detail" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3">{_esc(p.get('theme_detail'))}</textarea>
         <div class="grid">
           <div><label>状況</label><select name="status">{_opt(sfa_db.DEV_PROJECT_STATUSES, p.get('status'))}</select></div>
           <div><label>提供先</label><select name="dev_audience">{_opt(sfa_db.DEV_AUDIENCES, p.get('dev_audience'))}</select></div>
@@ -3586,7 +3588,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
           <div><label>開発MS</label><input name="dev_milestone" value="{_esc(p.get('dev_milestone'))}"></div>
         </div>
         <label>開発方針</label>
-        <textarea name="dev_policy" rows="3">{_esc(p.get('dev_policy'))}</textarea>
+        <textarea name="dev_policy" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3">{_esc(p.get('dev_policy'))}</textarea>
         <label>必要な技術シード（複数選択可）</label>
         <div style="margin:2px 0 4px;padding:8px 10px;border:1px solid #e6e9f0;border-radius:8px;background:#fafbfc">
           {tech_seeds_block}
@@ -3797,8 +3799,8 @@ def _issue_memo_panel_html(memos: list[dict], issue: dict, *, return_to: str) ->
       <div style="max-height:220px;overflow-y:auto;margin-bottom:8px">{memo_html}</div>
       <form method="post" action="/deal-issue/{issue['id']}/memo">
         <input type="hidden" name="return_to" value="{_esc(return_to)}">
-        <textarea name="body" class="di-autogrow" rows="2" placeholder="メモを追加"
-          onfocus="diAutogrow(this)" onblur="diAutoshrink(this)" required
+        <textarea name="body" class="ta-expand" rows="2" placeholder="メモを追加"
+          onfocus="taExpand(this)" onblur="taShrink(this)" required
           style="width:100%;box-sizing:border-box"></textarea>
         <p style="margin-top:6px"><button class="btn sec" type="submit">メモを追加</button></p>
       </form>
@@ -3863,7 +3865,6 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
 
     return f"""
     <style>
-    .di-autogrow {{ transition: height .15s ease; }}
     {AI_SUMMARY_HOVER_CSS}
     </style>
     <div class="card">
@@ -3882,8 +3883,6 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
       </div>
     </div>
     <script>
-    function diAutogrow(el) {{ el.rows = 8; }}
-    function diAutoshrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
     {DEAL_ISSUE_INLINE_EDIT_JS}
     </script>"""
 
@@ -4641,7 +4640,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                 f'<input class="tl-event-label" value="{_esc(_ms)}" placeholder="マイルストーン名" onfocus="this.select()">'
                 f'<button type="button" class="tl-del-btn" onclick="tlDelEvent(this)">✕</button>'
                 f'</div>'
-                f'<textarea class="tl-note" rows="2" placeholder="詳細・メモ"></textarea>'
+                f'<textarea class="tl-note ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2" placeholder="詳細・メモ"></textarea>'
                 f'</div>'
                 f'</div>'
                 for _ms in _tl_milestones
@@ -4739,20 +4738,20 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
                     f' placeholder="ステップ名"></td>'
                     f'<td class="yb-dept-cell"><input class="yb-row-dept" value="{_esc(_r.get("dept",""))}"'
                     f' placeholder="部署名"></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-content hq-autogrow" rows="2"'
-                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-content ta-expand" rows="2"'
+                    f' onfocus="taExpand(this)" onblur="taShrink(this)"'
                     f' placeholder="作業内容">{_esc(_r.get("content",""))}</textarea></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-output hq-autogrow" rows="2"'
-                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-output ta-expand" rows="2"'
+                    f' onfocus="taExpand(this)" onblur="taShrink(this)"'
                     f' placeholder="アウトプット">{_esc(_r.get("output",""))}</textarea></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-issue hq-autogrow" rows="2"'
-                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-issue ta-expand" rows="2"'
+                    f' onfocus="taExpand(this)" onblur="taShrink(this)"'
                     f' placeholder="現行課題">{_esc(_r.get("issue",""))}</textarea></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-target hq-autogrow" rows="2"'
-                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-target ta-expand" rows="2"'
+                    f' onfocus="taExpand(this)" onblur="taShrink(this)"'
                     f' placeholder="目指す姿">{_esc(_r.get("target",""))}</textarea></td>'
-                    f'<td class="yb-wide-cell"><textarea class="yb-row-target-number hq-autogrow" rows="2"'
-                    f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
+                    f'<td class="yb-wide-cell"><textarea class="yb-row-target-number ta-expand" rows="2"'
+                    f' onfocus="taExpand(this)" onblur="taShrink(this)"'
                     f' placeholder="目標数値（作業時間等）">{_esc(_r.get("target_number",""))}</textarea></td>'
                     f'<td class="yb-del-cell"><button type="button" class="yb-del-row-btn"'
                     f' onclick="ybDelRow(this)">✕</button></td>'
@@ -4815,8 +4814,8 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
             val = _esc(pv if isinstance(pv, str) else "")
             fields_html += (f'<div class="hq-item{branch_class}"{branch_attrs} style="margin:10px 0">'
                             f'<label>{label}{req}</label>'
-                            f'<textarea name="answer_{i}" rows="2" class="hq-autogrow"'
-                            f' onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)"'
+                            f'<textarea name="answer_{i}" rows="2" class="ta-expand"'
+                            f' onfocus="taExpand(this)" onblur="taShrink(this)"'
                             f'{req_attr}>{val}</textarea></div>')
 
     prev_note = (f'<p class="muted" style="font-size:12px;margin:0 0 10px">'
@@ -4852,7 +4851,6 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
     return f"""
     <style>
     .hq-branch {{ transition: opacity .25s, filter .25s; }}
-    .hq-autogrow {{ transition: height .15s ease; }}
     .hq-branch.hq-inactive {{ opacity: .38; filter: grayscale(.35); }}
     .hq-branch.hq-inactive > label:first-child {{ color: #aaa; }}
     .hq-sticky {{
@@ -4965,7 +4963,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
             <div><label>種別</label><select name="type">{_opt(sfa_db.get_master_list(con,'activity_types'), '面談')}</select></div>
             <div><label>相手</label><input name="contact_name" placeholder="例：田中部長"></div>
           </div>
-          <label>内容・決定事項</label><textarea name="body" rows="3"></textarea>
+          <label>内容・決定事項</label><textarea name="body" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3"></textarea>
           <div style="margin-top:10px;padding:12px;background:#f8f9fa;border-radius:6px">
             <p style="margin:0 0 8px;font-size:.9em;font-weight:600;color:#555">商談の現状を更新（任意）</p>
             <div class="grid">
@@ -4973,7 +4971,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
               <div><label>次回MSラベル</label><input name="next_milestone_label"></div>
               <div><label>次回MS種別</label><select name="next_milestone_type">{_opt(sfa_db.NEXT_MS_TYPES, 'アポ')}</select></div>
             </div>
-            <label>現状メモ</label><textarea name="update_note" rows="2"></textarea>
+            <label>現状メモ</label><textarea name="update_note" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2"></textarea>
           </div>
         </div>
         <div style="margin-top:16px"><button class="btn" type="submit">保存（活動履歴＋ヒアリング結果を記録）</button>
@@ -4981,9 +4979,6 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       </form>
     </div>
     <script>
-    // 自由記述欄: フォーカス時に大きく広げ、離れたら空なら小さく戻す(入力中の視認性を確保)
-    function hqAutogrow(el) {{ el.rows = 8; }}
-    function hqAutoshrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
     // ページ共通ヘッダー(position:sticky)の実高さ分だけ、このページ内のstickyバーを下にずらす
     (function() {{
       var pageHeader = document.querySelector('header');
@@ -5045,7 +5040,7 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
         +'<input class="tl-event-label" placeholder="マイルストーン名" onfocus="this.select()">'
         +'<button type="button" class="tl-del-btn" onclick="tlDelEvent(this)">✕</button>'
         +'</div>'
-        +'<textarea class="tl-note" rows="2" placeholder="詳細・メモ"></textarea>'
+        +'<textarea class="tl-note ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2" placeholder="詳細・メモ"></textarea>'
         +'</div>';
       track.appendChild(ev);
     }}
@@ -5110,11 +5105,11 @@ def hearing_input_page(con, *, target_type, target_id, template, target_label,
       return '<tr class="yb-row">' +
         '<td class="yb-step-cell"><input class="yb-row-step" value="'+esc(step)+'" placeholder="ステップ名"></td>' +
         '<td class="yb-dept-cell"><input class="yb-row-dept" value="'+esc(dept)+'" placeholder="部署名"></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-content hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="作業内容"></textarea></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-output hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="アウトプット"></textarea></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-issue hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="現行課題"></textarea></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-target hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="目指す姿"></textarea></td>' +
-        '<td class="yb-wide-cell"><textarea class="yb-row-target-number hq-autogrow" rows="2" onfocus="hqAutogrow(this)" onblur="hqAutoshrink(this)" placeholder="目標数値（作業時間等）"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-content ta-expand" rows="2" onfocus="taExpand(this)" onblur="taShrink(this)" placeholder="作業内容"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-output ta-expand" rows="2" onfocus="taExpand(this)" onblur="taShrink(this)" placeholder="アウトプット"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-issue ta-expand" rows="2" onfocus="taExpand(this)" onblur="taShrink(this)" placeholder="現行課題"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-target ta-expand" rows="2" onfocus="taExpand(this)" onblur="taShrink(this)" placeholder="目指す姿"></textarea></td>' +
+        '<td class="yb-wide-cell"><textarea class="yb-row-target-number ta-expand" rows="2" onfocus="taExpand(this)" onblur="taShrink(this)" placeholder="目標数値（作業時間等）"></textarea></td>' +
         '<td class="yb-del-cell"><button type="button" class="yb-del-row-btn" onclick="ybDelRow(this)">✕</button></td>' +
       '</tr>';
     }}
@@ -6118,7 +6113,7 @@ def lead_form(con, lead=None) -> str:
             <div><label>種別</label><select name="type">{act_type_opts}</select></div>
             <div><label>担当者</label><select name="author">{_opt(sfa_db.get_master_list(con,'owners'), None)}</select></div>
           </div>
-          <label>内容 *</label><textarea name="content" rows="2" required></textarea>
+          <label>内容 *</label><textarea name="content" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2" required></textarea>
           <p><button class="btn sec">活動を追加</button></p>
         </form></div>"""
 
@@ -6168,7 +6163,7 @@ def lead_form(con, lead=None) -> str:
           <div><label>終了理由 <span class="muted" style="font-weight:400;font-size:.8em">（lost時）</span></label>
             <select name="lost_reason"><option value="">（なし）</option>{_opt(sfa_db.CLOSE_REASONS, lead.get('lost_reason'))}</select></div>
         </div>
-        <label>メモ</label><textarea name="notes" rows="2">{_esc(lead.get('notes'))}</textarea>
+        <label>メモ</label><textarea name="notes" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(lead.get('notes'))}</textarea>
         <p style="display:flex;flex-wrap:wrap;gap:8px">
           <button class="btn">保存</button>
           <a class="btn sec" href="/leads">一覧へ</a>
