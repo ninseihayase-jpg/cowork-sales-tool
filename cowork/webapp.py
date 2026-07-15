@@ -1849,7 +1849,7 @@ _MS_PANEL_BLOCK = """
 #dealMsPanel input[type=date]{font-size:12px;padding:2px 4px}
 #dealMsPanel input[type=text]{font-size:12px;padding:2px 4px;flex:1;min-width:110px}
 #dealMsPanel select{font-size:12px;padding:2px 4px;width:auto}
-#dealMsPanel .msp-add{border-top:1px dashed #e2e8f0;padding-top:8px;margin-top:6px}
+#dealMsPanel .msp-add{border-bottom:1px dashed #cbd5e1;padding-bottom:10px;margin-bottom:10px;background:#f8fafc;border-radius:6px;padding:8px}
 #dealMsPanel .msp-del{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:5px;
   cursor:pointer;padding:1px 7px;font-size:12px}
 #dealMsPanel .msp-add-btn{background:#4f46e5;color:#fff;border:0;border-radius:6px;cursor:pointer;padding:3px 10px;font-size:12px}
@@ -1876,7 +1876,10 @@ _MS_PANEL_BLOCK = """
   }
   function render(d, keepPos){
     var p=panelEl(); window.__msDid=d.deal_id;
-    var rows=(d.milestones||[]).map(function(m){
+    var mss=(d.milestones||[]).slice().sort(function(a,b){
+      var da=a.date||'',db=b.date||''; if(!da&&!db)return 0; if(!da)return -1; if(!db)return 1;
+      return db.localeCompare(da);});  // 新しい日付→古い日付（最古＝次回MSが一番下・空欄は上）
+    var rows=mss.map(function(m){
       return '<div class="msp-row">'
         +'<input type="date" data-mid="'+m.id+'" data-mf="date" value="'+esc(m.date)+'">'
         +'<input type="text" data-mid="'+m.id+'" data-mf="label" value="'+esc(m.label)+'" placeholder="ラベル">'
@@ -1885,15 +1888,15 @@ _MS_PANEL_BLOCK = """
         +'<button type="button" class="msp-del" data-del="'+m.id+'">×</button>'
         +'</div>';
     }).join('');
-    if(!rows) rows='<p class="msp-hint">MSはまだありません。下で追加してください。</p>';
+    if(!rows) rows='<p class="msp-hint">MSはまだありません。上の欄で追加してください。</p>';
     var add='<div class="msp-add">'
       +'<input type="date" id="mspNewDate">'
       +'<input type="text" id="mspNewLabel" placeholder="ラベル（例：初回アポ）">'
       +'<select id="mspNewType">'+typeOpts('')+'</select>'
       +'<button type="button" class="msp-add-btn" data-add="1">＋追加</button></div>';
     p.innerHTML='<h4>次回マイルストーン <span data-close="1" style="cursor:pointer;color:#94a3b8">✕</span></h4>'
-      +'<p class="msp-hint">未完了で最も早い日付が「次回MS」として集計されます。変更は即保存されます。</p>'
-      +rows+add;
+      +'<p class="msp-hint">新規入力は一番上。下ほど古い日付で、最下段の最も早い日付が「次回MS」として集計されます。変更は即保存。</p>'
+      +add+rows;
     p.querySelectorAll('[data-mf]').forEach(function(el){
       el.addEventListener('change',function(){
         var val=(el.type==='checkbox')?(el.checked?'1':'0'):el.value;
