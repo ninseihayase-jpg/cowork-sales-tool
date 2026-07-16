@@ -6576,6 +6576,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         effective = None if status_q == "all" else status_q
                         deals = sfa_db.list_deals(con, status=effective)
                         self._send(json.dumps([dict(d) for d in deals], ensure_ascii=False, default=str).encode(), ctype="application/json")
+                elif path == "/api/deal_issues":
+                    # 論点リマインド(#47)用: 議論中の論点一覧（deal/account名JOIN込み）。トークン認証。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send(b'{"error":"unauthorized"}', status=401, ctype="application/json")
+                    else:
+                        _st = (qs.get("status", ["議論中"])[0] or "議論中")
+                        issues = sfa_db.list_deal_issues(con, status=(None if _st == "all" else _st))
+                        self._send(json.dumps([dict(r) for r in issues], ensure_ascii=False, default=str).encode(),
+                                   ctype="application/json")
                 elif path == "/api/dev_projects":
                     # スプシ出力用: 開発案件一覧（deals/accounts JOIN込み）
                     qs = self._qs()
