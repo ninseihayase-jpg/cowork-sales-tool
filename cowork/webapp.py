@@ -2880,7 +2880,7 @@ def deal_form(con, deal=None) -> str:
           <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
             <span>開発案件（{len(dps)}件）</span>{add_btn}
           </h2>
-          <table><tr><th>テーマ</th><th>ステージ</th><th>状況</th><th>受注余地</th><th>開発担当</th><th>期限</th><th>ツール</th></tr>{dp_rows}</table>
+          <table><tr><th>テーマ</th><th>ステージ</th><th>状況</th><th>受注余地</th><th>開発担当</th><th>開発期限</th><th>ツール</th></tr>{dp_rows}</table>
         </div>"""
         else:
             dev_projects_html = f"""
@@ -3218,7 +3218,7 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
       <select name="status" onchange="this.form.submit()">{_fopt(sfa_db.DEV_PROJECT_STATUSES, status).replace('全て', '状況:全て', 1)}</select>
       <select name="stage" onchange="this.form.submit()">{_fopt(sfa_db.DEV_PROJECT_STAGES, stage).replace('全て', 'ステージ:全て', 1)}</select>
       <select name="order_potential" onchange="this.form.submit()">{_fopt(sfa_db.DEV_ORDER_POTENTIALS, order_potential).replace('全て', '受注余地:全て', 1)}</select>
-      <input type="week" name="deadline_week" value="{_esc(deadline_week)}" title="期限（週）で絞り込み" onchange="this.form.submit()">
+      <input type="week" name="deadline_week" value="{_esc(deadline_week)}" title="開発期限（週）で絞り込み" onchange="this.form.submit()">
       <a class="btn sec" href="/dev-projects">リセット</a>
     </form>"""
 
@@ -3315,7 +3315,7 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
         <tr><th class="sticky frz" style="left:0;width:34px;min-width:34px;max-width:34px"><input type="checkbox" id="dp_chk_all" title="全選択"
               onchange="document.querySelectorAll('#dp_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
             <th class="sticky frz" style="left:34px;width:240px;min-width:240px;max-width:240px">開発テーマ</th><th class="sticky frz" style="left:274px;width:150px;min-width:150px;max-width:150px">商談</th>{_sticky_th('ステージ', '84px')}{_sticky_th('提供先', '88px')}{_sticky_th('作業種別', '144px')}{_sticky_th('難易度', '76px')}{_sticky_th('BE有無', '80px')}{_sticky_th('課金', '78px')}{_sticky_th('状況', '84px')}{_sticky_th('受注余地', '76px')}{_sticky_th('点数', '56px')}
-            {_sticky_th('開発担当', '88px')}{_sticky_th('営業担当', '88px')}{_sticky_th('期限', '88px')}{_sticky_th('技術シード', '180px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
+            {_sticky_th('開発担当', '88px')}{_sticky_th('営業担当', '88px')}{_sticky_th('開発期限', '88px')}{_sticky_th('技術シード', '180px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
         {rows}
       </table>
       </div>
@@ -3620,7 +3620,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
             <label>開発テーマ詳細</label>
             <textarea name="theme_detail" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3">{_esc(p.get('theme_detail'))}</textarea>
             <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
-              <div style="flex:1;min-width:130px"><label>期限</label>
+              <div style="flex:1;min-width:130px"><label>開発期限</label>
                 <input type="date" name="deadline" value="{_esc(p.get('deadline'))}" style="width:100%"></div>
               <div style="flex:1;min-width:130px"><label>開発MS日</label>
                 <input type="date" name="dev_milestone_date" value="{_esc(p.get('dev_milestone_date'))}" style="width:100%"></div>
@@ -3655,7 +3655,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         </div>
         <label>受注余地（自動判定）</label>
         <div><span class="stage" id="dpOrderPotential">{_esc(p.get('order_potential') or '（保存時に判定）')}</span></div>
-        <label>開発開始日〜終了日（期限から自動計算・読み取り専用。以後の調整はHisho側ダッシュボードで行う）</label>
+        <label>開発開始日〜終了日（開発期限から自動計算・読み取り専用。以後の調整はHisho側ダッシュボードで行う）</label>
         <div class="muted">{_esc(p.get('dev_start_date') or '—')} 〜 {_esc(p.get('dev_end_date') or '—')}{'' if is_edit else '（保存時に自動計算）'}</div>
         <label>技術サポート</label>
         <input name="tech_support" value="{_esc(p.get('tech_support'))}">
