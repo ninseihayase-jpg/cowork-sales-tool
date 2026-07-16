@@ -277,13 +277,15 @@ def _tool_link_btn(url, label: str = "🔧 ツール", *, tool_id=None, tool_pas
     )
 
 
-def _seed_line(seeds: str | None) -> str:
-    """開発案件一覧向け: 技術シード(カンマ区切り)を1行・省略表示（行高を変えない）。"""
-    s = (seeds or "").strip()
-    if not s:
-        return ""
-    return (f'<div class="muted" style="font-size:10px;white-space:nowrap;overflow:hidden;'
-            f'text-overflow:ellipsis" title="{_esc(s)}">🔧 {_esc(s.replace(",", " / "))}</div>')
+def _seed_chips(seeds: str | None) -> str:
+    """開発案件一覧の専用列: 技術シード(カンマ区切り)を小さなチップで表示（複数を見やすく折返し）。"""
+    items = [s.strip() for s in (seeds or "").split(",") if s.strip()]
+    if not items:
+        return '<span class="muted" style="font-size:11px">—</span>'
+    return "".join(
+        f'<span style="display:inline-block;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;'
+        f'border-radius:5px;padding:1px 6px;margin:0 3px 3px 0;font-size:10px;white-space:nowrap">'
+        f'{_esc(s)}</span>' for s in items)
 
 
 def _chips(values) -> str:
@@ -3216,8 +3218,7 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
         f'<td class="frz" style="left:34px;width:240px;min-width:240px;max-width:240px;white-space:normal;word-break:break-word">'
         f'<a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
         f'<div class="muted dp-detail" title="{_esc(p.get("theme_detail") or "")}" '
-        f'style="font-size:11px;word-break:break-word">{_esc(p.get("theme_detail") or "")}</div>'
-        f'{_seed_line(p.get("tech_seeds"))}</td>'
+        f'style="font-size:11px;word-break:break-word">{_esc(p.get("theme_detail") or "")}</div></td>'
         f'<td class="frz" style="left:274px;width:150px;min-width:150px;max-width:150px;white-space:normal;word-break:break-word">'
         f'<a href="/deal/{p["deal_id"]}">{_esc(p.get("account_name"))}</a>'
         f'<div class="muted">{_esc(p.get("deal_name"))}</div>'
@@ -3236,12 +3237,13 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
         f'<td>{_dsel(p["id"], "dev_owner", _dp_owners, p.get("dev_owner") or "")}</td>'
         f'<td>{_esc(p.get("sales_owner"))}{(" / " + _esc(p["sales_sub_owner"])) if p.get("sales_sub_owner") else ""}</td>'
         f'<td>{_esc(p.get("deadline") or "—")}</td>'
+        f'<td style="white-space:normal;min-width:170px;max-width:220px">{_seed_chips(p.get("tech_seeds"))}</td>'
         f'<td>{_tool_cell(p)}</td>'
         f'<td><form method="post" action="/dev-project/{p["id"]}/delete" style="display:inline" '
         f'onsubmit="return confirm(\'削除しますか？\')">'
         f'<button class="btn sec" style="font-size:11px;padding:4px 8px">削除</button></form></td></tr>'
         for p in projects
-    ) or '<tr><td colspan=17 class=muted>開発案件がまだありません</td></tr>'
+    ) or '<tr><td colspan=18 class=muted>開発案件がまだありません</td></tr>'
     _pts_total = sum(float(p.get("dev_points") or 0) for p in projects)
     return f"""
     <div class="card">
@@ -3262,11 +3264,11 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
       </div>
       <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
-      <table id="dpTable" style="min-width:1740px">
+      <table id="dpTable" style="min-width:1920px">
         <tr><th class="sticky frz" style="left:0;width:34px;min-width:34px;max-width:34px"><input type="checkbox" id="dp_chk_all" title="全選択"
               onchange="document.querySelectorAll('#dp_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
             <th class="sticky frz" style="left:34px;width:240px;min-width:240px;max-width:240px">開発テーマ</th><th class="sticky frz" style="left:274px;width:150px;min-width:150px;max-width:150px">商談</th>{_sticky_th('ステージ', '84px')}{_sticky_th('提供先', '88px')}{_sticky_th('作業種別', '144px')}{_sticky_th('難易度', '76px')}{_sticky_th('BE有無', '80px')}{_sticky_th('課金', '78px')}{_sticky_th('状況', '84px')}{_sticky_th('受注余地', '76px')}{_sticky_th('点数', '56px')}
-            {_sticky_th('開発担当', '88px')}{_sticky_th('営業担当', '88px')}{_sticky_th('期限', '88px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
+            {_sticky_th('開発担当', '88px')}{_sticky_th('営業担当', '88px')}{_sticky_th('期限', '88px')}{_sticky_th('技術シード', '180px')}{_sticky_th('ツール')}{_sticky_th('')}</tr>
         {rows}
       </table>
       </div>
