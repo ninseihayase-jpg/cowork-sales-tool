@@ -3522,9 +3522,11 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
     _seed_opts = sfa_db.get_master_list(con, "tech_seeds")
     _seed_sel = {s for s in (p.get("tech_seeds") or "").split(",") if s}
     tech_seeds_block = "".join(
-        f'<label style="display:inline-flex;align-items:center;gap:4px;margin:0 12px 6px 0;font-weight:400">'
-        f'<input type="checkbox" name="tech_seeds" value="{_esc(s)}"{" checked" if s in _seed_sel else ""}>'
-        f' {_esc(s)}</label>'
+        f'<label style="display:flex;align-items:flex-start;gap:6px;font-weight:400;font-size:13px;'
+        f'line-height:1.35;margin:0;cursor:pointer">'
+        f'<input type="checkbox" name="tech_seeds" value="{_esc(s)}"{" checked" if s in _seed_sel else ""}'
+        f' style="margin-top:2px;flex:0 0 auto;width:auto">'
+        f'<span>{_esc(s)}</span></label>'
         for s in _seed_opts
     ) or '<span class="muted">技術シードのマスタが未設定です（管理→マスタで追加できます）</span>'
 
@@ -3592,7 +3594,8 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         <label>開発方針</label>
         <textarea name="dev_policy" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3">{_esc(p.get('dev_policy'))}</textarea>
         <label>必要な技術シード（複数選択可）</label>
-        <div style="margin:2px 0 4px;padding:8px 10px;border:1px solid #e6e9f0;border-radius:8px;background:#fafbfc">
+        <div style="margin:2px 0 4px;padding:10px 12px;border:1px solid #e6e9f0;border-radius:8px;background:#fafbfc;
+          display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 14px">
           {tech_seeds_block}
         </div>
         <div style="margin-top:16px">
