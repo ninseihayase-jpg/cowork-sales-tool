@@ -3613,18 +3613,34 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         {return_to_field}
         <label>商談</label>
         {deal_field_html}
-        <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
-          <div style="flex:1;min-width:260px">
+        <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">
+          <div style="flex:1.6;min-width:340px">
             <label>開発テーマ *</label>
             <input name="theme" required value="{_esc(p.get('theme'))}" style="width:100%">
+            <label>開発テーマ詳細</label>
+            <textarea name="theme_detail" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3">{_esc(p.get('theme_detail'))}</textarea>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px">
+              <div style="flex:1;min-width:130px"><label>期限</label>
+                <input type="date" name="deadline" value="{_esc(p.get('deadline'))}" style="width:100%"></div>
+              <div style="flex:1;min-width:130px"><label>開発MS日</label>
+                <input type="date" name="dev_milestone_date" value="{_esc(p.get('dev_milestone_date'))}" style="width:100%"></div>
+              <div style="flex:1.5;min-width:170px"><label>開発MS</label>
+                <input name="dev_milestone" value="{_esc(p.get('dev_milestone'))}" list="devMsList"
+                  placeholder="例: 2次商談（デモあり）" style="width:100%">
+                <datalist id="devMsList"><option value="2次商談（デモあり）"></option><option value="初回デモ"></option>
+                  <option value="要件定義完了"></option><option value="本番リリース"></option></datalist></div>
+            </div>
           </div>
-          <div style="min-width:170px">
+          <div style="flex:1;min-width:280px">
             <label>開発点数（自動・約20点≒1FTE）</label>
             <div id="dpPoints" class="stage" style="font-size:15px;padding:6px 12px;text-align:center">—</div>
+            <label>必要な技術シード（カテゴリ別・複数選択可）</label>
+            <div style="margin:2px 0 4px;padding:10px 12px;border:1px solid #e6e9f0;border-radius:8px;
+              background:#fafbfc;max-height:360px;overflow:auto">
+              {tech_seeds_block}
+            </div>
           </div>
         </div>
-        <label>開発テーマ詳細</label>
-        <textarea name="theme_detail" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3">{_esc(p.get('theme_detail'))}</textarea>
         <div class="grid">
           <div><label>状況</label><select name="status">{_opt(sfa_db.DEV_PROJECT_STATUSES, p.get('status'))}</select></div>
           <div><label>提供先</label><select name="dev_audience">{_opt(sfa_db.DEV_AUDIENCES, p.get('dev_audience'))}</select></div>
@@ -3636,7 +3652,6 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
           <div><label>実現難易度</label><select name="difficulty" id="dpDifficulty" onchange="dpRecalcPotential();dpRecalcPoints()">{_opt(sfa_db.DEV_DIFFICULTIES, p.get('difficulty'))}</select></div>
           <div><label>予算確認</label><select name="budget_confirmed" id="dpBudget" onchange="dpRecalcPotential()">{_opt(sfa_db.DEV_BUDGET_CONFIRMED, p.get('budget_confirmed'))}</select></div>
           <div><label>開発担当</label><select name="dev_owner">{_opt(owners, p.get('dev_owner'))}</select></div>
-          <div><label>期限</label><input type="date" name="deadline" value="{_esc(p.get('deadline'))}"></div>
         </div>
         <label>受注余地（自動判定）</label>
         <div><span class="stage" id="dpOrderPotential">{_esc(p.get('order_potential') or '（保存時に判定）')}</span></div>
@@ -3645,16 +3660,8 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         <label>技術サポート</label>
         <input name="tech_support" value="{_esc(p.get('tech_support'))}">
         {sales_owner_block}
-        <div class="grid">
-          <div><label>開発MS日</label><input type="date" name="dev_milestone_date" value="{_esc(p.get('dev_milestone_date'))}"></div>
-          <div><label>開発MS</label><input name="dev_milestone" value="{_esc(p.get('dev_milestone'))}"></div>
-        </div>
         <label>開発方針</label>
         <textarea name="dev_policy" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3">{_esc(p.get('dev_policy'))}</textarea>
-        <label>必要な技術シード（カテゴリ別・複数選択可）</label>
-        <div style="margin:2px 0 4px;padding:10px 12px;border:1px solid #e6e9f0;border-radius:8px;background:#fafbfc">
-          {tech_seeds_block}
-        </div>
         <div style="margin-top:16px">
           <button class="btn" type="submit">保存</button>
           <a class="btn sec" href="{_esc(back_href)}">キャンセル</a>
