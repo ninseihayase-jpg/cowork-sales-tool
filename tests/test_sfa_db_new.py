@@ -116,6 +116,26 @@ def test_deal_milestones_cache_and_earliest(con, acc_id):
     assert sfa_db.count_open_milestones(con, [did]).get(did, 0) == 0
 
 
+def test_tech_seed_tree_roundtrip(con):
+    # デフォルトはL1=4カテゴリ、基礎技術に初期シード
+    t = sfa_db.get_tech_seed_tree(con)
+    assert list(t.keys())[0] == "基礎技術" and len(t["基礎技術"]) > 0
+    assert "研究テーマ(SCM)" in t
+    # 保存: 空カテゴリ名は除外・L2重複除去・順序保持
+    sfa_db.set_tech_seed_tree(con, {
+        "基礎技術": ["LLM/生成AI", "RAG", "RAG"],   # 重複はまとめる
+        "研究テーマ(SCM)": ["需要予測", "在庫最適化"],
+        "   ": ["捨てられる"],                        # 空L1名→除外
+        "研究テーマ(建設)": [],
+    })
+    t2 = sfa_db.get_tech_seed_tree(con)
+    assert list(t2.keys()) == ["基礎技術", "研究テーマ(SCM)", "研究テーマ(建設)"]
+    assert t2["基礎技術"] == ["LLM/生成AI", "RAG"]
+    # leaf → L1 マップ
+    assert sfa_db.tech_seed_l1_of(con)["需要予測"] == "研究テーマ(SCM)"
+    assert "需要予測" in sfa_db.tech_seed_leaves(con)
+
+
 def test_list_deals_by_week(con, acc_id):
     mk = lambda **k: sfa_db.upsert_deal(con, account_id=acc_id, **k)
     # 2026-W29 = 2026-07-13(月)〜2026-07-19(日)

@@ -433,6 +433,7 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
       <a href="/sync-health">🔍 同期チェック</a>
       <a href="/masters">⚙ マスタ編集</a>
       <a href="/dev-point-master">🎯 開発点数マスタ</a>
+      <a href="/tech-seed-master">🌱 技術シードマスタ</a>
       <a href="/backups">🗄 バックアップ</a>
       <a href="/logout">🚪 ログアウト</a>
     </div>
@@ -1666,6 +1667,52 @@ def backups_page(db_path: str) -> str:
       </table>
       </div>
     </div>"""
+
+
+def _tech_seed_block(l1: str, leaves: list) -> str:
+    """技術シードマスタの1カテゴリ(L1)ブロック: カテゴリ名＋L2シード(1行ずつ)のtextarea。"""
+    lines = "\n".join(leaves)
+    return (
+        '<div class="ts-block" style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;'
+        'margin-bottom:10px;background:#fafbfc">'
+        '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">'
+        f'<input name="l1_name[]" value="{_esc(l1)}" placeholder="カテゴリ名（例: 研究テーマ(SCM)）" '
+        'style="flex:1;font-weight:700">'
+        '<button type="button" class="btn sec" style="font-size:11px;white-space:nowrap" '
+        "onclick=\"this.closest('.ts-block').remove()\">このカテゴリを削除</button>"
+        '</div>'
+        f'<textarea name="l2_lines[]" rows="6" placeholder="シードを1行ずつ入力" '
+        f'style="font-size:13px">{_esc(lines)}</textarea>'
+        '</div>')
+
+
+def tech_seed_master_page(con) -> str:
+    """技術シード マスタ（ツリー: L1カテゴリ→L2シード）の編集ページ（#60）。"""
+    tree = sfa_db.get_tech_seed_tree(con)
+    blocks = "".join(_tech_seed_block(l1, leaves) for l1, leaves in tree.items()) \
+        or _tech_seed_block("", [])
+    return f"""
+    <div class="card" style="max-width:920px">
+      <p style="margin:0 0 10px"><a class="btn sec" href="/dev-projects">← 開発案件一覧へ</a></p>
+      <h2>技術シード マスタ（カテゴリ=L1 ／ シード=L2）</h2>
+      <p class="muted" style="margin:0 0 12px;font-size:12px">カテゴリ(L1)ごとに、シード(L2)を1行ずつ入力します。
+        事業が増えたら「＋カテゴリを追加」で <b>研究テーマ(◯◯)</b> を足せます。カテゴリ名が空の枠は保存時に削除されます。</p>
+      <form method="post" action="/tech-seed-master/save">
+        <div id="tsBlocks">{blocks}</div>
+        <button type="button" class="btn sec" onclick="tsAddBlock()">＋ カテゴリを追加</button>
+        <template id="tsBlockTpl">{_tech_seed_block("", [])}</template>
+        <div style="margin-top:16px">
+          <button class="btn" type="submit">保存</button>
+          <a class="btn sec" href="/dev-projects">キャンセル</a>
+        </div>
+      </form>
+    </div>
+    <script>
+    function tsAddBlock() {{
+      var t = document.getElementById('tsBlockTpl');
+      document.getElementById('tsBlocks').insertAdjacentHTML('beforeend', t.innerHTML);
+    }}
+    </script>"""
 
 
 def masters_page(con) -> str:
@@ -3518,17 +3565,28 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         extra_links_html = ('<p class="muted" style="font-size:11px;margin:6px 0 0;text-align:right">'
                             '追加リンクは保存後に登録できます</p>')
 
-    # 必要な技術シード（マスタ tech_seeds からの複数選択チェックボックス, #46）
-    _seed_opts = sfa_db.get_master_list(con, "tech_seeds")
+    # 必要な技術シード（ツリー: L1カテゴリごとにグループ表示・複数選択, #60）
+    _seed_tree = sfa_db.get_tech_seed_tree(con)
     _seed_sel = {s for s in (p.get("tech_seeds") or "").split(",") if s}
-    tech_seeds_block = "".join(
-        f'<label style="display:flex;align-items:flex-start;gap:6px;font-weight:400;font-size:13px;'
-        f'line-height:1.35;margin:0;cursor:pointer">'
-        f'<input type="checkbox" name="tech_seeds" value="{_esc(s)}"{" checked" if s in _seed_sel else ""}'
-        f' style="margin-top:2px;flex:0 0 auto;width:auto">'
-        f'<span>{_esc(s)}</span></label>'
-        for s in _seed_opts
-    ) or '<span class="muted">技術シードのマスタが未設定です（管理→マスタで追加できます）</span>'
+
+    def _seed_box(s):
+        return (f'<label style="display:flex;align-items:flex-start;gap:6px;font-weight:400;font-size:13px;'
+                f'line-height:1.35;margin:0;cursor:pointer">'
+                f'<input type="checkbox" name="tech_seeds" value="{_esc(s)}"{" checked" if s in _seed_sel else ""}'
+                f' style="margin-top:2px;flex:0 0 auto;width:auto"><span>{_esc(s)}</span></label>')
+
+    _seed_groups = []
+    for _l1, _leaves in _seed_tree.items():
+        if not _leaves:
+            continue
+        _boxes = "".join(_seed_box(s) for s in _leaves)
+        _seed_groups.append(
+            f'<div style="margin-bottom:10px">'
+            f'<div style="font-size:12px;font-weight:700;color:#4338ca;margin:0 0 5px">{_esc(_l1)}</div>'
+            f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 14px">{_boxes}</div>'
+            f'</div>')
+    tech_seeds_block = "".join(_seed_groups) or \
+        '<span class="muted">技術シードが未登録です（管理→技術シードマスタで追加できます）</span>'
 
     return f"""
     <div class="card" style="max-width:900px">
@@ -3593,9 +3651,8 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         </div>
         <label>開発方針</label>
         <textarea name="dev_policy" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3">{_esc(p.get('dev_policy'))}</textarea>
-        <label>必要な技術シード（複数選択可）</label>
-        <div style="margin:2px 0 4px;padding:10px 12px;border:1px solid #e6e9f0;border-radius:8px;background:#fafbfc;
-          display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 14px">
+        <label>必要な技術シード（カテゴリ別・複数選択可）</label>
+        <div style="margin:2px 0 4px;padding:10px 12px;border:1px solid #e6e9f0;border-radius:8px;background:#fafbfc">
           {tech_seeds_block}
         </div>
         <div style="margin-top:16px">
@@ -6826,6 +6883,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(masters_page(con)))
                 elif path == "/dev-point-master":
                     self._send(render(dev_point_master_page(con)))
+                elif path == "/tech-seed-master":
+                    self._send(render(tech_seed_master_page(con)))
                 elif path == "/sync-health":
                     self._send(render(sync_health_page(con, theme_client)))
                 elif path == "/weekly-numbers":
@@ -7082,6 +7141,21 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         values = [v.strip() for v in values if v.strip()]
                         sfa_db.set_master_list(con, key, values)
                     self._redirect("/")
+
+                # ── 技術シード マスタ（ツリー L1→L2, #60） ──
+                elif path == "/tech-seed-master/save":
+                    _names = f_list.get("l1_name[]", [])
+                    _lines = f_list.get("l2_lines[]", [])
+                    _tree = {}
+                    for _i, _nm in enumerate(_names):
+                        _nm = (_nm or "").strip()
+                        if not _nm:
+                            continue
+                        _raw = _lines[_i] if _i < len(_lines) else ""
+                        _leaves = [ln.strip() for ln in _raw.replace("\r", "").split("\n") if ln.strip()]
+                        _tree[_nm] = _leaves
+                    sfa_db.set_tech_seed_tree(con, _tree)
+                    self._redirect("/tech-seed-master")
 
                 # ── 開発点数マスタ / 担当キャパ（#41） ──
                 elif path == "/dev-point-master/save":

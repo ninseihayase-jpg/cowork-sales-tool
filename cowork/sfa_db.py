@@ -43,15 +43,23 @@ INDUSTRIES = [
     "官公庁・公共・非営利", "コンサル・専門サービス", "ファンド", "その他",
 ]
 
-# 開発案件で使う「必要な技術シード」の初期候補（マスタ編集で増減可）
+# 開発案件で使う「必要な技術シード」。#60でツリー(2階層)化: L1カテゴリ→L2シード。
+# 「基礎技術」の初期L2シード（研究テーマ系L1は空で開始し、運用で埋めていく）。
 TECH_SEEDS = [
     "LLM/生成AI", "RAG(社内文書検索)", "AIエージェント", "画像認識", "音声認識/文字起こし",
     "OCR/帳票読取", "需要予測/予測モデル", "最適化/数理計画", "レコメンド",
     "スクレイピング/データ収集", "業務自動化(RPA)", "データ基盤/ETL", "BI/ダッシュボード",
     "Web/業務アプリ開発", "外部API連携", "スプレッドシート連携",
 ]
+# 技術シードのツリー既定値。L1は事業が増えると「研究テーマ(◯◯)」が増える（マスタ画面で編集）。
+TECH_SEED_TREE_DEFAULT = {
+    "基礎技術": TECH_SEEDS,
+    "研究テーマ(SCM)": [],
+    "研究テーマ(建設)": [],
+    "研究テーマ(コスト削減)": [],
+}
 
-# マスタ編集対象キー → デフォルト値のマッピング
+# マスタ編集対象キー → デフォルト値のマッピング（技術シードはツリー専用画面で編集＝ここには含めない）
 MASTER_KEYS = {
     "owners":            OWNERS,
     "deal_stages":       DEAL_STAGES,
@@ -60,7 +68,6 @@ MASTER_KEYS = {
     "industries":        INDUSTRIES,
     "company_sizes":     COMPANY_SIZES,
     "activity_types":    ACTIVITY_TYPES,
-    "tech_seeds":        TECH_SEEDS,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -70,7 +77,6 @@ MASTER_LABELS = {
     "industries":        "業界",
     "company_sizes":     "企業規模",
     "activity_types":    "活動種別",
-    "tech_seeds":        "技術シード（開発案件）",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -833,6 +839,61 @@ def set_master_list(con, key: str, values: list[str]) -> None:
         (key, _json.dumps(values, ensure_ascii=False)),
     )
     con.commit()
+
+
+# ---- 技術シードのツリー（L1カテゴリ→L2シード, #60）。masters テーブルに JSON で保持 ----
+
+def get_tech_seed_tree(con) -> dict:
+    """{L1: [L2, ...]} を挿入順で返す。未保存ならデフォルト(TECH_SEED_TREE_DEFAULT)。"""
+    row = con.execute("SELECT values_json FROM masters WHERE key='tech_seed_tree'").fetchone()
+    if row:
+        try:
+            data = _json.loads(row[0])
+            if isinstance(data, dict):
+                return {str(k): [str(x) for x in (v or [])] for k, v in data.items()}
+        except (ValueError, TypeError):
+            print("[masters] tech_seed_tree broken, falling back to default", flush=True)
+    return {k: list(v) for k, v in TECH_SEED_TREE_DEFAULT.items()}
+
+
+def set_tech_seed_tree(con, tree: dict) -> None:
+    """ツリーを保存。空のL1名は除外、各L1内のL2は重複除去（順序保持）。"""
+    clean: dict = {}
+    for k, v in tree.items():
+        k = str(k).strip()
+        if not k:
+            continue
+        seen: set = set()
+        items: list = []
+        for x in (v or []):
+            x = str(x).strip()
+            if x and x not in seen:
+                seen.add(x)
+                items.append(x)
+        clean[k] = items
+    con.execute(
+        "INSERT INTO masters(key,values_json) VALUES('tech_seed_tree',?) "
+        "ON CONFLICT(key) DO UPDATE SET values_json=excluded.values_json",
+        (_json.dumps(clean, ensure_ascii=False),),
+    )
+    con.commit()
+
+
+def tech_seed_leaves(con) -> list[str]:
+    """全L2シードを平坦に返す。"""
+    out: list = []
+    for v in get_tech_seed_tree(con).values():
+        out.extend(v)
+    return out
+
+
+def tech_seed_l1_of(con) -> dict:
+    """L2シード -> L1カテゴリ のマップ（表示グルーピング用。重複時は先勝ち）。"""
+    m: dict = {}
+    for l1, leaves in get_tech_seed_tree(con).items():
+        for leaf in leaves:
+            m.setdefault(leaf, l1)
+    return m
 
 
 # ---- 取得系 ----
