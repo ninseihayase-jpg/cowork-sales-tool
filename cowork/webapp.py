@@ -434,6 +434,7 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
       <a href="/masters">⚙ マスタ編集</a>
       <a href="/dev-point-master">🎯 開発点数マスタ</a>
       <a href="/tech-seed-master">🌱 技術シードマスタ</a>
+      <a href="/tech-seed-tagging">🏷 技術シード一括付け</a>
       <a href="/backups">🗄 バックアップ</a>
       <a href="/logout">🚪 ログアウト</a>
     </div>
@@ -1713,6 +1714,63 @@ def tech_seed_master_page(con) -> str:
       document.getElementById('tsBlocks').insertAdjacentHTML('beforeend', t.innerHTML);
     }}
     </script>"""
+
+
+def _seed_checkboxes_grouped(con, field_name: str, selected: set, tree: dict | None = None) -> str:
+    """技術シードのチェックボックス群をL1カテゴリでグループ表示（一括タグ付け用・コンパクト）。"""
+    tree = tree if tree is not None else sfa_db.get_tech_seed_tree(con)
+    parts = []
+    for l1, leaves in tree.items():
+        if not leaves:
+            continue
+        boxes = "".join(
+            f'<label style="display:inline-flex;align-items:center;gap:3px;margin:0 10px 4px 0;'
+            f'font-weight:400;font-size:12px;white-space:nowrap">'
+            f'<input type="checkbox" name="{field_name}" value="{_esc(s)}"{" checked" if s in selected else ""}'
+            f' style="width:auto">{_esc(s)}</label>' for s in leaves)
+        parts.append(
+            f'<div style="margin-bottom:4px"><span style="font-size:10px;font-weight:700;color:#4338ca;'
+            f'margin-right:6px">{_esc(l1)}</span>{boxes}</div>')
+    return "".join(parts) or '<span class="muted" style="font-size:11px">シード未登録</span>'
+
+
+def tech_seed_tagging_page(con) -> str:
+    """技術シード 一括タグ付け（全開発案件を1画面で、必要な技術シードをまとめてチェック→保存）（#58）。"""
+    projects = sfa_db.list_dev_projects(con)
+    tree = sfa_db.get_tech_seed_tree(con)
+    has_seeds = any(v for v in tree.values())
+    _rows = []
+    for p in projects:
+        pid = p["id"]
+        sel = {s for s in (p.get("tech_seeds") or "").split(",") if s}
+        _rows.append(
+            f'<tr><td style="min-width:230px;vertical-align:top">'
+            f'<a href="/dev-project/{pid}/edit"><b>{_esc(p.get("theme") or "(無題)")}</b></a>'
+            f'<div class="muted" style="font-size:11px">{_esc(p.get("account_name") or "-")}／'
+            f'{_esc(p.get("deal_name") or "-")}・{_esc(p.get("status") or "")}</div>'
+            f'<input type="hidden" name="pids[]" value="{pid}"></td>'
+            f'<td style="vertical-align:top">{_seed_checkboxes_grouped(con, f"seeds__{pid}", sel, tree)}</td></tr>')
+    body = "".join(_rows) or '<tr><td colspan=2 class=muted>開発案件がありません。</td></tr>'
+    warn = ("" if has_seeds else
+            '<p class="flash" style="background:#fef3c7;color:#92400e">技術シードのマスタが空です。'
+            '先に「管理 ▾ → 🌱 技術シードマスタ」でシードを登録してください。</p>')
+    return f"""
+    <form method="post" action="/tech-seed-tagging/save" id="tsTagForm">
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>技術シード 一括付け（{len(projects)}件）</span>
+        <a class="btn sec" href="/dev-projects">← 開発案件一覧へ</a></h2>
+      {_save_bar('tsTagForm', cancel_url='/dev-projects', label='💾 まとめて保存')}
+      {warn}
+      <p class="muted" style="font-size:12px">各開発案件に必要な技術シードをチェックして「まとめて保存」。チェックを外して保存すると解除されます（表示中の全案件が対象）。</p>
+      <div style="overflow:auto;max-height:72vh"><table style="min-width:900px">
+        <tr>{_sticky_th('開発案件', '240px')}{_sticky_th('必要な技術シード')}</tr>
+        {body}
+      </table></div>
+      <div style="margin-top:12px"><button class="btn" type="submit">💾 まとめて保存</button>
+        <a class="btn sec" href="/dev-projects">キャンセル</a></div>
+    </div>
+    </form>"""
 
 
 def masters_page(con) -> str:
@@ -6903,6 +6961,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(dev_point_master_page(con)))
                 elif path == "/tech-seed-master":
                     self._send(render(tech_seed_master_page(con)))
+                elif path == "/tech-seed-tagging":
+                    self._send(render(tech_seed_tagging_page(con)))
                 elif path == "/sync-health":
                     self._send(render(sync_health_page(con, theme_client)))
                 elif path == "/weekly-numbers":
@@ -7174,6 +7234,19 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _tree[_nm] = _leaves
                     sfa_db.set_tech_seed_tree(con, _tree)
                     self._redirect("/tech-seed-master")
+
+                # ── 技術シード 一括タグ付け（#58）: 表示中の全開発案件のシードをまとめて保存 ──
+                elif path == "/tech-seed-tagging/save":
+                    for _pid_s in f_list.get("pids[]", []):
+                        try:
+                            _pid = int(_pid_s)
+                        except (ValueError, TypeError):
+                            continue
+                        _seeds = ",".join(s for s in f_list.get(f"seeds__{_pid}", []) if s) or None
+                        con.execute("UPDATE dev_projects SET tech_seeds=?, updated_at=datetime('now') WHERE id=?",
+                                    (_seeds, _pid))
+                    con.commit()
+                    self._redirect("/tech-seed-tagging")
 
                 # ── 開発点数マスタ / 担当キャパ（#41） ──
                 elif path == "/dev-point-master/save":
