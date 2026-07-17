@@ -414,6 +414,7 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
   <!-- 日常: 商談(ホーム)・開発案件・Delivery(稼働案件スプシ) -->
   <a href="/deals">商談</a>
   <a href="/dev-projects">開発</a>
+  <a href="/tasks">✅ タスク</a>
   <a href="{delivery_url}" target="_blank" style="opacity:.85;font-size:13px">🚚 Delivery ↗</a>
   <span class="nav-sep"></span>
   <!-- 次: ヒアリング・論点 -->
@@ -1771,6 +1772,155 @@ def tech_seed_tagging_page(con) -> str:
         <a class="btn sec" href="/dev-projects">キャンセル</a></div>
     </div>
     </form>"""
+
+
+_TASK_CAT_PALETTE = ["#4f46e5", "#0891b2", "#059669", "#b45309", "#be185d", "#7c3aed",
+                     "#0d9488", "#c2410c", "#4338ca", "#15803d", "#9333ea", "#6b7280"]
+
+
+def _task_category_color(name: str) -> str:
+    """タスク種類名から決定的に色を割り当てる（プロセス間で安定）。"""
+    if not name:
+        return "#6b7280"
+    return _TASK_CAT_PALETTE[sum(ord(c) for c in name) % len(_TASK_CAT_PALETTE)]
+
+
+_TASKS_JS = """
+<style>
+#taskBoard{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;align-items:flex-start}
+.task-col{flex:0 0 260px;background:#f1f4f9;border-radius:10px;padding:8px 8px 12px}
+.task-col h3{position:sticky;top:0}
+.task-card{background:#fff;border:1px solid #e6e9f0;border-radius:8px;padding:8px 10px;margin-bottom:8px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+</style>
+<script>
+function taskField(id, field, value){
+  return fetch('/task/'+id+'/field',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)})
+    .then(function(r){return r.json();}).then(function(d){
+      if(!d.ok){ alert('更新エラー: '+(d.error||'')); return; }
+      if(field==='status') location.reload();
+    }).catch(function(){ alert('通信エラー'); });
+}
+function taskDone(id){ taskField(id,'status','完了'); }
+function taskDelete(id){ if(!confirm('このタスクを削除しますか？')) return;
+  var f=document.createElement('form'); f.method='post'; f.action='/task/'+id+'/delete';
+  document.body.appendChild(f); f.submit(); }
+function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').toLowerCase().trim();
+  document.querySelectorAll('.task-card').forEach(function(c){
+    c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
+</script>
+"""
+
+
+def task_form(con, task=None) -> str:
+    """タスクの新規/編集フォーム（純粋な入力フォーム, #30）。"""
+    task = task or {}
+    is_edit = bool(task.get("id"))
+    owners = sfa_db.get_master_list(con, "owners")
+    cats = sfa_db.get_master_list(con, "task_categories")
+    dev_opts = '<option value="">（なし）</option>'
+    for dp in sfa_db.list_dev_projects(con):
+        sel = " selected" if (task.get("link_type") == "dev_project" and task.get("link_id") == dp["id"]) else ""
+        dev_opts += (f'<option value="dev_project:{dp["id"]}"{sel}>🛠 {_esc(dp.get("theme") or "開発案件")}'
+                     f'（{_esc(dp.get("account_name") or "-")}）</option>')
+    _blank = '<option value=""></option>'
+    return f"""
+    <div class="card" style="max-width:720px">
+      <h2>{'タスクを編集' if is_edit else '新規タスク'}</h2>
+      {_save_bar('taskForm', cancel_url='/tasks')}
+      <form id="taskForm" method="post" action="/tasks/save">
+        <input type="hidden" name="id" value="{_esc(task.get('id'))}">
+        <label>タイトル（次にやる具体アクション） *</label>
+        <input name="title" required value="{_esc(task.get('title'))}" placeholder="例: 〇〇のデモ環境を用意する">
+        <label>詳細・文脈</label>
+        <textarea name="detail" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(task.get('detail'))}</textarea>
+        <div class="grid">
+          <div><label>担当</label><select name="assignee">{_blank}{_opt(owners, task.get('assignee'))}</select></div>
+          <div><label>期限</label><input type="date" name="due_date" value="{_esc(task.get('due_date'))}"></div>
+          <div><label>種類</label><select name="category">{_blank}{_opt(cats, task.get('category'))}</select></div>
+          <div><label>優先度</label><select name="priority">{_opt(sfa_db.TASK_PRIORITIES, task.get('priority') or '中')}</select></div>
+          <div><label>状態</label><select name="status">{_opt(sfa_db.TASK_STATUSES, task.get('status') or ('未着手' if is_edit else '受信箱'))}</select></div>
+          <div class="full"><label>関連（開発案件）</label><select name="link">{dev_opts}</select></div>
+        </div>
+        <div style="margin-top:14px"><button class="btn" type="submit">保存</button>
+          <a class="btn sec" href="/tasks">キャンセル</a></div>
+      </form>
+    </div>"""
+
+
+def tasks_page(con, *, assignee: str | None = None, category: str | None = None) -> str:
+    """タスクボード（カンバン＝状態別列。受信箱=Triage。フィルタ＋検索＋インライン消込）（#30）。"""
+    owners = sfa_db.get_master_list(con, "owners")
+    cats = sfa_db.get_master_list(con, "task_categories")
+    dev_map = {dp["id"]: dp for dp in sfa_db.list_dev_projects(con)}
+    tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None)
+    today = date.today().isoformat()
+    soon = (date.today() + timedelta(days=3)).isoformat()
+    cols = {s: [] for s in sfa_db.TASK_STATUSES}
+    for t in tasks:
+        cols.setdefault(t.get("status") or "受信箱", []).append(t)
+
+    def card(t):
+        tid = t["id"]
+        due = (t.get("due_date") or "").strip()
+        due_html = ""
+        if due:
+            color = "#c53030" if due < today else ("#b7791f" if due <= soon else "#5b6b82")
+            due_html = f'<span style="color:{color};font-weight:600;font-size:11px">📅{_esc(due)}</span>'
+        cat = t.get("category") or ""
+        cat_html = (f'<span style="background:{_task_category_color(cat)};color:#fff;border-radius:4px;'
+                    f'padding:1px 6px;font-size:10px">{_esc(cat)}</span>' if cat else "")
+        pri = t.get("priority") or ""
+        pri_html = f'<span style="font-size:10px;color:#8893a8">優{_esc(pri)}</span>' if pri else ""
+        link_html = ""
+        if t.get("link_type") == "dev_project" and t.get("link_id") in dev_map:
+            dp = dev_map[t["link_id"]]
+            link_html = (f'<a href="/dev-project/{dp["id"]}/edit" style="font-size:10px" '
+                         f'title="{_esc(dp.get("account_name") or "")}">🛠{_esc(dp.get("theme") or "開発案件")}</a>')
+        status_sel = "".join(
+            f'<option value="{s}"{" selected" if s == t.get("status") else ""}>{s}</option>'
+            for s in sfa_db.TASK_STATUSES)
+        search = _esc(" ".join(str(t.get(k) or "") for k in ("title", "detail", "assignee", "category")).lower())
+        detail_html = (f'<div class="muted" style="font-size:11px;max-height:30px;overflow:hidden">'
+                       f'{_esc(t.get("detail"))}</div>' if t.get("detail") else "")
+        return (
+            f'<div class="task-card" data-search="{search}">'
+            f'<div style="font-weight:600;font-size:13px">{_esc(t.get("title"))}</div>'
+            f'{detail_html}'
+            f'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:5px 0">'
+            f'{cat_html}{due_html}<span style="font-size:10px">👤{_esc(t.get("assignee") or "—")}</span>{pri_html}{link_html}</div>'
+            f'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+            f'<select onchange="taskField({tid},\'status\',this.value)" style="font-size:11px;padding:1px 3px;width:auto">{status_sel}</select>'
+            f'<a href="/tasks/{tid}/edit" style="font-size:11px">編集</a>'
+            f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px" onclick="taskDone({tid})">✓完了</button>'
+            f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px;color:#c53030" onclick="taskDelete({tid})">削除</button>'
+            f'</div></div>')
+
+    columns = ""
+    for s in sfa_db.TASK_STATUSES:
+        ts = cols.get(s, [])
+        inner = "".join(card(t) for t in ts) or '<div class="muted" style="font-size:11px;padding:6px">なし</div>'
+        columns += f'<div class="task-col"><h3>{s}（{len(ts)}）</h3>{inner}</div>'
+
+    def _fopt(values, cur, alllabel):
+        return f'<option value="">{alllabel}</option>' + "".join(
+            f'<option value="{html.escape(v)}"{" selected" if v == cur else ""}>{html.escape(v)}</option>'
+            for v in values)
+    filter_row = f"""<form method="get" action="/tasks" class="filter-row">
+      <select name="assignee" onchange="this.form.submit()">{_fopt(owners, assignee, '担当:全て')}</select>
+      <select name="category" onchange="this.form.submit()">{_fopt(cats, category, '種類:全て')}</select>
+      <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細で検索…" oninput="taskFilter()" style="max-width:280px">
+      <a class="btn sec" href="/tasks">リセット</a>
+    </form>"""
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>タスク（{len(tasks)}）</span>
+        <a class="btn" href="/tasks/new">＋新規タスク</a>
+      </h2>
+      {filter_row}
+      <div id="taskBoard">{columns}</div>
+    </div>{_TASKS_JS}"""
 
 
 def masters_page(con) -> str:
@@ -7000,6 +7150,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(tech_seed_master_page(con)))
                 elif path == "/tech-seed-tagging":
                     self._send(render(tech_seed_tagging_page(con)))
+                elif path == "/tasks":
+                    _tq = self._qs()
+                    self._send(render(tasks_page(
+                        con, assignee=(_tq.get("assignee", [""])[0] or None),
+                        category=(_tq.get("category", [""])[0] or None))))
+                elif path == "/tasks/new":
+                    self._send(render(task_form(con)))
+                elif (path.startswith("/tasks/") and path.endswith("/edit")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _tk = sfa_db.get_task(con, int(path.split("/")[2]))
+                    if _tk:
+                        self._send(render(task_form(con, _tk)))
+                    else:
+                        self._redirect("/tasks")
                 elif path == "/sync-health":
                     self._send(render(sync_health_page(con, theme_client)))
                 elif path == "/weekly-numbers":
@@ -7284,6 +7448,59 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     (_seeds, _pid))
                     con.commit()
                     self._redirect("/tech-seed-tagging")
+
+                # ── タスク管理（#30） ──
+                elif path == "/tasks/save":
+                    try:
+                        _tid = int(f["id"]) if f.get("id") else None
+                    except ValueError:
+                        _tid = None
+                    _link = f.get("link", "") or ""
+                    _lt, _li = None, None
+                    if _link.startswith("dev_project:"):
+                        _lt = "dev_project"
+                        try:
+                            _li = int(_link.split(":", 1)[1])
+                        except ValueError:
+                            _li = None
+                    sfa_db.upsert_task(
+                        con, id=_tid,
+                        title=f.get("title") or "(無題)",
+                        detail=f.get("detail") or None,
+                        assignee=f.get("assignee") or None,
+                        due_date=f.get("due_date") or None,
+                        status=f.get("status") or "受信箱",
+                        priority=f.get("priority") or "中",
+                        category=f.get("category") or None,
+                        link_type=_lt, link_id=_li, source="web",
+                    )
+                    self._redirect("/tasks")
+
+                elif (path.startswith("/task/") and path.endswith("/field")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _tid = int(path.split("/")[2])
+                    _field = f.get("field", "")
+                    _value = f.get("value", "")
+                    _allowed = {"status", "assignee", "due_date", "category", "priority", "title"}
+                    if _field not in _allowed:
+                        self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(), ctype="application/json")
+                    elif _field == "status" and _value not in sfa_db.TASK_STATUSES:
+                        self._send(json.dumps({"ok": False, "error": "不正な状態"}).encode(), ctype="application/json")
+                    elif _field == "priority" and _value and _value not in sfa_db.TASK_PRIORITIES:
+                        self._send(json.dumps({"ok": False, "error": "不正な優先度"}).encode(), ctype="application/json")
+                    elif _field == "status":
+                        sfa_db.set_task_status(con, _tid, _value)
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                    else:
+                        con.execute(f"UPDATE tasks SET {_field}=?, updated_at=datetime('now') WHERE id=?",
+                                    (_value or None, _tid))
+                        con.commit()
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+
+                elif (path.startswith("/task/") and path.endswith("/delete")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    sfa_db.delete_task(con, int(path.split("/")[2]))
+                    self._redirect("/tasks")
 
                 # ── 開発点数マスタ / 担当キャパ（#41） ──
                 elif path == "/dev-point-master/save":

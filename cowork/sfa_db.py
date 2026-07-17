@@ -59,6 +59,10 @@ TECH_SEED_TREE_DEFAULT = {
     "研究テーマ(コスト削減)": [],
 }
 
+# タスク種類(分類)。マスタ編集可（管理→マスタ）。色は _task_category_color で自動割当。
+TASK_CATEGORIES = ["開発", "調査・検証", "設計", "レビュー", "バグ修正", "環境・インフラ",
+                   "データ整備", "ドキュメント", "打合せ準備", "営業対応", "社内・庶務", "その他"]
+
 # マスタ編集対象キー → デフォルト値のマッピング（技術シードはツリー専用画面で編集＝ここには含めない）
 MASTER_KEYS = {
     "owners":            OWNERS,
@@ -68,6 +72,7 @@ MASTER_KEYS = {
     "industries":        INDUSTRIES,
     "company_sizes":     COMPANY_SIZES,
     "activity_types":    ACTIVITY_TYPES,
+    "task_categories":   TASK_CATEGORIES,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -77,6 +82,7 @@ MASTER_LABELS = {
     "industries":        "業界",
     "company_sizes":     "企業規模",
     "activity_types":    "活動種別",
+    "task_categories":   "タスク種類",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -120,6 +126,14 @@ def compute_dev_points(con, *, work_type, stage, difficulty, has_backend=None) -
 # 社内論点管理
 DEAL_ISSUE_STATUSES = ["議論中", "議論済み", "取り消し"]
 DEAL_ISSUE_MEMBERS = ["経営", "営業担当", "営業+開発担当", "開発コア"]
+
+# タスク管理（#30）
+TASK_STATUSES = ["受信箱", "未着手", "対応中", "保留", "完了"]  # カンバン列。受信箱=未整理(Triage)
+TASK_OPEN_STATUSES = ["受信箱", "未着手", "対応中", "保留"]        # 完了以外
+TASK_PRIORITIES = ["高", "中", "低"]
+TASK_LINK_TYPES = ["dev_project", "deal", "issue", "org", "personal"]
+TASK_LINK_LABELS = {"dev_project": "開発案件", "deal": "商談", "issue": "論点",
+                    "org": "全社", "personal": "個人"}
 
 
 def compute_dev_order_potential(*, budget_confirmed: str | None, resolution: str | None,
@@ -507,6 +521,31 @@ CREATE TABLE IF NOT EXISTS deal_issue_memos (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_deal_issue_memos_issue ON deal_issue_memos(issue_id);
+
+-- タスク管理（#30）。開発案件/商談/論点等にひも付け可能。受信箱=未整理(Triage)。
+CREATE TABLE IF NOT EXISTS tasks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    title         TEXT NOT NULL,           -- 行動可能な次アクション
+    detail        TEXT,                    -- 文脈・補足
+    assignee      TEXT,                    -- 担当（owner名）
+    due_date      TEXT,                    -- 期限 YYYY-MM-DD
+    status        TEXT DEFAULT '受信箱',    -- 受信箱/未着手/対応中/保留/完了
+    priority      TEXT DEFAULT '中',        -- 高/中/低
+    category      TEXT,                    -- 種類（task_categoriesマスタ）
+    link_type     TEXT,                    -- dev_project/deal/issue/org/personal
+    link_id       INTEGER,                 -- 紐付け先ID
+    source        TEXT DEFAULT 'web',      -- web/slack/ai
+    slack_channel TEXT,
+    slack_ts      TEXT,
+    created_by    TEXT,
+    created_at    TEXT DEFAULT (datetime('now')),
+    updated_at    TEXT DEFAULT (datetime('now')),
+    done_at       TEXT,
+    remind_last_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee);
+CREATE INDEX IF NOT EXISTS idx_tasks_link ON tasks(link_type, link_id);
 
 -- 商談への添付ファイル（実体は保存せずSharePoint等の外部リンクのみ保持）
 CREATE TABLE IF NOT EXISTS deal_attachments (
@@ -2000,6 +2039,85 @@ def get_deal_issue_memo(con, memo_id: int) -> dict | None:
 
 def delete_deal_issue_memo(con, memo_id: int) -> None:
     con.execute("DELETE FROM deal_issue_memos WHERE id=?", (int(memo_id),))
+    con.commit()
+
+
+# ---- タスク管理（#30） ----
+
+TASK_FIELDS = [
+    "title", "detail", "assignee", "due_date", "status", "priority", "category",
+    "link_type", "link_id", "source", "slack_channel", "slack_ts", "created_by",
+]
+
+
+def upsert_task(con, *, id=None, commit: bool = True, **fields) -> int:
+    """タスクを作成/更新。status='完了'になったら done_at をセット、外れたらクリア。"""
+    data = {k: fields.get(k) for k in TASK_FIELDS}
+    if id is not None:
+        sets = ", ".join(f"{k}=?" for k in TASK_FIELDS) + ", updated_at=datetime('now')"
+        # 完了への遷移/解除で done_at を調整
+        done_sql = (", done_at=CASE WHEN ?='完了' AND (done_at IS NULL OR done_at='') "
+                    "THEN datetime('now') WHEN ?!='完了' THEN NULL ELSE done_at END")
+        con.execute(f"UPDATE tasks SET {sets}{done_sql} WHERE id=?",
+                    [data[k] for k in TASK_FIELDS] + [data["status"], data["status"], int(id)])
+        if commit:
+            con.commit()
+        return int(id)
+    cols = ", ".join(TASK_FIELDS)
+    ph = ", ".join("?" for _ in TASK_FIELDS)
+    cur = con.execute(f"INSERT INTO tasks ({cols}) VALUES ({ph})",
+                      [data[k] for k in TASK_FIELDS])
+    if data.get("status") == "完了":
+        con.execute("UPDATE tasks SET done_at=datetime('now') WHERE id=?", (cur.lastrowid,))
+    if commit:
+        con.commit()
+    return cur.lastrowid
+
+
+def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
+               category: str | None = None, link_type: str | None = None,
+               link_id: int | None = None, exclude_done: bool = False) -> list[dict]:
+    q = "SELECT * FROM tasks"
+    conds: list = []
+    params: list = []
+    if status:
+        conds.append("status = ?"); params.append(status)
+    if exclude_done:
+        conds.append("status != '完了'")
+    if assignee:
+        conds.append("assignee = ?"); params.append(assignee)
+    if category:
+        conds.append("category = ?"); params.append(category)
+    if link_type:
+        conds.append("link_type = ?"); params.append(link_type)
+    if link_id is not None:
+        conds.append("link_id = ?"); params.append(int(link_id))
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
+    # 期限昇順(未設定は末尾)→優先度高い順
+    q += (" ORDER BY (due_date IS NULL OR due_date='') ASC, due_date ASC, "
+          "CASE priority WHEN '高' THEN 0 WHEN '中' THEN 1 ELSE 2 END, id DESC")
+    return [dict(r) for r in con.execute(q, params)]
+
+
+def get_task(con, id: int) -> dict | None:
+    r = con.execute("SELECT * FROM tasks WHERE id=?", (int(id),)).fetchone()
+    return dict(r) if r else None
+
+
+def set_task_status(con, id: int, status: str, commit: bool = True) -> None:
+    if status == "完了":
+        con.execute("UPDATE tasks SET status=?, done_at=datetime('now'), updated_at=datetime('now') WHERE id=?",
+                    (status, int(id)))
+    else:
+        con.execute("UPDATE tasks SET status=?, done_at=NULL, updated_at=datetime('now') WHERE id=?",
+                    (status, int(id)))
+    if commit:
+        con.commit()
+
+
+def delete_task(con, id: int) -> None:
+    con.execute("DELETE FROM tasks WHERE id=?", (int(id),))
     con.commit()
 
 

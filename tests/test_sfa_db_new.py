@@ -116,6 +116,28 @@ def test_deal_milestones_cache_and_earliest(con, acc_id):
     assert sfa_db.count_open_milestones(con, [did]).get(did, 0) == 0
 
 
+def test_tasks_crud_and_status(con, acc_id):
+    did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="商談T")
+    con.commit()
+    tid = sfa_db.upsert_task(con, title="デモ準備", assignee="早瀬", due_date="2026-07-20",
+                             status="未着手", priority="高", category="開発",
+                             link_type="dev_project", link_id=1)
+    t = sfa_db.get_task(con, tid)
+    assert t["title"] == "デモ準備" and t["status"] == "未着手" and t["done_at"] is None
+    # 完了→done_atセット、再オープン→クリア
+    sfa_db.set_task_status(con, tid, "完了")
+    assert sfa_db.get_task(con, tid)["done_at"]
+    sfa_db.set_task_status(con, tid, "対応中")
+    assert sfa_db.get_task(con, tid)["done_at"] is None
+    # フィルタ・完了除外
+    sfa_db.upsert_task(con, title="別件", assignee="中島", status="完了")
+    assert {x["title"] for x in sfa_db.list_tasks(con, exclude_done=True)} == {"デモ準備"}
+    assert [x["title"] for x in sfa_db.list_tasks(con, assignee="早瀬")] == ["デモ準備"]
+    # upsertで完了に更新するとdone_atが入る
+    sfa_db.upsert_task(con, id=tid, title="デモ準備", status="完了", priority="高")
+    assert sfa_db.get_task(con, tid)["done_at"]
+
+
 def test_tech_seed_tree_roundtrip(con):
     # デフォルトはL1=4カテゴリ、基礎技術に初期シード
     t = sfa_db.get_tech_seed_tree(con)
