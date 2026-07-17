@@ -3308,6 +3308,28 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
 
     _dp_owners = sfa_db.get_master_list(con, "owners")
     _dp_worktypes = sfa_db.dev_work_types(con)
+    # 技術シードの複数選択フィルタ（ドロップダウン・L1カテゴリ別チェックボックス, クライアント側で絞り込み）
+    _seed_tree_f = sfa_db.get_tech_seed_tree(con)
+    _seed_filter_groups = []
+    for _l1f, _leavesf in _seed_tree_f.items():
+        if not _leavesf:
+            continue
+        _boxesf = "".join(
+            f'<label style="display:flex;align-items:center;gap:5px;font-weight:400;font-size:12px;padding:2px 0;white-space:nowrap">'
+            f'<input type="checkbox" class="dp-seedchk" value="{_esc(s)}" onchange="filterDevProjects()" style="width:auto">'
+            f'{_esc(s)}</label>' for s in _leavesf)
+        _seed_filter_groups.append(
+            f'<div style="margin-bottom:6px"><div style="font-size:10px;font-weight:700;color:#4338ca;margin:2px 0">{_esc(_l1f)}</div>{_boxesf}</div>')
+    _seed_filter_body = "".join(_seed_filter_groups) or '<span class="muted" style="font-size:11px">シード未登録（管理→🌱技術シードマスタ）</span>'
+    _seed_filter_dropdown = (
+        '<details class="tb-menu" style="position:relative">'
+        '<summary class="btn sec" style="font-size:12px">🏷 技術シードで絞り込み ▾ <span id="dpSeedCount"></span></summary>'
+        '<div style="position:absolute;left:0;top:112%;z-index:60;background:#fff;border:1px solid #e6e9f0;'
+        'border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:10px 12px;min-width:240px;max-height:340px;overflow:auto">'
+        + _seed_filter_body
+        + '<div style="border-top:1px solid #eef1f5;margin-top:6px;padding-top:6px">'
+          '<button type="button" class="btn sec" style="font-size:11px" onclick="dpClearSeedFilter()">クリア</button></div>'
+        + '</div></details>')
 
     def _dsel(pid, field, values, current):
         opts = "".join(
@@ -3318,7 +3340,8 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
                 f'<option value=""></option>{opts}</select>')
 
     rows = "".join(
-        f'<tr data-search="{_esc(" ".join(str(p.get(k) or "") for k in ("account_name", "deal_name", "theme", "theme_detail", "dev_owner", "sales_owner", "tech_seeds")).lower())}">'
+        f'<tr data-search="{_esc(" ".join(str(p.get(k) or "") for k in ("account_name", "deal_name", "theme", "theme_detail", "dev_owner", "sales_owner")).lower())}"'
+        f' data-seeds="{_esc("|" + "|".join(s for s in (p.get("tech_seeds") or "").split(",") if s) + "|") if p.get("tech_seeds") else ""}">'
         f'<td class="frz" style="left:0;width:34px;min-width:34px;max-width:34px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
         f'<td class="frz" style="left:34px;width:240px;min-width:240px;max-width:240px;white-space:normal;word-break:break-word">'
         f'<a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
@@ -3363,10 +3386,11 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
         </span>
       </h2>
       {filter_row}
-      <div style="margin:4px 0 10px">
-        <input type="text" id="dpSearch" placeholder="🔍 アカウント・商談・開発テーマ・技術シード・担当で検索…"
-          oninput="filterDevProjects()" style="width:100%;max-width:420px;padding:7px 10px">
-        <span class="muted" id="dpSearchCount" style="font-size:12px;margin-left:8px"></span>
+      <div style="margin:4px 0 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input type="text" id="dpSearch" placeholder="🔍 アカウント・商談・開発テーマ・担当で検索…"
+          oninput="filterDevProjects()" style="flex:1;min-width:240px;max-width:420px;padding:7px 10px">
+        {_seed_filter_dropdown}
+        <span class="muted" id="dpSearchCount" style="font-size:12px"></span>
       </div>
       <form id="dp_bulk_form" method="post" action="/dev-projects/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
@@ -3426,15 +3450,27 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
     }}
     function filterDevProjects() {{
       var q = (document.getElementById('dpSearch').value || '').toLowerCase().trim();
+      var checked = Array.prototype.map.call(document.querySelectorAll('.dp-seedchk:checked'),
+        function(c) {{ return c.value; }});
       var shown = 0, total = 0;
       document.querySelectorAll('#dpTable tr[data-search]').forEach(function(tr) {{
         total++;
-        var hit = !q || tr.getAttribute('data-search').indexOf(q) >= 0;
-        tr.style.display = hit ? '' : 'none';
-        if (hit) shown++;
+        var textOk = !q || tr.getAttribute('data-search').indexOf(q) >= 0;
+        var seeds = tr.getAttribute('data-seeds') || '';
+        // 選択シードのいずれかを持つ行を表示（OR条件）
+        var seedOk = !checked.length || checked.some(function(s) {{ return seeds.indexOf('|' + s + '|') >= 0; }});
+        var vis = textOk && seedOk;
+        tr.style.display = vis ? '' : 'none';
+        if (vis) shown++;
       }});
+      var sc = document.getElementById('dpSeedCount');
+      if (sc) sc.textContent = checked.length ? ('(' + checked.length + ')') : '';
       var c = document.getElementById('dpSearchCount');
-      if (c) c.textContent = q ? (shown + ' / ' + total + ' 件') : '';
+      if (c) c.textContent = (q || checked.length) ? (shown + ' / ' + total + ' 件') : '';
+    }}
+    function dpClearSeedFilter() {{
+      document.querySelectorAll('.dp-seedchk').forEach(function(c) {{ c.checked = false; }});
+      filterDevProjects();
     }}
     function dpRefreshTotal() {{
       var sum = 0;
