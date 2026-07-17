@@ -3318,7 +3318,7 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
                 f'<option value=""></option>{opts}</select>')
 
     rows = "".join(
-        f'<tr data-search="{_esc(" ".join(str(p.get(k) or "") for k in ("account_name", "deal_name", "theme", "theme_detail", "dev_owner", "sales_owner")).lower())}">'
+        f'<tr data-search="{_esc(" ".join(str(p.get(k) or "") for k in ("account_name", "deal_name", "theme", "theme_detail", "dev_owner", "sales_owner", "tech_seeds")).lower())}">'
         f'<td class="frz" style="left:0;width:34px;min-width:34px;max-width:34px"><input type="checkbox" name="ids" value="{p["id"]}"></td>'
         f'<td class="frz" style="left:34px;width:240px;min-width:240px;max-width:240px;white-space:normal;word-break:break-word">'
         f'<a href="/dev-project/{p["id"]}/edit">{_esc(p.get("theme"))}</a>'
@@ -3342,7 +3342,8 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
         f'<td>{_dsel(p["id"], "dev_owner", _dp_owners, p.get("dev_owner") or "")}</td>'
         f'<td>{_esc(p.get("sales_owner"))}{(" / " + _esc(p["sales_sub_owner"])) if p.get("sales_sub_owner") else ""}</td>'
         f'<td>{_esc(p.get("deadline") or "—")}</td>'
-        f'<td style="white-space:normal;min-width:170px;max-width:220px">{_seed_chips(p.get("tech_seeds"))}</td>'
+        f'<td style="white-space:normal;min-width:170px;max-width:220px;vertical-align:top">'
+        f'<div style="max-height:68px;overflow:auto">{_seed_chips(p.get("tech_seeds"))}</div></td>'
         f'<td>{_tool_cell(p)}</td>'
         f'<td><form method="post" action="/dev-project/{p["id"]}/delete" style="display:inline" '
         f'onsubmit="return confirm(\'削除しますか？\')">'
@@ -3363,7 +3364,7 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
       </h2>
       {filter_row}
       <div style="margin:4px 0 10px">
-        <input type="text" id="dpSearch" placeholder="🔍 アカウント・商談・開発テーマ・担当で検索…"
+        <input type="text" id="dpSearch" placeholder="🔍 アカウント・商談・開発テーマ・技術シード・担当で検索…"
           oninput="filterDevProjects()" style="width:100%;max-width:420px;padding:7px 10px">
         <span class="muted" id="dpSearchCount" style="font-size:12px;margin-left:8px"></span>
       </div>
