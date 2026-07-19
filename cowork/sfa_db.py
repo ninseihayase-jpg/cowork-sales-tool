@@ -62,12 +62,11 @@ TECH_SEED_TREE_DEFAULT = {
 # タスク種類(分類)。マスタ編集可（管理→マスタ）。色は _task_category_color で自動割当。
 TASK_CATEGORIES = ["開発", "調査・検証", "設計", "レビュー", "バグ修正", "環境・インフラ",
                    "データ整備", "ドキュメント", "打合せ準備", "営業対応", "社内・庶務", "その他"]
-# タスクの大項目＝プロジェクト(取り組み)。開発案件(商談連動)とは別軸の大きな括り
-# （例: セキュリティISO取得 / 図面OCR研究開発 等）。実データはマスタ画面で追加＝DBに保持
-# （publicリポジトリのため社内固有名はここにハードコードしない）。
-TASK_PROJECTS: list[str] = []
+# タスクの大項目＝プロジェクト(取り組み)。期限＋状態を持つ管理対象（task_projectsテーブル）。
+# 専用の管理画面(/task-projects)で追加・編集する。tasks.projectは名前で緩く参照。
+TASK_PROJECT_STATUSES = ["進行中", "保留", "完了"]
 
-# マスタ編集対象キー → デフォルト値のマッピング（技術シードはツリー専用画面で編集＝ここには含めない）
+# マスタ編集対象キー → デフォルト値のマッピング（技術シード・プロジェクトは専用画面で編集＝ここに含めない）
 MASTER_KEYS = {
     "owners":            OWNERS,
     "deal_stages":       DEAL_STAGES,
@@ -77,7 +76,6 @@ MASTER_KEYS = {
     "company_sizes":     COMPANY_SIZES,
     "activity_types":    ACTIVITY_TYPES,
     "task_categories":   TASK_CATEGORIES,
-    "task_projects":     TASK_PROJECTS,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -88,7 +86,6 @@ MASTER_LABELS = {
     "company_sizes":     "企業規模",
     "activity_types":    "活動種別",
     "task_categories":   "タスク種類",
-    "task_projects":     "プロジェクト（大項目）",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -538,8 +535,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     assignee      TEXT,                    -- 担当（owner名）
     due_date      TEXT,                    -- 期限 YYYY-MM-DD
     status        TEXT DEFAULT '受信箱',    -- 受信箱/未着手/対応中/保留/完了
-    priority      TEXT DEFAULT '中',        -- 高/中/低
-    category      TEXT,                    -- 種類（task_categoriesマスタ）
+    priority      TEXT DEFAULT '中',        -- 高/中/低（旧・優先度。緊急度は期限から自動算出へ移行）
+    pinned        INTEGER DEFAULT 0,       -- ★最優先ピン（手動・例外用）。緊急度自動化の上書き
+    category      TEXT,                    -- 種類（task_categoriesマスタ・AI自動判定）
     link_type     TEXT,                    -- dev_project/deal/issue/org/personal
     link_id       INTEGER,                 -- 紐付け先ID
     source        TEXT DEFAULT 'web',      -- web/slack/ai
@@ -566,6 +564,18 @@ CREATE TABLE IF NOT EXISTS task_notes (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id);
+
+-- タスクの大項目＝プロジェクト（取り組み）。期限＋状態を持つ管理対象（#30）。
+-- tasks.project は名前(name)で緩く参照する。
+CREATE TABLE IF NOT EXISTS task_projects (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    deadline   TEXT,                        -- 期限 YYYY-MM-DD（タスク期日の逆算推奨に使う）
+    status     TEXT DEFAULT '進行中',        -- 進行中/保留/完了
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
 
 -- 商談への添付ファイル（実体は保存せずSharePoint等の外部リンクのみ保持）
 CREATE TABLE IF NOT EXISTS deal_attachments (
@@ -830,6 +840,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN project TEXT")
         if _task_cols and "next_action" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN next_action TEXT")
+        if _task_cols and "pinned" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN pinned INTEGER DEFAULT 0")
         # project列が存在する状態でインデックスを作る（SCHEMAではなくここで＝既存DBでも安全）
         if _task_cols:
             con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")
@@ -2130,9 +2142,9 @@ def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
         conds.append("link_id = ?"); params.append(int(link_id))
     if conds:
         q += " WHERE " + " AND ".join(conds)
-    # 期限昇順(未設定は末尾)→優先度高い順
-    q += (" ORDER BY (due_date IS NULL OR due_date='') ASC, due_date ASC, "
-          "CASE priority WHEN '高' THEN 0 WHEN '中' THEN 1 ELSE 2 END, id DESC")
+    # ★ピン最優先→期限昇順(未設定は末尾)→id
+    q += (" ORDER BY COALESCE(pinned,0) DESC, (due_date IS NULL OR due_date='') ASC, "
+          "due_date ASC, id DESC")
     return [dict(r) for r in con.execute(q, params)]
 
 
@@ -2187,6 +2199,59 @@ def delete_task_note(con, note_id: int) -> None:
     con.commit()
 
 
+# ---- タスクのプロジェクト（大項目・期限＋状態を持つ管理対象）(#30) ----
+
+def list_task_projects(con, include_done: bool = True) -> list[dict]:
+    """プロジェクト一覧（sort_order→期限→名前）。include_done=Falseで完了を除く。"""
+    q = "SELECT * FROM task_projects"
+    if not include_done:
+        q += " WHERE status != '完了'"
+    q += (" ORDER BY sort_order ASC, "
+          "(deadline IS NULL OR deadline='') ASC, deadline ASC, name ASC")
+    return [dict(r) for r in con.execute(q)]
+
+
+def get_task_project(con, name: str) -> dict | None:
+    r = con.execute("SELECT * FROM task_projects WHERE name=?", (name,)).fetchone()
+    return dict(r) if r else None
+
+
+def upsert_task_project(con, *, id=None, name: str, deadline: str | None = None,
+                        status: str = "進行中", sort_order: int = 0) -> int:
+    """プロジェクトを作成/更新。id指定で更新（改名可）、無ければname一致で更新or新規。"""
+    name = (name or "").strip()
+    if id is not None:
+        con.execute("UPDATE task_projects SET name=?, deadline=?, status=?, sort_order=?, "
+                    "updated_at=datetime('now') WHERE id=?",
+                    (name, deadline or None, status, sort_order, int(id)))
+        con.commit()
+        return int(id)
+    cur = con.execute(
+        "INSERT INTO task_projects (name, deadline, status, sort_order) VALUES (?,?,?,?) "
+        "ON CONFLICT(name) DO UPDATE SET deadline=excluded.deadline, status=excluded.status, "
+        "sort_order=excluded.sort_order, updated_at=datetime('now')",
+        (name, deadline or None, status, sort_order))
+    con.commit()
+    r = con.execute("SELECT id FROM task_projects WHERE name=?", (name,)).fetchone()
+    return r["id"] if r else cur.lastrowid
+
+
+def delete_task_project(con, id: int) -> None:
+    """プロジェクト定義を削除（タスクのproject名文字列はそのまま残る＝孤立表示になるだけ）。"""
+    con.execute("DELETE FROM task_projects WHERE id=?", (int(id),))
+    con.commit()
+
+
+def task_counts_by_project_status(con) -> dict:
+    """プロジェクト名→{status: 件数} の集計（看板上部のプロジェクト一覧用）。"""
+    out: dict = {}
+    for r in con.execute(
+        "SELECT COALESCE(project,'') p, status, COUNT(*) n FROM tasks "
+        "WHERE project IS NOT NULL AND project!='' GROUP BY project, status"):
+        out.setdefault(r["p"], {})[r["status"] or "受信箱"] = r["n"]
+    return out
+
+
 # テストデータ（検証用・source='test'で明示。ワンクリック投入/削除できる）。
 # タイトルは必ず「【テスト】」で始め、本番タスクと視覚的に区別する。
 def seed_sample_tasks(con, assignee: str = "早瀬", today: str | None = None) -> int:
@@ -2198,6 +2263,11 @@ def seed_sample_tasks(con, assignee: str = "早瀬", today: str | None = None) -
     tod = base.isoformat()
     future = (base + _td(days=20)).isoformat()
     delete_test_tasks(con)  # 二重投入を防ぐ
+    # テスト用プロジェクト（期限付き＝看板ストリップ・期限逆算の推奨を体験できる）
+    upsert_task_project(con, name="【テスト】図面OCR研究開発",
+                        deadline=add_business_days(base, 30).isoformat())
+    upsert_task_project(con, name="【テスト】セキュリティISO取得",
+                        deadline=add_business_days(base, 15).isoformat())
     samples = [
         dict(title="【テスト】デモ環境を用意する", project="【テスト】図面OCR研究開発",
              next_action="サンプルデータを△△さんに依頼する", assignee=assignee,
@@ -2233,6 +2303,7 @@ def delete_test_tasks(con) -> int:
     for tid in ids:
         con.execute("DELETE FROM task_notes WHERE task_id=?", (tid,))
     con.execute("DELETE FROM tasks WHERE source='test'")
+    con.execute("DELETE FROM task_projects WHERE name LIKE '【テスト】%'")
     con.commit()
     return len(ids)
 
