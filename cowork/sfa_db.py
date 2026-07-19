@@ -554,7 +554,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee);
 CREATE INDEX IF NOT EXISTS idx_tasks_link ON tasks(link_type, link_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
+-- 注: idx_tasks_project は project列に依存するため、init_db()の列追加(ALTER)後に作成する
+-- （既存DBではSCHEMA実行時点でproject列が無く、ここに置くと executescript が失敗する）。
 
 -- タスクの進捗ログ（追記式・履歴が残る）。最新1件がカードの「進捗」表示に使われる。
 CREATE TABLE IF NOT EXISTS task_notes (
@@ -829,6 +830,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN project TEXT")
         if _task_cols and "next_action" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN next_action TEXT")
+        # project列が存在する状態でインデックスを作る（SCHEMAではなくここで＝既存DBでも安全）
+        if _task_cols:
+            con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")
         # weekly_reports に cover_image を後方互換追加（前回デプロイ時は列が無かった）
         wr_cols = {r[1] for r in con.execute("PRAGMA table_info(weekly_reports)")}
         if wr_cols and "cover_image" not in wr_cols:
