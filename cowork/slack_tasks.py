@@ -1,0 +1,461 @@
+"""タスク管理 × Slackインタラクティブ（#30）。
+
+Slack上で「起票→整理→進捗→消込」を完結させるハンドラ群。
+- 起票: /task スラッシュ・🎯リアクション・@メンション（AI補助で前埋め）
+- 消込: 朝ダイジェストのボタン（✓完了/▶開始/💬進捗/⏰後で）＋モーダル
+すべて `tasks` に集約（source='slack', slack_channel/slack_ts に起源を記録）。
+
+Web本体(webapp.py)から呼ばれる。エンドポイント側で署名検証済みのペイロードを受け取る前提。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import date
+
+from . import sfa_db
+from .slack_bot import _slack_post, _slack_get, _call_claude  # 既存基盤を流用
+
+# 🎯 = "dart"。タスク化トリガーの絵文字（複数許容）
+TASK_REACTIONS = {"dart", "clipboard", "memo", "white_check_mark"}
+SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "") or "https://sfa-crm.onrender.com"
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# ── 担当解決（Slackユーザー → SFA担当名） ─────────────────────────────────
+
+def _owner_slack_map() -> dict:
+    """config/owner_slack_map.json（担当名→email）。_始まりのキーは除外。"""
+    p = os.path.join(_PROJECT_ROOT, "config", "owner_slack_map.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return {k: v for k, v in d.items() if not k.startswith("_")}
+    except Exception:
+        return {}
+
+
+def owner_from_slack_user(user_id: str) -> str | None:
+    """SlackユーザーID → SFA担当名。users.infoのemailを owner_slack_map で逆引き。"""
+    if not user_id:
+        return None
+    r = _slack_get("users.info", {"user": user_id})
+    email = (((r.get("user") or {}).get("profile") or {}).get("email") or "").lower()
+    if not email:
+        return None
+    for name, mail in _owner_slack_map().items():
+        if (mail or "").lower() == email:
+            return name
+    return None
+
+
+# ── AI補助（自由文 → タスク項目を抽出） ───────────────────────────────────
+
+def ai_extract_task(text: str, today: str | None = None) -> dict:
+    """自由文からタスク項目を抽出（title/next_action/due_date/category）。失敗時は素の値。"""
+    text = (text or "").strip()
+    today = today or date.today().isoformat()
+    fallback = {"title": text[:80] or "(無題)", "next_action": "", "due_date": "", "category": ""}
+    if not text:
+        return fallback
+    cats = "／".join(sfa_db.TASK_CATEGORIES)
+    prompt = (
+        "次の文から社内タスクを1件抽出し、JSONだけを出力してください（説明不要）。\n"
+        f"今日は {today}。相対表現（例:金曜まで/来週/明日）は今日基準でYYYY-MM-DDに変換。不明な項目は空文字。\n"
+        f"カテゴリは次から最も近い1つ: {cats}\n"
+        '出力: {"title":"簡潔なタスク名","next_action":"次にやる具体的な一手","due_date":"YYYY-MM-DD or 空","category":"カテゴリ名 or 空"}\n\n'
+        f"文:\n{text}")
+    try:
+        raw = _call_claude(prompt) or ""
+        import re
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        data = json.loads(m.group(0)) if m else {}
+    except Exception:
+        return fallback
+    out = dict(fallback)
+    for k in ("title", "next_action", "due_date", "category"):
+        v = (data.get(k) or "").strip()
+        if v:
+            out[k] = v
+    if out["category"] not in sfa_db.TASK_CATEGORIES:
+        out["category"] = ""  # 不一致は空に
+    if not out["title"]:
+        out["title"] = text[:80]
+    return out
+
+
+# ── モーダル（views）ビルダー ─────────────────────────────────────────────
+
+def _select(action_id: str, label: str, values: list, initial=None, optional=True) -> dict:
+    opts = [{"text": {"type": "plain_text", "text": str(v)[:75]}, "value": str(v)[:75]}
+            for v in values if str(v).strip()]
+    element = {"type": "static_select", "action_id": action_id,
+               "placeholder": {"type": "plain_text", "text": "選択"}}
+    if opts:
+        element["options"] = opts
+    if initial and any(o["value"] == str(initial) for o in opts):
+        element["initial_option"] = {"text": {"type": "plain_text", "text": str(initial)[:75]},
+                                     "value": str(initial)[:75]}
+    b = {"type": "input", "block_id": action_id, "optional": optional,
+         "label": {"type": "plain_text", "text": label}, "element": element}
+    return b
+
+
+def _text_input(action_id: str, label: str, initial: str = "", multiline: bool = False,
+                optional: bool = True) -> dict:
+    el = {"type": "plain_text_input", "action_id": action_id, "multiline": multiline}
+    if initial:
+        el["initial_value"] = initial[:2900]
+    return {"type": "input", "block_id": action_id, "optional": optional,
+            "label": {"type": "plain_text", "text": label}, "element": el}
+
+
+def build_create_modal(con, prefill: dict, private_meta: dict) -> dict:
+    """タスク起票モーダル。prefill=AI抽出結果、private_meta=起源情報(channel/ts等)。"""
+    owners = sfa_db.get_master_list(con, "owners")
+    projects = [p["name"] for p in sfa_db.list_task_projects(con)]
+    cats = sfa_db.get_master_list(con, "task_categories")
+    blocks = [
+        _text_input("title", "タイトル *", prefill.get("title", ""), optional=False),
+        _text_input("next_action", "次アクション", prefill.get("next_action", "")),
+        _select("assignee", "担当", owners, prefill.get("assignee")),
+        {"type": "input", "block_id": "due_date", "optional": True,
+         "label": {"type": "plain_text", "text": "期限"},
+         "element": ({"type": "datepicker", "action_id": "due_date",
+                      "initial_date": prefill["due_date"]} if prefill.get("due_date")
+                     else {"type": "datepicker", "action_id": "due_date"})},
+        _select("project", "プロジェクト", projects, prefill.get("project")),
+        _select("category", "種類（空ならAI判定）", cats, prefill.get("category")),
+    ]
+    return {
+        "type": "modal", "callback_id": "task_create",
+        "title": {"type": "plain_text", "text": "タスクを起票"},
+        "submit": {"type": "plain_text", "text": "起票"},
+        "close": {"type": "plain_text", "text": "キャンセル"},
+        "private_metadata": json.dumps(private_meta, ensure_ascii=False),
+        "blocks": blocks,
+    }
+
+
+def build_progress_modal(task_id: int, kind: str, title: str = "") -> dict:
+    label = "議論メモ" if kind == "discussion" else "進捗メモ"
+    return {
+        "type": "modal", "callback_id": f"task_note:{task_id}:{kind}",
+        "title": {"type": "plain_text", "text": label},
+        "submit": {"type": "plain_text", "text": "追記"},
+        "close": {"type": "plain_text", "text": "閉じる"},
+        "blocks": [
+            {"type": "context", "elements": [
+                {"type": "mrkdwn", "text": f"*{title[:80]}* への{label}"}]},
+            _text_input("body", label, multiline=True, optional=False),
+        ],
+    }
+
+
+# ── モーダル送信値の取り出し ───────────────────────────────────────────────
+
+def _view_val(state: dict, block_id: str):
+    v = (state.get("values", {}).get(block_id, {}) or {}).get(block_id, {}) or {}
+    if "value" in v:
+        return (v.get("value") or "").strip() or None
+    if "selected_date" in v:
+        return v.get("selected_date") or None
+    if "selected_option" in v and v["selected_option"]:
+        return v["selected_option"].get("value") or None
+    return None
+
+
+# ── 起票の実処理 ───────────────────────────────────────────────────────────
+
+def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_date=None,
+                            project=None, category=None, slack_channel=None, slack_ts=None,
+                            created_by=None, ai_category=True) -> int:
+    """モーダル/AI抽出の値からタスク作成。種類が空かつai_category=Trueならその場でAI判定
+    （モーダル送信＝3秒制約のある文脈では ai_category=False にして背景で後追い判定）。担当＋期限で自動整理。"""
+    if not category and ai_category:
+        try:
+            from .webapp import _ai_guess_task_category  # 遅延import（循環回避）
+            category = _ai_guess_task_category(title or "", next_action or "")
+        except Exception:
+            category = None
+    tid = sfa_db.upsert_task(
+        con, title=title or "(無題)", next_action=next_action or None,
+        assignee=assignee or None, due_date=due_date or None,
+        project=project or None, category=category or None,
+        status="受信箱", source="slack",
+        slack_channel=slack_channel, slack_ts=slack_ts, created_by=created_by)
+    # 担当＋期限が揃えば受信箱→未着手へ
+    if (assignee or "").strip() and (due_date or "").strip():
+        sfa_db.set_task_status(con, tid, "未着手")
+    return tid
+
+
+# ── スラッシュコマンド /task ───────────────────────────────────────────────
+
+def handle_slash(con, form: dict) -> None:
+    """/task <自由文>。AI抽出で前埋めした起票モーダルを開く。"""
+    trigger_id = form.get("trigger_id", "")
+    text = (form.get("text") or "").strip()
+    user_id = form.get("user_id", "")
+    prefill = ai_extract_task(text) if text else {"title": "", "next_action": "", "due_date": "", "category": ""}
+    owner = owner_from_slack_user(user_id)
+    if owner:
+        prefill["assignee"] = owner
+    meta = {"channel": form.get("channel_id", ""), "user": user_id, "response_url": form.get("response_url", "")}
+    view = build_create_modal(con, prefill, meta)
+    r = _slack_post("views.open", trigger_id=trigger_id, view=view)
+    if not r.get("ok"):
+        print(f"[slack_tasks] views.open(slash) failed: {r.get('error')}", flush=True)
+
+
+# ── リアクション🎯 ────────────────────────────────────────────────────────
+
+def handle_reaction(con, event: dict) -> None:
+    """🎯等のリアクションでメッセージをタスク化（AI抽出→即作成→ephemeral確認）。"""
+    if event.get("reaction") not in TASK_REACTIONS:
+        return
+    item = event.get("item", {}) or {}
+    channel = item.get("channel", "")
+    ts = item.get("ts", "")
+    user_id = event.get("user", "")
+    if not channel or not ts:
+        return
+    # 元メッセージ本文を取得
+    r = _slack_get("conversations.history", {"channel": channel, "latest": ts,
+                                             "inclusive": "true", "limit": 1})
+    msgs = r.get("messages", []) or []
+    text = (msgs[0].get("text") if msgs else "") or ""
+    prefill = ai_extract_task(text)
+    owner = owner_from_slack_user(user_id)
+    tid = create_task_from_fields(
+        con, title=prefill["title"], next_action=prefill["next_action"] or None,
+        assignee=owner, due_date=prefill["due_date"] or None, category=prefill["category"] or None,
+        slack_channel=channel, slack_ts=ts, created_by=owner or user_id)
+    link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
+    _slack_post("chat.postEphemeral", channel=channel, user=user_id,
+                text=f"🎯 タスク化しました: {prefill['title']}",
+                blocks=[
+                    {"type": "section", "text": {"type": "mrkdwn",
+                     "text": f"🎯 タスク化しました\n*<{link}|{prefill['title']}>*"
+                             + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
+                    _task_action_block(tid),
+                ])
+
+
+# ── @メンションでタスク化（webapp/slack_botから条件付きで呼ぶ） ──────────────
+
+def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: str) -> int:
+    prefill = ai_extract_task(text)
+    owner = owner_from_slack_user(user_id)
+    tid = create_task_from_fields(
+        con, title=prefill["title"], next_action=prefill["next_action"] or None,
+        assignee=owner, due_date=prefill["due_date"] or None, category=prefill["category"] or None,
+        slack_channel=channel, slack_ts=thread_ts, created_by=owner or user_id)
+    link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
+    _slack_post("chat.postMessage", channel=channel, thread_ts=thread_ts,
+                text=f"タスク化しました: {prefill['title']}",
+                blocks=[{"type": "section", "text": {"type": "mrkdwn",
+                        "text": f"✅ タスク化しました *<{link}|{prefill['title']}>*"}},
+                        _task_action_block(tid)])
+    return tid
+
+
+# ── ボタン付きブロック（消込UI） ───────────────────────────────────────────
+
+def _task_action_block(task_id: int) -> dict:
+    return {"type": "actions", "block_id": f"tab_{task_id}", "elements": [
+        {"type": "button", "action_id": f"task_done:{task_id}", "value": str(task_id),
+         "style": "primary", "text": {"type": "plain_text", "text": "✓完了"}},
+        {"type": "button", "action_id": f"task_start:{task_id}", "value": str(task_id),
+         "text": {"type": "plain_text", "text": "▶開始"}},
+        {"type": "button", "action_id": f"task_progress:{task_id}", "value": str(task_id),
+         "text": {"type": "plain_text", "text": "💬進捗"}},
+        {"type": "button", "action_id": f"task_snooze:{task_id}", "value": str(task_id),
+         "text": {"type": "plain_text", "text": "⏰+3営業日"}},
+    ]}
+
+
+# ── インタラクティブ（ボタン・モーダル送信） ───────────────────────────────
+
+def handle_interactive(con, payload: dict) -> dict | None:
+    """block_actions（ボタン）と view_submission（モーダル送信）を処理。
+    view_submission時はSlackへ返すレスポンス(dict)を返す（例: 空=モーダルを閉じる）。"""
+    ptype = payload.get("type")
+    if ptype == "view_submission":
+        return _handle_view_submission(con, payload)
+    if ptype == "block_actions":
+        _handle_block_action(con, payload)
+        return None
+    return None
+
+
+def _handle_view_submission(con, payload: dict) -> dict | None:
+    view = payload.get("view", {}) or {}
+    cb = view.get("callback_id", "")
+    state = view.get("state", {}) or {}
+    user_id = (payload.get("user") or {}).get("id", "")
+    if cb == "task_create":
+        meta = {}
+        try:
+            meta = json.loads(view.get("private_metadata") or "{}")
+        except Exception:
+            meta = {}
+        owner = owner_from_slack_user(user_id)
+        _cat = _view_val(state, "category")
+        tid = create_task_from_fields(
+            con,
+            title=_view_val(state, "title") or "(無題)",
+            next_action=_view_val(state, "next_action"),
+            assignee=_view_val(state, "assignee") or owner,
+            due_date=_view_val(state, "due_date"),
+            project=_view_val(state, "project"),
+            category=_cat,
+            slack_channel=meta.get("channel"), slack_ts=meta.get("ts"),
+            created_by=owner or user_id, ai_category=False)  # AIは3秒制約回避のため背景で
+        # 起票通知（本人へDM）
+        link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
+        _slack_post("chat.postMessage", channel=user_id,
+                    text=f"タスクを起票しました: {_view_val(state,'title')}",
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn",
+                            "text": f"✅ 起票しました *<{link}|{_view_val(state,'title')}>*"}},
+                            _task_action_block(tid)])
+        resp = {"response_action": "clear"}
+        if not _cat:
+            resp["_defer_category"] = tid   # 種類が空→背景でAI判定
+        return resp
+    if cb.startswith("task_note:"):
+        _, sid, kind = cb.split(":", 2)
+        body = _view_val(state, "body")
+        resp = {"response_action": "clear"}
+        if body:
+            sfa_db.add_task_note(con, int(sid), body, kind=kind)
+            if kind == "discussion":
+                resp["_defer_summary"] = int(sid)   # 議論メモ→背景でサマリ再生成
+            else:
+                tk = sfa_db.get_task(con, int(sid))  # 進捗追記＝着手→対応中
+                if tk and tk.get("status") in ("受信箱", "未着手", "保留"):
+                    sfa_db.set_task_status(con, int(sid), "対応中")
+        return resp
+    return {"response_action": "clear"}
+
+
+def regenerate_task_summary(con, task_id: int) -> None:
+    """議論メモからタスクサマリを再生成（背景スレッドから呼ぶ想定）。"""
+    try:
+        from .webapp import _ai_summarize_task
+        memos = [n["body"] for n in sfa_db.list_task_notes(con, int(task_id), kind="discussion")]
+        tk = sfa_db.get_task(con, int(task_id))
+        s = _ai_summarize_task(tk.get("title", "") if tk else "", memos)
+        if s:
+            sfa_db.set_task_summary(con, int(task_id), s)
+    except Exception as e:  # noqa: BLE001
+        print(f"[slack_tasks] regen summary failed: {e}", flush=True)
+
+
+def regenerate_task_category(con, task_id: int) -> None:
+    """タイトル/詳細からタスク種類をAI判定（背景スレッドから呼ぶ想定）。"""
+    try:
+        from .webapp import _ai_guess_task_category
+        tk = sfa_db.get_task(con, int(task_id))
+        if tk and not (tk.get("category") or "").strip():
+            cat = _ai_guess_task_category(tk.get("title", ""), tk.get("next_action") or "")
+            if cat:
+                con.execute("UPDATE tasks SET category=?, updated_at=datetime('now') WHERE id=?",
+                            (cat, int(task_id)))
+                con.commit()
+    except Exception as e:  # noqa: BLE001
+        print(f"[slack_tasks] regen category failed: {e}", flush=True)
+
+
+def _handle_block_action(con, payload: dict) -> None:
+    actions = payload.get("actions", []) or []
+    if not actions:
+        return
+    act = actions[0]
+    action_id = act.get("action_id", "")
+    trigger_id = payload.get("trigger_id", "")
+    resp_url = payload.get("response_url", "")
+    try:
+        name, sid = action_id.split(":", 1)
+        tid = int(sid)
+    except (ValueError, TypeError):
+        return
+    tk = sfa_db.get_task(con, tid)
+    if not tk:
+        _respond_url(resp_url, "⚠ タスクが見つかりません（削除済み？）")
+        return
+    if name == "task_done":
+        sfa_db.set_task_status(con, tid, "完了")
+        _respond_url(resp_url, f"✓ 完了にしました: {tk.get('title')}")
+    elif name == "task_start":
+        sfa_db.set_task_status(con, tid, "対応中")
+        _respond_url(resp_url, f"▶ 対応中にしました: {tk.get('title')}")
+    elif name == "task_snooze":
+        due = (tk.get("due_date") or "").strip()
+        base = date.fromisoformat(due) if due else date.today()
+        nd = sfa_db.add_business_days(base, 3).isoformat()
+        con.execute("UPDATE tasks SET due_date=?, updated_at=datetime('now') WHERE id=?", (nd, tid))
+        con.commit()
+        _respond_url(resp_url, f"⏰ 期限を {nd} に延ばしました: {tk.get('title')}")
+    elif name == "task_progress":
+        view = build_progress_modal(tid, "progress", tk.get("title", ""))
+        _slack_post("views.open", trigger_id=trigger_id, view=view)
+    elif name == "task_edit":
+        # 起票と同じモーダルを既存値で開く（簡易編集）
+        prefill = {"title": tk.get("title", ""), "next_action": tk.get("next_action") or "",
+                   "assignee": tk.get("assignee") or "", "due_date": tk.get("due_date") or "",
+                   "project": tk.get("project") or "", "category": tk.get("category") or ""}
+        _slack_post("views.open", trigger_id=trigger_id,
+                    view=build_create_modal(con, prefill, {"edit_id": tid}))
+
+
+def _respond_url(response_url: str, text: str) -> None:
+    """response_url にPOSTしてメッセージを更新/追記（ephemeral置換）。"""
+    if not response_url:
+        return
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            response_url, data=json.dumps({"text": text, "replace_original": False}).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        print(f"[slack_tasks] respond_url failed: {e}", flush=True)
+
+
+# ── 朝ダイジェスト（Block Kit・ボタン付き） ────────────────────────────────
+
+def build_digest_blocks(owner: str, tasks: list, tool_url: str) -> list:
+    """朝ダイジェストをBlock Kit化。各タスクに操作ボタンを付ける。"""
+    today = date.today().isoformat()
+
+    def mmdd(due):
+        try:
+            d = date.fromisoformat(due)
+            return f"{d.month}/{d.day}"
+        except (ValueError, TypeError):
+            return "期限なし"
+
+    blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"☀️ 今日のタスク（{owner}）"}},
+              {"type": "context", "elements": [{"type": "mrkdwn",
+               "text": f"未完了 {len(tasks)}件・{today}。ボタンでその場で消込できます。"}]}]
+    shown = 0
+    for t in tasks:
+        if shown >= 12:
+            break
+        due = (t.get("due_date") or "").strip()
+        mark = "🔴" if (due and due < today) else ("🟡" if due else "⚪")
+        na = (t.get("next_action") or "").strip()
+        link = f"{tool_url}/tasks?assignee={owner}#tc-{t['id']}"
+        txt = f"{mark} *<{link}|{t.get('title','')}>*  ({mmdd(due) if due else '期限なし'})"
+        if na:
+            txt += f"\n▶ {na}"
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": txt}})
+        blocks.append(_task_action_block(t["id"]))
+        shown += 1
+    if len(tasks) > shown:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+                      "text": f"…ほか {len(tasks)-shown}件。<{tool_url}/tasks?assignee={owner}|看板で見る>"}]})
+    return blocks

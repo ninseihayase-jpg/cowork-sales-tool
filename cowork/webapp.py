@@ -2706,8 +2706,10 @@ def send_task_digests(con, only: str | None = None) -> str:
             if not dm.get("ok"):
                 results.append(f"{owner}: DMを開けず")
                 continue
+            from cowork import slack_tasks as _st
             res = _slack_api_post("chat.postMessage", channel=dm["channel"]["id"],
-                                  text=build_task_digest_text(owner, tasks, tool_url))
+                                  text=build_task_digest_text(owner, tasks, tool_url),
+                                  blocks=_st.build_digest_blocks(owner, tasks, tool_url))
             results.append(f"{owner}: {'送信OK' if res.get('ok') else 'エラー ' + str(res.get('error'))}"
                            f"（{len(tasks)}件）")
         except Exception as e:  # noqa: BLE001
@@ -10096,6 +10098,101 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         else:
                             self._send_cors_json(b'{"error":"deal_id and date required"}', status=400)
 
+                # ── Slack スラッシュコマンド /task（起票モーダルを開く）──
+                elif path == "/slack/commands":
+                    import threading as _threading
+                    from cowork import slack_bot as _sb
+                    if not _sb.verify_signature(
+                        raw.encode("utf-8"),
+                        self.headers.get("X-Slack-Request-Timestamp", ""),
+                        self.headers.get("X-Slack-Signature", ""),
+                    ):
+                        self._send(b'{"error":"invalid signature"}', 401, ctype="application/json")
+                        return
+                    import urllib.parse as _up2
+                    _form = {k: (v[0] if v else "")
+                             for k, v in _up2.parse_qs(raw, keep_blank_values=True).items()}
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"")
+
+                    def _proc_cmd():
+                        _con = sfa_db.connect(db_path)
+                        try:
+                            from cowork import slack_tasks as _st
+                            _st.handle_slash(_con, _form)
+                        except Exception as _e:  # noqa: BLE001
+                            print(f"[slack_commands] error: {_e}", flush=True)
+                        finally:
+                            _con.close()
+                    _threading.Thread(target=_proc_cmd, daemon=True).start()
+                    return
+
+                # ── Slack インタラクティブ（ボタン・モーダル送信）──
+                elif path == "/slack/interactive":
+                    import threading as _threading
+                    from cowork import slack_bot as _sb
+                    if not _sb.verify_signature(
+                        raw.encode("utf-8"),
+                        self.headers.get("X-Slack-Request-Timestamp", ""),
+                        self.headers.get("X-Slack-Signature", ""),
+                    ):
+                        self._send(b'{"error":"invalid signature"}', 401, ctype="application/json")
+                        return
+                    import urllib.parse as _up2
+                    _payload_raw = _up2.parse_qs(raw, keep_blank_values=True).get("payload", [""])[0]
+                    try:
+                        _payload = json.loads(_payload_raw)
+                    except Exception:
+                        self._send(b"{}", 400, ctype="application/json")
+                        return
+                    from cowork import slack_tasks as _st
+                    if _payload.get("type") == "view_submission":
+                        # モーダル送信: 3秒以内にresponse_actionを同期で返す。AIは背景へ退避。
+                        _con2 = sfa_db.connect(db_path)
+                        try:
+                            _resp = _st.handle_interactive(_con2, _payload) or {}
+                        finally:
+                            _con2.close()
+                        _defer_cat = _resp.pop("_defer_category", None)
+                        _defer_sum = _resp.pop("_defer_summary", None)
+                        _rb = json.dumps(_resp, ensure_ascii=False).encode() if _resp else b""
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(_rb)))
+                        self.end_headers()
+                        self.wfile.write(_rb)
+                        if _defer_cat or _defer_sum:
+                            def _bg():
+                                _c3 = sfa_db.connect(db_path)
+                                try:
+                                    if _defer_cat:
+                                        _st.regenerate_task_category(_c3, _defer_cat)
+                                    if _defer_sum:
+                                        _st.regenerate_task_summary(_c3, _defer_sum)
+                                finally:
+                                    _c3.close()
+                            _threading.Thread(target=_bg, daemon=True).start()
+                        return
+                    else:
+                        # ボタン(block_actions): 即200→背景処理（モーダルを開く操作もここ）
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/plain")
+                        self.end_headers()
+                        self.wfile.write(b"")
+
+                        def _proc_iv():
+                            _con = sfa_db.connect(db_path)
+                            try:
+                                _st.handle_interactive(_con, _payload)
+                            except Exception as _e:  # noqa: BLE001
+                                print(f"[slack_interactive] error: {_e}", flush=True)
+                            finally:
+                                _con.close()
+                        _threading.Thread(target=_proc_iv, daemon=True).start()
+                        return
+
                 # ── Slack Events API ──
                 elif path == "/slack/events":
                     import threading as _threading
@@ -10134,7 +10231,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _con = sfa_db.connect(db_path)
                         try:
                             from cowork import slack_bot
-                            slack_bot.handle_event(data, _con, theme_client)
+                            _inner = data.get("event", {}) or {}
+                            if _inner.get("type") == "reaction_added":
+                                # 🎯等のリアクションでタスク化。Slack再送対策に冪等化。
+                                _eid = data.get("event_id")
+                                if _eid and not slack_bot._mark_event_processed(_con, _eid):
+                                    return
+                                from cowork import slack_tasks as _st
+                                _st.handle_reaction(_con, _inner)
+                            else:
+                                slack_bot.handle_event(data, _con, theme_client)
                         except Exception as _e:
                             print(f"[slack_events] error: {_e}")
                         finally:

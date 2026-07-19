@@ -1142,7 +1142,17 @@ def handle_event(data: dict, con: sqlite3.Connection, theme_client=None):
 
     try:
         if etype == "app_mention":
-            handle_mention(event, con)
+            # 「@Bot task ...」「@Bot タスク ...」はタスク起票へ。それ以外は従来の商談フロー。
+            _clean = re.sub(r"<@[A-Z0-9]+>", "", event.get("text") or "").strip()
+            _m = re.match(r"^(task|タスク)[:：\s]+(.+)", _clean, flags=re.IGNORECASE | re.DOTALL)
+            if _m:
+                from cowork import slack_tasks as _st
+                _st.handle_mention_task(
+                    con, event.get("channel", ""),
+                    event.get("thread_ts") or event.get("ts"),
+                    _m.group(2).strip(), event.get("user", ""))
+            else:
+                handle_mention(event, con)
         elif etype in ("message", "message.groups", "message.channels"):
             handle_message(event, con, theme_client)
     except Exception as e:
