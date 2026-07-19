@@ -2180,6 +2180,56 @@ def delete_task_note(con, note_id: int) -> None:
     con.commit()
 
 
+# テストデータ（検証用・source='test'で明示。ワンクリック投入/削除できる）。
+# タイトルは必ず「【テスト】」で始め、本番タスクと視覚的に区別する。
+def seed_sample_tasks(con, assignee: str = "早瀬", today: str | None = None) -> int:
+    """検証用のサンプルタスクを投入する（既存のtestデータは一旦消してから入れ直す）。件数を返す。"""
+    from datetime import date as _date, timedelta as _td
+    base = _date.fromisoformat(today) if today else _date.today()
+    past = (base - _td(days=6)).isoformat()
+    thisweek = (base + _td(days=2)).isoformat()
+    tod = base.isoformat()
+    future = (base + _td(days=20)).isoformat()
+    delete_test_tasks(con)  # 二重投入を防ぐ
+    samples = [
+        dict(title="【テスト】デモ環境を用意する", project="【テスト】図面OCR研究開発",
+             next_action="サンプルデータを△△さんに依頼する", assignee=assignee,
+             due_date=past, status="対応中", priority="高", category="開発"),
+        dict(title="【テスト】ISO内部監査の資料レビュー", project="【テスト】セキュリティISO取得",
+             assignee=assignee, due_date=thisweek, status="未着手", priority="中", category="ドキュメント"),
+        dict(title="【テスト】提案書の骨子を作る", next_action="競合比較表を1枚にまとめる",
+             assignee=assignee, due_date=tod, status="未着手", priority="高", category="設計"),
+        dict(title="【テスト】Slackで来た依頼を整理する", assignee=assignee,
+             status="受信箱", priority="中"),
+        dict(title="【テスト】先の対応（期限なし）", project="【テスト】図面OCR研究開発",
+             next_action="要件が固まったら着手", assignee=assignee, status="保留", priority="低"),
+        dict(title="【テスト】完了済みサンプル", assignee=assignee, due_date=past,
+             status="完了", priority="中", category="開発"),
+    ]
+    n = 0
+    first_id = None
+    for s in samples:
+        tid = upsert_task(con, source="test", commit=False, **s)
+        if first_id is None:
+            first_id = tid
+        n += 1
+    con.commit()
+    if first_id:
+        add_task_note(con, first_id, "【テスト】環境構築に着手。あと少しで完了予定。")
+        add_task_note(con, first_id, "【テスト】DBスキーマを確定した。")
+    return n
+
+
+def delete_test_tasks(con) -> int:
+    """source='test' のテストタスク（と紐づく進捗ログ）を全削除。件数を返す。"""
+    ids = [r[0] for r in con.execute("SELECT id FROM tasks WHERE source='test'")]
+    for tid in ids:
+        con.execute("DELETE FROM task_notes WHERE task_id=?", (tid,))
+    con.execute("DELETE FROM tasks WHERE source='test'")
+    con.commit()
+    return len(ids)
+
+
 def list_deal_attachments(con, deal_id: int) -> list[dict]:
     return [dict(r) for r in con.execute(
         "SELECT * FROM deal_attachments WHERE deal_id=? ORDER BY created_at DESC", (deal_id,)

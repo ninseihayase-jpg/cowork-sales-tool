@@ -1966,15 +1966,27 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
       <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細・次アクションで検索…" oninput="taskFilter()" style="max-width:280px">
       <a class="btn sec" href="/tasks">リセット</a>
     </form>"""
+    has_test = any((t.get("source") == "test") for t in tasks)
+    test_bar = ""
+    if has_test:
+        test_bar = ('<div class="card" style="background:#fef3c7;border-color:#fcd34d;'
+                    'display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+                    '<span>🧪 <b>【テスト】</b>で始まるタスクは検証用のサンプルです（本番データではありません）。</span>'
+                    '<form method="post" action="/tasks/delete-test">'
+                    '<button class="btn sec" type="submit">🧪 テストデータを削除</button></form></div>')
+    seed_btn = ('<form method="post" action="/tasks/seed-test" style="display:inline">'
+                '<button class="btn sec" type="submit" title="検証用の【テスト】サンプルを投入">🧪 テストデータ投入</button></form>')
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>タスク（{len(tasks)}）</span>
-        <span style="display:flex;gap:8px">
+        <span style="display:flex;gap:8px;flex-wrap:wrap">
+          {seed_btn}
           <a class="btn sec" href="/tasks/digest">🔔 朝ダイジェスト</a>
           <a class="btn" href="/tasks/new">＋新規タスク</a>
         </span>
       </h2>
+      {test_bar}
       {filter_row}
       <div id="taskBoard">{columns}</div>
     </div>{_TASKS_JS}"""
@@ -7704,6 +7716,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         link_type=_lt, link_id=_li, source="web",
                     )
                     self._redirect("/tasks")
+
+                elif path == "/tasks/seed-test":
+                    _n = sfa_db.seed_sample_tasks(con)
+                    self._send(render(tasks_page(con),
+                                      flash=f"🧪 テストデータを {_n} 件投入しました（【テスト】で始まるタスク）。"))
+                elif path == "/tasks/delete-test":
+                    _n = sfa_db.delete_test_tasks(con)
+                    self._send(render(tasks_page(con), flash=f"🧪 テストデータを {_n} 件削除しました。"))
 
                 elif path == "/tasks/digest/send":
                     _only = (f.get("only") or "").strip() or None
