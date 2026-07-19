@@ -1938,7 +1938,7 @@ _TASKS_JS = """
 /* 画面幅いっぱいに5列を伸縮配置。広い画面では横スクロールなし、狭い画面(=合計が入り切らない時)だけ横スクロール */
 #taskBoard{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;align-items:flex-start}
 .task-col{flex:1 1 0;min-width:185px;background:#f1f4f9;border-radius:10px;padding:8px 7px 12px}
-.task-col h3{position:sticky;top:0;font-size:13px;margin:0 0 6px}
+.task-col h3{position:sticky;top:44px;background:#f1f4f9;z-index:5;font-size:13px;margin:0 0 6px;padding:5px 4px;border-radius:6px;box-shadow:0 2px 4px rgba(15,23,42,.06)}
 .tc-col-body{min-height:18px}
 .task-card{background:#fff;border:1px solid #e6e9f0;border-radius:8px;padding:5px 8px;margin-bottom:6px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
 .task-card.saved{outline:2px solid #10b981;transition:outline .15s}
@@ -2093,6 +2093,11 @@ document.addEventListener('DOMContentLoaded',function(){ document.querySelectorA
   if(board){ ['input','change','click','keydown'].forEach(function(evt){ board.addEventListener(evt,function(e){ var c=e.target.closest('.task-card.open'); if(c)_tcTouch(c); }); }); }
   // 一定時間(45秒)操作の無い開いたカードは自動でコンパクトに戻す
   setInterval(function(){ var now=Date.now(); document.querySelectorAll('.task-card.open').forEach(function(c){ var t=parseInt(c.getAttribute('data-touch')||'0'); if(t&&now-t>_TC_IDLE_MS)c.classList.remove('open'); }); },5000);
+  // Slack等からの直リンク(#tc-<id>)で該当タスクを開いてスクロール
+  if(location.hash&&location.hash.indexOf('#tc-')===0){ var fc=document.getElementById(location.hash.slice(1));
+    if(fc){ fc.classList.add('open'); _tcTouch(fc); fc.style.outline='2px solid #2563eb';
+      setTimeout(function(){fc.scrollIntoView({behavior:'smooth',block:'center'});},150);
+      setTimeout(function(){fc.style.outline='';},2500); } }
 });
 </script>
 <div id="notesBackdrop"></div><div id="notesPop"></div>
@@ -2619,11 +2624,22 @@ def build_task_digest_text(owner: str, tasks: list, tool_url: str) -> str:
         else:
             rest.append(t)
 
+    def _mmdd(due):
+        try:
+            d = date.fromisoformat(due)
+            return f"{d.month}/{d.day}"
+        except (ValueError, TypeError):
+            return "期限なし"
+
     def line(t):
-        due = (t.get("due_date") or "").strip() or "期限なし"
+        due = (t.get("due_date") or "").strip()
+        dd = _mmdd(due) if due else "期限なし"
         na = (t.get("next_action") or "").strip()
-        na_s = f" ▶ {na}" if na else " ▶（次アクション未設定）"
-        return f"  • [{due}] {t.get('title', '')}{na_s}"
+        na_s = f"　→ {na}" if na else "　→ 次アクション未設定"
+        # タイトルをその場のカードへの直リンクに（Slack→該当タスクが1クリック）
+        title = str(t.get("title", "")).replace("|", "｜").replace(">", "＞").replace("<", "＜")
+        link = f"{tool_url}/tasks?assignee={_up.quote(owner)}#tc-{t.get('id')}"
+        return f"  • {dd}｜<{link}|{title}>{na_s}"
 
     lines = [f"【朝のタスクダイジェスト {today}】",
              f"{owner}さん、未完了タスク {len(tasks)}件です。", ""]
