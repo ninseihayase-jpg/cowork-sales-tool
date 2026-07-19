@@ -3665,6 +3665,9 @@ def deal_form(con, deal=None) -> str:
     {lead_picker_html}
     <form id="dealForm" method="post" action="/deal/save">
       <input type="hidden" name="id" value="{_esc(deal.get('id'))}">
+      {ms_editor_html}
+      <label>現状メモ</label><textarea name="note" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(deal.get('note'))}</textarea>
+      <hr style="border:none;border-top:1px solid #e6e9f0;margin:16px 0 18px">
       <div class="grid">
         <div><label>アカウント{"" if not deal.get("id") else " *"}</label>
           <select name="account_id" id="acc_id_sel" {acc_req}>{''.join(acc_opts)}</select>
@@ -3697,8 +3700,6 @@ def deal_form(con, deal=None) -> str:
           <div style="padding:7px 0"><span class="stage">{'クローズ済' if deal.get('status') == 'closed' else '進行中'}</span>
           <span class="muted" style="font-size:11px;margin-left:6px">クローズは画面上部の「クローズ」ボタンから</span></div></div>
       </div>
-      {ms_editor_html}
-      <label>現状メモ</label><textarea name="note" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(deal.get('note'))}</textarea>
       <label>ゴール</label><textarea name="goal" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(deal.get('goal'))}</textarea>
       <div id="cost_section" style="{'display:none' if deal.get('business_type_l1') != 'コスト削減' else ''}">
         <hr style="margin:16px 0">
