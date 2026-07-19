@@ -1986,7 +1986,7 @@ _TASKS_JS = """
 .tc-sel,.tc-due{font-size:10px;padding:1px 2px;border:1px solid #e2e8f0;border-radius:4px;max-width:100%;background:#fff}
 .tc-notes{font-size:10px;color:#64748b;background:#f8fafc;border-radius:4px;padding:3px 6px;margin:3px 0;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tc-notes:hover{background:#eef2f7}
-.tc-actions{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-top:5px}
+.tc-actions{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-top:5px;min-height:24px}
 .tc-actions button{font-size:10px;padding:2px 8px;border-radius:5px;border:1px solid #cbd5e1;background:#fff;cursor:pointer}
 .tc-actions .go{background:#2563eb;color:#fff;border-color:#2563eb}
 .tc-actions .done{background:#10b981;color:#fff;border-color:#10b981}
@@ -2032,13 +2032,13 @@ function openNotes(id,kind){
   var title=isD?'💬 議論メモ':'📝 進捗ログ';
   var ph=isD?'議論・検討メモを追記（たっぷり書けます）':'進捗を追記';
   var inp=isD
-    ? '<textarea id="noteInput" rows="5" placeholder="'+ph+'" style="width:100%;font-size:13px;padding:6px;box-sizing:border-box"></textarea><div style="text-align:right;margin-top:4px"><button class="btn np-add" style="font-size:11px;padding:3px 10px" onclick="addNote()">追記＋サマリ更新</button></div>'
+    ? '<textarea id="noteInput" rows="12" placeholder="'+ph+'" style="width:100%;min-height:240px;font-size:13px;padding:8px;box-sizing:border-box;line-height:1.6" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key===&#39;Enter&#39;){event.preventDefault();addNote();}"></textarea><div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span class="muted" style="font-size:10px">Enter=改行 ／ Ctrl+Enter=確定 ／ Esc=閉じる</span><button class="btn np-add" style="font-size:11px;padding:3px 10px" onclick="addNote()">追記＋サマリ更新</button></div>'
     : '<div style="display:flex;gap:6px"><input id="noteInput" placeholder="'+ph+'" style="flex:1;font-size:12px;padding:4px 6px" onkeydown="if(event.key===&#39;Enter&#39;)addNote()"><button class="btn np-add" style="font-size:11px;padding:3px 8px" onclick="addNote()">追記</button></div>';
   pop.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:13px">'+title+'</b><span onclick="closeNotes()" style="cursor:pointer;color:#94a3b8">✕</span></div>'
     +(isD?'<div id="notesSummary" class="np-sum"></div>':'')
     +'<div id="notesBody" class="muted" style="font-size:12px">読み込み中…</div>'
     +'<div style="margin-top:8px">'+inp+'</div>';
-  bd.style.display='block'; pop.style.display='block'; pop.style.width=(isD?'480px':'340px');
+  bd.style.display='block'; pop.style.display='block'; pop.style.width=(isD?'min(600px,94vw)':'340px');
   pop.style.left=Math.max(8,(window.innerWidth-pop.offsetWidth)/2)+'px';
   pop.style.top=Math.max(8,(window.innerHeight-pop.offsetHeight)/2)+'px';
   fetch('/task/'+id+'/notes?kind='+kind).then(function(r){return r.json();}).then(function(d){ _tcRenderNotes(d.notes||[]); if(isD)_npSummary(d.summary); });
@@ -2062,7 +2062,10 @@ function addNote(){
      else { if(card){ var chip=card.querySelector('.tc-notes'); if(chip)chip.textContent='📝 '+v.slice(0,40); if(d.status&&card.getAttribute('data-status')!==d.status)tcMove(id,d.status); } }
    });
 }
-function closeNotes(){ document.getElementById('notesPop').style.display='none'; document.getElementById('notesBackdrop').style.display='none'; }
+function closeNotes(){ var i=document.getElementById('noteInput');
+  if(i&&(i.value||'').trim()&&!confirm('入力中のメモを破棄して閉じますか？')) return;
+  document.getElementById('notesPop').style.display='none'; document.getElementById('notesBackdrop').style.display='none'; }
+document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ var p=document.getElementById('notesPop'); if(p&&p.style.display==='block'){ e.preventDefault(); closeNotes(); } } });
 function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').toLowerCase().trim();
   document.querySelectorAll('.task-card').forEach(function(c){ c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
 var _TC_IDLE_MS=45000;
@@ -2409,7 +2412,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'<span class="tc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
             f'<span class="tc-ttl">{_esc(t.get("title"))}</span>'
             f'{pin_btn}<span class="tc-car">▸</span></div>'
-            f'<div class="tc-mini">{m_pj}{m_asg}{m_due}<span class="tc-actions"></span></div>'
+            f'<div class="tc-mini">{m_pj}{m_asg}{m_due}</div>'
+            f'<div class="tc-actions"></div>'
             f'<div class="tc-body">'
             f'<input class="tc-title" value="{_esc(t.get("title"))}" title="タイトル" '
             f'onchange="taskField({tid},&#39;title&#39;,this.value);tcSyncTitle({tid},this.value)">'
