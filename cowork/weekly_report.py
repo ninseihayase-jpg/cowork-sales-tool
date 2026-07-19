@@ -127,6 +127,91 @@ def compute_weekly_numbers(con, as_of: date | None = None) -> dict:
     }
 
 
+def _num(v) -> str:
+    """整数はカンマ区切り、floatは端数を落として整形。"""
+    try:
+        return f"{int(round(float(v))):,}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _wow_ar(delta) -> str:
+    """前週比を矢印付きの小さなラベルにする（.ar クラス）。0や不明は控えめに。"""
+    if delta is None:
+        return ""
+    try:
+        delta = int(round(float(delta)))
+    except (TypeError, ValueError):
+        return ""
+    if delta > 0:
+        return f'<span class="ar">▲{delta:,}</span>'
+    if delta < 0:
+        return f'<span class="ar">▼{abs(delta):,}</span>'
+    return '<span class="ar">±0</span>'
+
+
+def render_number_rail(nums: dict) -> str:
+    """compute_weekly_numbers() の dict から、記事レール（数字パート）のHTML断片を生成する。
+    _REPORT_ARTICLE_CSS の .rail-h / .stat / .fn クラスに一致。記事本文の <!--NUMBERS--> と差し替える。
+    ※ここが「数字は自動集計・人は手打ちしない」の中核（#39）。"""
+    flow = nums.get("flow", {}) or {}
+    prev = flow.get("prev", {}) or {}
+    stock = nums.get("stock", {}) or {}
+    exh = (nums.get("cohort", {}) or {}).get("exhibition", {}) or {}
+    wow = nums.get("wow", {}) or {}
+    wow_ok = bool(wow.get("available"))
+
+    def stat(k, v, unit="", ar=""):
+        u = f'<span class="u">{unit}</span>' if unit else ""
+        return f'<div class="stat"><div class="k">{k}</div><div class="v">{v}{u} {ar}</div></div>'
+
+    def fn(label, val):
+        return f'<div class="fn"><span>{label}</span><b>{val}</b></div>'
+
+    def flow_d(key):
+        if key in flow and key in prev:
+            return _wow_ar(flow.get(key, 0) - prev.get(key, 0))
+        return ""
+
+    parts = ['<div class="rail-h">今週の動き</div>']
+    parts.append(stat("面談",
+                      f'{_num(flow.get("meetings", 0))}<span class="ar">/{_num(flow.get("meeting_companies", 0))}社</span>',
+                      "件", flow_d("meetings")))
+    parts.append(stat("新規リード", _num(flow.get("new_leads", 0)), "件", flow_d("new_leads")))
+    parts.append(stat("新規商談", _num(flow.get("new_deals", 0)), "件", flow_d("new_deals")))
+
+    parts.append('<div class="rail-h sub">パイプライン</div>')
+    parts.append(stat("進行中の商談", _num(stock.get("open_deals", 0)), "件",
+                      _wow_ar(wow.get("open_deals")) if wow_ok else ""))
+    parts.append(stat("金額（一括）", _num(stock.get("pipeline_lump", 0)), "万円",
+                      _wow_ar(wow.get("pipeline_lump")) if wow_ok else ""))
+    if stock.get("pipeline_recurring"):
+        parts.append(stat("金額（継続/月）", _num(stock.get("pipeline_recurring", 0)), "万円",
+                          _wow_ar(wow.get("pipeline_recurring")) if wow_ok else ""))
+
+    if exh:
+        parts.append('<div class="rail-h sub">展示会ファネル</div>')
+        parts.append(fn("商談化（総数）", _num(exh.get("total", 0))))
+        parts.append(fn("有効母数（ニーズ有）", _num(exh.get("valid_total", 0))))
+        parts.append(fn("面談1回以上", _num(exh.get("first_meeting", 0))))
+        parts.append(fn("面談2回以上", _num(exh.get("second_meeting", 0))))
+        parts.append(fn("受注", _num(exh.get("won", 0))))
+
+    funnel = stock.get("funnel") or []
+    if funnel:
+        parts.append('<div class="rail-h sub">ステージ別（進行中）</div>')
+        wow_funnel = wow.get("funnel", {}) if wow_ok else {}
+        for row in funnel:
+            stg = row.get("stage", "未設定")
+            ar = _wow_ar(wow_funnel.get(stg)) if stg in wow_funnel else ""
+            parts.append(fn(stg, f'{_num(row.get("count", 0))} {ar}'.strip()))
+
+    if not wow_ok:
+        parts.append('<div class="fn" style="border:0;color:var(--faint)">'
+                     '<span>※前週比はスナップショット2週分から表示</span><b></b></div>')
+    return "".join(parts)
+
+
 def _exhibition_funnel(con) -> dict:
     """展示会由来(lead_pattern='Exh.')商談の面談回数ベースのファネル。
     - total: 展示会由来の商談総数

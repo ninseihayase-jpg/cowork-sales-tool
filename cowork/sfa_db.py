@@ -615,6 +615,7 @@ CREATE TABLE IF NOT EXISTS weekly_reports (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     slug        TEXT NOT NULL UNIQUE,   -- URLスラッグ（英数と-_のみ）例: 2026-07-12
     report_date TEXT,                   -- 一覧表示用の期間文字列 例: 2026.7.6 – 7.12
+    week_start  TEXT,                   -- 対象週の月曜(YYYY-MM-DD)。数字レール自動注入の基準週（#39）
     title       TEXT,                   -- 号の表題
     lead        TEXT,                   -- 一覧に出す「一言」
     cover_image TEXT,                   -- カバー画像（data: URI。一覧サムネ＋記事hero。無ければ既定の装飾）
@@ -832,6 +833,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         wr_cols = {r[1] for r in con.execute("PRAGMA table_info(weekly_reports)")}
         if wr_cols and "cover_image" not in wr_cols:
             con.execute("ALTER TABLE weekly_reports ADD COLUMN cover_image TEXT")
+        if wr_cols and "week_start" not in wr_cols:
+            con.execute("ALTER TABLE weekly_reports ADD COLUMN week_start TEXT")
         # dev_owner_capacity に上限変更(2段階)列を後方互換追加（#42）
         _cap_cols = {r[1] for r in con.execute("PRAGMA table_info(dev_owner_capacity)")}
         if _cap_cols and "change_from_week" not in _cap_cols:
@@ -2370,28 +2373,31 @@ def list_snapshot_weeks(con) -> list[str]:
 def list_weekly_reports(con) -> list[dict]:
     """レポートの号一覧（本文は除きメタ＋カバー画像）を新しい順(slug降順)で返す。"""
     return [dict(r) for r in con.execute(
-        "SELECT slug, report_date, title, lead, cover_image, updated_at FROM weekly_reports "
+        "SELECT slug, report_date, week_start, title, lead, cover_image, updated_at FROM weekly_reports "
         "ORDER BY slug DESC")]
 
 
 def get_weekly_report(con, slug: str) -> dict | None:
     """slugの号を返す（本文html_body・カバー画像含む）。無ければNone。"""
     r = con.execute(
-        "SELECT slug, report_date, title, lead, cover_image, html_body, created_at, updated_at "
+        "SELECT slug, report_date, week_start, title, lead, cover_image, html_body, created_at, updated_at "
         "FROM weekly_reports WHERE slug=?", (slug,)).fetchone()
     return dict(r) if r else None
 
 
 def upsert_weekly_report(con, slug: str, report_date: str, title: str,
-                         lead: str, html_body: str, cover_image: str = "") -> None:
-    """号を作成/更新（slug一致で上書き）。cover_imageはdata: URI（任意）。"""
+                         lead: str, html_body: str, cover_image: str = "",
+                         week_start: str = "") -> None:
+    """号を作成/更新（slug一致で上書き）。cover_imageはdata: URI（任意）。
+    week_start=対象週の月曜(YYYY-MM-DD)。数字レール自動注入の基準（#39）。"""
     con.execute(
-        "INSERT INTO weekly_reports (slug, report_date, title, lead, cover_image, html_body, updated_at) "
-        "VALUES (?,?,?,?,?,?,datetime('now')) "
+        "INSERT INTO weekly_reports (slug, report_date, week_start, title, lead, cover_image, html_body, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,datetime('now')) "
         "ON CONFLICT(slug) DO UPDATE SET "
-        "report_date=excluded.report_date, title=excluded.title, lead=excluded.lead, "
-        "cover_image=excluded.cover_image, html_body=excluded.html_body, updated_at=datetime('now')",
-        (slug, report_date, title, lead, cover_image or "", html_body),
+        "report_date=excluded.report_date, week_start=excluded.week_start, title=excluded.title, "
+        "lead=excluded.lead, cover_image=excluded.cover_image, html_body=excluded.html_body, "
+        "updated_at=datetime('now')",
+        (slug, report_date, week_start or None, title, lead, cover_image or "", html_body),
     )
     con.commit()
 

@@ -839,11 +839,14 @@ h1{font-size:clamp(1.35rem,2.6vw,1.75rem);font-weight:700;line-height:1.5;margin
 """
 
 
-def report_article_html(rep: dict) -> str:
+def report_article_html(rep: dict, rail_html: str = "") -> str:
     """1号の読み物ページ。旧・単体HTML本文は後方互換でそのまま返し、
     新形式（本文fragment=.cols の中身）はアプリ側の2カラム・マガジン設計に包んで返す。
-    デザイン・フォント調整は _REPORT_ARTICLE_CSS 側で完結する（本文の貼り直し不要）。"""
+    デザイン・フォント調整は _REPORT_ARTICLE_CSS 側で完結する（本文の貼り直し不要）。
+    本文中の <!--NUMBERS--> は rail_html（自動集計した数字レール）に差し替える（#39）。"""
     body = rep.get("html_body") or ""
+    # 数字レール自動注入: プレースホルダを実データのレールに差し替え（人は数字を手打ちしない）
+    body = body.replace("<!--NUMBERS-->", rail_html or "")
     low = body.lstrip().lower()
     if low.startswith("<!doctype") or low.startswith("<html"):
         return body  # 旧形式（単体HTML）はそのまま配信
@@ -1502,7 +1505,10 @@ def weekly_numbers_page(con) -> str:
 
     return f"""
     <div class="card">
-      <h2>週次レポート 数字パック <span class="muted" style="font-size:.6em">{_esc(wk)}</span></h2>
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>週次レポート 数字パック <span class="muted" style="font-size:.6em">{_esc(wk)}</span></span>
+        <a class="btn sec" href="/weekly-numbers/audit">🔍 集計を検証（元データ）</a>
+      </h2>
       {wow_banner}
       <h3>今週の動き（フロー）</h3>
       <ul>
@@ -1530,6 +1536,148 @@ def weekly_numbers_page(con) -> str:
       <textarea rows="12" style="width:100%;font-family:monospace;font-size:13px"
         onclick="this.select()">{_esc(paste)}</textarea>
     </div>"""
+
+
+def _audit_table(headers: list, rows: list) -> str:
+    """監査用の素朴なテーブル（ヘッダ＋行）。rowsは各要素がセル文字列のlist。"""
+    if not rows:
+        return '<p class="muted" style="font-size:.85em;margin:.3rem 0">該当行なし</p>'
+    thead = "".join(f"<th>{_esc(h)}</th>" for h in headers)
+    trs = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
+    return (f'<table style="font-size:12px;width:100%;border-collapse:collapse">'
+            f'<tr>{thead}</tr>{trs}</table>')
+
+
+def _audit_section(title: str, definition: str, value_html: str, detail_html: str,
+                   warn: str = "") -> str:
+    """1指標の監査ブロック: 定義・値・元データ(details)・注意。"""
+    warn_html = (f'<div style="background:#fef2f2;border-left:3px solid #dc2626;padding:6px 10px;'
+                 f'margin:6px 0;font-size:12px;color:#991b1b">⚠ {warn}</div>' if warn else "")
+    return (f'<div class="card" style="margin-bottom:10px">'
+            f'<h3 style="margin:0 0 4px">{_esc(title)} — {value_html}</h3>'
+            f'<div class="muted" style="font-size:12px;margin-bottom:4px">定義: {definition}</div>'
+            f'{warn_html}'
+            f'<details><summary style="cursor:pointer;font-size:12px;color:#2563eb">元データを表示（数えている行）</summary>'
+            f'<div style="overflow-x:auto;margin-top:6px">{detail_html}</div></details></div>')
+
+
+def weekly_numbers_audit_page(con, as_of=None) -> str:
+    """数字パックの「集計監査」ページ（#27）。各指標を 定義＋値＋元データ に展開し、
+    集計の確からしさを人が元データで検証できるようにする。スナップショットは記録しない（読み取り専用）。"""
+    import cowork.weekly_report as weekly_report
+    ws, we, _prev = weekly_report._week_bounds(as_of)
+    open_cond = "(d.status='open' OR d.status IS NULL)"
+
+    # 1) 面談（フロー）
+    mtg_rows = con.execute(
+        "SELECT a.occurred_on, acc.name acc, d.deal_name, a.contact_name, a.type "
+        "FROM activities a LEFT JOIN deals d ON d.id=a.deal_id LEFT JOIN accounts acc ON acc.id=d.account_id "
+        "WHERE a.type='面談' AND a.occurred_on BETWEEN ? AND ? ORDER BY a.occurred_on", (ws, we)).fetchall()
+    mtg_companies = len({r["acc"] for r in mtg_rows if r["acc"]})
+    mtg_tbl = _audit_table(
+        ["面談日", "アカウント", "案件", "相手"],
+        [[_esc(r["occurred_on"]), _esc(r["acc"] or "—"), _esc(r["deal_name"] or "—"),
+          _esc(r["contact_name"] or "—")] for r in mtg_rows])
+    sec_mtg = _audit_section(
+        "面談数", f"activities.type='面談' かつ occurred_on が {ws}〜{we}。相手社数=案件経由のaccount重複排除。",
+        f'<b>{len(mtg_rows)}</b>件（相手 {mtg_companies}社）', mtg_tbl,
+        warn="occurred_on 未入力の面談はここに出ません。面談を activities に『面談』種別で登録しているか要確認。")
+
+    # 2) 新規リード（フロー）
+    lead_rows = con.execute(
+        "SELECT created_at, name, source, lead_status FROM leads "
+        "WHERE substr(created_at,1,10) BETWEEN ? AND ? ORDER BY created_at", (ws, we)).fetchall()
+    lead_tbl = _audit_table(
+        ["登録日時", "リード名", "経路", "状態"],
+        [[_esc((r["created_at"] or "")[:16]), _esc(r["name"] or "—"), _esc(r["source"] or "—"),
+          _esc(r["lead_status"] or "—")] for r in lead_rows])
+    sec_lead = _audit_section(
+        "新規リード", f"leads.created_at（登録日時）の日付が {ws}〜{we}。",
+        f'<b>{len(lead_rows)}</b>件', lead_tbl,
+        warn="created_at は『SFAへ登録した日時』。過去分を後からまとめて登録すると、その週の新規として二重に膨らむ。"
+             "実際の獲得日で数えたい場合は基準列の見直しが必要（#27）。")
+
+    # 3) 新規商談（フロー）
+    deal_rows = con.execute(
+        "SELECT d.created_at, acc.name acc, d.deal_name, d.stage, d.owner FROM deals d "
+        "LEFT JOIN accounts acc ON acc.id=d.account_id "
+        "WHERE substr(d.created_at,1,10) BETWEEN ? AND ? ORDER BY d.created_at", (ws, we)).fetchall()
+    deal_tbl = _audit_table(
+        ["登録日時", "アカウント", "案件名", "ステージ", "担当"],
+        [[_esc((r["created_at"] or "")[:16]), _esc(r["acc"] or "—"), _esc(r["deal_name"] or "—"),
+          _esc(r["stage"] or "—"), _esc(r["owner"] or "—")] for r in deal_rows])
+    sec_deal = _audit_section(
+        "新規商談", f"deals.created_at（登録日時）の日付が {ws}〜{we}。",
+        f'<b>{len(deal_rows)}</b>件', deal_tbl,
+        warn="リード同様 created_at=登録日時のため、過去商談を後から登録するとその週の『新規』として膨らむ。"
+             "『実際に商談化した日』の列が別途必要かも（#27の最有力の乖離要因）。")
+
+    # 4) パイプライン（ストック＝現在のopen商談）
+    open_rows = con.execute(
+        f"SELECT acc.name acc, d.deal_name, d.stage, d.value_lumpsum lump, d.value_recurring rec "
+        f"FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id WHERE {open_cond} "
+        f"ORDER BY d.value_lumpsum DESC").fetchall()
+    sum_lump = sum((r["lump"] or 0) for r in open_rows)
+    sum_rec = sum((r["rec"] or 0) for r in open_rows)
+    open_tbl = _audit_table(
+        ["アカウント", "案件名", "ステージ", "単発(万)", "継続月(万)"],
+        [[_esc(r["acc"] or "—"), _esc(r["deal_name"] or "—"), _esc(r["stage"] or "—"),
+          f'{(r["lump"] or 0):,.0f}', f'{(r["rec"] or 0):,.0f}'] for r in open_rows])
+    sec_pipe = _audit_section(
+        "パイプライン（進行中商談）", f"status='open'(またはNULL)の全商談。金額は value_lumpsum / value_recurring の合計。",
+        f'<b>{len(open_rows)}</b>件・単発計 <b>{sum_lump:,.0f}</b>万 / 継続 <b>{sum_rec:,.0f}</b>万', open_tbl,
+        warn="金額未入力(NULL)は0扱い。桁違いの仮入力・重複商談があると総額が跳ねる。単位が『万円』で統一されているか要確認。")
+
+    # 5) 展示会ファネル（コホート）
+    exh_rows = con.execute(
+        "SELECT d.deal_name, acc.name acc, d.stage, d.close_reason, "
+        "(SELECT COUNT(*) FROM activities a WHERE a.deal_id=d.id AND a.type='面談') mtg "
+        "FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id "
+        "WHERE d.lead_pattern='Exh.' ORDER BY mtg DESC", ).fetchall()
+    total = len(exh_rows)
+    no_need = sum(1 for r in exh_rows if r["close_reason"] == "ニーズなし")
+    canceled = sum(1 for r in exh_rows if r["close_reason"] == "キャンセル")
+    first = sum(1 for r in exh_rows if (r["mtg"] or 0) >= 1)
+    second = sum(1 for r in exh_rows if (r["mtg"] or 0) >= 2)
+    won = sum(1 for r in exh_rows if r["stage"] == "受注")
+    exh_tbl = _audit_table(
+        ["案件名", "アカウント", "ステージ", "終了理由", "面談回数"],
+        [[_esc(r["deal_name"] or "—"), _esc(r["acc"] or "—"), _esc(r["stage"] or "—"),
+          _esc(r["close_reason"] or "—"), str(r["mtg"] or 0)] for r in exh_rows])
+    sec_exh = _audit_section(
+        "展示会ファネル", "lead_pattern='Exh.' の商談が母集団。面談回数は activities.type='面談' の件数。"
+        f"有効母数=総数−ニーズなし。初回面談=面談≧1、次商談=面談≧2、受注=stage'受注'。",
+        f'総数 <b>{total}</b>／有効 <b>{total - no_need}</b>（ニーズなし {no_need}・ｷｬﾝｾﾙ {canceled}）'
+        f' → 面談1+ <b>{first}</b> → 面談2+ <b>{second}</b> → 受注 <b>{won}</b>', exh_tbl,
+        warn="母集団は『lead_pattern=Exh.』のタグに全依存。展示会由来なのにタグ漏れ／逆に別経路が混入していると全数字がズレる。"
+             "面談回数も occurred_on 有無でなく件数なので、二重登録があれば過大。")
+
+    # 6) ステージ別（open）
+    stage_rows = con.execute(
+        f"SELECT COALESCE(d.stage,'未設定') s, COUNT(*) n FROM deals d WHERE {open_cond} "
+        f"GROUP BY d.stage ORDER BY n DESC").fetchall()
+    stage_tbl = _audit_table(["ステージ", "件数"], [[_esc(r["s"]), str(r["n"])] for r in stage_rows])
+    sec_stage = _audit_section(
+        "ステージ別（進行中）", f"status='open'(またはNULL)を stage で集計。",
+        f'<b>{sum(r["n"] for r in stage_rows)}</b>件', stage_tbl)
+
+    week_input = (as_of.isoformat() if hasattr(as_of, "isoformat") else "")
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>🔍 数字パック 集計監査 <span class="muted" style="font-size:.6em">{ws} 〜 {we}</span></span>
+        <a class="btn sec" href="/weekly-numbers">← 数字パックに戻る</a>
+      </h2>
+      <p class="muted" style="font-size:13px">各指標を「定義・値・元データ（実際に数えている行）」に展開しました。
+      自動注入を有効化する前に、ここで集計の確からしさを確認します。定義に違和感があれば、その定義自体を直します（#27）。</p>
+      <form method="get" action="/weekly-numbers/audit" class="filter-row">
+        <label style="font-size:13px">対象週（この日を含む月〜日）:
+          <input type="date" name="as_of" value="{week_input}"></label>
+        <button class="btn sec" type="submit">この週で見る</button>
+        <a class="btn sec" href="/weekly-numbers/audit">今週</a>
+      </form>
+    </div>
+    {sec_mtg}{sec_lead}{sec_deal}{sec_pipe}{sec_exh}{sec_stage}"""
 
 
 def sync_health_page(con, theme_client) -> str:
@@ -7407,6 +7555,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(sync_health_page(con, theme_client)))
                 elif path == "/weekly-numbers":
                     self._send(render(weekly_numbers_page(con)))
+                elif path == "/weekly-numbers/audit":
+                    _aq = (self._qs().get("as_of", [""])[0] or "").strip()
+                    _aod = None
+                    if _aq:
+                        try:
+                            _aod = date.fromisoformat(_aq)
+                        except ValueError:
+                            _aod = None
+                    self._send(render(weekly_numbers_audit_page(con, as_of=_aod)))
                 elif path == "/data-tagging":
                     self._send(render(data_tagging_page(con)))
                 elif path == "/reports":
@@ -7418,7 +7575,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _slug = path[len("/reports/"):].strip("/")
                     _rep = sfa_db.get_weekly_report(con, _slug) if _SLUG_RE.fullmatch(_slug or "") else None
                     if _rep:
-                        self._send(report_article_html(_rep).encode("utf-8"))
+                        # 数字レール自動注入: 対象週(week_start)の数字を集計してレール化し <!--NUMBERS--> と差替え
+                        _rail = ""
+                        if (_rep.get("html_body") or "").find("<!--NUMBERS-->") >= 0:
+                            _ws = (_rep.get("week_start") or "").strip()
+                            try:
+                                _as_of = date.fromisoformat(_ws) if _ws else None
+                                _nums = weekly_report.compute_weekly_numbers(con, as_of=_as_of)
+                                _rail = weekly_report.render_number_rail(_nums)
+                            except Exception:
+                                _rail = ""
+                        self._send(report_article_html(_rep, _rail).encode("utf-8"))
                     else:
                         self._redirect("/reports")
                 elif path == "/backups":
