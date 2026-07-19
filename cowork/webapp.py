@@ -1936,32 +1936,129 @@ def _task_category_color(name: str) -> str:
 _TASKS_JS = """
 <style>
 #taskBoard{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;align-items:flex-start}
-.task-col{flex:0 0 260px;background:#f1f4f9;border-radius:10px;padding:8px 8px 12px}
-.task-col h3{position:sticky;top:0}
-.task-card{background:#fff;border:1px solid #e6e9f0;border-radius:8px;padding:8px 10px;margin-bottom:8px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.task-col{flex:0 0 275px;background:#f1f4f9;border-radius:10px;padding:8px 8px 12px}
+.task-col h3{position:sticky;top:0;font-size:13px;margin:0 0 6px}
+.tc-col-body{min-height:18px}
+.task-card{background:#fff;border:1px solid #e6e9f0;border-radius:8px;padding:7px 9px;margin-bottom:8px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.task-card.saved{outline:2px solid #10b981;transition:outline .15s}
+.tc-title{width:100%;border:none;font-weight:600;font-size:13px;padding:2px;background:transparent}
+.tc-title:hover,.tc-title:focus{background:#f1f5f9;border-radius:4px;outline:none}
+.tc-na{display:flex;align-items:center;gap:3px;margin:3px 0}
+.tc-na>span{color:#0369a1;font-size:11px}
+.tc-na input{flex:1;border:none;font-size:11px;color:#0369a1;padding:2px;background:transparent}
+.tc-na input:hover,.tc-na input:focus{background:#f0f9ff;border-radius:4px;outline:none}
+.tc-na.empty input{color:#c53030}
+.tc-na.empty input::placeholder{color:#c53030}
+.tc-meta{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:4px 0}
+.tc-sel,.tc-due{font-size:10px;padding:1px 2px;border:1px solid #e2e8f0;border-radius:4px;max-width:100%;background:#fff}
+.tc-notes{font-size:10px;color:#64748b;background:#f8fafc;border-radius:4px;padding:3px 6px;margin:3px 0;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tc-notes:hover{background:#eef2f7}
+.tc-actions{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-top:5px}
+.tc-actions button{font-size:10px;padding:2px 8px;border-radius:5px;border:1px solid #cbd5e1;background:#fff;cursor:pointer}
+.tc-actions .go{background:#2563eb;color:#fff;border-color:#2563eb}
+.tc-actions .done{background:#10b981;color:#fff;border-color:#10b981}
+.tc-actions .del{color:#c53030;border:none;background:transparent;margin-left:auto}
+.tc-edit{font-size:10px;color:#94a3b8;text-decoration:none}
+#notesBackdrop{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}
+#notesPop{position:fixed;z-index:9999;display:none;background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.18);width:340px;max-width:92vw;max-height:70vh;overflow:auto;padding:12px}
 </style>
 <script>
-function taskField(id, field, value){
+var _TC_STATUSES=["受信箱","未着手","対応中","保留","完了"];
+function _tcEsc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function _tcFlash(id){var c=document.getElementById('tc-'+id); if(!c)return; c.classList.add('saved'); setTimeout(function(){c.classList.remove('saved');},600);}
+function tcActions(id,status){
+  var b='';
+  if(status==='受信箱') b+='<button class="go" onclick="taskField('+id+',\\'status\\',\\'未着手\\')">▶ 未着手へ</button>';
+  else if(status==='未着手') b+='<button class="go" onclick="taskField('+id+',\\'status\\',\\'対応中\\')">▶ 開始</button>';
+  else if(status==='対応中'){ b+='<button onclick="taskField('+id+',\\'status\\',\\'保留\\')">⏸ 保留</button><button class="done" onclick="taskField('+id+',\\'status\\',\\'完了\\')">✓ 完了</button>'; }
+  else if(status==='保留') b+='<button class="go" onclick="taskField('+id+',\\'status\\',\\'対応中\\')">▶ 再開</button>';
+  else if(status==='完了') b+='<button onclick="taskField('+id+',\\'status\\',\\'対応中\\')">↩ 戻す</button>';
+  b+='<a class="tc-edit" href="/tasks/'+id+'/edit">編集</a>';
+  b+='<button class="del" onclick="taskDelete('+id+')" title="削除">🗑</button>';
+  return b;
+}
+function tcRenderActions(card){var id=card.id.slice(3); var st=card.getAttribute('data-status'); var a=card.querySelector('.tc-actions'); if(a)a.innerHTML=tcActions(id,st);}
+function tcCounts(){_TC_STATUSES.forEach(function(s){var body=document.querySelector('[data-col="'+s+'"]'); var cnt=document.querySelector('[data-count="'+s+'"]'); if(body&&cnt)cnt.textContent=body.querySelectorAll('.task-card').length;});}
+function tcMove(id,status){var card=document.getElementById('tc-'+id); if(!card)return; var body=document.querySelector('[data-col="'+status+'"]'); if(!body)return; card.setAttribute('data-status',status); body.appendChild(card); tcRenderActions(card); tcCounts();}
+function taskField(id,field,value){
   return fetch('/task/'+id+'/field',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)})
-    .then(function(r){return r.json();}).then(function(d){
-      if(!d.ok){ alert('更新エラー: '+(d.error||'')); return; }
-      if(field==='status') location.reload();
-    }).catch(function(){ alert('通信エラー'); });
+   .then(function(r){return r.json();}).then(function(d){
+     if(!d.ok){ alert('更新エラー: '+(d.error||'')); return; }
+     _tcFlash(id);
+     var card=document.getElementById('tc-'+id);
+     if(field==='next_action'&&card){ var na=card.querySelector('.tc-na'); if(na)na.classList.toggle('empty',!(value||'').trim()); }
+     if(d.status&&card&&card.getAttribute('data-status')!==d.status){ tcMove(id,d.status); }
+   }).catch(function(){ alert('通信エラー'); });
 }
-function taskDone(id){ taskField(id,'status','完了'); }
 function taskDelete(id){ if(!confirm('このタスクを削除しますか？')) return;
-  var f=document.createElement('form'); f.method='post'; f.action='/task/'+id+'/delete';
-  document.body.appendChild(f); f.submit(); }
-function taskNote(id){ var b=prompt('進捗を追記（履歴が残ります）'); if(!b) return;
-  var f=document.createElement('form'); f.method='post'; f.action='/task/'+id+'/note';
-  var i=document.createElement('input'); i.name='body'; i.value=b; f.appendChild(i);
-  document.body.appendChild(f); f.submit(); }
+  fetch('/task/'+id+'/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})
+   .then(function(r){return r.json();}).then(function(d){ if(d.ok){ var c=document.getElementById('tc-'+id); if(c)c.remove(); tcCounts(); } });
+}
+function openNotes(id){
+  var pop=document.getElementById('notesPop'), bd=document.getElementById('notesBackdrop');
+  pop.setAttribute('data-tid',id);
+  pop.innerHTML='<div style="text-align:right"><span onclick="closeNotes()" style="cursor:pointer;color:#94a3b8">✕</span></div>'
+    +'<div id="notesBody" class="muted" style="font-size:12px">読み込み中…</div>'
+    +'<div style="margin-top:8px;display:flex;gap:6px"><input id="noteInput" placeholder="進捗を追記" style="flex:1;font-size:12px;padding:4px 6px" onkeydown="if(event.key===\\'Enter\\')addNote()"><button class="btn" style="font-size:11px;padding:3px 8px" onclick="addNote()">追記</button></div>';
+  bd.style.display='block'; pop.style.display='block';
+  pop.style.left=Math.max(8,(window.innerWidth-pop.offsetWidth)/2)+'px';
+  pop.style.top=Math.max(8,(window.innerHeight-pop.offsetHeight)/2)+'px';
+  fetch('/task/'+id+'/notes').then(function(r){return r.json();}).then(function(d){ _tcRenderNotes(d.notes||[]); });
+}
+function _tcRenderNotes(notes){
+  var body=document.getElementById('notesBody'); if(!body)return;
+  if(!notes.length){ body.innerHTML='<i>まだ進捗ログはありません。下の欄から追記できます。</i>'; return; }
+  body.innerHTML=notes.map(function(n){ return '<div style="border-left:3px solid #cbd5e1;padding:2px 0 2px 8px;margin:6px 0"><div style="font-size:10px;color:#94a3b8">'+(n.created_at||'').slice(0,16)+(n.author?(' ・'+_tcEsc(n.author)):'')+'</div>'+_tcEsc(n.body).replace(/\\n/g,'<br>')+'</div>'; }).join('');
+}
+function addNote(){
+  var pop=document.getElementById('notesPop'), id=pop.getAttribute('data-tid'), inp=document.getElementById('noteInput'), v=(inp.value||'').trim(); if(!v)return;
+  fetch('/task/'+id+'/note',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1&body='+encodeURIComponent(v)})
+   .then(function(r){return r.json();}).then(function(d){ if(!d.ok)return; inp.value=''; _tcRenderNotes(d.notes||[]);
+     var card=document.getElementById('tc-'+id); if(card){ var chip=card.querySelector('.tc-notes'); if(chip)chip.textContent='📝 '+v.slice(0,40); if(d.status&&card.getAttribute('data-status')!==d.status)tcMove(id,d.status); }
+   });
+}
+function closeNotes(){ document.getElementById('notesPop').style.display='none'; document.getElementById('notesBackdrop').style.display='none'; }
 function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').toLowerCase().trim();
-  document.querySelectorAll('.task-card').forEach(function(c){
-    c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
+  document.querySelectorAll('.task-card').forEach(function(c){ c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
+document.addEventListener('DOMContentLoaded',function(){ document.querySelectorAll('.task-card').forEach(tcRenderActions);
+  var bd=document.getElementById('notesBackdrop'); if(bd)bd.addEventListener('click',closeNotes); });
 </script>
+<div id="notesBackdrop"></div><div id="notesPop"></div>
 """
+
+
+def _tc_sel(tid: int, field: str, values: list, cur, placeholder: str, blank: bool = True) -> str:
+    """カード上のインライン編集<select>（変更で即保存・遷移なし）。"""
+    opts = (f'<option value="">{html.escape(placeholder)}</option>' if blank else "")
+    for v in values:
+        opts += (f'<option value="{html.escape(str(v))}"'
+                 f'{" selected" if str(v) == str(cur or "") else ""}>{html.escape(str(v))}</option>')
+    return (f'<select class="tc-sel" title="{html.escape(placeholder)}" '
+            f'onchange="taskField({tid},&#39;{field}&#39;,this.value)">{opts}</select>')
+
+
+def _task_auto_triage(con, tid: int) -> str | None:
+    """受信箱のタスクに担当＋期限が揃ったら自動で「未着手」へ整理する。現在のstatusを返す。"""
+    t = sfa_db.get_task(con, tid)
+    if not t:
+        return None
+    if (t.get("status") == "受信箱" and (t.get("assignee") or "").strip()
+            and (t.get("due_date") or "").strip()):
+        sfa_db.set_task_status(con, tid, "未着手")
+        return "未着手"
+    return t.get("status")
+
+
+def _task_auto_start(con, tid: int) -> str | None:
+    """進捗を追記＝着手の合図。受信箱/未着手/保留なら自動で「対応中」へ。現在のstatusを返す。"""
+    t = sfa_db.get_task(con, tid)
+    if not t:
+        return None
+    if t.get("status") in ("受信箱", "未着手", "保留"):
+        sfa_db.set_task_status(con, tid, "対応中")
+        return "対応中"
+    return t.get("status")
 
 
 def task_form(con, task=None) -> str:
@@ -2046,60 +2143,45 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
 
     def card(t):
         tid = t["id"]
+        status = t.get("status") or "受信箱"
         due = (t.get("due_date") or "").strip()
-        due_html = ""
-        if due:
-            color = "#c53030" if due < today else ("#b7791f" if due <= soon else "#5b6b82")
-            due_html = f'<span style="color:{color};font-weight:600;font-size:11px">📅{_esc(due)}</span>'
-        cat = t.get("category") or ""
-        cat_html = (f'<span style="background:{_task_category_color(cat)};color:#fff;border-radius:4px;'
-                    f'padding:1px 6px;font-size:10px">{_esc(cat)}</span>' if cat else "")
-        proj = t.get("project") or ""
-        proj_html = (f'<span style="background:#eef2ff;color:#4338ca;border-radius:4px;'
-                     f'padding:1px 6px;font-size:10px">📁{_esc(proj)}</span>' if proj else "")
-        pri = t.get("priority") or ""
-        pri_html = f'<span style="font-size:10px;color:#8893a8">優{_esc(pri)}</span>' if pri else ""
+        due_color = ("#c53030" if (due and due < today)
+                     else ("#b7791f" if (due and due <= soon) else "#5b6b82"))
+        na = (t.get("next_action") or "").strip()
+        # インライン編集用の各<select>（変更で即保存・画面遷移なし）
+        proj_sel = _tc_sel(tid, "project", projects, t.get("project"), "📁PJ") if projects else ""
+        asg_sel = _tc_sel(tid, "assignee", owners, t.get("assignee"), "👤担当")
+        cat_sel = _tc_sel(tid, "category", cats, t.get("category"), "種類")
+        pri_sel = _tc_sel(tid, "priority", sfa_db.TASK_PRIORITIES, t.get("priority") or "中", "優先度", blank=False)
+        due_input = (f'<input type="date" class="tc-due" style="color:{due_color}" value="{_esc(due)}" '
+                     f'title="期限" onchange="taskField({tid},&#39;due_date&#39;,this.value)">')
         link_html = ""
         if t.get("link_type") == "dev_project" and t.get("link_id") in dev_map:
             dp = dev_map[t["link_id"]]
             link_html = (f'<a href="/dev-project/{dp["id"]}/edit" style="font-size:10px" '
                          f'title="{_esc(dp.get("account_name") or "")}">🛠{_esc(dp.get("theme") or "開発案件")}</a>')
-        status_sel = "".join(
-            f'<option value="{s}"{" selected" if s == t.get("status") else ""}>{s}</option>'
-            for s in sfa_db.TASK_STATUSES)
         search = _esc(" ".join(str(t.get(k) or "") for k in
                                ("title", "detail", "assignee", "category", "project", "next_action")).lower())
-        detail_html = (f'<div class="muted" style="font-size:11px;max-height:30px;overflow:hidden">'
-                       f'{_esc(t.get("detail"))}</div>' if t.get("detail") else "")
-        # 次アクション（常時1行表示。空＝止まっている合図で赤系）
-        na = (t.get("next_action") or "").strip()
-        na_html = (f'<div style="font-size:11px;color:#0369a1;margin:3px 0">▶ {_esc(na)}</div>' if na
-                   else '<div style="font-size:11px;color:#c53030;margin:3px 0">▶ 次アクション未設定</div>')
-        # 最新の進捗ログ
         note = latest_notes.get(tid)
-        note_html = (f'<div class="muted" style="font-size:10px;max-height:28px;overflow:hidden;'
-                     f'background:#f8fafc;border-radius:4px;padding:2px 5px;margin-top:3px">'
-                     f'📝 {_esc((note.get("body") or "")[:60])}</div>' if note else "")
+        note_snip = _esc((note.get("body") or "")[:40]) if note else "進捗を追記…"
         return (
-            f'<div class="task-card" data-search="{search}">'
-            f'<div style="font-weight:600;font-size:13px">{_esc(t.get("title"))}</div>'
-            f'{na_html}{detail_html}'
-            f'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:5px 0">'
-            f'{proj_html}{cat_html}{due_html}<span style="font-size:10px">👤{_esc(t.get("assignee") or "—")}</span>{pri_html}{link_html}</div>'
-            f'{note_html}'
-            f'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px">'
-            f'<select onchange="taskField({tid},\'status\',this.value)" style="font-size:11px;padding:1px 3px;width:auto">{status_sel}</select>'
-            f'<a href="/tasks/{tid}/edit" style="font-size:11px">編集</a>'
-            f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px" onclick="taskNote({tid})">＋進捗</button>'
-            f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px" onclick="taskDone({tid})">✓完了</button>'
-            f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px;color:#c53030" onclick="taskDelete({tid})">削除</button>'
-            f'</div></div>')
+            f'<div class="task-card" id="tc-{tid}" data-status="{_esc(status)}" data-search="{search}">'
+            f'<input class="tc-title" value="{_esc(t.get("title"))}" title="タイトル" '
+            f'onchange="taskField({tid},&#39;title&#39;,this.value)">'
+            f'<div class="tc-na{" empty" if not na else ""}"><span>▶</span>'
+            f'<input value="{_esc(na)}" placeholder="次アクション未設定" title="次アクション" '
+            f'onchange="taskField({tid},&#39;next_action&#39;,this.value)"></div>'
+            f'<div class="tc-meta">{proj_sel}{asg_sel}{due_input}{cat_sel}{pri_sel}{link_html}</div>'
+            f'<div class="tc-notes" onclick="openNotes({tid})" title="進捗ログを見る・追記">📝 {note_snip}</div>'
+            f'<div class="tc-actions"></div>'
+            f'</div>')
 
     columns = ""
     for s in sfa_db.TASK_STATUSES:
         ts = cols.get(s, [])
-        inner = "".join(card(t) for t in ts) or '<div class="muted" style="font-size:11px;padding:6px">なし</div>'
-        columns += f'<div class="task-col"><h3>{s}（{len(ts)}）</h3>{inner}</div>'
+        inner = "".join(card(t) for t in ts)
+        columns += (f'<div class="task-col"><h3>{s}（<span class="tc-count" data-count="{s}">{len(ts)}</span>）</h3>'
+                    f'<div class="tc-col-body" data-col="{s}">{inner}</div></div>')
 
     def _fopt(values, cur, alllabel):
         return f'<option value="">{alllabel}</option>' + "".join(
@@ -7552,6 +7634,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render(task_form(con, _tk)))
                     else:
                         self._redirect("/tasks")
+                elif (path.startswith("/task/") and path.endswith("/notes")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _notes = sfa_db.list_task_notes(con, int(path.split("/")[2]))
+                    self._send(json.dumps({"ok": True, "notes": [
+                        {"body": n.get("body"), "author": n.get("author"),
+                         "created_at": n.get("created_at")} for n in _notes]},
+                        ensure_ascii=False).encode(), ctype="application/json")
                 elif path == "/sync-health":
                     self._send(render(sync_health_page(con, theme_client)))
                 elif path == "/weekly-numbers":
@@ -7902,9 +7991,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     _tid = int(path.split("/")[2])
                     _body = (f.get("body") or "").strip()
+                    _new_status = None
                     if _body:
                         sfa_db.add_task_note(con, _tid, _body)
-                    self._redirect(f"/tasks/{_tid}/edit")
+                        _new_status = _task_auto_start(con, _tid)  # 進捗追記＝着手→対応中へ
+                    if f.get("ajax") == "1":
+                        _notes = sfa_db.list_task_notes(con, _tid)
+                        self._send(json.dumps({"ok": True, "status": _new_status, "notes": [
+                            {"body": n.get("body"), "author": n.get("author"),
+                             "created_at": n.get("created_at")} for n in _notes]},
+                            ensure_ascii=False).encode(), ctype="application/json")
+                    else:
+                        self._redirect(f"/tasks/{_tid}/edit")
 
                 elif (path.startswith("/task/") and path.endswith("/field")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
@@ -7921,17 +8019,24 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(json.dumps({"ok": False, "error": "不正な優先度"}).encode(), ctype="application/json")
                     elif _field == "status":
                         sfa_db.set_task_status(con, _tid, _value)
-                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                        self._send(json.dumps({"ok": True, "status": _value}, ensure_ascii=False).encode(),
+                                   ctype="application/json")
                     else:
                         con.execute(f"UPDATE tasks SET {_field}=?, updated_at=datetime('now') WHERE id=?",
                                     (_value or None, _tid))
                         con.commit()
-                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                        # 担当＋期限が揃ったら受信箱→未着手へ自動整理。現在のstatusを返す。
+                        _st = _task_auto_triage(con, _tid)
+                        self._send(json.dumps({"ok": True, "status": _st}, ensure_ascii=False).encode(),
+                                   ctype="application/json")
 
                 elif (path.startswith("/task/") and path.endswith("/delete")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     sfa_db.delete_task(con, int(path.split("/")[2]))
-                    self._redirect("/tasks")
+                    if f.get("ajax") == "1":
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                    else:
+                        self._redirect("/tasks")
 
                 # ── 開発点数マスタ / 担当キャパ（#41） ──
                 elif path == "/dev-point-master/save":
