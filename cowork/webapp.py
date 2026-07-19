@@ -4096,6 +4096,11 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     acc_req = "required" if deal.get("id") else ""
     new_acc_html = ""
     new_acc_js = ""
+    # 固定保存バーに表示する「SFA#・アカウント・案件名」（編集時のみ）
+    _sb_title = ""
+    if deal.get("id"):
+        _acc_nm = next((a["name"] for a in accounts if a["id"] == deal.get("account_id")), "")
+        _sb_title = f"SFA#{deal['id']}　{_acc_nm}／{deal.get('deal_name') or ''}"
     if not deal.get("id"):
         new_acc_html = (
             '<div style="margin-top:5px;text-align:left">'
@@ -4128,7 +4133,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
       <span>{'商談編集' if deal.get('id') else '新規商談'}</span>
       {attachments_widget}
     </h2>
-    {_save_bar('dealForm', cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
+    {_save_bar('dealForm', title=_sb_title, cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
     {top_action_buttons}
     {lead_picker_html}
     <form id="dealForm" method="post" action="/deal/save">
