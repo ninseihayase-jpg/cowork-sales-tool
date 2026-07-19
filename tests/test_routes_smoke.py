@@ -447,10 +447,9 @@ def test_post_deal_save_minimal_form_redirects_and_persists(server, db_path):
         code = e.code
         location = e.headers.get("Location")
 
-    # urllibはデフォルトで303リダイレクトを自動追従するため、最終的に/deal/<id>へGETした
-    # 200が返る(もしくはリダイレクト自体を検知できるようredirect_handlerを外して確認)。
+    # 保存後は商談一覧(/deals)へリダイレクト（連打・多重保存の防止）。303を自動追従して200。
     assert code == 200
-    assert "/deal/" in location
+    assert location.endswith("/deals")
 
     con2 = sfa_db.connect(db_path)
     try:
@@ -477,7 +476,7 @@ def test_post_deal_save_returns_303_without_redirect_following(server):
     )
     resp = opener.open(req, timeout=10)
     assert resp.getcode() == 303
-    assert resp.headers.get("Location", "").startswith("/deal/")
+    assert resp.headers.get("Location", "") == "/deals"
 
 
 def test_unified_deal_table_has_dev_project_link(db_path):

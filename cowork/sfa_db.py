@@ -546,6 +546,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority      TEXT DEFAULT '中',        -- 高/中/低（旧・優先度。緊急度は期限から自動算出へ移行）
     pinned        INTEGER DEFAULT 0,       -- ★最優先ピン（手動・例外用）。緊急度自動化の上書き
     category      TEXT,                    -- 種類（task_categoriesマスタ・AI自動判定）
+    summary       TEXT,                    -- 議論メモのAIサマリ（追記のたび再生成）
+    summary_at    TEXT,                    -- サマリ生成時刻
     link_type     TEXT,                    -- dev_project/deal/issue/org/personal
     link_id       INTEGER,                 -- 紐付け先ID
     source        TEXT DEFAULT 'web',      -- web/slack/ai
@@ -563,12 +565,14 @@ CREATE INDEX IF NOT EXISTS idx_tasks_link ON tasks(link_type, link_id);
 -- 注: idx_tasks_project は project列に依存するため、init_db()の列追加(ALTER)後に作成する
 -- （既存DBではSCHEMA実行時点でproject列が無く、ここに置くと executescript が失敗する）。
 
--- タスクの進捗ログ（追記式・履歴が残る）。最新1件がカードの「進捗」表示に使われる。
+-- タスクの追記式ログ（履歴が残る）。kind='progress'(進捗) / 'discussion'(議論メモ)。
+-- 議論メモを追記するとタスクのAIサマリ(tasks.summary)が再生成される（論点管理の吸収, #30）。
 CREATE TABLE IF NOT EXISTS task_notes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     body       TEXT NOT NULL,
     author     TEXT,
+    kind       TEXT DEFAULT 'progress',
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id);
@@ -581,6 +585,8 @@ CREATE TABLE IF NOT EXISTS task_projects (
     deadline   TEXT,                        -- 期限 YYYY-MM-DD（タスク期日の逆算推奨に使う）
     status     TEXT DEFAULT '進行中',        -- 進行中/保留/完了
     sort_order INTEGER DEFAULT 0,
+    summary    TEXT,                         -- PJ全体のAIサマリ（配下タスクの議論＋進捗を俯瞰要約）
+    summary_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -850,9 +856,21 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN next_action TEXT")
         if _task_cols and "pinned" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN pinned INTEGER DEFAULT 0")
+        if _task_cols and "summary" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN summary TEXT")
+            con.execute("ALTER TABLE tasks ADD COLUMN summary_at TEXT")
         # project列が存在する状態でインデックスを作る（SCHEMAではなくここで＝既存DBでも安全）
         if _task_cols:
             con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")
+        # task_notes.kind（進捗/議論メモの区別）を後方互換追加（#30）
+        _tn_cols = {r[1] for r in con.execute("PRAGMA table_info(task_notes)")}
+        if _tn_cols and "kind" not in _tn_cols:
+            con.execute("ALTER TABLE task_notes ADD COLUMN kind TEXT DEFAULT 'progress'")
+        # task_projects.summary（PJ全体のAIサマリ）を後方互換追加（#30）
+        _tp_cols = {r[1] for r in con.execute("PRAGMA table_info(task_projects)")}
+        if _tp_cols and "summary" not in _tp_cols:
+            con.execute("ALTER TABLE task_projects ADD COLUMN summary TEXT")
+            con.execute("ALTER TABLE task_projects ADD COLUMN summary_at TEXT")
         # weekly_reports に cover_image を後方互換追加（前回デプロイ時は列が無かった）
         wr_cols = {r[1] for r in con.execute("PRAGMA table_info(weekly_reports)")}
         if wr_cols and "cover_image" not in wr_cols:
@@ -2178,21 +2196,37 @@ def delete_task(con, id: int) -> None:
 
 
 def add_task_note(con, task_id: int, body: str, author: str | None = None,
-                  commit: bool = True) -> int:
-    """進捗ログを1件追記し、タスクのupdated_atを更新する（最終更新日時＝追記時刻）。"""
-    cur = con.execute("INSERT INTO task_notes (task_id, body, author) VALUES (?,?,?)",
-                      (int(task_id), body, author))
+                  kind: str = "progress", commit: bool = True) -> int:
+    """追記ログを1件追加し、タスクのupdated_atを更新する。kind='progress'(進捗)/'discussion'(議論メモ)。"""
+    cur = con.execute("INSERT INTO task_notes (task_id, body, author, kind) VALUES (?,?,?,?)",
+                      (int(task_id), body, author, kind))
     con.execute("UPDATE tasks SET updated_at=datetime('now') WHERE id=?", (int(task_id),))
     if commit:
         con.commit()
     return cur.lastrowid
 
 
-def list_task_notes(con, task_id: int) -> list[dict]:
-    """進捗ログを新しい順に返す。"""
-    return [dict(r) for r in con.execute(
-        "SELECT * FROM task_notes WHERE task_id=? ORDER BY created_at DESC, id DESC",
-        (int(task_id),))]
+def list_task_notes(con, task_id: int, kind: str | None = None) -> list[dict]:
+    """追記ログを新しい順に返す。kind指定でその種別のみ。"""
+    q = "SELECT * FROM task_notes WHERE task_id=?"
+    params: list = [int(task_id)]
+    if kind:
+        q += " AND kind=?"
+        params.append(kind)
+    q += " ORDER BY created_at DESC, id DESC"
+    return [dict(r) for r in con.execute(q, params)]
+
+
+def set_task_summary(con, task_id: int, summary: str) -> None:
+    con.execute("UPDATE tasks SET summary=?, summary_at=datetime('now') WHERE id=?",
+                (summary, int(task_id)))
+    con.commit()
+
+
+def set_project_summary(con, name: str, summary: str) -> None:
+    con.execute("UPDATE task_projects SET summary=?, summary_at=datetime('now') WHERE name=?",
+                (summary, name))
+    con.commit()
 
 
 def latest_task_note(con, task_id: int) -> dict | None:

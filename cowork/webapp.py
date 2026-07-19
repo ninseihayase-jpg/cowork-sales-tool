@@ -1964,6 +1964,10 @@ _TASKS_JS = """
 .m-due{font-size:10px;font-weight:600;white-space:nowrap}
 .tc-foot{display:flex;gap:10px;align-items:center;margin-top:7px;padding-top:6px;border-top:1px dashed #eef1f5}
 .tc-foot .del{border:none;background:transparent;color:#c53030;cursor:pointer;font-size:11px;padding:0}
+.tc-disc{border:1px solid #e2e8f0;background:#fff;border-radius:5px;cursor:pointer;font-size:11px;padding:2px 8px}
+.tc-sum{font-size:10px;color:#3730a3;background:#eef2ff;border-radius:4px;padding:3px 6px;margin:3px 0;cursor:pointer;max-height:44px;overflow:hidden}
+.np-sum{background:#eef2ff;border-radius:6px;padding:6px 8px;font-size:12px;color:#1e3a8a;margin:6px 0;white-space:pre-wrap;max-height:200px;overflow:auto}
+.np-sum-h{font-weight:700;font-size:11px;margin-bottom:3px}
 .pj-strip{display:flex;gap:6px;overflow-x:auto;padding:2px 0 8px;margin-bottom:6px}
 .pj-chip{flex:none;display:flex;align-items:center;gap:4px;font-size:11px;text-decoration:none;color:#334155;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:20px;padding:3px 10px;white-space:nowrap}
 .pj-chip.active{background:#dbeafe;border-color:#93c5fd;color:#1e40af}
@@ -2021,27 +2025,41 @@ function taskDelete(id){ if(!confirm('このタスクを削除しますか？'))
   fetch('/task/'+id+'/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})
    .then(function(r){return r.json();}).then(function(d){ if(d.ok){ var c=document.getElementById('tc-'+id); if(c)c.remove(); tcCounts(); } });
 }
-function openNotes(id){
+function openNotes(id,kind){
+  kind=kind||'progress'; var isD=(kind==='discussion');
   var pop=document.getElementById('notesPop'), bd=document.getElementById('notesBackdrop');
-  pop.setAttribute('data-tid',id);
-  pop.innerHTML='<div style="text-align:right"><span onclick="closeNotes()" style="cursor:pointer;color:#94a3b8">✕</span></div>'
+  pop.setAttribute('data-tid',id); pop.setAttribute('data-kind',kind);
+  var title=isD?'💬 議論メモ':'📝 進捗ログ';
+  var ph=isD?'議論・検討メモを追記（たっぷり書けます）':'進捗を追記';
+  var inp=isD
+    ? '<textarea id="noteInput" rows="5" placeholder="'+ph+'" style="width:100%;font-size:13px;padding:6px;box-sizing:border-box"></textarea><div style="text-align:right;margin-top:4px"><button class="btn np-add" style="font-size:11px;padding:3px 10px" onclick="addNote()">追記＋サマリ更新</button></div>'
+    : '<div style="display:flex;gap:6px"><input id="noteInput" placeholder="'+ph+'" style="flex:1;font-size:12px;padding:4px 6px" onkeydown="if(event.key===&#39;Enter&#39;)addNote()"><button class="btn np-add" style="font-size:11px;padding:3px 8px" onclick="addNote()">追記</button></div>';
+  pop.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:13px">'+title+'</b><span onclick="closeNotes()" style="cursor:pointer;color:#94a3b8">✕</span></div>'
+    +(isD?'<div id="notesSummary" class="np-sum"></div>':'')
     +'<div id="notesBody" class="muted" style="font-size:12px">読み込み中…</div>'
-    +'<div style="margin-top:8px;display:flex;gap:6px"><input id="noteInput" placeholder="進捗を追記" style="flex:1;font-size:12px;padding:4px 6px" onkeydown="if(event.key===\\'Enter\\')addNote()"><button class="btn" style="font-size:11px;padding:3px 8px" onclick="addNote()">追記</button></div>';
-  bd.style.display='block'; pop.style.display='block';
+    +'<div style="margin-top:8px">'+inp+'</div>';
+  bd.style.display='block'; pop.style.display='block'; pop.style.width=(isD?'480px':'340px');
   pop.style.left=Math.max(8,(window.innerWidth-pop.offsetWidth)/2)+'px';
   pop.style.top=Math.max(8,(window.innerHeight-pop.offsetHeight)/2)+'px';
-  fetch('/task/'+id+'/notes').then(function(r){return r.json();}).then(function(d){ _tcRenderNotes(d.notes||[]); });
+  fetch('/task/'+id+'/notes?kind='+kind).then(function(r){return r.json();}).then(function(d){ _tcRenderNotes(d.notes||[]); if(isD)_npSummary(d.summary); });
 }
+function _npSummary(s){ var el=document.getElementById('notesSummary'); if(!el)return;
+  el.innerHTML=s?('<div class="np-sum-h">🧠 AIサマリ</div>'+_tcEsc(s).replace(/\\n/g,'<br>')):'<span class="muted" style="font-size:11px">メモを追記するとAIサマリが自動生成されます。</span>'; }
 function _tcRenderNotes(notes){
   var body=document.getElementById('notesBody'); if(!body)return;
-  if(!notes.length){ body.innerHTML='<i>まだ進捗ログはありません。下の欄から追記できます。</i>'; return; }
+  if(!notes.length){ body.innerHTML='<i>まだメモはありません。下の欄から追記できます。</i>'; return; }
   body.innerHTML=notes.map(function(n){ return '<div style="border-left:3px solid #cbd5e1;padding:2px 0 2px 8px;margin:6px 0"><div style="font-size:10px;color:#94a3b8">'+(n.created_at||'').slice(0,16)+(n.author?(' ・'+_tcEsc(n.author)):'')+'</div>'+_tcEsc(n.body).replace(/\\n/g,'<br>')+'</div>'; }).join('');
 }
 function addNote(){
-  var pop=document.getElementById('notesPop'), id=pop.getAttribute('data-tid'), inp=document.getElementById('noteInput'), v=(inp.value||'').trim(); if(!v)return;
-  fetch('/task/'+id+'/note',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1&body='+encodeURIComponent(v)})
-   .then(function(r){return r.json();}).then(function(d){ if(!d.ok)return; inp.value=''; _tcRenderNotes(d.notes||[]);
-     var card=document.getElementById('tc-'+id); if(card){ var chip=card.querySelector('.tc-notes'); if(chip)chip.textContent='📝 '+v.slice(0,40); if(d.status&&card.getAttribute('data-status')!==d.status)tcMove(id,d.status); }
+  var pop=document.getElementById('notesPop'), id=pop.getAttribute('data-tid'), kind=pop.getAttribute('data-kind')||'progress';
+  var inp=document.getElementById('noteInput'), v=(inp.value||'').trim(); if(!v)return;
+  var btn=pop.querySelector('.np-add'); if(btn){btn.disabled=true;btn.textContent='保存中…';}
+  fetch('/task/'+id+'/note',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1&kind='+kind+'&body='+encodeURIComponent(v)})
+   .then(function(r){return r.json();}).then(function(d){ if(btn){btn.disabled=false;btn.textContent=(kind==='discussion'?'追記＋サマリ更新':'追記');}
+     if(!d.ok)return; inp.value=''; _tcRenderNotes(d.notes||[]); var card=document.getElementById('tc-'+id);
+     if(kind==='discussion'){ _npSummary(d.summary);
+       if(card&&d.summary){ var sc=card.querySelector('.tc-sum'); if(sc){sc.innerHTML='🧠 '+_tcEsc(d.summary).slice(0,130);} } }
+     else { if(card){ var chip=card.querySelector('.tc-notes'); if(chip)chip.textContent='📝 '+v.slice(0,40); if(d.status&&card.getAttribute('data-status')!==d.status)tcMove(id,d.status); } }
    });
 }
 function closeNotes(){ document.getElementById('notesPop').style.display='none'; document.getElementById('notesBackdrop').style.display='none'; }
@@ -2190,6 +2208,41 @@ def _ai_guess_task_category(title: str, detail: str = "") -> str | None:
     return None
 
 
+def _ai_summarize_task(title: str, memos: list) -> str | None:
+    """タスクの議論メモ(新しい順のbody list)をHaikuで要約。失敗時None。"""
+    memos = [m for m in memos if (m or "").strip()]
+    if not memos:
+        return None
+    joined = "\n---\n".join(reversed(memos))  # 古い順に並べて文脈を作る
+    prompt = (
+        f"次はタスク「{title}」についての議論メモの履歴（古い順）です。\n"
+        "全体を踏まえ、①現状/論点 ②決まったこと ③未決・懸念 ④次の一手 を、"
+        "各1〜2行の簡潔な箇条書き（日本語）でまとめてください。前置き不要。\n\n"
+        f"{joined}")
+    try:
+        ans = (_call_claude_haiku(prompt, timeout=25, max_wait=30) or "").strip()
+    except Exception:
+        return None
+    return ans or None
+
+
+def _ai_summarize_project(pname: str, meta: str, task_lines: list) -> str | None:
+    """PJ配下タスクの状態＋各サマリ/次アクションを俯瞰要約（Haiku）。失敗時None。"""
+    if not task_lines:
+        return None
+    body = "\n".join(task_lines)
+    prompt = (
+        f"プロジェクト「{pname}」（{meta}）の配下タスクの状況一覧です。\n"
+        "全体として ①進捗サマリ ②主要な論点/意思決定 ③リスク・停滞 ④次にやるべきこと を、"
+        "各1〜3行の簡潔な箇条書き（日本語）で俯瞰的にまとめてください。前置き不要。\n\n"
+        f"{body}")
+    try:
+        ans = (_call_claude_haiku(prompt, timeout=25, max_wait=30) or "").strip()
+    except Exception:
+        return None
+    return ans or None
+
+
 def task_form(con, task=None) -> str:
     """タスクの新規/編集フォーム（純粋な入力フォーム, #30）。"""
     task = task or {}
@@ -2269,8 +2322,9 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         tasks = [t for t in tasks if (t.get("project") or "") in _selset]
     latest_notes = {}
     for r in con.execute(
-        "SELECT n.task_id, n.body, n.created_at FROM task_notes n WHERE n.id=("
-        "SELECT id FROM task_notes WHERE task_id=n.task_id ORDER BY created_at DESC, id DESC LIMIT 1)"):
+        "SELECT n.task_id, n.body, n.created_at FROM task_notes n WHERE n.kind='progress' AND n.id=("
+        "SELECT id FROM task_notes WHERE task_id=n.task_id AND kind='progress' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1)"):
         latest_notes[r["task_id"]] = dict(r)
     _td = date.today()
     today = _td.isoformat()
@@ -2335,6 +2389,10 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                                ("title", "detail", "assignee", "category", "project", "next_action")).lower())
         note = latest_notes.get(tid)
         note_snip = _esc((note.get("body") or "")[:40]) if note else "進捗を追記…"
+        summary_html = (f'<div class="tc-sum" title="議論メモのAIサマリ" '
+                        f'onclick="openNotes({tid},&#39;discussion&#39;)">🧠 '
+                        f'{_esc((t.get("summary") or "").strip()[:130])}</div>'
+                        if (t.get("summary") or "").strip() else "")
         pin_btn = (f'<button type="button" class="tc-pin{" on" if pinned else ""}" '
                    f'onclick="tcPin({tid})" title="★最優先ピン">★</button>')
         asg = (t.get("assignee") or "").strip()
@@ -2360,8 +2418,11 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'onchange="taskField({tid},&#39;next_action&#39;,this.value)"></div>'
             f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{link_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}{rec}</div>'
-            f'<div class="tc-notes" onclick="openNotes({tid})" title="進捗ログを見る・追記">📝 {note_snip}</div>'
-            f'<div class="tc-foot"><a class="tc-edit" href="/tasks/{tid}/edit">編集</a>'
+            f'<div class="tc-notes" onclick="openNotes({tid},&#39;progress&#39;)" title="進捗ログを見る・追記">📝 {note_snip}</div>'
+            f'{summary_html}'
+            f'<div class="tc-foot">'
+            f'<button type="button" class="tc-disc" onclick="openNotes({tid},&#39;discussion&#39;)" title="議論メモ＋AIサマリ">💬 議論メモ</button>'
+            f'<a class="tc-edit" href="/tasks/{tid}/edit">編集</a>'
             f'<button type="button" class="del" onclick="taskDelete({tid})">🗑 削除</button></div>'
             f'</div></div>')
 
@@ -2463,6 +2524,10 @@ def task_projects_page(con) -> str:
         c = counts.get(p["name"], {})
         open_n = sum(c.get(s, 0) for s in ("受信箱", "未着手", "対応中", "保留"))
         done_n = c.get("完了", 0)
+        _sum = (p.get("summary") or "").strip()
+        sum_disp = (f'<div id="pjsum-{p["id"]}" style="margin-top:8px;background:#eef2ff;border-radius:6px;'
+                    f'padding:8px 10px;font-size:12px;color:#1e3a8a;white-space:pre-wrap">🧠 {_esc(_sum)}</div>'
+                    if _sum else f'<div id="pjsum-{p["id"]}"></div>')
         blocks += f"""
       <div class="card" style="margin-bottom:8px">
         <form method="post" action="/task-projects/save" class="filter-row" style="margin:0">
@@ -2473,10 +2538,12 @@ def task_projects_page(con) -> str:
           <span class="muted" style="font-size:12px">進行 {open_n}件・完了 {done_n}件</span>
           <button class="btn sec" type="submit">保存</button>
           <a class="btn sec" href="/tasks?project={urllib.parse.quote(p['name'])}">タスクを見る</a>
+          <button class="btn sec" type="button" onclick="pjSummary({p['id']})">🧠 PJサマリ生成</button>
           <button class="btn sec" type="submit" formaction="/task-project/{p['id']}/delete"
             style="color:#c53030" formnovalidate
             onclick="return confirm('プロジェクト定義を削除しますか？（紐づくタスク自体は残ります）')">削除</button>
         </form>
+        {sum_disp}
       </div>"""
     if not projs:
         blocks = '<div class="card muted">プロジェクトはまだありません。下から追加してください。</div>'
@@ -2487,7 +2554,8 @@ def task_projects_page(con) -> str:
         <a class="btn sec" href="/tasks">← タスク看板へ</a>
       </h2>
       <p class="muted" style="font-size:13px">プロジェクトに期限と状態を持たせると、看板上部の一覧に出て、
-      タスクの期日はプロジェクト期限から逆算して推奨されます。</p>
+      タスクの期日はプロジェクト期限から逆算して推奨されます。「🧠PJサマリ生成」で配下タスクの
+      議論・進捗をAIが俯瞰要約します。</p>
       <form method="post" action="/task-projects/save" class="filter-row">
         <input name="name" placeholder="新しいプロジェクト名（例: セキュリティISO取得）" required style="min-width:260px">
         <label style="font-size:12px">期限 <input type="date" name="deadline"></label>
@@ -2495,7 +2563,19 @@ def task_projects_page(con) -> str:
         <button class="btn" type="submit">＋ 追加</button>
       </form>
     </div>
-    {blocks}"""
+    {blocks}
+    <script>
+    function pjSummary(id){{
+      var box=document.getElementById('pjsum-'+id);
+      if(box){{ box.style.display='block'; box.style.marginTop='8px'; box.style.background='#eef2ff';
+        box.style.borderRadius='6px'; box.style.padding='8px 10px'; box.style.fontSize='12px';
+        box.style.color='#1e3a8a'; box.style.whiteSpace='pre-wrap'; box.textContent='🧠 生成中…（配下タスクを要約しています）'; }}
+      fetch('/task-project/'+id+'/summary',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:'x=1'}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(box) box.textContent = d.ok&&d.summary ? ('🧠 '+d.summary) : '⚠ サマリを生成できませんでした（配下タスクが無い/AI応答なし）。';
+       }}).catch(function(){{ if(box)box.textContent='⚠ 通信エラー'; }});
+    }}
+    </script>"""
 
 
 # ---- 朝のタスクダイジェスト（Slack DM）(#30) ----
@@ -2892,7 +2972,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'<tr class="deal-row" data-account="{_esc((d.get("account_name") or "").lower())}">'
             f'{cb_td}'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}</td>'
-            f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a></td>'
+            f'<td><a href="/deal/{did}?return_to={urllib.parse.quote(return_to_url, safe="")}">{_esc(d.get("account_name"))}</a></td>'
             f'<td><input type="text" value="{_esc(d.get("deal_name"))}" '
             f'onchange="updateDealField({did}, \'deal_name\', this.value)" style="font-size:12px;padding:2px 4px;width:150px"></td>'
             f'<td>{_udeal_sel(did, "stage", stages, d.get("stage") or "")}</td>'
@@ -3712,8 +3792,10 @@ def account_detail(con, acc: dict) -> str:
     </div>"""
 
 
-def deal_form(con, deal=None) -> str:
+def deal_form(con, deal=None, return_to: str | None = None) -> str:
     deal = deal or {}
+    # 特定日/MS超過等から遷移した場合の戻り先。保存後・キャンセル時にここへ戻す（未指定は一覧/詳細）。
+    return_to = return_to if (return_to or "").startswith("/") else None
     # 次回MS（複数）。既存行があればそれを、無ければキャッシュから1行を仮生成（保存時に実体化）。
     _ms_list = sfa_db.list_deal_milestones(con, deal["id"]) if deal.get("id") else []
     if not _ms_list:
@@ -4023,11 +4105,12 @@ def deal_form(con, deal=None) -> str:
       <span>{'商談編集' if deal.get('id') else '新規商談'}</span>
       {attachments_widget}
     </h2>
-    {_save_bar('dealForm', cancel_url=('/deal/' + str(deal['id']) if deal.get('id') else '/deals'))}
+    {_save_bar('dealForm', cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
     {top_action_buttons}
     {lead_picker_html}
     <form id="dealForm" method="post" action="/deal/save">
       <input type="hidden" name="id" value="{_esc(deal.get('id'))}">
+      {f'<input type="hidden" name="return_to" value="{_esc(return_to)}">' if return_to else ''}
       {ms_editor_html}
       <label>現状メモ</label><textarea name="note" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(deal.get('note'))}</textarea>
       <hr style="border:none;border-top:1px solid #e6e9f0;margin:16px 0 18px">
@@ -7920,8 +8003,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._redirect("/tasks")
                 elif (path.startswith("/task/") and path.endswith("/notes")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
-                    _notes = sfa_db.list_task_notes(con, int(path.split("/")[2]))
-                    self._send(json.dumps({"ok": True, "notes": [
+                    _tid = int(path.split("/")[2])
+                    _kind = (self._qs().get("kind", [""])[0] or None)
+                    _notes = sfa_db.list_task_notes(con, _tid, kind=_kind)
+                    _tk = sfa_db.get_task(con, _tid)
+                    self._send(json.dumps({"ok": True,
+                        "summary": (_tk.get("summary") if _tk else None), "notes": [
                         {"body": n.get("body"), "author": n.get("author"),
                          "created_at": n.get("created_at")} for n in _notes]},
                         ensure_ascii=False).encode(), ctype="application/json")
@@ -8127,8 +8214,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render("<div class=card>ページが見つかりません</div>"), 404)
                     else:
                         deal = sfa_db.get_deal(con, did)
+                        _rt = self._qs().get("return_to", [None])[0]
                         self._send(
-                            render(deal_form(con, deal)) if deal
+                            render(deal_form(con, deal, return_to=_rt)) if deal
                             else render("<div class=card>商談が見つかりません</div>"),
                             200 if deal else 404,
                         )
@@ -8280,6 +8368,24 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     sfa_db.delete_task_project(con, int(path.split("/")[2]))
                     self._redirect("/task-projects")
+                elif (path.startswith("/task-project/") and path.endswith("/summary")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _pid = int(path.split("/")[2])
+                    _p = next((x for x in sfa_db.list_task_projects(con) if x["id"] == _pid), None)
+                    _summ = None
+                    if _p:
+                        _tks = [t for t in sfa_db.list_tasks(con) if (t.get("project") or "") == _p["name"]]
+                        _lines = []
+                        for t in _tks:
+                            _s = (t.get("summary") or t.get("next_action") or "").strip()
+                            _lines.append(f"[{t.get('status')}] {t.get('title')}" + (f" — {_s}" if _s else ""))
+                        _meta = (f"期限{_p.get('deadline') or '—'} / 状態{_p.get('status') or '進行中'} "
+                                 f"/ タスク{len(_tks)}件")
+                        _summ = _ai_summarize_project(_p["name"], _meta, _lines)
+                        if _summ:
+                            sfa_db.set_project_summary(con, _p["name"], _summ)
+                    self._send(json.dumps({"ok": bool(_summ), "summary": _summ},
+                                          ensure_ascii=False).encode(), ctype="application/json")
 
                 elif path == "/tasks/seed-test":
                     _n = sfa_db.seed_sample_tasks(con)
@@ -8298,13 +8404,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     _tid = int(path.split("/")[2])
                     _body = (f.get("body") or "").strip()
+                    _kind = "discussion" if f.get("kind") == "discussion" else "progress"
                     _new_status = None
+                    _summary = None
                     if _body:
-                        sfa_db.add_task_note(con, _tid, _body)
-                        _new_status = _task_auto_start(con, _tid)  # 進捗追記＝着手→対応中へ
+                        sfa_db.add_task_note(con, _tid, _body, kind=_kind)
+                        if _kind == "progress":
+                            _new_status = _task_auto_start(con, _tid)  # 進捗追記＝着手→対応中へ
+                        else:
+                            # 議論メモ→タスクのAIサマリを自動再生成
+                            _memos = [n["body"] for n in sfa_db.list_task_notes(con, _tid, kind="discussion")]
+                            _tk = sfa_db.get_task(con, _tid)
+                            _summary = _ai_summarize_task(_tk.get("title", "") if _tk else "", _memos)
+                            if _summary:
+                                sfa_db.set_task_summary(con, _tid, _summary)
                     if f.get("ajax") == "1":
-                        _notes = sfa_db.list_task_notes(con, _tid)
-                        self._send(json.dumps({"ok": True, "status": _new_status, "notes": [
+                        _notes = sfa_db.list_task_notes(con, _tid, kind=_kind)
+                        self._send(json.dumps({"ok": True, "status": _new_status, "summary": _summary, "notes": [
                             {"body": n.get("body"), "author": n.get("author"),
                              "created_at": n.get("created_at")} for n in _notes]},
                             ensure_ascii=False).encode(), ctype="application/json")
@@ -8673,7 +8789,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except Exception as exc:  # noqa: BLE001
                             sfa_db.record_sync_failure(con, "deal", did, str(exc))
                             print(f"[theme_link] sync_deal failed: {exc}")
-                    self._redirect(f"/deal/{did}")
+                    # 保存後は商談一覧へ（連打・多重保存の防止）。特定画面から来た場合は元の画面へ戻る。
+                    _rt = f.get("return_to") or ""
+                    self._redirect(_rt if _rt.startswith("/") else "/deals")
 
                 # ── 開発案件 ──
                 elif path == "/dev-project/new":
