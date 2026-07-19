@@ -2093,6 +2093,28 @@ def _tc_sel(tid: int, field: str, values: list, cur, placeholder: str, blank: bo
             f'onchange="taskField({tid},&#39;{field}&#39;,this.value)">{opts}</select>')
 
 
+def _task_cat_optgroups(cats: list, selected) -> str:
+    """種類<select>用の<optgroup>群（L1見出し＋L2オプション）。ツリー外はまとめて『未分類』へ。"""
+    sel = str(selected or "")
+    used = set()
+    out = ""
+    for l1, leaves in sfa_db.TASK_CATEGORY_TREE.items():
+        opts = ""
+        for l2 in leaves:
+            if l2 in cats:
+                used.add(l2)
+                opts += (f'<option value="{html.escape(l2)}"'
+                         f'{" selected" if l2 == sel else ""}>{html.escape(l2)}</option>')
+        if opts:
+            out += f'<optgroup label="{html.escape(l1)}">{opts}</optgroup>'
+    extra = [c for c in cats if c not in used]
+    if extra:
+        opts = "".join(f'<option value="{html.escape(c)}"{" selected" if c == sel else ""}>'
+                       f'{html.escape(c)}</option>' for c in extra)
+        out += f'<optgroup label="未分類">{opts}</optgroup>'
+    return out
+
+
 def _task_auto_triage(con, tid: int) -> str | None:
     """受信箱のタスクに担当＋期限が揃ったら自動で「未着手」へ整理する。現在のstatusを返す。"""
     t = sfa_db.get_task(con, tid)
@@ -2219,7 +2241,7 @@ def task_form(con, task=None) -> str:
           <div><label>プロジェクト（大項目）</label><select name="project">{_blank}{_opt(projects, task.get('project'))}</select></div>
           <div><label>担当</label><select name="assignee">{_blank}{_opt(owners, task.get('assignee'))}</select></div>
           <div><label>期限</label><input type="date" name="due_date" value="{_esc(task.get('due_date'))}"></div>
-          <div><label>種類（空ならAIが自動判定）</label><select name="category">{_blank}{_opt(cats, task.get('category'))}</select></div>
+          <div><label>種類（空ならAIが自動判定）</label><select name="category"><option value=""></option>{_task_cat_optgroups(cats, task.get('category'))}</select></div>
           <div><label>状態</label><select name="status">{_opt(sfa_db.TASK_STATUSES, task.get('status') or ('未着手' if is_edit else '受信箱'))}</select></div>
           <div class="full"><label>関連（開発案件）</label><select name="link">{dev_opts}</select></div>
         </div>
@@ -2230,7 +2252,7 @@ def task_form(con, task=None) -> str:
 
 
 def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
-               project: str | None = None) -> str:
+               project: str | None = None, urgency: str | None = None) -> str:
     """タスクボード（状態別カンバン）。コンパクト折りたたみカード＋その場編集＋緊急度自動＋
     プロジェクト一覧（期限・状態別内訳）＋期限クイック/逆算推奨（#30）。"""
     owners = sfa_db.get_master_list(con, "owners")
@@ -2256,6 +2278,18 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     weekend = (_td + timedelta(days=6 - _td.weekday())).isoformat()
     # 期限クイック候補（今日＋N営業日）を先に計算してJSへ
     qdates = {n: sfa_db.add_business_days(_td, n).isoformat() for n in (1, 3, 5, 8)}
+    # 緊急度フィルタ（期限ベース）: overdue=超過 / week=今週まで / nodue=期限なし
+    if urgency:
+        def _uok(t):
+            due = (t.get("due_date") or "").strip()
+            if urgency == "overdue":
+                return bool(due) and due < today
+            if urgency == "week":
+                return bool(due) and today <= due <= weekend
+            if urgency == "nodue":
+                return not due
+            return True
+        tasks = [t for t in tasks if _uok(t)]
     cols = {s: [] for s in sfa_db.TASK_STATUSES}
     for t in tasks:
         cols.setdefault(t.get("status") or "受信箱", []).append(t)
@@ -2271,7 +2305,9 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         proj_sel = (_tc_sel(tid, "project", projects, proj, "📁PJ")
                     if (projects or proj) else "")
         asg_sel = _tc_sel(tid, "assignee", owners, t.get("assignee"), "👤担当")
-        cat_sel = _tc_sel(tid, "category", cats, t.get("category"), "種類")
+        cat_sel = (f'<select class="tc-sel" data-field="category" title="種類" '
+                   f'onchange="taskField({tid},&#39;category&#39;,this.value)">'
+                   f'<option value="">種類</option>{_task_cat_optgroups(cats, t.get("category"))}</select>')
         ai_btn = (f'<button type="button" class="tc-ai" title="AIで種類を判定" '
                   f'onclick="tcAiCat({tid})">🤖種類</button>')
         due_input = (f'<input type="date" class="tc-due" style="color:{ucolor}" value="{_esc(due)}" '
@@ -2376,10 +2412,16 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         return f'<option value="">{alllabel}</option>' + "".join(
             f'<option value="{html.escape(v)}"{" selected" if v == cur else ""}>{html.escape(v)}</option>'
             for v in values)
+    _urg_opts = "".join(
+        f'<option value="{v}"{" selected" if urgency == v else ""}>{lbl}</option>'
+        for v, lbl in (("", "緊急度:全て"), ("overdue", "🔴 超過"), ("week", "🟡 今週まで"),
+                       ("nodue", "⚪ 期限なし")))
     filter_row = f"""<form method="get" action="/tasks" class="filter-row">
+      <input type="hidden" name="project" value="{_esc(','.join(sel_projects))}">
       <select name="assignee" onchange="this.form.submit()">{_fopt(owners, assignee, '担当:全て')}</select>
-      <select name="category" onchange="this.form.submit()">{_fopt(cats, category, '種類:全て')}</select>
-      <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細・次アクションで検索…" oninput="taskFilter()" style="max-width:280px">
+      <select name="category" onchange="this.form.submit()"><option value="">種類:全て</option>{_task_cat_optgroups(cats, category)}</select>
+      <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
+      <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細・次アクションで検索…" oninput="taskFilter()" style="max-width:260px">
       <a class="btn sec" href="/tasks">リセット</a>
     </form>"""
     has_test = any((t.get("source") == "test") for t in tasks)
@@ -7861,7 +7903,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(tasks_page(
                         con, assignee=(_tq.get("assignee", [""])[0] or None),
                         category=(_tq.get("category", [""])[0] or None),
-                        project=(_tq.get("project", [""])[0] or None))))
+                        project=(_tq.get("project", [""])[0] or None),
+                        urgency=(_tq.get("urgency", [""])[0] or None))))
                 elif path == "/tasks/digest":
                     self._send(render(tasks_digest_page(con)))
                 elif path == "/task-projects":
