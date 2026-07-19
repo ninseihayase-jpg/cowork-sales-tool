@@ -1935,8 +1935,9 @@ def _task_category_color(name: str) -> str:
 
 _TASKS_JS = """
 <style>
-#taskBoard{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px;align-items:flex-start}
-.task-col{flex:0 0 275px;background:#f1f4f9;border-radius:10px;padding:8px 8px 12px}
+/* 画面幅いっぱいに5列を伸縮配置。広い画面では横スクロールなし、狭い画面(=合計が入り切らない時)だけ横スクロール */
+#taskBoard{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;align-items:flex-start}
+.task-col{flex:1 1 0;min-width:185px;background:#f1f4f9;border-radius:10px;padding:8px 7px 12px}
 .task-col h3{position:sticky;top:0;font-size:13px;margin:0 0 6px}
 .tc-col-body{min-height:18px}
 .task-card{background:#fff;border:1px solid #e6e9f0;border-radius:8px;padding:5px 8px;margin-bottom:6px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
@@ -2048,9 +2049,9 @@ function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').t
   document.querySelectorAll('.task-card').forEach(function(c){ c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
 var _TC_IDLE_MS=45000;
 function _tcTouch(card){ if(card)card.setAttribute('data-touch',Date.now()); }
-function _tcCollapseAll(){ document.querySelectorAll('.task-card.open').forEach(function(c){c.classList.remove('open');}); }
-function tcToggle(ev,head){ if(ev.target.closest('button')||ev.target.closest('a')) return;
-  var card=head.parentElement; card.classList.toggle('open'); if(card.classList.contains('open'))_tcTouch(card); }
+// カード内のどこをクリックしても展開（操作系＝ボタン/リンク/入力は除く）。開いているときは何もしない。
+function tcCardClick(ev,card){ if(ev.target.closest('button,a,select,input,textarea,label')) return;
+  if(!card.classList.contains('open')){ card.classList.add('open'); _tcTouch(card); } }
 function tcSyncTitle(id,v){ var c=document.getElementById('tc-'+id); if(c){ var t=c.querySelector('.tc-ttl'); if(t)t.textContent=v; } }
 function _tcUrg(due){ var D=window._TC||{}; if(!due)return '#cbd5e1'; if(due<D.today)return '#dc2626'; if(due<=D.d3)return '#f59e0b'; if(due<=D.weekend)return '#eab308'; return '#94a3b8'; }
 function tcDue(id,ds){ var c=document.getElementById('tc-'+id); if(c){ var col=_tcUrg(ds); var inp=c.querySelector('.tc-due'); if(inp){inp.value=ds;inp.style.color=col;} var m=c.querySelector('.tc-duem'); if(m){m.textContent=ds||'期限なし';m.style.color=col;} var d=c.querySelector('.tc-dot'); if(d)d.style.background=col; } taskField(id,'due_date',ds); }
@@ -2063,8 +2064,9 @@ function tcAiCat(id){ var c=document.getElementById('tc-'+id);
      var sel=c.querySelector('select[data-field="category"]'); if(sel){ sel.value=d.category; } _tcFlash(id); }); }
 document.addEventListener('DOMContentLoaded',function(){ document.querySelectorAll('.task-card').forEach(tcRenderActions);
   var bd=document.getElementById('notesBackdrop'); if(bd)bd.addEventListener('click',closeNotes);
-  // エリア外クリックで開いているカードを閉じる
-  document.addEventListener('click',function(e){ if(e.target.closest('.task-card')||e.target.closest('#notesPop'))return; _tcCollapseAll(); });
+  // 「当該カードの外」をクリックしたら、そのカードを閉じる（他カードをクリックした時も閉じる）
+  document.addEventListener('click',function(e){ if(e.target.closest('#notesPop'))return;
+    document.querySelectorAll('.task-card.open').forEach(function(c){ if(!c.contains(e.target)) c.classList.remove('open'); }); });
   // 開いているカード内の操作で無操作タイマーをリセット
   var board=document.getElementById('taskBoard');
   if(board){ ['input','change','click','keydown'].forEach(function(evt){ board.addEventListener(evt,function(e){ var c=e.target.closest('.task-card.open'); if(c)_tcTouch(c); }); }); }
@@ -2307,8 +2309,9 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                  if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
         return (
             f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
-            f'data-status="{_esc(status)}" data-pinned="{1 if pinned else 0}" data-search="{search}">'
-            f'<div class="tc-head" onclick="tcToggle(event,this)">'
+            f'data-status="{_esc(status)}" data-pinned="{1 if pinned else 0}" data-search="{search}" '
+            f'onclick="tcCardClick(event,this)">'
+            f'<div class="tc-head">'
             f'<span class="tc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
             f'<span class="tc-ttl">{_esc(t.get("title"))}</span>'
             f'{pin_btn}<span class="tc-car">▸</span></div>'
