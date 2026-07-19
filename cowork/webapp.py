@@ -1956,6 +1956,13 @@ _TASKS_JS = """
 .tc-q.rec{border-color:#93c5fd;color:#2563eb;font-weight:600}
 .tc-ai{font-size:10px;padding:1px 5px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;cursor:pointer}
 .tc-lbl{font-size:9px;color:#94a3b8}
+.tc-mini{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:3px}
+.tc-mini .tc-actions{margin:0}
+.m-pj{font-size:9px;background:#eef2ff;color:#4338ca;border-radius:4px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.m-asg{font-size:10px;color:#475569}
+.m-due{font-size:10px;font-weight:600;white-space:nowrap}
+.tc-foot{display:flex;gap:10px;align-items:center;margin-top:7px;padding-top:6px;border-top:1px dashed #eef1f5}
+.tc-foot .del{border:none;background:transparent;color:#c53030;cursor:pointer;font-size:11px;padding:0}
 .pj-strip{display:flex;gap:6px;overflow-x:auto;padding:2px 0 8px;margin-bottom:6px}
 .pj-chip{flex:none;display:flex;align-items:center;gap:4px;font-size:11px;text-decoration:none;color:#334155;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:20px;padding:3px 10px;white-space:nowrap}
 .pj-chip.active{background:#dbeafe;border-color:#93c5fd;color:#1e40af}
@@ -1988,15 +1995,12 @@ var _TC_STATUSES=["受信箱","未着手","対応中","保留","完了"];
 function _tcEsc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function _tcFlash(id){var c=document.getElementById('tc-'+id); if(!c)return; c.classList.add('saved'); setTimeout(function(){c.classList.remove('saved');},600);}
 function tcActions(id,status){
-  var b='';
-  if(status==='受信箱') b+='<span style="font-size:9px;color:#94a3b8">担当＋期限で自動整理</span>';
-  else if(status==='未着手') b+='<button class="go" onclick="taskField('+id+',\\'status\\',\\'対応中\\')">▶ 開始</button>';
-  else if(status==='対応中'){ b+='<button onclick="taskField('+id+',\\'status\\',\\'保留\\')">⏸ 保留</button><button class="done" onclick="taskField('+id+',\\'status\\',\\'完了\\')">✓ 完了</button>'; }
-  else if(status==='保留') b+='<button class="go" onclick="taskField('+id+',\\'status\\',\\'対応中\\')">▶ 再開</button>';
-  else if(status==='完了') b+='<button onclick="taskField('+id+',\\'status\\',\\'対応中\\')">↩ 戻す</button>';
-  b+='<a class="tc-edit" href="/tasks/'+id+'/edit">編集</a>';
-  b+='<button class="del" onclick="taskDelete('+id+')" title="削除">🗑</button>';
-  return b;
+  if(status==='受信箱') return '<span style="font-size:9px;color:#94a3b8">担当＋期限で自動整理</span>';
+  if(status==='未着手') return '<button class="go" onclick="taskField('+id+',\\'status\\',\\'対応中\\')">▶ 開始</button>';
+  if(status==='対応中') return '<button onclick="taskField('+id+',\\'status\\',\\'保留\\')">⏸ 保留</button><button class="done" onclick="taskField('+id+',\\'status\\',\\'完了\\')">✓ 完了</button>';
+  if(status==='保留') return '<button class="go" onclick="taskField('+id+',\\'status\\',\\'対応中\\')">▶ 再開</button>';
+  if(status==='完了') return '<button onclick="taskField('+id+',\\'status\\',\\'対応中\\')">↩ 戻す</button>';
+  return '';
 }
 function tcRenderActions(card){var id=card.id.slice(3); var st=card.getAttribute('data-status'); var a=card.querySelector('.tc-actions'); if(a)a.innerHTML=tcActions(id,st);}
 function tcCounts(){_TC_STATUSES.forEach(function(s){var body=document.querySelector('[data-col="'+s+'"]'); var cnt=document.querySelector('[data-count="'+s+'"]'); if(body&&cnt)cnt.textContent=body.querySelectorAll('.task-card').length;});}
@@ -2042,7 +2046,11 @@ function addNote(){
 function closeNotes(){ document.getElementById('notesPop').style.display='none'; document.getElementById('notesBackdrop').style.display='none'; }
 function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').toLowerCase().trim();
   document.querySelectorAll('.task-card').forEach(function(c){ c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
-function tcToggle(ev,head){ if(ev.target.closest('button')||ev.target.closest('a')) return; head.parentElement.classList.toggle('open'); }
+var _TC_IDLE_MS=45000;
+function _tcTouch(card){ if(card)card.setAttribute('data-touch',Date.now()); }
+function _tcCollapseAll(){ document.querySelectorAll('.task-card.open').forEach(function(c){c.classList.remove('open');}); }
+function tcToggle(ev,head){ if(ev.target.closest('button')||ev.target.closest('a')) return;
+  var card=head.parentElement; card.classList.toggle('open'); if(card.classList.contains('open'))_tcTouch(card); }
 function tcSyncTitle(id,v){ var c=document.getElementById('tc-'+id); if(c){ var t=c.querySelector('.tc-ttl'); if(t)t.textContent=v; } }
 function _tcUrg(due){ var D=window._TC||{}; if(!due)return '#cbd5e1'; if(due<D.today)return '#dc2626'; if(due<=D.d3)return '#f59e0b'; if(due<=D.weekend)return '#eab308'; return '#94a3b8'; }
 function tcDue(id,ds){ var c=document.getElementById('tc-'+id); if(c){ var col=_tcUrg(ds); var inp=c.querySelector('.tc-due'); if(inp){inp.value=ds;inp.style.color=col;} var m=c.querySelector('.tc-duem'); if(m){m.textContent=ds||'期限なし';m.style.color=col;} var d=c.querySelector('.tc-dot'); if(d)d.style.background=col; } taskField(id,'due_date',ds); }
@@ -2054,7 +2062,15 @@ function tcAiCat(id){ var c=document.getElementById('tc-'+id);
    .then(function(r){return r.json();}).then(function(d){ if(!d.ok||!d.category){ if(d&&!d.category)alert('AIが種類を判定できませんでした'); return; }
      var sel=c.querySelector('select[data-field="category"]'); if(sel){ sel.value=d.category; } _tcFlash(id); }); }
 document.addEventListener('DOMContentLoaded',function(){ document.querySelectorAll('.task-card').forEach(tcRenderActions);
-  var bd=document.getElementById('notesBackdrop'); if(bd)bd.addEventListener('click',closeNotes); });
+  var bd=document.getElementById('notesBackdrop'); if(bd)bd.addEventListener('click',closeNotes);
+  // エリア外クリックで開いているカードを閉じる
+  document.addEventListener('click',function(e){ if(e.target.closest('.task-card')||e.target.closest('#notesPop'))return; _tcCollapseAll(); });
+  // 開いているカード内の操作で無操作タイマーをリセット
+  var board=document.getElementById('taskBoard');
+  if(board){ ['input','change','click','keydown'].forEach(function(evt){ board.addEventListener(evt,function(e){ var c=e.target.closest('.task-card.open'); if(c)_tcTouch(c); }); }); }
+  // 一定時間(45秒)操作の無い開いたカードは自動でコンパクトに戻す
+  setInterval(function(){ var now=Date.now(); document.querySelectorAll('.task-card.open').forEach(function(c){ var t=parseInt(c.getAttribute('data-touch')||'0'); if(t&&now-t>_TC_IDLE_MS)c.classList.remove('open'); }); },5000);
+});
 </script>
 <div id="notesBackdrop"></div><div id="notesPop"></div>
 """
@@ -2110,6 +2126,18 @@ def _task_urgency(due: str, today: str, d3: str, weekend: str) -> tuple:
     if due <= weekend:
         return ("#eab308", "今週")        # 🟡 〜今週末
     return ("#94a3b8", "先")             # ⚪
+
+
+_WD_JP = "月火水木金土日"
+
+
+def _due_compact(due: str) -> str:
+    """期限をコンパクト表記に（例: 2026-07-31 → 7/31金）。"""
+    try:
+        d = date.fromisoformat(due)
+        return f"{d.month}/{d.day}{_WD_JP[d.weekday()]}"
+    except (ValueError, TypeError):
+        return due or ""
 
 
 def _ai_guess_task_category(title: str, detail: str = "") -> str | None:
@@ -2209,8 +2237,12 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     projects = [p["name"] for p in proj_objs]
     proj_deadline = {p["name"]: (p.get("deadline") or "") for p in proj_objs if p.get("deadline")}
     dev_map = {dp["id"]: dp for dp in sfa_db.list_dev_projects(con)}
-    tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None,
-                              project=project or None)
+    # プロジェクトはカンマ区切りで複数選択可（チップのトグルで増減）
+    sel_projects = [p for p in (project or "").split(",") if p.strip()]
+    tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None)
+    if sel_projects:
+        _selset = set(sel_projects)
+        tasks = [t for t in tasks if (t.get("project") or "") in _selset]
     latest_notes = {}
     for r in con.execute(
         "SELECT n.task_id, n.body, n.created_at FROM task_notes n WHERE n.id=("
@@ -2265,16 +2297,22 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                                ("title", "detail", "assignee", "category", "project", "next_action")).lower())
         note = latest_notes.get(tid)
         note_snip = _esc((note.get("body") or "")[:40]) if note else "進捗を追記…"
-        due_mini = f'<span class="tc-duem" style="color:{ucolor}">{_esc(due) or "期限なし"}</span>'
         pin_btn = (f'<button type="button" class="tc-pin{" on" if pinned else ""}" '
                    f'onclick="tcPin({tid})" title="★最優先ピン">★</button>')
+        asg = (t.get("assignee") or "").strip()
+        # コンパクト表示（常時）: PJ・担当・期限(7/31金)・遷移ボタン
+        m_pj = f'<span class="m-pj" title="{_esc(proj)}">📁{_esc(proj)}</span>' if proj else ""
+        m_asg = f'<span class="m-asg">👤{_esc(asg)}</span>' if asg else ""
+        m_due = (f'<span class="m-due" style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
+                 if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
         return (
             f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
             f'data-status="{_esc(status)}" data-pinned="{1 if pinned else 0}" data-search="{search}">'
             f'<div class="tc-head" onclick="tcToggle(event,this)">'
             f'<span class="tc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
             f'<span class="tc-ttl">{_esc(t.get("title"))}</span>'
-            f'{pin_btn}{due_mini}<span class="tc-car">▸</span></div>'
+            f'{pin_btn}<span class="tc-car">▸</span></div>'
+            f'<div class="tc-mini">{m_pj}{m_asg}{m_due}<span class="tc-actions"></span></div>'
             f'<div class="tc-body">'
             f'<input class="tc-title" value="{_esc(t.get("title"))}" title="タイトル" '
             f'onchange="taskField({tid},&#39;title&#39;,this.value);tcSyncTitle({tid},this.value)">'
@@ -2284,7 +2322,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{link_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}{rec}</div>'
             f'<div class="tc-notes" onclick="openNotes({tid})" title="進捗ログを見る・追記">📝 {note_snip}</div>'
-            f'<div class="tc-actions"></div>'
+            f'<div class="tc-foot"><a class="tc-edit" href="/tasks/{tid}/edit">編集</a>'
+            f'<button type="button" class="del" onclick="taskDelete({tid})">🗑 削除</button></div>'
             f'</div></div>')
 
     columns = ""
@@ -2294,36 +2333,49 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         columns += (f'<div class="task-col"><h3>{s}（<span class="tc-count" data-count="{s}">{len(ts)}</span>）</h3>'
                     f'<div class="tc-col-body" data-col="{s}">{inner}</div></div>')
 
-    # プロジェクト一覧ストリップ（状態別内訳＋期限。クリックで絞り込み）
+    # /tasks のURLを組み立て（PJ複数＋担当/種類フィルタを保持）
+    def _tasks_url(projs_list):
+        params = []
+        if projs_list:
+            params.append("project=" + urllib.parse.quote(",".join(projs_list)))
+        if assignee:
+            params.append("assignee=" + urllib.parse.quote(assignee))
+        if category:
+            params.append("category=" + urllib.parse.quote(category))
+        return "/tasks" + ("?" + "&".join(params) if params else "")
+
+    # プロジェクト一覧ストリップ（状態別内訳＋期限。クリックで絞り込み・再クリックで解除・複数選択）
     pcounts = sfa_db.task_counts_by_project_status(con)
     strip = ""
     if proj_objs:
         chips = ""
         for p in proj_objs:
-            c = pcounts.get(p["name"], {})
+            name = p["name"]
+            c = pcounts.get(name, {})
             open_n = sum(c.get(s, 0) for s in ("受信箱", "未着手", "対応中", "保留"))
             done_n = c.get("完了", 0)
             dl = p.get("deadline") or ""
             dcol = _task_urgency(dl, today, d3, weekend)[0] if dl else "#cbd5e1"
-            act = " active" if project == p["name"] else ""
+            in_sel = name in sel_projects
+            # トグル: 選択中なら外す、未選択なら足す
+            new_sel = [x for x in sel_projects if x != name] if in_sel else sel_projects + [name]
             done_txt = f'・完{done_n}' if done_n else ""
             dl_txt = f'・〆{_esc(dl[5:])}' if dl else ""
-            chips += (f'<a class="pj-chip{act}" href="/tasks?project={urllib.parse.quote(p["name"])}">'
-                      f'<span class="pj-dot" style="background:{dcol}"></span>📁{_esc(p["name"])}'
+            chips += (f'<a class="pj-chip{" active" if in_sel else ""}" href="{_tasks_url(new_sel)}">'
+                      f'<span class="pj-dot" style="background:{dcol}"></span>'
+                      f'{"✓" if in_sel else ""}📁{_esc(name)}'
                       f'<span class="pj-cnt">{open_n}件{done_txt}{dl_txt}</span></a>')
-        strip = (f'<div class="pj-strip">{chips}'
+        clear = (f'<a class="pj-chip mng" href="{_tasks_url([])}">絞り込み解除</a>' if sel_projects else "")
+        strip = (f'<div class="pj-strip">{chips}{clear}'
                  f'<a class="pj-chip mng" href="/task-projects">⚙ PJ管理</a></div>')
 
     def _fopt(values, cur, alllabel):
         return f'<option value="">{alllabel}</option>' + "".join(
             f'<option value="{html.escape(v)}"{" selected" if v == cur else ""}>{html.escape(v)}</option>'
             for v in values)
-    proj_filter = (f'<select name="project" onchange="this.form.submit()">'
-                   f'{_fopt(projects, project or "", "PJ:全て")}</select>' if projects else "")
     filter_row = f"""<form method="get" action="/tasks" class="filter-row">
       <select name="assignee" onchange="this.form.submit()">{_fopt(owners, assignee, '担当:全て')}</select>
       <select name="category" onchange="this.form.submit()">{_fopt(cats, category, '種類:全て')}</select>
-      {proj_filter}
       <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細・次アクションで検索…" oninput="taskFilter()" style="max-width:280px">
       <a class="btn sec" href="/tasks">リセット</a>
     </form>"""
@@ -2337,8 +2389,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                     '<button class="btn sec" type="submit">🧪 テストデータを削除</button></form></div>')
     seed_btn = ('<form method="post" action="/tasks/seed-test" style="display:inline">'
                 '<button class="btn sec" type="submit" title="検証用の【テスト】サンプルを投入">🧪 テストデータ投入</button></form>')
-    filt_note = (f'<span class="muted" style="font-size:12px">📁 {_esc(project)} で絞り込み中 '
-                 f'<a href="/tasks">解除</a></span>' if project else "")
+    filt_note = (f'<span class="muted" style="font-size:12px">📁 {_esc("・".join(sel_projects))} で絞り込み中 '
+                 f'<a href="{_tasks_url([])}">解除</a></span>' if sel_projects else "")
     quick_js = (f'<script>window._TC={{today:"{today}",d3:"{d3}",weekend:"{weekend}"}};</script>')
     return f"""
     <div class="card">
