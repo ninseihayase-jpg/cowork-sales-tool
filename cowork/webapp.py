@@ -1968,7 +1968,7 @@ function _tcEsc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/
 function _tcFlash(id){var c=document.getElementById('tc-'+id); if(!c)return; c.classList.add('saved'); setTimeout(function(){c.classList.remove('saved');},600);}
 function tcActions(id,status){
   var b='';
-  if(status==='受信箱') b+='<button class="go" onclick="taskField('+id+',\\'status\\',\\'未着手\\')">▶ 未着手へ</button>';
+  if(status==='受信箱') b+='<span style="font-size:9px;color:#94a3b8">担当＋期限で自動整理</span>';
   else if(status==='未着手') b+='<button class="go" onclick="taskField('+id+',\\'status\\',\\'対応中\\')">▶ 開始</button>';
   else if(status==='対応中'){ b+='<button onclick="taskField('+id+',\\'status\\',\\'保留\\')">⏸ 保留</button><button class="done" onclick="taskField('+id+',\\'status\\',\\'完了\\')">✓ 完了</button>'; }
   else if(status==='保留') b+='<button class="go" onclick="taskField('+id+',\\'status\\',\\'対応中\\')">▶ 再開</button>';
@@ -2029,11 +2029,16 @@ document.addEventListener('DOMContentLoaded',function(){ document.querySelectorA
 
 
 def _tc_sel(tid: int, field: str, values: list, cur, placeholder: str, blank: bool = True) -> str:
-    """カード上のインライン編集<select>（変更で即保存・遷移なし）。"""
+    """カード上のインライン編集<select>（変更で即保存・遷移なし）。
+    現値がマスタ未登録でも選択肢に含めて必ず表示する（値が"消える"のを防ぐ）。"""
+    cur_s = str(cur or "")
+    vals = [str(v) for v in values]
+    if cur_s and cur_s not in vals:
+        vals = [cur_s] + vals  # マスタ外の現値を先頭に補って表示
     opts = (f'<option value="">{html.escape(placeholder)}</option>' if blank else "")
-    for v in values:
-        opts += (f'<option value="{html.escape(str(v))}"'
-                 f'{" selected" if str(v) == str(cur or "") else ""}>{html.escape(str(v))}</option>')
+    for v in vals:
+        opts += (f'<option value="{html.escape(v)}"'
+                 f'{" selected" if v == cur_s else ""}>{html.escape(v)}</option>')
     return (f'<select class="tc-sel" title="{html.escape(placeholder)}" '
             f'onchange="taskField({tid},&#39;{field}&#39;,this.value)">{opts}</select>')
 
@@ -2149,7 +2154,9 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                      else ("#b7791f" if (due and due <= soon) else "#5b6b82"))
         na = (t.get("next_action") or "").strip()
         # インライン編集用の各<select>（変更で即保存・画面遷移なし）
-        proj_sel = _tc_sel(tid, "project", projects, t.get("project"), "📁PJ") if projects else ""
+        # マスタが空でも、タスクにPJ値があれば表示する（値が消えないように）
+        proj_sel = (_tc_sel(tid, "project", projects, t.get("project"), "📁PJ")
+                    if (projects or (t.get("project") or "").strip()) else "")
         asg_sel = _tc_sel(tid, "assignee", owners, t.get("assignee"), "👤担当")
         cat_sel = _tc_sel(tid, "category", cats, t.get("category"), "種類")
         pri_sel = _tc_sel(tid, "priority", sfa_db.TASK_PRIORITIES, t.get("priority") or "中", "優先度", blank=False)
