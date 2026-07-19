@@ -138,6 +138,28 @@ def test_tasks_crud_and_status(con, acc_id):
     assert sfa_db.get_task(con, tid)["done_at"]
 
 
+def test_tasks_project_next_action_and_notes(con):
+    # 大項目=プロジェクト・次アクションの保存とフィルタ
+    a = sfa_db.upsert_task(con, title="OCR検証", project="図面OCR研究開発",
+                           next_action="サンプル依頼", assignee="早瀬", status="対応中")
+    sfa_db.upsert_task(con, title="ISO文書", project="セキュリティISO取得",
+                       assignee="早瀬", status="未着手")
+    t = sfa_db.get_task(con, a)
+    assert t["project"] == "図面OCR研究開発" and t["next_action"] == "サンプル依頼"
+    assert [x["title"] for x in sfa_db.list_tasks(con, project="セキュリティISO取得")] == ["ISO文書"]
+    # 進捗ログ（追記式・最新順）＋最終更新の更新
+    before = sfa_db.get_task(con, a)["updated_at"]
+    sfa_db.add_task_note(con, a, "環境構築中")
+    sfa_db.add_task_note(con, a, "スキーマ確定")
+    notes = sfa_db.list_task_notes(con, a)
+    assert [n["body"] for n in notes] == ["スキーマ確定", "環境構築中"]
+    assert sfa_db.latest_task_note(con, a)["body"] == "スキーマ確定"
+    assert sfa_db.get_task(con, a)["updated_at"] >= before
+    # 削除
+    sfa_db.delete_task_note(con, notes[0]["id"])
+    assert len(sfa_db.list_task_notes(con, a)) == 1
+
+
 def test_tech_seed_tree_roundtrip(con):
     # デフォルトはL1=4カテゴリ、基礎技術に初期シード
     t = sfa_db.get_tech_seed_tree(con)

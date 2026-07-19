@@ -1805,6 +1805,10 @@ function taskDone(id){ taskField(id,'status','完了'); }
 function taskDelete(id){ if(!confirm('このタスクを削除しますか？')) return;
   var f=document.createElement('form'); f.method='post'; f.action='/task/'+id+'/delete';
   document.body.appendChild(f); f.submit(); }
+function taskNote(id){ var b=prompt('進捗を追記（履歴が残ります）'); if(!b) return;
+  var f=document.createElement('form'); f.method='post'; f.action='/task/'+id+'/note';
+  var i=document.createElement('input'); i.name='body'; i.value=b; f.appendChild(i);
+  document.body.appendChild(f); f.submit(); }
 function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').toLowerCase().trim();
   document.querySelectorAll('.task-card').forEach(function(c){
     c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
@@ -1818,23 +1822,46 @@ def task_form(con, task=None) -> str:
     is_edit = bool(task.get("id"))
     owners = sfa_db.get_master_list(con, "owners")
     cats = sfa_db.get_master_list(con, "task_categories")
+    projects = sfa_db.get_master_list(con, "task_projects")
     dev_opts = '<option value="">（なし）</option>'
     for dp in sfa_db.list_dev_projects(con):
         sel = " selected" if (task.get("link_type") == "dev_project" and task.get("link_id") == dp["id"]) else ""
         dev_opts += (f'<option value="dev_project:{dp["id"]}"{sel}>🛠 {_esc(dp.get("theme") or "開発案件")}'
                      f'（{_esc(dp.get("account_name") or "-")}）</option>')
     _blank = '<option value=""></option>'
+    # 進捗ログ（追記式・履歴）は編集時のみ表示
+    notes_block = ""
+    if is_edit:
+        notes = sfa_db.list_task_notes(con, task["id"])
+        rows = "".join(
+            f'<div style="border-left:3px solid #cbd5e1;padding:2px 0 2px 8px;margin:4px 0;font-size:12px">'
+            f'<span class="muted" style="font-size:10px">{_esc((n.get("created_at") or "")[:16])}'
+            f'{" ・" + _esc(n.get("author")) if n.get("author") else ""}</span><br>'
+            f'{_esc(n.get("body")).replace(chr(10), "<br>")}</div>'
+            for n in notes) or '<div class="muted" style="font-size:11px">まだ進捗ログはありません。</div>'
+        notes_block = f"""
+      <div class="card" style="max-width:720px;margin-top:12px">
+        <h3 style="margin:0 0 6px">進捗ログ（追記式）</h3>
+        <form method="post" action="/task/{task['id']}/note" style="margin-bottom:8px">
+          <textarea name="body" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2" placeholder="今日やったこと・状況を追記（履歴が残ります）" required></textarea>
+          <div style="margin-top:6px"><button class="btn" type="submit">＋進捗を追記</button></div>
+        </form>
+        {rows}
+      </div>"""
     return f"""
     <div class="card" style="max-width:720px">
       <h2>{'タスクを編集' if is_edit else '新規タスク'}</h2>
       {_save_bar('taskForm', cancel_url='/tasks')}
       <form id="taskForm" method="post" action="/tasks/save">
         <input type="hidden" name="id" value="{_esc(task.get('id'))}">
-        <label>タイトル（次にやる具体アクション） *</label>
+        <label>タイトル（タスク名・中項目） *</label>
         <input name="title" required value="{_esc(task.get('title'))}" placeholder="例: 〇〇のデモ環境を用意する">
+        <label>次アクション（次にやる具体的な一手。空だと「止まっている」合図）</label>
+        <input name="next_action" value="{_esc(task.get('next_action'))}" placeholder="例: △△さんにサンプルデータを依頼する">
         <label>詳細・文脈</label>
         <textarea name="detail" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(task.get('detail'))}</textarea>
         <div class="grid">
+          <div><label>プロジェクト（大項目）</label><select name="project">{_blank}{_opt(projects, task.get('project'))}</select></div>
           <div><label>担当</label><select name="assignee">{_blank}{_opt(owners, task.get('assignee'))}</select></div>
           <div><label>期限</label><input type="date" name="due_date" value="{_esc(task.get('due_date'))}"></div>
           <div><label>種類</label><select name="category">{_blank}{_opt(cats, task.get('category'))}</select></div>
@@ -1845,15 +1872,24 @@ def task_form(con, task=None) -> str:
         <div style="margin-top:14px"><button class="btn" type="submit">保存</button>
           <a class="btn sec" href="/tasks">キャンセル</a></div>
       </form>
-    </div>"""
+    </div>{notes_block}"""
 
 
-def tasks_page(con, *, assignee: str | None = None, category: str | None = None) -> str:
+def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
+               project: str | None = None) -> str:
     """タスクボード（カンバン＝状態別列。受信箱=Triage。フィルタ＋検索＋インライン消込）（#30）。"""
     owners = sfa_db.get_master_list(con, "owners")
     cats = sfa_db.get_master_list(con, "task_categories")
+    projects = sfa_db.get_master_list(con, "task_projects")
     dev_map = {dp["id"]: dp for dp in sfa_db.list_dev_projects(con)}
-    tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None)
+    tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None,
+                              project=project or None)
+    # 最新の進捗ログ1件をタスクごとにまとめて取得（カード表示用）
+    latest_notes = {}
+    for r in con.execute(
+        "SELECT n.task_id, n.body, n.created_at FROM task_notes n WHERE n.id=("
+        "SELECT id FROM task_notes WHERE task_id=n.task_id ORDER BY created_at DESC, id DESC LIMIT 1)"):
+        latest_notes[r["task_id"]] = dict(r)
     today = date.today().isoformat()
     soon = (date.today() + timedelta(days=3)).isoformat()
     cols = {s: [] for s in sfa_db.TASK_STATUSES}
@@ -1870,6 +1906,9 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None)
         cat = t.get("category") or ""
         cat_html = (f'<span style="background:{_task_category_color(cat)};color:#fff;border-radius:4px;'
                     f'padding:1px 6px;font-size:10px">{_esc(cat)}</span>' if cat else "")
+        proj = t.get("project") or ""
+        proj_html = (f'<span style="background:#eef2ff;color:#4338ca;border-radius:4px;'
+                     f'padding:1px 6px;font-size:10px">📁{_esc(proj)}</span>' if proj else "")
         pri = t.get("priority") or ""
         pri_html = f'<span style="font-size:10px;color:#8893a8">優{_esc(pri)}</span>' if pri else ""
         link_html = ""
@@ -1880,18 +1919,30 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None)
         status_sel = "".join(
             f'<option value="{s}"{" selected" if s == t.get("status") else ""}>{s}</option>'
             for s in sfa_db.TASK_STATUSES)
-        search = _esc(" ".join(str(t.get(k) or "") for k in ("title", "detail", "assignee", "category")).lower())
+        search = _esc(" ".join(str(t.get(k) or "") for k in
+                               ("title", "detail", "assignee", "category", "project", "next_action")).lower())
         detail_html = (f'<div class="muted" style="font-size:11px;max-height:30px;overflow:hidden">'
                        f'{_esc(t.get("detail"))}</div>' if t.get("detail") else "")
+        # 次アクション（常時1行表示。空＝止まっている合図で赤系）
+        na = (t.get("next_action") or "").strip()
+        na_html = (f'<div style="font-size:11px;color:#0369a1;margin:3px 0">▶ {_esc(na)}</div>' if na
+                   else '<div style="font-size:11px;color:#c53030;margin:3px 0">▶ 次アクション未設定</div>')
+        # 最新の進捗ログ
+        note = latest_notes.get(tid)
+        note_html = (f'<div class="muted" style="font-size:10px;max-height:28px;overflow:hidden;'
+                     f'background:#f8fafc;border-radius:4px;padding:2px 5px;margin-top:3px">'
+                     f'📝 {_esc((note.get("body") or "")[:60])}</div>' if note else "")
         return (
             f'<div class="task-card" data-search="{search}">'
             f'<div style="font-weight:600;font-size:13px">{_esc(t.get("title"))}</div>'
-            f'{detail_html}'
+            f'{na_html}{detail_html}'
             f'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:5px 0">'
-            f'{cat_html}{due_html}<span style="font-size:10px">👤{_esc(t.get("assignee") or "—")}</span>{pri_html}{link_html}</div>'
-            f'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+            f'{proj_html}{cat_html}{due_html}<span style="font-size:10px">👤{_esc(t.get("assignee") or "—")}</span>{pri_html}{link_html}</div>'
+            f'{note_html}'
+            f'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px">'
             f'<select onchange="taskField({tid},\'status\',this.value)" style="font-size:11px;padding:1px 3px;width:auto">{status_sel}</select>'
             f'<a href="/tasks/{tid}/edit" style="font-size:11px">編集</a>'
+            f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px" onclick="taskNote({tid})">＋進捗</button>'
             f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px" onclick="taskDone({tid})">✓完了</button>'
             f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px;color:#c53030" onclick="taskDelete({tid})">削除</button>'
             f'</div></div>')
@@ -1906,21 +1957,194 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None)
         return f'<option value="">{alllabel}</option>' + "".join(
             f'<option value="{html.escape(v)}"{" selected" if v == cur else ""}>{html.escape(v)}</option>'
             for v in values)
+    proj_filter = (f'<select name="project" onchange="this.form.submit()">'
+                   f'{_fopt(projects, project, "PJ:全て")}</select>' if projects else "")
     filter_row = f"""<form method="get" action="/tasks" class="filter-row">
       <select name="assignee" onchange="this.form.submit()">{_fopt(owners, assignee, '担当:全て')}</select>
       <select name="category" onchange="this.form.submit()">{_fopt(cats, category, '種類:全て')}</select>
-      <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細で検索…" oninput="taskFilter()" style="max-width:280px">
+      {proj_filter}
+      <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細・次アクションで検索…" oninput="taskFilter()" style="max-width:280px">
       <a class="btn sec" href="/tasks">リセット</a>
     </form>"""
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>タスク（{len(tasks)}）</span>
-        <a class="btn" href="/tasks/new">＋新規タスク</a>
+        <span style="display:flex;gap:8px">
+          <a class="btn sec" href="/tasks/digest">🔔 朝ダイジェスト</a>
+          <a class="btn" href="/tasks/new">＋新規タスク</a>
+        </span>
       </h2>
       {filter_row}
       <div id="taskBoard">{columns}</div>
     </div>{_TASKS_JS}"""
+
+
+# ---- 朝のタスクダイジェスト（Slack DM）(#30) ----
+
+def _load_owner_slack_map() -> dict:
+    """config/owner_slack_map.json（担当者名→email）を読む。_始まりのキーは除外。"""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "config", "owner_slack_map.json")
+    try:
+        with open(p, encoding="utf-8") as fp:
+            d = json.load(fp)
+        return {k: v for k, v in d.items() if not k.startswith("_")}
+    except Exception:
+        return {}
+
+
+def _task_digest_groups(con) -> dict:
+    """未完了タスクを担当ごとにまとめる（list_tasks の順＝期限昇順→優先度）。"""
+    groups: dict = {}
+    for t in sfa_db.list_tasks(con, exclude_done=True):
+        groups.setdefault(t.get("assignee") or "（担当未設定）", []).append(t)
+    return groups
+
+
+def build_task_digest_text(owner: str, tasks: list, tool_url: str) -> str:
+    """1担当ぶんの朝ダイジェストDM本文を組み立てる（超過/今週/その他に区分）。"""
+    import urllib.parse as _up
+    today = date.today().isoformat()
+    week = (date.today() + timedelta(days=7)).isoformat()
+    overdue, thisweek, rest = [], [], []
+    for t in tasks:
+        due = (t.get("due_date") or "").strip()
+        if due and due < today:
+            overdue.append(t)
+        elif due and today <= due <= week:
+            thisweek.append(t)
+        else:
+            rest.append(t)
+
+    def line(t):
+        due = (t.get("due_date") or "").strip() or "期限なし"
+        na = (t.get("next_action") or "").strip()
+        na_s = f" ▶ {na}" if na else " ▶（次アクション未設定）"
+        return f"  • [{due}] {t.get('title', '')}{na_s}"
+
+    lines = [f"【朝のタスクダイジェスト {today}】",
+             f"{owner}さん、未完了タスク {len(tasks)}件です。", ""]
+    if overdue:
+        lines.append(f"🔴 超過 {len(overdue)}件")
+        lines += [line(t) for t in overdue[:10]]
+        lines.append("")
+    if thisweek:
+        lines.append(f"🟡 今週まで {len(thisweek)}件")
+        lines += [line(t) for t in thisweek[:10]]
+        lines.append("")
+    if rest:
+        lines.append(f"📋 その他 {len(rest)}件（先の期限・期限なし）")
+        lines.append("")
+    lines.append(f"🔗 ボード: {tool_url}/tasks?assignee={_up.quote(owner)}")
+    lines.append("今日はどれを前に進めますか？ 一手だけ決めましょう。")
+    return "\n".join(lines)
+
+
+def _slack_api_post(method: str, **kwargs) -> dict:
+    import urllib.request
+    token = os.environ.get("SLACK_BOT_TOKEN", "")
+    req = urllib.request.Request(
+        f"https://slack.com/api/{method}", data=json.dumps(kwargs).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def _slack_api_get(method: str, params: dict) -> dict:
+    import urllib.request
+    import urllib.parse as _up
+    token = os.environ.get("SLACK_BOT_TOKEN", "")
+    req = urllib.request.Request(
+        f"https://slack.com/api/{method}?{_up.urlencode(params)}",
+        headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def send_task_digests(con, only: str | None = None) -> str:
+    """朝ダイジェストをSlack DMで送る。only指定時はその担当のみ（テスト送信用）。結果文字列を返す。"""
+    if not os.environ.get("SLACK_BOT_TOKEN"):
+        return "SLACK_BOT_TOKEN が未設定のため送信できません（本番のみ有効）。"
+    owner_map = _load_owner_slack_map()
+    tool_url = os.environ.get("SFA_TOOL_URL", "") or "https://sfa-crm.onrender.com"
+    results = []
+    for owner, tasks in _task_digest_groups(con).items():
+        if only and owner != only:
+            continue
+        if owner == "（担当未設定）":
+            continue
+        email = owner_map.get(owner)
+        if not email:
+            results.append(f"{owner}: メール未設定でスキップ")
+            continue
+        try:
+            lk = _slack_api_get("users.lookupByEmail", {"email": email})
+            if not lk.get("ok"):
+                results.append(f"{owner}: Slackユーザー不明")
+                continue
+            dm = _slack_api_post("conversations.open", users=lk["user"]["id"])
+            if not dm.get("ok"):
+                results.append(f"{owner}: DMを開けず")
+                continue
+            res = _slack_api_post("chat.postMessage", channel=dm["channel"]["id"],
+                                  text=build_task_digest_text(owner, tasks, tool_url))
+            results.append(f"{owner}: {'送信OK' if res.get('ok') else 'エラー ' + str(res.get('error'))}"
+                           f"（{len(tasks)}件）")
+        except Exception as e:  # noqa: BLE001
+            results.append(f"{owner}: 例外 {e}")
+    return " ／ ".join(results) or "送信対象がありませんでした。"
+
+
+def tasks_digest_page(con, result: str | None = None) -> str:
+    """朝ダイジェストのプレビュー＋Slackテスト送信画面（#30）。"""
+    tool_url = os.environ.get("SFA_TOOL_URL", "") or "https://sfa-crm.onrender.com"
+    owner_map = _load_owner_slack_map()
+    groups = _task_digest_groups(con)
+    result_html = (f'<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">'
+                   f'<b>送信結果:</b> {_esc(result)}</div>' if result else "")
+    blocks = ""
+    for owner, tasks in groups.items():
+        if owner == "（担当未設定）":
+            note = '<span style="color:#c53030">※担当未設定＝DM送信対象外</span>'
+            btn = ""
+        elif owner not in owner_map:
+            note = '<span style="color:#c53030">※owner_slack_mapにメール未設定＝送信不可</span>'
+            btn = ""
+        else:
+            note = ""
+            btn = (f'<form method="post" action="/tasks/digest/send" style="display:inline">'
+                   f'<input type="hidden" name="only" value="{_esc(owner)}">'
+                   f'<button class="btn sec" type="submit">この人に送信</button></form>')
+        preview = _esc(build_task_digest_text(owner, tasks, tool_url))
+        blocks += (f'<div class="card" style="max-width:720px">'
+                   f'<h3 style="margin:0 0 4px;display:flex;justify-content:space-between;align-items:center">'
+                   f'<span>👤 {_esc(owner)}（{len(tasks)}件）{note}</span>{btn}</h3>'
+                   f'<pre style="white-space:pre-wrap;font-size:12px;background:#f8fafc;'
+                   f'border-radius:6px;padding:8px;margin:0">{preview}</pre></div>')
+    if not blocks:
+        blocks = '<div class="card">未完了タスクがありません。</div>'
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>🔔 朝のタスクダイジェスト（プレビュー）</span>
+        <a class="btn sec" href="/tasks">← ボードに戻る</a>
+      </h2>
+      <p class="muted" style="font-size:13px">担当ごとに、未完了タスクを「超過／今週まで／その他」に整理してSlack DMで送ります。
+      まずは<b>自分に送って手触りを確認</b>してください。将来は毎朝1回、cronで自動送信します。</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <form method="post" action="/tasks/digest/send">
+          <input type="hidden" name="only" value="早瀬">
+          <button class="btn" type="submit">自分（早瀬）にテスト送信</button>
+        </form>
+        <form method="post" action="/tasks/digest/send"
+              onsubmit="return confirm('担当が設定された全員にSlack DMを送信します。よろしいですか？')">
+          <button class="btn sec" type="submit">全員に送信</button>
+        </form>
+      </div>
+    </div>
+    {result_html}
+    {blocks}"""
 
 
 def masters_page(con) -> str:
@@ -7154,7 +7378,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _tq = self._qs()
                     self._send(render(tasks_page(
                         con, assignee=(_tq.get("assignee", [""])[0] or None),
-                        category=(_tq.get("category", [""])[0] or None))))
+                        category=(_tq.get("category", [""])[0] or None),
+                        project=(_tq.get("project", [""])[0] or None))))
+                elif path == "/tasks/digest":
+                    self._send(render(tasks_digest_page(con)))
                 elif path == "/tasks/new":
                     self._send(render(task_form(con)))
                 elif (path.startswith("/tasks/") and path.endswith("/edit")
@@ -7467,6 +7694,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con, id=_tid,
                         title=f.get("title") or "(無題)",
                         detail=f.get("detail") or None,
+                        project=f.get("project") or None,
+                        next_action=f.get("next_action") or None,
                         assignee=f.get("assignee") or None,
                         due_date=f.get("due_date") or None,
                         status=f.get("status") or "受信箱",
@@ -7476,12 +7705,26 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     )
                     self._redirect("/tasks")
 
+                elif path == "/tasks/digest/send":
+                    _only = (f.get("only") or "").strip() or None
+                    _res = send_task_digests(con, only=_only)
+                    self._send(render(tasks_digest_page(con, result=_res)))
+
+                elif (path.startswith("/task/") and path.endswith("/note")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _tid = int(path.split("/")[2])
+                    _body = (f.get("body") or "").strip()
+                    if _body:
+                        sfa_db.add_task_note(con, _tid, _body)
+                    self._redirect(f"/tasks/{_tid}/edit")
+
                 elif (path.startswith("/task/") and path.endswith("/field")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     _tid = int(path.split("/")[2])
                     _field = f.get("field", "")
                     _value = f.get("value", "")
-                    _allowed = {"status", "assignee", "due_date", "category", "priority", "title"}
+                    _allowed = {"status", "assignee", "due_date", "category", "priority",
+                                "title", "project", "next_action"}
                     if _field not in _allowed:
                         self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(), ctype="application/json")
                     elif _field == "status" and _value not in sfa_db.TASK_STATUSES:

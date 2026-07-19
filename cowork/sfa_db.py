@@ -62,6 +62,10 @@ TECH_SEED_TREE_DEFAULT = {
 # タスク種類(分類)。マスタ編集可（管理→マスタ）。色は _task_category_color で自動割当。
 TASK_CATEGORIES = ["開発", "調査・検証", "設計", "レビュー", "バグ修正", "環境・インフラ",
                    "データ整備", "ドキュメント", "打合せ準備", "営業対応", "社内・庶務", "その他"]
+# タスクの大項目＝プロジェクト(取り組み)。開発案件(商談連動)とは別軸の大きな括り
+# （例: セキュリティISO取得 / 図面OCR研究開発 等）。実データはマスタ画面で追加＝DBに保持
+# （publicリポジトリのため社内固有名はここにハードコードしない）。
+TASK_PROJECTS: list[str] = []
 
 # マスタ編集対象キー → デフォルト値のマッピング（技術シードはツリー専用画面で編集＝ここには含めない）
 MASTER_KEYS = {
@@ -73,6 +77,7 @@ MASTER_KEYS = {
     "company_sizes":     COMPANY_SIZES,
     "activity_types":    ACTIVITY_TYPES,
     "task_categories":   TASK_CATEGORIES,
+    "task_projects":     TASK_PROJECTS,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -83,6 +88,7 @@ MASTER_LABELS = {
     "company_sizes":     "企業規模",
     "activity_types":    "活動種別",
     "task_categories":   "タスク種類",
+    "task_projects":     "プロジェクト（大項目）",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -525,8 +531,10 @@ CREATE INDEX IF NOT EXISTS idx_deal_issue_memos_issue ON deal_issue_memos(issue_
 -- タスク管理（#30）。開発案件/商談/論点等にひも付け可能。受信箱=未整理(Triage)。
 CREATE TABLE IF NOT EXISTS tasks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    title         TEXT NOT NULL,           -- 行動可能な次アクション
+    title         TEXT NOT NULL,           -- タスク名（中項目）
     detail        TEXT,                    -- 文脈・補足
+    project       TEXT,                    -- 大項目＝プロジェクト（task_projectsマスタ）
+    next_action   TEXT,                    -- 次アクション（常時1行表示。空なら止まっている合図）
     assignee      TEXT,                    -- 担当（owner名）
     due_date      TEXT,                    -- 期限 YYYY-MM-DD
     status        TEXT DEFAULT '受信箱',    -- 受信箱/未着手/対応中/保留/完了
@@ -546,6 +554,17 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee);
 CREATE INDEX IF NOT EXISTS idx_tasks_link ON tasks(link_type, link_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
+
+-- タスクの進捗ログ（追記式・履歴が残る）。最新1件がカードの「進捗」表示に使われる。
+CREATE TABLE IF NOT EXISTS task_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL,
+    author     TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id);
 
 -- 商談への添付ファイル（実体は保存せずSharePoint等の外部リンクのみ保持）
 CREATE TABLE IF NOT EXISTS deal_attachments (
@@ -803,6 +822,12 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # 技術シード機能（#46）: 必要な技術シード（カンマ区切り）を後方互換追加
         if "tech_seeds" not in dp_cols:
             con.execute("ALTER TABLE dev_projects ADD COLUMN tech_seeds TEXT")
+        # tasks に project(大項目)・next_action(次アクション) を後方互換追加（#30・前回デプロイ後の追加列）
+        _task_cols = {r[1] for r in con.execute("PRAGMA table_info(tasks)")}
+        if _task_cols and "project" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN project TEXT")
+        if _task_cols and "next_action" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN next_action TEXT")
         # weekly_reports に cover_image を後方互換追加（前回デプロイ時は列が無かった）
         wr_cols = {r[1] for r in con.execute("PRAGMA table_info(weekly_reports)")}
         if wr_cols and "cover_image" not in wr_cols:
@@ -2045,8 +2070,9 @@ def delete_deal_issue_memo(con, memo_id: int) -> None:
 # ---- タスク管理（#30） ----
 
 TASK_FIELDS = [
-    "title", "detail", "assignee", "due_date", "status", "priority", "category",
-    "link_type", "link_id", "source", "slack_channel", "slack_ts", "created_by",
+    "title", "detail", "project", "next_action", "assignee", "due_date", "status",
+    "priority", "category", "link_type", "link_id", "source", "slack_channel",
+    "slack_ts", "created_by",
 ]
 
 
@@ -2075,7 +2101,8 @@ def upsert_task(con, *, id=None, commit: bool = True, **fields) -> int:
 
 
 def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
-               category: str | None = None, link_type: str | None = None,
+               category: str | None = None, project: str | None = None,
+               link_type: str | None = None,
                link_id: int | None = None, exclude_done: bool = False) -> list[dict]:
     q = "SELECT * FROM tasks"
     conds: list = []
@@ -2088,6 +2115,8 @@ def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
         conds.append("assignee = ?"); params.append(assignee)
     if category:
         conds.append("category = ?"); params.append(category)
+    if project:
+        conds.append("project = ?"); params.append(project)
     if link_type:
         conds.append("link_type = ?"); params.append(link_type)
     if link_id is not None:
@@ -2118,6 +2147,36 @@ def set_task_status(con, id: int, status: str, commit: bool = True) -> None:
 
 def delete_task(con, id: int) -> None:
     con.execute("DELETE FROM tasks WHERE id=?", (int(id),))
+    con.commit()
+
+
+def add_task_note(con, task_id: int, body: str, author: str | None = None,
+                  commit: bool = True) -> int:
+    """進捗ログを1件追記し、タスクのupdated_atを更新する（最終更新日時＝追記時刻）。"""
+    cur = con.execute("INSERT INTO task_notes (task_id, body, author) VALUES (?,?,?)",
+                      (int(task_id), body, author))
+    con.execute("UPDATE tasks SET updated_at=datetime('now') WHERE id=?", (int(task_id),))
+    if commit:
+        con.commit()
+    return cur.lastrowid
+
+
+def list_task_notes(con, task_id: int) -> list[dict]:
+    """進捗ログを新しい順に返す。"""
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM task_notes WHERE task_id=? ORDER BY created_at DESC, id DESC",
+        (int(task_id),))]
+
+
+def latest_task_note(con, task_id: int) -> dict | None:
+    r = con.execute(
+        "SELECT * FROM task_notes WHERE task_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (int(task_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def delete_task_note(con, note_id: int) -> None:
+    con.execute("DELETE FROM task_notes WHERE id=?", (int(note_id),))
     con.commit()
 
 
