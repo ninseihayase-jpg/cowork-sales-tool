@@ -3055,8 +3055,13 @@ def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, labe
     （HTML5のform属性。バー自体は<form>の外にあってよい）。"""
     t = f'<span class="sb-title">{_esc(title)}</span>' if title else ""
     cancel = f'<a class="btn sec" href="{_esc(cancel_url)}">キャンセル</a>' if cancel_url else ""
+    # 二重送信防止: フォームが妥当なら送信後にボタンを無効化（連打で多重登録されるのを防ぐ）。
+    # 未入力等でバリデーションに落ちる場合はロックしない。
+    guard = ("var f=this.form;if(f&&!f.checkValidity())return true;"
+             "if(this.dataset.busy)return false;this.dataset.busy=1;var b=this;"
+             "setTimeout(function(){b.disabled=true;b.textContent='保存中…';},50);")
     return (f'<div class="save-bar">{t}'
-            f'<button class="btn" type="submit" form="{form_id}">{label}</button>{cancel}</div>')
+            f'<button class="btn" type="submit" form="{form_id}" onclick="{guard}">{label}</button>{cancel}</div>')
 
 
 def home_page(con, owner: str | None = None, status_filter: str | None = None,
@@ -8673,8 +8678,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except Exception as exc:  # noqa: BLE001
                             sfa_db.record_sync_failure(con, "dev_project", pid, str(exc))
                             print(f"[dev_project_link] sync_dev_project failed: {exc}")
-                    _return_to = f.get("return_to") or ""
-                    self._redirect(_return_to if _return_to.startswith("/") else f"/deal/{deal_id_val}")
+                    # 新規作成後は開発案件一覧へ遷移（保存後に画面が変わらず二重登録される問題の対策）
+                    self._redirect("/dev-projects")
 
                 elif path.startswith("/dev-project/") and path.endswith("/edit"):
                     try:
