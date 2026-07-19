@@ -288,8 +288,11 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
         f"次回MSラベル: {ms_label}",
         f"追記メモ: {memo_add}",
         "",
-        "✅ 確認・編集後「確定」または「ok」と返信してください",
-        "（修正は「種別: 面談」のように返信で上書きできます）",
+        "✅ 確認後「確定」または「ok」（yes可）と返信すると保存します。",
+        "✏️ 修正する場合は、修正部分だけ記載して返信すると上書きできます。",
+        "　例) 次回MS日: 2026-07-31",
+        "　例) 次回MSラベル: (調整中)2次面談/デモあり",
+        "　例) ステージ: 要件詰め",
     ]
     if not deal:
         lines.insert(2, "⚠️ 商談を自動特定できませんでした。商談名を明示して再メンションしてください。")
@@ -361,8 +364,10 @@ def draft_new_deal_template(thread_text: str, create_mode: str, con=None) -> str
 
     lines += [
         "",
-        "✅ 確認・編集後「確定」または「ok」と返信してください",
-        "（修正は「アカウント名: 〇〇社」のように返信で上書きできます）",
+        "✅ 確認後「確定」または「ok」（yes可）と返信すると保存します。",
+        "✏️ 修正する場合は、修正部分だけ記載して返信すると上書きできます。",
+        "　例) アカウント名: 〇〇社",
+        "　例) ステージ: 要件詰め",
     ]
     return "\n".join(lines)
 
@@ -616,7 +621,7 @@ def handle_mention(event: dict, con: sqlite3.Connection):
         f"🔍 以下の商談でよいですか？\n\n"
         f"*SFA#{deal_id_str}* | *{acct}* / {deal_name}\n"
         f"ステージ: {stage}　　次回MS: {ms_date} / {ms_label}\n\n"
-        f"「はい」で続行 / 「いいえ」の場合は正しいSFA番号（数字のみ）を返信してください\n"
+        f"「はい」(yes)で続行 / 「いいえ」(no)の場合は正しいSFA番号（数字のみ）を返信してください\n"
         f"商談一覧: {SFA_TOOL_URL}/deals"
     )
     bot_ts = post_message(channel, thread_ts, confirm_text)
@@ -701,7 +706,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                     f"🔍 以下の商談でよいですか？\n\n"
                     f"*SFA#{specified_id}* | *{acct}* / {dn}\n"
                     f"ステージ: {st}　　次回MS: {ms} / {msl}\n\n"
-                    f"「はい」で続行 / 「いいえ」で別の番号を指定 / 「new」で新規商談追加\n"
+                    f"「はい」(yes)で続行 / 「いいえ」(no)で別の番号を指定 / 「new」で新規商談追加\n"
                     f"商談一覧: {SFA_TOOL_URL}/deals"
                 )
                 new_bot_ts = post_message(channel, thread_ts, confirm_text)
@@ -771,7 +776,12 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 "🔄 リセットしました。再度 @NegoCollection をメンションしてください。")
             return
 
-        if text_l not in ("確定", "ok"):
+        if text_l not in ("確定", "ok", "yes", "はい"):
+            # 上書き返信を検知したら短く応答して"無言"を防ぐ
+            if any(_extract_field(text, lb) for lb in
+                   ("アカウント名", "案件名", "担当", "ステージ", "メモ", "種別", "相手", "内容", "活動日")):
+                post_message(channel, thread_ts,
+                    "✍️ 上書きを受け付けました。反映するには「確定」または「ok」と返信してください。")
             return
 
         messages = get_thread_messages(channel, thread_ts)
@@ -1016,7 +1026,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                     f"🔍 以下の商談でよいですか？\n\n"
                     f"*SFA#{specified_id}* | *{acct}* / {deal_name}\n"
                     f"ステージ: {stage}　　次回MS: {ms_date} / {ms_label}\n\n"
-                    f"「はい」で続行 / 「いいえ」で別の番号を指定 / 「new」で新規商談追加\n"
+                    f"「はい」(yes)で続行 / 「いいえ」(no)で別の番号を指定 / 「new」で新規商談追加\n"
                     f"商談一覧: {SFA_TOOL_URL}/deals"
                 )
                 new_bot_ts = post_message(channel, thread_ts, confirm_text)
@@ -1044,7 +1054,12 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
             "🔄 リセットしました。再度 @NegoCollection をメンションしてください。")
         return
 
-    if text_l not in ("確定", "ok"):
+    if text_l not in ("確定", "ok", "yes", "はい"):
+        # 上書き返信（「フィールド: 値」）を検知したら短く応答して"無言"を防ぐ
+        if any(_extract_field(text, lb) for lb in
+               ("種別", "相手", "内容", "活動日", "ステージ", "次回MS日", "次回MSラベル", "追記メモ")):
+            post_message(channel, thread_ts,
+                "✍️ 上書きを受け付けました。反映するには「確定」または「ok」と返信してください。")
         return
 
     # テンプレート + 上書き値を収集
