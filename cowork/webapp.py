@@ -1937,9 +1937,10 @@ _TASKS_JS = """
 <style>
 /* 画面幅いっぱいに5列を伸縮配置。広い画面では横スクロールなし、狭い画面(=合計が入り切らない時)だけ横スクロール */
 #taskBoard{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px;align-items:flex-start}
-.task-col{flex:1 1 0;min-width:185px;background:#f1f4f9;border-radius:10px;padding:8px 7px 12px}
-.task-col h3{position:sticky;top:44px;background:#f1f4f9;z-index:5;font-size:13px;margin:0 0 6px;padding:5px 4px;border-radius:6px;box-shadow:0 2px 4px rgba(15,23,42,.06)}
-.tc-col-body{min-height:18px}
+/* 各列を内部スクロールにし、ヘッダ(h3)は列上部に常駐＝縦に増えてもタイトルが見える（ナビと干渉しない） */
+.task-col{flex:1 1 0;min-width:185px;background:#f1f4f9;border-radius:10px;padding:8px 7px 10px;display:flex;flex-direction:column;max-height:calc(100vh - 200px)}
+.task-col h3{font-size:13px;margin:0 0 6px;flex:none}
+.tc-col-body{overflow-y:auto;flex:1 1 auto;min-height:18px}
 .task-card{background:#fff;border:1px solid #e6e9f0;border-radius:8px;padding:5px 8px;margin-bottom:6px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
 .task-card.saved{outline:2px solid #10b981;transition:outline .15s}
 .task-card.pinned{border-color:#f59e0b}
