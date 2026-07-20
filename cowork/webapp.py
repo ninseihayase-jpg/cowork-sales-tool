@@ -3202,17 +3202,20 @@ def _ms_panel_json(con, deal_id: int) -> dict:
     }
 
 
-def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, label: str = "💾 保存") -> str:
+def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, label: str = "💾 保存",
+              extra: str = "") -> str:
     """個別編集/入力フォーム上部の固定・保存バー。ボタンは form="<id>" で対象フォームを送信する
-    （HTML5のform属性。バー自体は<form>の外にあってよい）。"""
+    （HTML5のform属性。バー自体は<form>の外にあってよい）。
+    extra: タイトルとボタンの間に差し込む任意HTML（ステータス表示などの固定表示用・rawで挿入）。"""
     t = f'<span class="sb-title">{_esc(title)}</span>' if title else ""
+    ex = f'<span class="sb-extra" style="margin-right:12px;display:flex;align-items:center;gap:6px">{extra}</span>' if extra else ""
     cancel = f'<a class="btn sec" href="{_esc(cancel_url)}">キャンセル</a>' if cancel_url else ""
     # 二重送信防止: フォームが妥当なら送信後にボタンを無効化（連打で多重登録されるのを防ぐ）。
     # 未入力等でバリデーションに落ちる場合はロックしない。
     guard = ("var f=this.form;if(f&&!f.checkValidity())return true;"
              "if(this.dataset.busy)return false;this.dataset.busy=1;var b=this;"
              "setTimeout(function(){b.disabled=true;b.textContent='保存中…';},50);")
-    return (f'<div class="save-bar">{t}'
+    return (f'<div class="save-bar">{t}{ex}'
             f'<button class="btn" type="submit" form="{form_id}" onclick="{guard}">{label}</button>{cancel}</div>')
 
 
@@ -4149,9 +4152,14 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     new_acc_js = ""
     # 固定保存バーに表示する「SFA#・アカウント・案件名」（編集時のみ）
     _sb_title = ""
+    _sb_extra = ""
     if deal.get("id"):
         _acc_nm = next((a["name"] for a in accounts if a["id"] == deal.get("account_id")), "")
         _sb_title = f"SFA#{deal['id']}　{_acc_nm}／{deal.get('deal_name') or ''}"
+        _st_label = "クローズ済" if deal.get("status") == "closed" else "進行中"
+        _sb_extra = (f'<span class="muted" style="font-size:11px">ステータス</span>'
+                     f'<span class="stage">{_st_label}</span>'
+                     f'<span class="muted" style="font-size:11px">クローズは画面下部の「クローズ」ボタンから</span>')
     if not deal.get("id"):
         new_acc_html = (
             '<div style="margin-top:5px;text-align:left">'
@@ -4184,7 +4192,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
       <span>{'商談編集' if deal.get('id') else '新規商談'}</span>
       {attachments_widget}
     </h2>
-    {_save_bar('dealForm', title=_sb_title, cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
+    {_save_bar('dealForm', title=_sb_title, extra=_sb_extra, cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
     {top_action_buttons}
     {lead_picker_html}
     <form id="dealForm" method="post" action="/deal/save">
@@ -4221,9 +4229,6 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           <input name="client_budget" value="{_esc(deal.get('client_budget'))}"></div>
         <div><label>重要度</label>
           <select name="importance">{_opt(sfa_db.IMPORTANCE_OPTIONS, deal.get('importance'))}</select></div>
-        <div><label>ステータス</label>
-          <div style="padding:7px 0"><span class="stage">{'クローズ済' if deal.get('status') == 'closed' else '進行中'}</span>
-          <span class="muted" style="font-size:11px;margin-left:6px">クローズは画面上部の「クローズ」ボタンから</span></div></div>
       </div>
       <label>ゴール</label><textarea name="goal" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(deal.get('goal'))}</textarea>
       <div id="cost_section" style="{'display:none' if deal.get('business_type_l1') != 'コスト削減' else ''}">
