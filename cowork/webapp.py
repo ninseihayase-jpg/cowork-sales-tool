@@ -4054,16 +4054,28 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     sync_btn = ""
     if deal.get("id"):
         acts = sfa_db.list_activities(con, deal["id"])
+        _act_types = sfa_db.get_master_list(con, "activity_types")
         act_rows = "".join(
-            f'<tr><td>{_esc(a.get("occurred_on"))}</td>'
-            f'<td>{_esc(a.get("type"))}</td>'
-            f'<td>{_esc(a.get("contact_name"))}</td>'
-            f'<td style="white-space:pre-wrap">{_esc(a.get("body"))}</td></tr>'
+            f'<tr id="act-{a["id"]}">'
+            f'<td><input type="date" value="{_esc(a.get("occurred_on"))}" style="font-size:12px" '
+            f'onchange="actField({a["id"]},&#39;occurred_on&#39;,this.value)"></td>'
+            f'<td><select style="font-size:12px" onchange="actField({a["id"]},&#39;type&#39;,this.value)">'
+            f'{_opt(_act_types, a.get("type"))}</select></td>'
+            f'<td><input value="{_esc(a.get("contact_name"))}" style="font-size:12px;width:110px" '
+            f'onchange="actField({a["id"]},&#39;contact_name&#39;,this.value)"></td>'
+            f'<td><textarea rows="2" style="font-size:12px;width:100%" '
+            f'onchange="actField({a["id"]},&#39;body&#39;,this.value)">{_esc(a.get("body"))}</textarea></td>'
+            f'<td><button type="button" class="btn sec" style="font-size:10px;padding:2px 6px;color:#c53030" '
+            f'onclick="actDelete({a["id"]})">削除</button></td></tr>'
             for a in acts
-        ) or '<tr><td colspan=4 class=muted>活動なし</td></tr>'
+        ) or '<tr><td colspan=5 class=muted>活動なし</td></tr>'
         activities_html = f"""
-        <div class="card" id="activity"><h2>活動履歴</h2>
-        <table><tr><th>日付</th><th>種別</th><th>相手</th><th>内容</th></tr>{act_rows}</table>
+        <div class="card" id="activity"><h2>活動履歴 <span class="muted" style="font-size:.5em">（各項目クリックで直接編集・自動保存）</span></h2>
+        <table><tr><th>日付</th><th>種別</th><th>相手</th><th>内容</th><th></th></tr>{act_rows}</table>
+        <script>
+        function actField(id,f,v){{ fetch('/activity/'+id+'/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:'field='+encodeURIComponent(f)+'&value='+encodeURIComponent(v)}}).then(function(r){{return r.json();}}).then(function(d){{ if(!d.ok)alert('更新エラー: '+(d.error||'')); else {{var row=document.getElementById('act-'+id); if(row){{row.style.background='#ecfdf5'; setTimeout(function(){{row.style.background='';}},600);}}}} }}).catch(function(){{alert('通信エラー');}}); }}
+        function actDelete(id){{ if(!confirm('この活動履歴を削除しますか？')) return; var f=document.createElement('form'); f.method='post'; f.action='/activity/'+id+'/delete'; document.body.appendChild(f); f.submit(); }}
+        </script>
         <form method="post" action="/activity/add" style="margin-top:16px">
           <input type="hidden" name="deal_id" value="{deal['id']}">
           <div class="grid">
@@ -9151,6 +9163,26 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if att:
                         sfa_db.delete_deal_attachment(con, aid)
                     self._redirect(f"/deal/{att['deal_id']}" if att else "/deals")
+
+                elif (path.startswith("/activity/") and path.endswith("/field")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _aid = int(path.split("/")[2])
+                    _field = f.get("field", "")
+                    _value = f.get("value", "")
+                    if _field not in sfa_db.ACTIVITY_EDIT_FIELDS:
+                        self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(),
+                                   ctype="application/json")
+                    else:
+                        sfa_db.update_activity_field(con, _aid, _field, _value)
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+
+                elif (path.startswith("/activity/") and path.endswith("/delete")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _aid = int(path.split("/")[2])
+                    _act = sfa_db.get_activity(con, _aid)
+                    _did = _act.get("deal_id") if _act else None
+                    sfa_db.delete_activity(con, _aid)
+                    self._redirect(f"/deal/{_did}#activity" if _did else "/deals")
 
                 elif path == "/activity/add":
                     try:

@@ -1451,6 +1451,27 @@ def add_activity(con, *, deal_id, type=None, occurred_on=None, contact_name=None
     return cur.lastrowid
 
 
+ACTIVITY_EDIT_FIELDS = {"type", "occurred_on", "contact_name", "body"}
+
+
+def get_activity(con, activity_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM activities WHERE id=?", (int(activity_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def update_activity_field(con, activity_id: int, field: str, value) -> None:
+    """活動履歴の1項目を更新（whitelistのみ）。"""
+    if field not in ACTIVITY_EDIT_FIELDS:
+        raise ValueError(f"invalid activity field: {field}")
+    con.execute(f"UPDATE activities SET {field}=? WHERE id=?", (value or None, int(activity_id)))
+    con.commit()
+
+
+def delete_activity(con, activity_id: int) -> None:
+    con.execute("DELETE FROM activities WHERE id=?", (int(activity_id),))
+    con.commit()
+
+
 # ---- ピッチテーマ ----
 
 def list_pitch_themes(con, active_only: bool = False) -> list[dict]:
