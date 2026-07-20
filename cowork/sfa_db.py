@@ -1083,13 +1083,13 @@ def list_deals(con, status: str | None = "open", owner: str | None = None,
 
 
 def list_deals_by_date(con, date: str, owner: str | None = None) -> list[dict]:
-    """指定日が次回MS日付、または活動履歴の実施日のいずれかに一致する商談を返す。"""
+    """指定日が次回MS日付、または活動履歴の実施日のいずれかに一致する商談を返す。
+    過去の振り返り用途のためクローズ済み商談も含める（statusで絞らない）。"""
     q = """SELECT DISTINCT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d
            LEFT JOIN accounts a ON a.id = d.account_id
-           WHERE (d.status IS NULL OR d.status != 'closed')
-                 AND (d.next_milestone_date = ?
-                      OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id AND act.occurred_on = ?))"""
+           WHERE (d.next_milestone_date = ?
+                  OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id AND act.occurred_on = ?))"""
     params: list = [date, date]
     if owner:
         q += " AND (d.owner = ? OR d.sub_owner = ?)"
@@ -1100,14 +1100,14 @@ def list_deals_by_date(con, date: str, owner: str | None = None) -> list[dict]:
 
 
 def list_deals_by_week(con, week_start: str, week_end: str, owner: str | None = None) -> list[dict]:
-    """週(week_start〜week_end, 両端含む)に次回MS日付 または 活動実施日 が含まれる商談を返す。"""
+    """週(week_start〜week_end, 両端含む)に次回MS日付 または 活動実施日 が含まれる商談を返す。
+    過去の振り返り用途のためクローズ済み商談も含める（statusで絞らない）。"""
     q = """SELECT DISTINCT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d
            LEFT JOIN accounts a ON a.id = d.account_id
-           WHERE (d.status IS NULL OR d.status != 'closed')
-                 AND ((d.next_milestone_date BETWEEN ? AND ?)
-                      OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id
-                                 AND act.occurred_on BETWEEN ? AND ?))"""
+           WHERE ((d.next_milestone_date BETWEEN ? AND ?)
+                  OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id
+                             AND act.occurred_on BETWEEN ? AND ?))"""
     params: list = [week_start, week_end, week_start, week_end]
     if owner:
         q += " AND (d.owner = ? OR d.sub_owner = ?)"
