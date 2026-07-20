@@ -4027,11 +4027,12 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         <style>
         .attach-wrap {{ position:relative; display:inline-block }}
         .attach-trigger {{ display:inline-block; background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe;
-          border-radius:6px; padding:4px 10px; font-size:12px; cursor:default; white-space:nowrap }}
-        .attach-panel {{ display:none; position:absolute; top:100%; right:0; z-index:30; background:#fff;
+          border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; white-space:nowrap }}
+        /* 固定保存バー(z-index:40)より前面に出す。以前はz-index:30でバーの裏に隠れて操作不能だった */
+        .attach-panel {{ display:none; position:absolute; top:100%; right:0; z-index:60; background:#fff;
           border:1px solid #d0e4ff; border-radius:8px; padding:10px 12px; width:260px;
-          box-shadow:0 4px 12px rgba(0,0,0,.12); text-align:left; margin-top:4px }}
-        .attach-wrap:hover .attach-panel {{ display:block }}
+          box-shadow:0 4px 12px rgba(0,0,0,.12); text-align:left }}
+        .attach-wrap:hover .attach-panel, .attach-wrap:focus-within .attach-panel {{ display:block }}
         .attach-item {{ display:flex; justify-content:space-between; align-items:center; gap:6px;
           padding:4px 0; border-bottom:1px solid #f1f5f9; font-size:12px }}
         .attach-item a {{ word-break:break-all }}
