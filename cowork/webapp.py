@@ -3245,13 +3245,14 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     # 選択するだけで自動絞り込み（onchangeで即送信・「絞り込み」ボタンは廃止）
     # フィルタUIは全タブで「サーバ側select群 → 次回MS種別 → 🔍アカウント検索 → リセット」の順で統一。
     filter_row = f"""<form method="get" action="/deals" class="filter-row">
+      <input type="hidden" name="tab" value="active">
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="status" onchange="this.form.submit()">{status_opts}</select>
       <select name="stage" onchange="this.form.submit()">{stage_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
-      <a class="btn sec" href="/deals">リセット</a>
+      <a class="btn sec" href="/deals?tab=active">リセット</a>
     </form>"""
     # バルク編集用JSオブジェクト構築
     deal_bulk_options = {
