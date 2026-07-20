@@ -4083,7 +4083,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             for a in acts
         ) or '<tr><td colspan=5 class=muted>活動なし</td></tr>'
         activities_html = f"""
-        <div class="card" id="activity"><h2>活動履歴 <span class="muted" style="font-size:.5em">（「編集」で編集モード。変更は自動保存）</span></h2>
+        <div class="card" id="activity"><h2>活動履歴 <span class="muted" style="font-size:.5em">（「編集」→入力後、エリア外クリックで自動保存して閉じる）</span></h2>
         <style>
         .actrow .ae{{display:none}}
         .actrow.editing .av{{display:none}}
@@ -4092,8 +4092,23 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         </style>
         <table style="width:100%"><tr><th style="width:1%">日付</th><th style="width:1%">種別</th><th style="width:1%">相手</th><th>内容</th><th style="width:1%"></th></tr>{act_rows}</table>
         <script>
-        function actEdit(id){{ var r=document.getElementById('act-'+id); if(!r)return; var on=r.classList.toggle('editing'); var b=r.querySelector('.act-editbtn'); if(b)b.textContent=on?'閉じる':'編集'; if(on){{var ta=r.querySelector('textarea'); if(ta){{ta.focus();}}}} }}
-        function actField(id,f,v){{ fetch('/activity/'+id+'/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:'field='+encodeURIComponent(f)+'&value='+encodeURIComponent(v)}}).then(function(r){{return r.json();}}).then(function(d){{ if(!d.ok)alert('更新エラー: '+(d.error||'')); else {{var row=document.getElementById('act-'+id); if(row){{row.style.background='#ecfdf5'; setTimeout(function(){{row.style.background='';}},600);}}}} }}).catch(function(){{alert('通信エラー');}}); }}
+        function actEdit(id){{ var r=document.getElementById('act-'+id); if(!r)return;
+          if(r.classList.contains('editing')){{ actClose(id); return; }}
+          r.classList.add('editing'); var b=r.querySelector('.act-editbtn'); if(b)b.textContent='閉じる';
+          var ta=r.querySelector('textarea'); if(ta){{ta.focus();}}
+          setTimeout(function(){{ r._out=function(e){{ if(!r.contains(e.target) && !r.contains(document.activeElement)) actClose(id); }};
+            document.addEventListener('mousedown', r._out); }},0); }}
+        function actClose(id){{ var r=document.getElementById('act-'+id); if(!r||!r.classList.contains('editing'))return;
+          if(r._out){{ document.removeEventListener('mousedown', r._out); r._out=null; }}
+          var d=r.querySelector('input[type=date]'), s=r.querySelector('select'),
+              c=r.querySelector('input:not([type=date])'), b=r.querySelector('textarea'),
+              sp=r.querySelectorAll('.av');
+          if(d){{ actField(id,'occurred_on',d.value); if(sp[0])sp[0].textContent=d.value||'—'; }}
+          if(s){{ actField(id,'type',s.value); if(sp[1])sp[1].textContent=s.value||'—'; }}
+          if(c){{ actField(id,'contact_name',c.value); if(sp[2])sp[2].textContent=c.value||'—'; }}
+          if(b){{ actField(id,'body',b.value); if(sp[3])sp[3].textContent=b.value; }}
+          r.classList.remove('editing'); var eb=r.querySelector('.act-editbtn'); if(eb)eb.textContent='編集'; }}
+        function actField(id,f,v){{ return fetch('/activity/'+id+'/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:'field='+encodeURIComponent(f)+'&value='+encodeURIComponent(v)}}).then(function(r){{return r.json();}}).then(function(d){{ if(!d.ok)alert('更新エラー: '+(d.error||'')); }}).catch(function(){{alert('通信エラー');}}); }}
         function actDelete(id){{ if(!confirm('この活動履歴を削除しますか？')) return; var f=document.createElement('form'); f.method='post'; f.action='/activity/'+id+'/delete'; document.body.appendChild(f); f.submit(); }}
         </script>
         <form method="post" action="/activity/add" style="margin-top:16px">
