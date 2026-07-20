@@ -621,7 +621,7 @@ def handle_mention(event: dict, con: sqlite3.Connection):
         f"🔍 以下の商談でよいですか？\n\n"
         f"*SFA#{deal_id_str}* | *{acct}* / {deal_name}\n"
         f"ステージ: {stage}　　次回MS: {ms_date} / {ms_label}\n\n"
-        f"「はい」(yes)で続行 / 「いいえ」(no)の場合は正しいSFA番号（数字のみ）を返信してください\n"
+        f"「はい」(yes / ok)で続行 / 「いいえ」(no)の場合は正しいSFA番号（数字のみ）を返信してください\n"
         f"商談一覧: {SFA_TOOL_URL}/deals"
     )
     bot_ts = post_message(channel, thread_ts, confirm_text)
@@ -706,7 +706,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                     f"🔍 以下の商談でよいですか？\n\n"
                     f"*SFA#{specified_id}* | *{acct}* / {dn}\n"
                     f"ステージ: {st}　　次回MS: {ms} / {msl}\n\n"
-                    f"「はい」(yes)で続行 / 「いいえ」(no)で別の番号を指定 / 「new」で新規商談追加\n"
+                    f"「はい」(yes / ok)で続行 / 「いいえ」(no)で別の番号を指定 / 「new」で新規商談追加\n"
                     f"商談一覧: {SFA_TOOL_URL}/deals"
                 )
                 new_bot_ts = post_message(channel, thread_ts, confirm_text)
@@ -1026,7 +1026,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                     f"🔍 以下の商談でよいですか？\n\n"
                     f"*SFA#{specified_id}* | *{acct}* / {deal_name}\n"
                     f"ステージ: {stage}　　次回MS: {ms_date} / {ms_label}\n\n"
-                    f"「はい」(yes)で続行 / 「いいえ」(no)で別の番号を指定 / 「new」で新規商談追加\n"
+                    f"「はい」(yes / ok)で続行 / 「いいえ」(no)で別の番号を指定 / 「new」で新規商談追加\n"
                     f"商談一覧: {SFA_TOOL_URL}/deals"
                 )
                 new_bot_ts = post_message(channel, thread_ts, confirm_text)
