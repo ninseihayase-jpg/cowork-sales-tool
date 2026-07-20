@@ -1597,20 +1597,24 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         warn="created_at は『SFAへ登録した日時』。過去分を後からまとめて登録すると、その週の新規として二重に膨らむ。"
              "実際の獲得日で数えたい場合は基準列の見直しが必要（#27）。")
 
-    # 3) 新規商談（フロー）
+    # 3) 新規商談（フロー）＝「その週に最初の活動があった商談」（#27で定義変更）
     deal_rows = con.execute(
-        "SELECT d.created_at, acc.name acc, d.deal_name, d.stage, d.owner FROM deals d "
-        "LEFT JOIN accounts acc ON acc.id=d.account_id "
-        "WHERE substr(d.created_at,1,10) BETWEEN ? AND ? ORDER BY d.created_at", (ws, we)).fetchall()
+        "SELECT fa.first_act, acc.name acc, d.deal_name, d.stage, d.owner FROM ("
+        "  SELECT a.deal_id, MIN(a.occurred_on) first_act FROM activities a"
+        "  WHERE a.occurred_on IS NOT NULL AND a.occurred_on != ''"
+        "  GROUP BY a.deal_id HAVING first_act BETWEEN ? AND ?"
+        ") fa JOIN deals d ON d.id=fa.deal_id LEFT JOIN accounts acc ON acc.id=d.account_id "
+        "ORDER BY fa.first_act", (ws, we)).fetchall()
     deal_tbl = _audit_table(
-        ["登録日時", "アカウント", "案件名", "ステージ", "担当"],
-        [[_esc((r["created_at"] or "")[:16]), _esc(r["acc"] or "—"), _esc(r["deal_name"] or "—"),
+        ["初回活動日", "アカウント", "案件名", "ステージ", "担当"],
+        [[_esc(r["first_act"]), _esc(r["acc"] or "—"), _esc(r["deal_name"] or "—"),
           _esc(r["stage"] or "—"), _esc(r["owner"] or "—")] for r in deal_rows])
     sec_deal = _audit_section(
-        "新規商談", f"deals.created_at（登録日時）の日付が {ws}〜{we}。",
+        "新規商談", f"その商談の最初の活動(activities.occurred_onの最小)が {ws}〜{we} にある商談。"
+        "（旧: 登録日created_at基準は一括取込で膨張したため定義変更 #27）",
         f'<b>{len(deal_rows)}</b>件', deal_tbl,
-        warn="リード同様 created_at=登録日時のため、過去商談を後から登録するとその週の『新規』として膨らむ。"
-             "『実際に商談化した日』の列が別途必要かも（#27の最有力の乖離要因）。")
+        warn="活動が1件も登録されていない商談は『新規』に数えられない。面談/活動を activities に"
+             "登録する運用が前提。occurred_on が空の活動は無視。")
 
     # 4) パイプライン（ストック＝現在のopen商談）
     open_rows = con.execute(
