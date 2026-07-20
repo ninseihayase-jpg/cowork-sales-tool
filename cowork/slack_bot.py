@@ -242,6 +242,7 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
   "stage_update": "{stages_str} のいずれか（変更不要なら null）",
   "next_milestone_date": "YYYY-MM-DD（変更不要なら null、不明なら【記載なし】）",
   "next_milestone_label": "次回MSラベル（変更不要なら null、不明なら【記載なし】）",
+  "next_milestone_type": "アポ または タスク（顧客接点=アポ / 社内作業=タスク。変更不要なら null、不明なら【記載なし】）",
   "memo_addition": "追記すべきメモ（追記不要なら null）"
 }}"""
 
@@ -261,11 +262,13 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
     cur_stage = deal.get("stage", "") if deal else ""
     cur_ms_date = deal.get("next_milestone_date", "") if deal else ""
     cur_ms_label = deal.get("next_milestone_label", "") if deal else ""
+    cur_ms_type = deal.get("next_milestone_type", "") if deal else ""
     cur_memo = deal.get("note", "") or "（なし）" if deal else "（なし）"
 
     stage_upd = parsed.get("stage_update") or "-"
     ms_date = parsed.get("next_milestone_date") or "-"
     ms_label = parsed.get("next_milestone_label") or "-"
+    ms_type = parsed.get("next_milestone_type") or "-"
     memo_add = parsed.get("memo_addition") or "-"
 
     lines = [
@@ -273,7 +276,7 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
         f"商談: {deal_name}",
         "─── 現在の商談情報 ───",
         f"ステージ: {cur_stage}",
-        f"次回MS: {cur_ms_date} / {cur_ms_label}",
+        f"次回MS: {cur_ms_date} / {cur_ms_label}" + (f"（{cur_ms_type}）" if cur_ms_type else ""),
         f"現状メモ: {cur_memo}",
         "",
         "─── 今回の活動 ───",
@@ -284,14 +287,17 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
         "",
         "─── 商談更新（変更なしは「-」のまま） ───",
         f"ステージ: {stage_upd}　　＊{' / '.join(_stages)}",
-        f"次回MS日: {ms_date}",
-        f"次回MSラベル: {ms_label}",
+        f"*次回MS日: {ms_date}*",
+        f"*次回MSラベル: {ms_label}*",
+        f"*次回MS種別: {ms_type}*　　＊{' / '.join(_sfa_db.NEXT_MS_TYPES)}",
         f"追記メモ: {memo_add}",
         "",
         "✅ 確認後「確定」または「ok」（yes可）と返信すると保存します。",
         "✏️ 修正する場合は、修正部分だけ記載して返信すると上書きできます。",
+        "　※ *次回MS（日付・ラベル・種別）は必ず入力してください*。",
         "　例) 次回MS日: 2026-07-31",
         "　例) 次回MSラベル: (調整中)2次面談/デモあり",
+        "　例) 次回MS種別: アポ",
         "　例) ステージ: 要件詰め",
     ]
     if not deal:
@@ -375,13 +381,16 @@ def draft_new_deal_template(thread_text: str, create_mode: str, con=None) -> str
 # ── Template parser ────────────────────────────────────────────────────────
 
 def _extract_field(text: str, label: str) -> str | None:
-    """テンプレートまたは返信テキストからフィールド値を抽出。"""
-    m = re.search(rf"^{re.escape(label)}: *(.+)$", text, re.MULTILINE)
+    """テンプレートまたは返信テキストからフィールド値を抽出。
+    Slackの太字 *...*（行頭の*・ラベル直後の*・値末尾の*）に対応。"""
+    m = re.search(rf"^\*?{re.escape(label)}:\*? *(.+)$", text, re.MULTILINE)
     if not m:
         return None
     val = m.group(1).strip()
     # テンプレートのヒント部分（　　＊選択肢...）を除去
     val = re.sub(r'[\s　]+＊.*$', '', val).strip()
+    # 行全体を太字にした場合の末尾 * を除去
+    val = val.rstrip('*').strip()
     if val in ("-", "【記載なし】", "変更なし", "（なし）"):
         return None
     return val
@@ -400,8 +409,8 @@ def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
     bot_ts = bot_ts or ""
 
     all_labels = (
-        "活動日", "種別", "相手", "内容", "ステージ", "次回MS日", "次回MSラベル", "追記メモ",
-        "アカウント名", "案件名", "担当", "メモ",
+        "活動日", "種別", "相手", "内容", "ステージ", "次回MS日", "次回MSラベル", "次回MS種別",
+        "追記メモ", "アカウント名", "案件名", "担当", "メモ",
     )
     for m in messages:
         ts = m.get("ts", "")
@@ -495,6 +504,8 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None,
             updates["next_milestone_date"] = fields["次回MS日"]
         if fields.get("次回MSラベル"):
             updates["next_milestone_label"] = fields["次回MSラベル"]
+        if fields.get("次回MS種別") and fields["次回MS種別"] in _sfa_db.NEXT_MS_TYPES:
+            updates["next_milestone_type"] = fields["次回MS種別"]
         if fields.get("追記メモ"):
             cur = con.execute("SELECT note FROM deals WHERE id=?", (deal_id,)).fetchone()
             existing = (dict(cur).get("note") or "") if cur else ""
