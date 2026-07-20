@@ -15,9 +15,11 @@ from pathlib import Path
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "cowork_sfa.db")
 
 # テーマDBの選択肢に準拠（表記揺れ防止。docs/00 §3 / 秘書 db_schema_design.md）
-DEAL_STAGES = ["初回アポ実施", "要件詰め", "提案", "クロージング", "受注", "失注", "保留中"]
-# 決着済みステージ。次回MSが無くても「要フォロー(MS超過)」に出さない（受注/失注は追うものが無い）。
-# ※status='open'のまま保持するため Hisho dashboard 等の集計は従来どおり継続する。
+# ※「失注」は選択肢から撤廃済み(#67)。失注は「クローズ(status=closed)＋close_reason='失注'」で
+#   一元管理する。既存データにstage='失注'が残りうるため、集計側は後方互換で扱う。
+DEAL_STAGES = ["初回アポ実施", "要件詰め", "提案", "クロージング", "受注", "保留中"]
+# 決着済みステージ。次回MSが無くても「要フォロー(MS超過)」に出さない（受注は追うものが無い）。
+# 失注は撤廃したが、移行前の残存データ(stage='失注')を保護するため一覧に残す（クローズ済みなので実害なし）。
 CONCLUDED_DEAL_STAGES = ["受注", "失注"]
 # 次回MSの種別。Slack日次アポ通知は「アポ」（および未設定=fail-safe）のみ投稿し、「タスク」は除外する。
 NEXT_MS_TYPES = ["アポ", "タスク"]
@@ -1141,6 +1143,39 @@ def list_overdue_deals(con, owner: str | None = None, today: str | None = None) 
     q += (" ORDER BY (d.next_milestone_date IS NULL OR d.next_milestone_date = '') ASC,"
           " d.next_milestone_date ASC")
     return [dict(r) for r in con.execute(q, params)]
+
+
+def list_lost_stage_deals(con) -> list[dict]:
+    """ステージ='失注' の残存商談（#67移行の対象/確認用）。status問わず全件。"""
+    return [dict(r) for r in con.execute(
+        """SELECT d.*, a.name AS account_name FROM deals d
+           LEFT JOIN accounts a ON a.id = d.account_id
+           WHERE d.stage = '失注'
+           ORDER BY (d.status = 'closed') ASC, d.id ASC""")]
+
+
+def migrate_lost_stage_to_closed(con) -> list[int]:
+    """#67: ステージ='失注' で未クローズの商談を「クローズ＋close_reason='失注'」へ移行。
+
+    失注運用を「リードに戻す(理由=失注)」側へ一本化した際の、旧ステージ='失注'残存データの
+    片付け。open→closedにし、理由が空なら'失注'を入れる（既存理由は尊重）。
+    冪等（再実行しても未クローズ分が無ければ0件）。移行した商談IDのリストを返す
+    （呼び出し側でHisho再同期に使う）。
+    """
+    rows = con.execute(
+        "SELECT id FROM deals WHERE stage='失注' AND (status IS NULL OR status != 'closed')"
+    ).fetchall()
+    ids = [r["id"] for r in rows]
+    if ids:
+        con.execute(
+            """UPDATE deals
+                 SET status='closed',
+                     close_reason=CASE WHEN close_reason IS NULL OR close_reason=''
+                                       THEN '失注' ELSE close_reason END,
+                     updated_at=datetime('now')
+               WHERE stage='失注' AND (status IS NULL OR status != 'closed')""")
+        con.commit()
+    return ids
 
 
 def list_untyped_milestone_deals(con) -> list[dict]:

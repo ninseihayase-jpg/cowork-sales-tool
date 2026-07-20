@@ -1761,6 +1761,33 @@ def sync_health_page(con, theme_client) -> str:
                          '<span class="stage" style="background:#dcfce7;color:#166534">0件</span></h2>'
                          '<p class="muted" style="margin:0">記録された同期失敗はありません。</p></div>')
 
+    # #67: ステージ='失注' の残存商談。失注運用は「クローズ＋理由=失注」へ一本化済みのため、
+    #      旧ステージ='失注'（特にopenのまま滞留中）をクローズへ移行する片付けボタンを出す。
+    lost_all = sfa_db.list_lost_stage_deals(con)
+    lost_open = [d for d in lost_all if (d.get("status") or "open") != "closed"]
+    if lost_all:
+        _lost_rows = "".join(
+            f'<tr><td><a href="/deal/{d["id"]}">{_esc(d.get("deal_name") or "—")}</a>'
+            f'<span class="muted" style="font-size:.85em"> / {_esc(d.get("account_name") or "")}</span></td>'
+            f'<td class="muted" style="white-space:nowrap">{"クローズ済" if (d.get("status") or "open")=="closed" else "🟠 未クローズ(滞留)"}</td>'
+            f'<td class="muted">{_esc(d.get("close_reason") or "—")}</td></tr>'
+            for d in lost_all)
+        _mig_btn = (
+            f'<form method="post" action="/deals/migrate_lost_stage" style="margin:8px 0 0">'
+            f'<button class="btn" style="background:#c53030" '
+            f'onclick="return confirm(\'未クローズの失注商談 {len(lost_open)}件を『クローズ＋終了理由=失注』へ移行し、Hishoへ再同期します。よろしいですか？\')">'
+            f'🧹 未クローズの失注 {len(lost_open)}件をクローズへ移行</button></form>'
+            if lost_open else '<p class="muted" style="margin:8px 0 0">未クローズの残存はありません（移行不要）。</p>')
+        lost_stage_html = (
+            '<div class="card"><h2>ステージ「失注」の残存商談 '
+            f'<span class="stage" style="background:{"#fee2e2;color:#991b1b" if lost_open else "#dcfce7;color:#166534"}">'
+            f'{len(lost_all)}件（未クローズ {len(lost_open)}）</span></h2>'
+            '<p class="muted" style="margin:0 0 8px">失注は「クローズ＋終了理由=失注」に一本化されました（ステージ選択肢からは撤廃済み）。'
+            '下のボタンで旧ステージ=失注の未クローズ商談を一括クローズし、Hishoへ再同期します。冪等（何度押しても安全）。</p>'
+            f'<table><tr><th>商談</th><th>状態</th><th>終了理由</th></tr>{_lost_rows}</table>{_mig_btn}</div>')
+    else:
+        lost_stage_html = ""
+
     total = (len(diag["dev_unsynced"]) + len(diag["dev_broken_link"])
              + len(diag["dev_orphan_hisho"]) + len(diag["deal_unsynced"]))
     banner_bg = "#dcfce7" if total == 0 else "#fff7ed"
@@ -1772,7 +1799,7 @@ def sync_health_page(con, theme_client) -> str:
       <h2>🔍 SFA ↔ Hisho 同期チェック</h2>
       <p class="muted" style="margin:0">{summary} このページを開くたびにHishoへ最新状態を照会します。</p>
     </div>
-    {unsynced}{broken}{orphan}{deal_unsynced}{failures_html}"""
+    {lost_stage_html}{unsynced}{broken}{orphan}{deal_unsynced}{failures_html}"""
 
 
 def backups_page(db_path: str) -> str:
@@ -9844,6 +9871,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             flash=f"テーマDB未同期の商談{pending}件の同期をバックグラウンドで開始しました。"
                                   f"数分後に商談一覧の「連携」列で確認できます。",
                         ))
+
+                elif path == "/deals/migrate_lost_stage":
+                    # #67: 旧ステージ='失注'の未クローズ商談を「クローズ＋理由=失注」へ移行し、Hishoへ再同期。
+                    ids = sfa_db.migrate_lost_stage_to_closed(con)
+                    synced = 0
+                    if theme_client is not None:
+                        for _did in ids:
+                            try:
+                                theme_link.sync_deal(theme_client, con, _did)
+                                synced += 1
+                            except Exception as exc:  # noqa: BLE001
+                                print(f"[theme_link] sync_deal failed (migrate_lost_stage): {exc}")
+                    _msg = (f"失注商談 {len(ids)}件を『クローズ＋終了理由=失注』へ移行しました"
+                            + (f"（Hisho再同期 {synced}件）。" if theme_client is not None else "。")
+                            if ids else "移行対象（未クローズの失注）はありませんでした。")
+                    self._send(render(sync_health_page(con, theme_client), flash=_msg))
 
                 elif path == "/data-tagging/bulk-appt":
                     # 明日以降・ラベルに「初回アポ」を含む未タグ次回MSを一括で「アポ」にする

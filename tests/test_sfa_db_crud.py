@@ -290,3 +290,43 @@ def test_backup_db_creates_generation_and_skips_same_day(tmp_dir, db_path):
 def test_backup_db_returns_none_when_source_missing(tmp_dir):
     missing_path = str(tmp_dir / "does_not_exist.db")
     assert sfa_db.backup_db(missing_path) is None
+
+
+# ---- #67: 失注ステージの移行 ----
+
+def test_migrate_lost_stage_to_closed(con):
+    """ステージ='失注'の未クローズ商談がクローズ＋理由=失注へ移行され、冪等であること。"""
+    acc = sfa_db.upsert_account(con, id=None, name="失注テスト社")
+    # 未クローズの失注（移行対象）
+    d_open = sfa_db.upsert_deal(con, account_id=acc, deal_name="失注open", stage="失注")
+    # 既にクローズ済みで理由あり（理由は上書きしない）。close_reasonはDEAL_FIELDS外のため直接更新。
+    d_closed = sfa_db.upsert_deal(con, account_id=acc, deal_name="失注closed",
+                                  stage="失注", status="closed")
+    con.execute("UPDATE deals SET close_reason='キャンセル' WHERE id=?", (d_closed,))
+    con.commit()
+    # 失注でない商談（無関係・不変）
+    d_other = sfa_db.upsert_deal(con, account_id=acc, deal_name="提案中", stage="提案")
+
+    ids = sfa_db.migrate_lost_stage_to_closed(con)
+    assert ids == [d_open]  # 未クローズの失注のみ
+
+    r_open = sfa_db.get_deal(con, d_open)
+    assert r_open["status"] == "closed"
+    assert r_open["close_reason"] == "失注"
+    # 既存の理由は尊重（上書きしない）
+    assert sfa_db.get_deal(con, d_closed)["close_reason"] == "キャンセル"
+    # 無関係な商談は不変
+    r_other = sfa_db.get_deal(con, d_other)
+    assert r_other["stage"] == "提案"
+    assert (r_other.get("status") or "open") != "closed"
+
+    # 冪等: 再実行で対象なし
+    assert sfa_db.migrate_lost_stage_to_closed(con) == []
+
+
+def test_list_lost_stage_deals(con):
+    acc = sfa_db.upsert_account(con, id=None, name="残存確認社")
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="失注A", stage="失注")
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="受注B", stage="受注")
+    lost = sfa_db.list_lost_stage_deals(con)
+    assert [d["deal_name"] for d in lost] == ["失注A"]
