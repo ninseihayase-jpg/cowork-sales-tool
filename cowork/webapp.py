@@ -4215,6 +4215,10 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           <select name="owner">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('owner'))}</select></div>
         <div><label>サブ担当</label>
           <select name="sub_owner">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('sub_owner'))}</select></div>
+        <div><label>顧客担当者名（先方）</label>
+          <input name="client_contact" value="{_esc(deal.get('client_contact'))}" placeholder="例：田中 太郎"></div>
+        <div><label>顧客担当 部署（先方）</label>
+          <input name="client_dept" value="{_esc(deal.get('client_dept'))}" placeholder="例：購買部"></div>
         <div><label>事業種別L1</label>
           <select name="business_type_l1" id="biz_l1" onchange="updateL2()">{_opt(sfa_db.get_master_list(con,'business_type_l1'), deal.get('business_type_l1'))}</select></div>
         <div><label>事業種別L2</label>
@@ -8819,6 +8823,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         lead_pattern=f.get("lead_pattern") or None,
                         owner=f.get("owner") or None,
                         sub_owner=f.get("sub_owner") or None,
+                        client_contact=f.get("client_contact") or None,
+                        client_dept=f.get("client_dept") or None,
                         value_lumpsum=num("value_lumpsum"),
                         value_lumpsum_monthly=num("value_lumpsum_monthly"),
                         value_recurring=num("value_recurring"),
@@ -9257,6 +9263,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 lead_pattern=deal.get("lead_pattern"),
                                 owner=deal.get("owner"),
                                 sub_owner=deal.get("sub_owner"),
+                                client_contact=deal.get("client_contact"),
+                                client_dept=deal.get("client_dept"),
                                 value_lumpsum=deal.get("value_lumpsum"),
                                 value_lumpsum_monthly=deal.get("value_lumpsum_monthly"),
                                 value_recurring=deal.get("value_recurring"),
@@ -9674,6 +9682,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 business_type_l2=deal.get("business_type_l2"),
                                 lead_pattern=deal.get("lead_pattern"), owner=deal.get("owner"),
                                 sub_owner=deal.get("sub_owner"),
+                                client_contact=deal.get("client_contact"),
+                                client_dept=deal.get("client_dept"),
                                 value_lumpsum=deal.get("value_lumpsum"),
                                 value_lumpsum_monthly=deal.get("value_lumpsum_monthly"),
                                 value_recurring=deal.get("value_recurring"),

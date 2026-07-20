@@ -308,6 +308,8 @@ CREATE TABLE IF NOT EXISTS deals (
     lead_pattern TEXT,
     owner TEXT,
     sub_owner TEXT,                   -- サブ担当
+    client_contact TEXT,              -- 先方（顧客側）担当者名
+    client_dept TEXT,                 -- 先方 部署
     value_lumpsum REAL,               -- 単発総額（万円）
     value_lumpsum_monthly REAL,       -- 単発月額（万円）
     value_recurring REAL,             -- 継続月額（万円）
@@ -815,6 +817,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             ("slack_notified_date", "TEXT"),
             ("next_milestone_type", "TEXT"),
             ("close_reason", "TEXT"),
+            ("client_contact", "TEXT"),
+            ("client_dept", "TEXT"),
         ]:
             if col not in deal_cols:
                 con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")
@@ -1239,7 +1243,8 @@ def upsert_account_merge(con, *, name: str, industry=None, company_size=None, co
 
 DEAL_FIELDS = [
     "account_id", "theme_id", "deal_name", "stage", "business_type_l1", "business_type_l2",
-    "lead_pattern", "owner", "sub_owner", "value_lumpsum", "value_lumpsum_monthly", "value_recurring",
+    "lead_pattern", "owner", "sub_owner", "client_contact", "client_dept",
+    "value_lumpsum", "value_lumpsum_monthly", "value_recurring",
     "client_budget", "next_milestone_date", "next_milestone_label", "next_milestone_type", "note", "goal",
     "importance", "status",
     "cost_stage", "approach_value", "approach_rate", "reduction_rate", "fee_rate", "diagnosis_cost",
