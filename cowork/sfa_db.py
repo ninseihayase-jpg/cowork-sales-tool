@@ -16,6 +16,9 @@ DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "cowork_sfa.db")
 
 # テーマDBの選択肢に準拠（表記揺れ防止。docs/00 §3 / 秘書 db_schema_design.md）
 DEAL_STAGES = ["初回アポ実施", "要件詰め", "提案", "クロージング", "受注", "失注", "保留中"]
+# 決着済みステージ。次回MSが無くても「要フォロー(MS超過)」に出さない（受注/失注は追うものが無い）。
+# ※status='open'のまま保持するため Hisho dashboard 等の集計は従来どおり継続する。
+CONCLUDED_DEAL_STAGES = ["受注", "失注"]
 # 次回MSの種別。Slack日次アポ通知は「アポ」（および未設定=fail-safe）のみ投稿し、「タスク」は除外する。
 NEXT_MS_TYPES = ["アポ", "タスク"]
 # 商談/リードの終了理由（区分）。「自社都合で撤退」を独立させ"失注"と区別する（戦略的な選別を数字で語るため）。
@@ -1120,13 +1123,16 @@ def list_overdue_deals(con, owner: str | None = None, today: str | None = None) 
     並び順は「超過（遅れている順に日付昇順）→ 未設定（末尾）」。
     """
     today = today or date.today().isoformat()
-    q = """SELECT d.*, a.name AS account_name, a.industry, a.company_size
+    # 受注/失注（決着済み）は次回MSが無くても要フォローに含めない
+    _concluded_ph = ", ".join("?" for _ in CONCLUDED_DEAL_STAGES)
+    q = f"""SELECT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d
            LEFT JOIN accounts a ON a.id = d.account_id
            WHERE (d.status IS NULL OR d.status != 'closed')
+                 AND (d.stage IS NULL OR d.stage NOT IN ({_concluded_ph}))
                  AND (d.next_milestone_date IS NULL OR d.next_milestone_date = ''
                       OR d.next_milestone_date <= ?)"""
-    params: list = [today]
+    params: list = list(CONCLUDED_DEAL_STAGES) + [today]
     if owner:
         q += " AND (d.owner = ? OR d.sub_owner = ?)"
         params.append(owner)
