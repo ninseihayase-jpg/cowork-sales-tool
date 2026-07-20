@@ -4056,26 +4056,43 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         acts = sfa_db.list_activities(con, deal["id"])
         _act_types = sfa_db.get_master_list(con, "activity_types")
         act_rows = "".join(
-            f'<tr id="act-{a["id"]}">'
-            f'<td style="width:1%;white-space:nowrap"><input type="date" value="{_esc(a.get("occurred_on"))}" '
+            f'<tr id="act-{a["id"]}" class="actrow">'
+            f'<td style="width:1%;white-space:nowrap">'
+            f'<span class="av">{_esc(a.get("occurred_on")) or "—"}</span>'
+            f'<input class="ae" type="date" value="{_esc(a.get("occurred_on"))}" '
             f'style="font-size:11px;width:118px;padding:2px 3px" '
             f'onchange="actField({a["id"]},&#39;occurred_on&#39;,this.value)"></td>'
-            f'<td style="width:1%;white-space:nowrap"><select style="font-size:11px;width:auto;padding:2px 3px" '
+            f'<td style="width:1%;white-space:nowrap">'
+            f'<span class="av">{_esc(a.get("type")) or "—"}</span>'
+            f'<select class="ae" style="font-size:11px;width:auto;padding:2px 3px" '
             f'onchange="actField({a["id"]},&#39;type&#39;,this.value)">{_opt(_act_types, a.get("type"))}</select></td>'
-            f'<td style="width:1%;white-space:nowrap"><input value="{_esc(a.get("contact_name"))}" '
+            f'<td style="width:1%;white-space:nowrap">'
+            f'<span class="av">{_esc(a.get("contact_name")) or "—"}</span>'
+            f'<input class="ae" value="{_esc(a.get("contact_name"))}" '
             f'style="font-size:11px;width:76px;padding:2px 3px" placeholder="相手" '
             f'onchange="actField({a["id"]},&#39;contact_name&#39;,this.value)"></td>'
-            f'<td><textarea class="ta-expand" rows="1" style="font-size:12px;width:100%" '
+            f'<td><span class="av" style="white-space:pre-wrap;font-size:12px">{_esc(a.get("body"))}</span>'
+            f'<textarea class="ae ta-expand" rows="2" style="font-size:12px;width:100%" '
             f'onfocus="taExpand(this)" onblur="taShrink(this)" '
             f'onchange="actField({a["id"]},&#39;body&#39;,this.value)">{_esc(a.get("body"))}</textarea></td>'
-            f'<td style="width:1%;white-space:nowrap"><button type="button" class="btn sec" '
-            f'style="font-size:10px;padding:2px 6px;color:#c53030" onclick="actDelete({a["id"]})">削除</button></td></tr>'
+            f'<td style="width:1%;white-space:nowrap">'
+            f'<button type="button" class="btn sec act-editbtn" style="font-size:10px;padding:2px 8px" '
+            f'onclick="actEdit({a["id"]})">編集</button> '
+            f'<button type="button" class="btn sec ae" style="font-size:10px;padding:2px 6px;color:#c53030" '
+            f'onclick="actDelete({a["id"]})">削除</button></td></tr>'
             for a in acts
         ) or '<tr><td colspan=5 class=muted>活動なし</td></tr>'
         activities_html = f"""
-        <div class="card" id="activity"><h2>活動履歴 <span class="muted" style="font-size:.5em">（各項目クリックで直接編集・自動保存。内容は入力時に広がります）</span></h2>
+        <div class="card" id="activity"><h2>活動履歴 <span class="muted" style="font-size:.5em">（「編集」で編集モード。変更は自動保存）</span></h2>
+        <style>
+        .actrow .ae{{display:none}}
+        .actrow.editing .av{{display:none}}
+        .actrow.editing .ae{{display:inline-block}}
+        .actrow.editing td{{background:#f5f9ff}}
+        </style>
         <table style="width:100%"><tr><th style="width:1%">日付</th><th style="width:1%">種別</th><th style="width:1%">相手</th><th>内容</th><th style="width:1%"></th></tr>{act_rows}</table>
         <script>
+        function actEdit(id){{ var r=document.getElementById('act-'+id); if(!r)return; var on=r.classList.toggle('editing'); var b=r.querySelector('.act-editbtn'); if(b)b.textContent=on?'閉じる':'編集'; if(on){{var ta=r.querySelector('textarea'); if(ta){{ta.focus();}}}} }}
         function actField(id,f,v){{ fetch('/activity/'+id+'/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:'field='+encodeURIComponent(f)+'&value='+encodeURIComponent(v)}}).then(function(r){{return r.json();}}).then(function(d){{ if(!d.ok)alert('更新エラー: '+(d.error||'')); else {{var row=document.getElementById('act-'+id); if(row){{row.style.background='#ecfdf5'; setTimeout(function(){{row.style.background='';}},600);}}}} }}).catch(function(){{alert('通信エラー');}}); }}
         function actDelete(id){{ if(!confirm('この活動履歴を削除しますか？')) return; var f=document.createElement('form'); f.method='post'; f.action='/activity/'+id+'/delete'; document.body.appendChild(f); f.submit(); }}
         </script>
