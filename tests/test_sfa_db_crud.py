@@ -295,20 +295,24 @@ def test_backup_db_returns_none_when_source_missing(tmp_dir):
 # ---- #67: 失注ステージの移行 ----
 
 def test_migrate_lost_stage_to_closed(con):
-    """ステージ='失注'の未クローズ商談がクローズ＋理由=失注へ移行され、冪等であること。"""
-    acc = sfa_db.upsert_account(con, id=None, name="失注テスト社")
-    # 未クローズの失注（移行対象）
-    d_open = sfa_db.upsert_deal(con, account_id=acc, deal_name="失注open", stage="失注")
+    """ステージ='失注'商談がクローズ＋理由=失注へ移行され、フォロー中リードが作られ、冪等であること。"""
+    acc_a = sfa_db.upsert_account(con, id=None, name="失注社A")
+    acc_b = sfa_db.upsert_account(con, id=None, name="失注社B")
+    acc_c = sfa_db.upsert_account(con, id=None, name="提案社C")
+    # 未クローズの失注（移行対象・新規クローズ）
+    d_open = sfa_db.upsert_deal(con, account_id=acc_a, deal_name="失注open", stage="失注")
     # 既にクローズ済みで理由あり（理由は上書きしない）。close_reasonはDEAL_FIELDS外のため直接更新。
-    d_closed = sfa_db.upsert_deal(con, account_id=acc, deal_name="失注closed",
+    d_closed = sfa_db.upsert_deal(con, account_id=acc_b, deal_name="失注closed",
                                   stage="失注", status="closed")
     con.execute("UPDATE deals SET close_reason='キャンセル' WHERE id=?", (d_closed,))
     con.commit()
     # 失注でない商談（無関係・不変）
-    d_other = sfa_db.upsert_deal(con, account_id=acc, deal_name="提案中", stage="提案")
+    d_other = sfa_db.upsert_deal(con, account_id=acc_c, deal_name="提案中", stage="提案")
 
-    ids = sfa_db.migrate_lost_stage_to_closed(con)
-    assert ids == [d_open]  # 未クローズの失注のみ
+    res = sfa_db.migrate_lost_stage_to_closed(con)
+    assert set(res["deal_ids"]) == {d_open, d_closed}  # stage='失注'の全件
+    assert res["newly_closed"] == 1                     # d_openのみ新規クローズ
+    assert res["leads_created"] == 2                    # A社・B社に新規フォロー中リード
 
     r_open = sfa_db.get_deal(con, d_open)
     assert r_open["status"] == "closed"
@@ -320,8 +324,19 @@ def test_migrate_lost_stage_to_closed(con):
     assert r_other["stage"] == "提案"
     assert (r_other.get("status") or "open") != "closed"
 
-    # 冪等: 再実行で対象なし
-    assert sfa_db.migrate_lost_stage_to_closed(con) == []
+    # フォロー中リードがA社・B社に作られ、deal_idは残さない
+    leads_a = sfa_db.list_leads(con, q="失注社A")
+    assert len(leads_a) == 1 and leads_a[0]["lead_status"] == "following"
+    assert leads_a[0].get("deal_id") in (None, "")
+    assert sfa_db.list_leads(con, q="失注社B")[0]["lead_status"] == "following"
+    # 無関係なC社のリードは作られない
+    assert sfa_db.list_leads(con, q="提案社C") == []
+
+    # 冪等: 再実行で新規リードは増えない（company一致で再利用）
+    res2 = sfa_db.migrate_lost_stage_to_closed(con)
+    assert res2["newly_closed"] == 0
+    assert res2["leads_created"] == 0
+    assert len(sfa_db.list_leads(con, q="失注社A")) == 1
 
 
 def test_list_lost_stage_deals(con):

@@ -1154,28 +1154,66 @@ def list_lost_stage_deals(con) -> list[dict]:
            ORDER BY (d.status = 'closed') ASC, d.id ASC""")]
 
 
-def migrate_lost_stage_to_closed(con) -> list[int]:
-    """#67: ステージ='失注' で未クローズの商談を「クローズ＋close_reason='失注'」へ移行。
+def migrate_lost_stage_to_closed(con) -> dict:
+    """#67: ステージ='失注' の商談を「クローズ＋close_reason='失注'」にし、対応アカウントを
+    『フォロー中リード』として作成/再活性化する（正規の revert_to_lead と同じ思想）。
 
-    失注運用を「リードに戻す(理由=失注)」側へ一本化した際の、旧ステージ='失注'残存データの
-    片付け。open→closedにし、理由が空なら'失注'を入れる（既存理由は尊重）。
-    冪等（再実行しても未クローズ分が無ければ0件）。移行した商談IDのリストを返す
-    （呼び出し側でHisho再同期に使う）。
+    - 未クローズならクローズし、close_reasonが空なら'失注'を補完（既存理由は尊重）。
+    - 既にクローズ済みでもリード未整備なら整備する（例: 過去に手動でstage='失注'にして閉じた案件）。
+    - リードは company（＝アカウント名）一致で重複作成を回避＝冪等。既存リードがあれば
+      lead_status='following' に再活性化し、無ければアカウントから新規作成する。
+    - リードには deal_id を残さない（残すと convert_lead_to_deal が「商談化済」とみなし再商談化
+      できなくなるため。revert_to_lead と同じ扱い）。
+
+    戻り値: {"deal_ids": [...処理した全商談ID...], "newly_closed": n,
+             "leads_created": c, "leads_reactivated": r}
     """
-    rows = con.execute(
-        "SELECT id FROM deals WHERE stage='失注' AND (status IS NULL OR status != 'closed')"
-    ).fetchall()
-    ids = [r["id"] for r in rows]
-    if ids:
+    deals = [dict(r) for r in con.execute("SELECT * FROM deals WHERE stage='失注'").fetchall()]
+    deal_ids: list[int] = []
+    newly_closed = 0
+    leads_created = 0
+    leads_reactivated = 0
+    for deal in deals:
+        did = deal["id"]
+        deal_ids.append(did)
+        acct_row = con.execute("SELECT * FROM accounts WHERE id=?", (deal.get("account_id"),)).fetchone()
+        acct = dict(acct_row) if acct_row else {}
+        company = acct.get("name")
+        # クローズ＆終了理由の補完
+        if (deal.get("status") or "open") != "closed":
+            newly_closed += 1
         con.execute(
             """UPDATE deals
                  SET status='closed',
                      close_reason=CASE WHEN close_reason IS NULL OR close_reason=''
                                        THEN '失注' ELSE close_reason END,
                      updated_at=datetime('now')
-               WHERE stage='失注' AND (status IS NULL OR status != 'closed')""")
-        con.commit()
-    return ids
+               WHERE id=?""", (did,))
+        # フォロー中リードを作成/再活性化（company一致で重複回避＝冪等）
+        existing = None
+        if company:
+            _row = con.execute(
+                "SELECT * FROM leads WHERE company=? "
+                "ORDER BY (lead_status='following') DESC, id LIMIT 1", (company,)
+            ).fetchone()
+            existing = dict(_row) if _row else None
+        if existing:
+            if (existing.get("lead_status") or "") != "following":
+                con.execute(
+                    "UPDATE leads SET lead_status='following', updated_at=datetime('now') WHERE id=?",
+                    (existing["id"],))
+                leads_reactivated += 1
+        else:
+            upsert_lead(
+                con, name=company or "（不明）", company=company or "（不明）",
+                industry=acct.get("industry"), company_size=acct.get("company_size"),
+                lead_status="following",
+                notes=f"商談 #{did}（{deal.get('deal_name', '')}）を失注クローズ→リード化(#67)",
+                assigned_to=deal.get("owner"))
+            leads_created += 1
+    con.commit()
+    return {"deal_ids": deal_ids, "newly_closed": newly_closed,
+            "leads_created": leads_created, "leads_reactivated": leads_reactivated}
 
 
 def list_untyped_milestone_deals(con) -> list[dict]:

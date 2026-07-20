@@ -507,3 +507,22 @@ def test_unified_deal_table_has_dev_project_link(db_path):
     # 1商談に複数つくため、既存があっても「＋開発案件」追加リンクを出す
     assert f"/dev-projects/new?deal_id={d_has}&return_to=" in html_out
     con.close()
+
+
+def test_resolve_default_deals_tab_fallback(tmp_dir):
+    """tab未指定時: MS超過0件なら'active'、超過ありなら'overdue'。明示tabは尊重。"""
+    db_path = str(tmp_dir / "tabtest.db")
+    sfa_db.init_db(db_path)
+    con = sfa_db.connect(db_path)
+    try:
+        # MS超過(要フォロー)が0件 → activeへフォールバック
+        assert webapp.resolve_default_deals_tab(con, None) == "active"
+        # 明示指定は尊重
+        assert webapp.resolve_default_deals_tab(con, "overdue") == "overdue"
+        assert webapp.resolve_default_deals_tab(con, "byDate") == "byDate"
+        # 次回MS未設定の進行中商談を作ると要フォロー化 → overdueが既定に
+        acc = sfa_db.upsert_account(con, id=None, name="タブ社")
+        sfa_db.upsert_deal(con, account_id=acc, deal_name="MS未設定", stage="提案")
+        assert webapp.resolve_default_deals_tab(con, None) == "overdue"
+    finally:
+        con.close()

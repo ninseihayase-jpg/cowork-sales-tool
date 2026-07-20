@@ -1775,15 +1775,16 @@ def sync_health_page(con, theme_client) -> str:
         _mig_btn = (
             f'<form method="post" action="/deals/migrate_lost_stage" style="margin:8px 0 0">'
             f'<button class="btn" style="background:#c53030" '
-            f'onclick="return confirm(\'未クローズの失注商談 {len(lost_open)}件を『クローズ＋終了理由=失注』へ移行し、Hishoへ再同期します。よろしいですか？\')">'
-            f'🧹 未クローズの失注 {len(lost_open)}件をクローズへ移行</button></form>'
-            if lost_open else '<p class="muted" style="margin:8px 0 0">未クローズの残存はありません（移行不要）。</p>')
+            f'onclick="return confirm(\'ステージ=失注の商談 {len(lost_all)}件を『クローズ＋終了理由=失注』にし、'
+            f'各社を『フォロー中リード』として作成/再活性化します（Hisho再同期込み）。同名リードは再利用・冪等。よろしいですか？\')">'
+            f'🧹 失注 {len(lost_all)}件をクローズ＋フォロー中リード化</button></form>')
         lost_stage_html = (
             '<div class="card"><h2>ステージ「失注」の残存商談 '
-            f'<span class="stage" style="background:{"#fee2e2;color:#991b1b" if lost_open else "#dcfce7;color:#166534"}">'
+            f'<span class="stage" style="background:{"#fee2e2;color:#991b1b" if lost_open else "#fef9c3;color:#854d0e"}">'
             f'{len(lost_all)}件（未クローズ {len(lost_open)}）</span></h2>'
             '<p class="muted" style="margin:0 0 8px">失注は「クローズ＋終了理由=失注」に一本化されました（ステージ選択肢からは撤廃済み）。'
-            '下のボタンで旧ステージ=失注の未クローズ商談を一括クローズし、Hishoへ再同期します。冪等（何度押しても安全）。</p>'
+            '下のボタンで旧ステージ=失注の商談を一括クローズ＋終了理由=失注にし、各社を「フォロー中リード」として'
+            '作成/再活性化（再接触できるように）＋Hisho再同期します。同名リードは再利用するため冪等（何度押しても安全）。</p>'
             f'<table><tr><th>商談</th><th>状態</th><th>終了理由</th></tr>{_lost_rows}</table>{_mig_btn}</div>')
     else:
         lost_stage_html = ""
@@ -3397,6 +3398,18 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     repopulateDealBulkValue();
     </script>
     """
+
+
+def resolve_default_deals_tab(con, explicit_tab: str | None, owner: str | None = None) -> str:
+    """商談一覧のデフォルトタブを決める。ユーザーがtabを明示していればそれを尊重。
+    未指定のときは「MS超過(overdue)」を既定とするが、MS超過(要フォロー)が0件なら
+    「進行中(active)」へフォールバックする（空タブを見せない）。"""
+    if explicit_tab:
+        return explicit_tab
+    try:
+        return "overdue" if sfa_db.list_overdue_deals(con, owner=owner) else "active"
+    except Exception:  # noqa: BLE001 — 集計失敗時は従来どおりoverdue
+        return "overdue"
 
 
 def deals_page(con, *, tab: str = "active", owner: str | None = None, status_filter: str | None = None,
@@ -7857,7 +7870,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except ValueError:
                             _d = None
                     self._send(render(deals_page(
-                        con, tab=_qs1("tab") or "overdue", owner=_qs1("owner"),
+                        con, tab=resolve_default_deals_tab(con, _qs1("tab"), _qs1("owner")),
+                        owner=_qs1("owner"),
                         status_filter=_qs1("status"), stage_filter=_qs1("stage"), date=_d,
                         ms_type=_qs1("ms_type"), week=_qs1("week"),
                     )))
@@ -8068,7 +8082,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except ValueError:
                             _date_q = None
                     self._send(render(deals_page(
-                        con, tab=qs1("tab") or "overdue", owner=qs1("owner"),
+                        con, tab=resolve_default_deals_tab(con, qs1("tab"), qs1("owner")),
+                        owner=qs1("owner"),
                         status_filter=qs1("status"), stage_filter=qs1("stage"), date=_date_q,
                         ms_type=qs1("ms_type"), week=qs1("week"),
                     )))
@@ -9873,19 +9888,31 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         ))
 
                 elif path == "/deals/migrate_lost_stage":
-                    # #67: 旧ステージ='失注'の未クローズ商談を「クローズ＋理由=失注」へ移行し、Hishoへ再同期。
-                    ids = sfa_db.migrate_lost_stage_to_closed(con)
+                    # #67: ステージ='失注'の商談を「クローズ＋理由=失注」にし、フォロー中リードとして
+                    #      作成/再活性化した上でHishoへ再同期。
+                    res = sfa_db.migrate_lost_stage_to_closed(con)
+                    _ids = res["deal_ids"]
                     synced = 0
                     if theme_client is not None:
-                        for _did in ids:
+                        for _did in _ids:
                             try:
                                 theme_link.sync_deal(theme_client, con, _did)
                                 synced += 1
                             except Exception as exc:  # noqa: BLE001
                                 print(f"[theme_link] sync_deal failed (migrate_lost_stage): {exc}")
-                    _msg = (f"失注商談 {len(ids)}件を『クローズ＋終了理由=失注』へ移行しました"
-                            + (f"（Hisho再同期 {synced}件）。" if theme_client is not None else "。")
-                            if ids else "移行対象（未クローズの失注）はありませんでした。")
+                    if _ids:
+                        _lead_bits = []
+                        if res["leads_created"]:
+                            _lead_bits.append(f"リード新規作成 {res['leads_created']}件")
+                        if res["leads_reactivated"]:
+                            _lead_bits.append(f"既存リード再活性化 {res['leads_reactivated']}件")
+                        _lead_txt = ("、" + "・".join(_lead_bits)) if _lead_bits else "（リードは既存を維持）"
+                        _msg = (f"失注商談 {len(_ids)}件を処理しました"
+                                f"（うち新規クローズ {res['newly_closed']}件{_lead_txt}"
+                                + (f"／Hisho再同期 {synced}件" if theme_client is not None else "")
+                                + "）。リード一覧で「フォロー中」として確認できます。")
+                    else:
+                        _msg = "ステージ='失注'の商談はありませんでした（移行不要）。"
                     self._send(render(sync_health_page(con, theme_client), flash=_msg))
 
                 elif path == "/data-tagging/bulk-appt":
