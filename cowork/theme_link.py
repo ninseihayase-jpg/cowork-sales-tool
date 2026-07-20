@@ -37,6 +37,7 @@ def deal_to_theme_fields(con, deal: dict) -> dict:
         "business_type_l1": deal.get("business_type_l1"),
         "business_type_l2": deal.get("business_type_l2"),
         "deal_stage": deal.get("stage"),
+        "close_reason": deal.get("close_reason"),
         "lead_pattern": deal.get("lead_pattern"),
         "deal_owner": deal.get("owner"),
         "deal_value_lumpsum": deal.get("value_lumpsum"),

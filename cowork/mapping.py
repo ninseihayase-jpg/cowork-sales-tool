@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 THEME_COLUMNS = [
     "title", "category", "importance", "status", "note", "goal",
     "business_type", "business_type_l1", "business_type_l2",
-    "deal_stage", "lead_pattern", "deal_owner",
+    "deal_stage", "close_reason", "lead_pattern", "deal_owner",
     "deal_value_lumpsum", "deal_value_lumpsum_monthly", "deal_value_recurring",
     "approach_value", "client_name", "deal_name", "meeting_dates",
     "client_budget", "industry", "company_size", "start_date", "end_date",
