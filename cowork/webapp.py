@@ -3381,7 +3381,7 @@ def deals_page(con, *, tab: str = "active", owner: str | None = None, status_fil
     <div style="display:flex;gap:8px;margin-bottom:14px">
       <a class="{'btn' if is_overdue else 'btn sec'}" href="/deals?tab=overdue">MS超過の商談</a>
       <a class="{'btn' if is_by_date else 'btn sec'}" href="/deals?tab=byDate">特定日の商談</a>
-      <a class="{'btn' if not (is_by_date or is_overdue) else 'btn sec'}" href="/deals">進行中の商談</a>
+      <a class="{'btn' if not (is_by_date or is_overdue) else 'btn sec'}" href="/deals?tab=active">進行中の商談</a>
     </div>"""
     if is_overdue:
         body = overdue_deals_page(con, owner=owner, ms_type=ms_type)
