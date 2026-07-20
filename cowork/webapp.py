@@ -7824,7 +7824,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except ValueError:
                             _d = None
                     self._send(render(deals_page(
-                        con, tab=_qs1("tab") or "active", owner=_qs1("owner"),
+                        con, tab=_qs1("tab") or "overdue", owner=_qs1("owner"),
                         status_filter=_qs1("status"), stage_filter=_qs1("stage"), date=_d,
                         ms_type=_qs1("ms_type"), week=_qs1("week"),
                     )))
@@ -8035,7 +8035,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except ValueError:
                             _date_q = None
                     self._send(render(deals_page(
-                        con, tab=qs1("tab") or "active", owner=qs1("owner"),
+                        con, tab=qs1("tab") or "overdue", owner=qs1("owner"),
                         status_filter=qs1("status"), stage_filter=qs1("stage"), date=_date_q,
                         ms_type=qs1("ms_type"), week=qs1("week"),
                     )))
