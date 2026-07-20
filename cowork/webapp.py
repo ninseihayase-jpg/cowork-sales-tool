@@ -19,7 +19,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +41,15 @@ SFA_BASIC_USER = os.environ.get("SFA_BASIC_USER", "")
 SFA_BASIC_PASS = os.environ.get("SFA_BASIC_PASS", "")
 _SESSION_COOKIE = "sfa_session"
 _SESSION_MAX_AGE = 30 * 86400  # 30日
+
+
+_JST = timezone(timedelta(hours=9))
+
+
+def _today_jst() -> date:
+    """業務上の「今日」＝日本時間の日付。本番(Render)はUTC稼働のため、標準の date.today() だと
+    日本の早朝〜午前9時前は前日になってしまう。UIの日付デフォルト/期限比較は必ずこれを使う。"""
+    return datetime.now(_JST).date()
 
 
 def _session_secret() -> bytes:
@@ -1386,8 +1395,8 @@ def dashboard_page(con) -> str:
     hisho_url = os.environ.get("THEME_API_URL", "https://hisho-ohxe.onrender.com").rstrip("/") + "/dashboard"
 
     # 当日〜5日以内に次回MSがある商談
-    today_str = date.today().isoformat()
-    horizon_str = (date.today() + timedelta(days=5)).isoformat()
+    today_str = _today_jst().isoformat()
+    horizon_str = (_today_jst() + timedelta(days=5)).isoformat()
     recent_deals = sorted(
         [d for d in deals
          if d.get("next_milestone_date")
@@ -2367,7 +2376,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         "SELECT id FROM task_notes WHERE task_id=n.task_id AND kind='progress' "
         "ORDER BY created_at DESC, id DESC LIMIT 1)"):
         latest_notes[r["task_id"]] = dict(r)
-    _td = date.today()
+    _td = _today_jst()
     today = _td.isoformat()
     d3 = sfa_db.add_business_days(_td, 3).isoformat()
     weekend = (_td + timedelta(days=6 - _td.weekday())).isoformat()
@@ -2645,8 +2654,8 @@ def _task_digest_groups(con) -> dict:
 def build_task_digest_text(owner: str, tasks: list, tool_url: str) -> str:
     """1担当ぶんの朝ダイジェストDM本文を組み立てる（超過/今週/その他に区分）。"""
     import urllib.parse as _up
-    today = date.today().isoformat()
-    week = (date.today() + timedelta(days=7)).isoformat()
+    today = _today_jst().isoformat()
+    week = (_today_jst() + timedelta(days=7)).isoformat()
     overdue, thisweek, rest = [], [], []
     for t in tasks:
         due = (t.get("due_date") or "").strip()
@@ -3407,7 +3416,8 @@ def resolve_default_deals_tab(con, explicit_tab: str | None, owner: str | None =
     if explicit_tab:
         return explicit_tab
     try:
-        return "overdue" if sfa_db.list_overdue_deals(con, owner=owner) else "active"
+        return "overdue" if sfa_db.list_overdue_deals(
+            con, owner=owner, today=_today_jst().isoformat()) else "active"
     except Exception:  # noqa: BLE001 — 集計失敗時は従来どおりoverdue
         return "overdue"
 
@@ -3453,11 +3463,11 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
             week_mode = True
         except (ValueError, TypeError):
             week_mode = False
-    target_date = target_date or date.today().isoformat()
+    target_date = target_date or _today_jst().isoformat()
     try:
         _cur = date.fromisoformat(target_date)
     except ValueError:
-        _cur = date.today()
+        _cur = _today_jst()
         target_date = _cur.isoformat()
 
     _owner_qs = f"&owner={urllib.parse.quote(owner)}" if owner else ""
@@ -3534,7 +3544,8 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
     _return_qs = urllib.parse.urlencode({"tab": "overdue", "owner": owner or "", "ms_type": ms_type or ""})
     return_to_url = f"/deals?{_return_qs}"
 
-    deals = [dict(d) for d in sfa_db.list_overdue_deals(con, owner=owner)]
+    deals = [dict(d) for d in sfa_db.list_overdue_deals(
+        con, owner=owner, today=_today_jst().isoformat())]
     deals = _filter_deals_by_ms_type(deals, ms_type)
     return f"""
     <div class="card"><h2>MS超過の商談 {len(deals)}件</h2>
@@ -4967,7 +4978,7 @@ def _issue_members_inline_html(issue_id: int, current_members: str | None) -> st
 
 
 def _issue_due_date_input_html(issue_id: int, due_date: str | None) -> str:
-    is_overdue = bool(due_date) and due_date <= date.today().isoformat()
+    is_overdue = bool(due_date) and due_date <= _today_jst().isoformat()
     style = "font-size:11px;padding:2px 4px"
     if is_overdue:
         style += ";color:#dc2626;font-weight:700;border-color:#dc2626"
@@ -5210,7 +5221,7 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
         back_href = return_to or (f'/deal/{deal_id}' if deal_id else "/deal-issues")
 
     default_due_date = it.get('due_date') if is_edit else (
-        it.get('due_date') or (date.today() + timedelta(days=7)).isoformat())
+        it.get('due_date') or (_today_jst() + timedelta(days=7)).isoformat())
 
     return f"""
     <div class="card" style="max-width:700px">
@@ -9917,7 +9928,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 elif path == "/data-tagging/bulk-appt":
                     # 明日以降・ラベルに「初回アポ」を含む未タグ次回MSを一括で「アポ」にする
-                    n = sfa_db.bulk_tag_appt_by_label(con, after_date=date.today().isoformat())
+                    n = sfa_db.bulk_tag_appt_by_label(con, after_date=_today_jst().isoformat())
                     self._send(render(data_tagging_page(con),
                                       flash=f"「初回アポ」を含む未タグ（明日以降）{n}件を「アポ」にしました。"))
 
