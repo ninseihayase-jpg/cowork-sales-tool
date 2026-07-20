@@ -17,8 +17,8 @@ from datetime import date
 from . import sfa_db
 from .slack_bot import _slack_post, _slack_get, _call_claude  # 既存基盤を流用
 
-# 🎯 = "dart"。タスク化トリガーの絵文字（複数許容）
-TASK_REACTIONS = {"dart", "clipboard", "memo", "white_check_mark"}
+# 🎯 = "dart"。タスク化トリガーの絵文字。誤爆防止のため🎯のみに限定。
+TASK_REACTIONS = {"dart"}
 SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "") or "https://sfa-crm.onrender.com"
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -212,6 +212,21 @@ def handle_slash(con, form: dict) -> None:
 
 # ── リアクション🎯 ────────────────────────────────────────────────────────
 
+def _fetch_message_text(channel: str, ts: str) -> str:
+    """channel の ts に厳密一致するメッセージ本文だけを返す（無ければ空）。
+    トップレベルは conversations.history(oldest=latest=ts)、スレッド返信は conversations.replies で拾う。"""
+    r = _slack_get("conversations.history", {"channel": channel, "latest": ts, "oldest": ts,
+                                             "inclusive": "true", "limit": 1})
+    for m in (r.get("messages") or []):
+        if m.get("ts") == ts:
+            return m.get("text") or ""
+    r2 = _slack_get("conversations.replies", {"channel": channel, "ts": ts, "limit": 50})
+    for m in (r2.get("messages") or []):
+        if m.get("ts") == ts:
+            return m.get("text") or ""
+    return ""
+
+
 def handle_reaction(con, event: dict) -> None:
     """🎯等のリアクションでメッセージをタスク化（AI抽出→即作成→ephemeral確認）。"""
     if event.get("reaction") not in TASK_REACTIONS:
@@ -222,11 +237,13 @@ def handle_reaction(con, event: dict) -> None:
     user_id = event.get("user", "")
     if not channel or not ts:
         return
-    # 元メッセージ本文を取得
-    r = _slack_get("conversations.history", {"channel": channel, "latest": ts,
-                                             "inclusive": "true", "limit": 1})
-    msgs = r.get("messages", []) or []
-    text = (msgs[0].get("text") if msgs else "") or ""
+    # 元メッセージ本文を「その ts のメッセージだけ」正確に取得（別メッセージ誤取得を防止）
+    text = _fetch_message_text(channel, ts)
+    if not text:
+        # 本文が取れない場合（権限不足・特殊メッセージ）は誤起票を避けて通知だけ
+        _slack_post("chat.postEphemeral", channel=channel, user=user_id,
+                    text="⚠ このメッセージ本文を取得できませんでした（Botの参加/権限をご確認ください）。タスクは作成していません。")
+        return
     prefill = ai_extract_task(text)
     owner = owner_from_slack_user(user_id)
     tid = create_task_from_fields(
