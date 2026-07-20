@@ -4057,21 +4057,24 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         _act_types = sfa_db.get_master_list(con, "activity_types")
         act_rows = "".join(
             f'<tr id="act-{a["id"]}">'
-            f'<td><input type="date" value="{_esc(a.get("occurred_on"))}" style="font-size:12px" '
+            f'<td style="width:1%;white-space:nowrap"><input type="date" value="{_esc(a.get("occurred_on"))}" '
+            f'style="font-size:11px;width:118px;padding:2px 3px" '
             f'onchange="actField({a["id"]},&#39;occurred_on&#39;,this.value)"></td>'
-            f'<td><select style="font-size:12px" onchange="actField({a["id"]},&#39;type&#39;,this.value)">'
-            f'{_opt(_act_types, a.get("type"))}</select></td>'
-            f'<td><input value="{_esc(a.get("contact_name"))}" style="font-size:12px;width:110px" '
+            f'<td style="width:1%;white-space:nowrap"><select style="font-size:11px;width:auto;padding:2px 3px" '
+            f'onchange="actField({a["id"]},&#39;type&#39;,this.value)">{_opt(_act_types, a.get("type"))}</select></td>'
+            f'<td style="width:1%;white-space:nowrap"><input value="{_esc(a.get("contact_name"))}" '
+            f'style="font-size:11px;width:76px;padding:2px 3px" placeholder="相手" '
             f'onchange="actField({a["id"]},&#39;contact_name&#39;,this.value)"></td>'
-            f'<td><textarea rows="2" style="font-size:12px;width:100%" '
+            f'<td><textarea class="ta-expand" rows="1" style="font-size:12px;width:100%" '
+            f'onfocus="taExpand(this)" onblur="taShrink(this)" '
             f'onchange="actField({a["id"]},&#39;body&#39;,this.value)">{_esc(a.get("body"))}</textarea></td>'
-            f'<td><button type="button" class="btn sec" style="font-size:10px;padding:2px 6px;color:#c53030" '
-            f'onclick="actDelete({a["id"]})">削除</button></td></tr>'
+            f'<td style="width:1%;white-space:nowrap"><button type="button" class="btn sec" '
+            f'style="font-size:10px;padding:2px 6px;color:#c53030" onclick="actDelete({a["id"]})">削除</button></td></tr>'
             for a in acts
         ) or '<tr><td colspan=5 class=muted>活動なし</td></tr>'
         activities_html = f"""
-        <div class="card" id="activity"><h2>活動履歴 <span class="muted" style="font-size:.5em">（各項目クリックで直接編集・自動保存）</span></h2>
-        <table><tr><th>日付</th><th>種別</th><th>相手</th><th>内容</th><th></th></tr>{act_rows}</table>
+        <div class="card" id="activity"><h2>活動履歴 <span class="muted" style="font-size:.5em">（各項目クリックで直接編集・自動保存。内容は入力時に広がります）</span></h2>
+        <table style="width:100%"><tr><th style="width:1%">日付</th><th style="width:1%">種別</th><th style="width:1%">相手</th><th>内容</th><th style="width:1%"></th></tr>{act_rows}</table>
         <script>
         function actField(id,f,v){{ fetch('/activity/'+id+'/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:'field='+encodeURIComponent(f)+'&value='+encodeURIComponent(v)}}).then(function(r){{return r.json();}}).then(function(d){{ if(!d.ok)alert('更新エラー: '+(d.error||'')); else {{var row=document.getElementById('act-'+id); if(row){{row.style.background='#ecfdf5'; setTimeout(function(){{row.style.background='';}},600);}}}} }}).catch(function(){{alert('通信エラー');}}); }}
         function actDelete(id){{ if(!confirm('この活動履歴を削除しますか？')) return; var f=document.createElement('form'); f.method='post'; f.action='/activity/'+id+'/delete'; document.body.appendChild(f); f.submit(); }}
