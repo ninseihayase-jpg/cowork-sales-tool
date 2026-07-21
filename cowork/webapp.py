@@ -2937,12 +2937,18 @@ def activity_deal_picker(con) -> str:
 
 # ── 既存ページ（商談・アカウント）─────────────────────────────────────────────
 
-def _udeal_sel(deal_id, field, values, current, *, sel_id=None, cascade_l1=False):
-    """商談一覧の共通インライン編集セレクト。cascade_l1=Trueなら事業種別L1(保存後リロード)。"""
+def _udeal_sel(deal_id, field, values, current, *, sel_id=None, cascade_l1=False, disabled=False):
+    """商談一覧の共通インライン編集セレクト。cascade_l1=Trueなら事業種別L1(保存後リロード)。
+    disabled=Trueで編集不可（クローズ済み商談などの閲覧専用行に使う）。"""
     opts = "".join(
         f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
         for v in values)
     id_attr = f' id="{sel_id}"' if sel_id else ""
+    if disabled:
+        return (f'<select{id_attr} disabled '
+                f'style="font-size:11px;padding:1px 2px;min-width:84px;max-width:120px;'
+                f'background:#f1f5f9;color:#64748b">'
+                f'<option value=""></option>{opts}</select>')
     if cascade_l1:
         onchange = f'updateDealL1({deal_id}, this.value)'
     else:
@@ -2976,30 +2982,40 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         f'{_sticky_th("次回MS日")}{_sticky_th("次回MS")}{_sticky_th("ツール")}{_sticky_th("クローズ")}</tr>'
     )
 
+    _ro_input_style = "background:#f1f5f9;color:#64748b"  # 編集不可の見た目（クローズ済み行）
     rows = []
     for d in deals:
         did = d["id"]
+        _ro = (d.get("status") == "closed")  # クローズ済みは閲覧専用（編集不可）
+        _dis = " disabled" if _ro else ""
+        _ro_sty = f";{_ro_input_style}" if _ro else ""
         l2_values = sfa_db.BUSINESS_TYPE_L2_BY_L1.get(d.get("business_type_l1") or "", [])
-        inp_budget = (f'<input type="text" value="{_esc(d.get("client_budget") or "")}"'
+        inp_budget = (f'<input type="text" value="{_esc(d.get("client_budget") or "")}"{_dis}'
                       f' onchange="updateDealField({did}, \'client_budget\', this.value)"'
-                      f' style="font-size:11px;padding:1px 2px;width:72px">')
-        inp_total = (f'<input type="number" step="0.1" value="{_esc(d.get("value_lumpsum") or "")}"'
+                      f' style="font-size:11px;padding:1px 2px;width:72px{_ro_sty}">')
+        inp_total = (f'<input type="number" step="0.1" value="{_esc(d.get("value_lumpsum") or "")}"{_dis}'
                      f' onchange="updateDealField({did}, \'value_lumpsum\', this.value)"'
-                     f' style="font-size:11px;padding:1px 2px;width:72px">')
-        inp_ms_date = (f'<input type="date" id="msdate_{did}" value="{_esc(d.get("next_milestone_date"))}"'
+                     f' style="font-size:11px;padding:1px 2px;width:72px{_ro_sty}">')
+        inp_ms_date = (f'<input type="date" id="msdate_{did}" value="{_esc(d.get("next_milestone_date"))}"{_dis}'
                        f' onchange="updateDealField({did}, \'next_milestone_date\', this.value)"'
-                       f' style="font-size:11px;padding:1px 2px">')
+                       f' style="font-size:11px;padding:1px 2px{_ro_sty}">')
         _ms_open = ms_counts.get(did, 0)
-        # 一覧から全MSを確認/追加/編集できるパネルのトリガー（未完了2件以上は強調）
-        _ms_trigger = (
-            f'<button type="button" id="mstrg_{did}" class="ms-trigger{" has-multi" if _ms_open >= 2 else ""}" '
-            f'onclick="openMsPanel({did}, this)" title="この商談の次回MSを一覧・追加・編集">'
-            f'🗂 MS·<span id="mscount_{did}">{_ms_open}</span></button>')
-        inp_ms_label = (f'<input type="text" id="mslabel_{did}" value="{_esc(d.get("next_milestone_label"))}"'
+        # 一覧から全MSを確認/追加/編集できるパネルのトリガー（未完了2件以上は強調）。
+        # クローズ済みは編集不可のため、パネルを開かない静的表示にする。
+        if _ro:
+            _ms_trigger = (f'<span class="ms-trigger" style="cursor:default;opacity:.6">'
+                           f'🗂 MS·{_ms_open}</span>')
+        else:
+            _ms_trigger = (
+                f'<button type="button" id="mstrg_{did}" class="ms-trigger{" has-multi" if _ms_open >= 2 else ""}" '
+                f'onclick="openMsPanel({did}, this)" title="この商談の次回MSを一覧・追加・編集">'
+                f'🗂 MS·<span id="mscount_{did}">{_ms_open}</span></button>')
+        inp_ms_label = (f'<input type="text" id="mslabel_{did}" value="{_esc(d.get("next_milestone_label"))}"{_dis}'
                         f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
-                        f' style="font-size:11px;padding:1px 2px;width:130px"><br>'
+                        f' style="font-size:11px;padding:1px 2px;width:130px{_ro_sty}"><br>'
                         + f'<span id="mstype_{did}">'
-                        + _udeal_sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES, d.get("next_milestone_type") or "")
+                        + _udeal_sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES,
+                                     d.get("next_milestone_type") or "", disabled=_ro)
                         + '</span> ' + _ms_trigger)
         tool_btns = " ".join(
             _tool_link_btn(dp.get("tool_url"), tool_id=dp.get("tool_login_id"), tool_password=dp.get("tool_login_pass"))
@@ -3031,19 +3047,25 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                          f' onclick="openCloseModal({did}, \'{return_to_url}\')">クローズ</button>')
         else:
             close_btn = '<span class="muted">クローズ済</span>'
-        cb_td = (f'<td style="width:28px"><input type="checkbox" name="ids" value="{did}"></td>') if bulk else ""
+        cb_td = (f'<td style="width:28px"><input type="checkbox" name="ids" value="{did}"'
+                 f'{" disabled" if _ro else ""}></td>') if bulk else ""
+        _closed_badge = ('<br><span style="display:inline-block;background:#c53030;color:#fff;'
+                         'border-radius:4px;padding:1px 5px;font-size:10px;margin-top:3px;'
+                         'white-space:nowrap">Close(編集不可)</span>') if _ro else ""
+        _name_input = (f'<input type="text" value="{_esc(d.get("deal_name"))}"{_dis} '
+                       f'onchange="updateDealField({did}, \'deal_name\', this.value)" '
+                       f'style="font-size:12px;padding:2px 4px;width:150px{_ro_sty}">')
         rows.append(
-            f'<tr class="deal-row" data-account="{_esc((d.get("account_name") or "").lower())}">'
+            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}">'
             f'{cb_td}'
-            f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}</td>'
+            f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
             f'<td><a href="/deal/{did}?return_to={urllib.parse.quote(return_to_url, safe="")}">{_esc(d.get("account_name"))}</a></td>'
-            f'<td><input type="text" value="{_esc(d.get("deal_name"))}" '
-            f'onchange="updateDealField({did}, \'deal_name\', this.value)" style="font-size:12px;padding:2px 4px;width:150px"></td>'
-            f'<td>{_udeal_sel(did, "stage", stages, d.get("stage") or "")}</td>'
-            f'<td>{_udeal_sel(did, "owner", owners, d.get("owner") or "")}</td>'
-            f'<td>{_udeal_sel(did, "sub_owner", owners, d.get("sub_owner") or "")}</td>'
-            f'<td>{_udeal_sel(did, "business_type_l1", l1_list, d.get("business_type_l1") or "", cascade_l1=True)}</td>'
-            f'<td>{_udeal_sel(did, "business_type_l2", l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{did}")}</td>'
+            f'<td>{_name_input}</td>'
+            f'<td>{_udeal_sel(did, "stage", stages, d.get("stage") or "", disabled=_ro)}</td>'
+            f'<td>{_udeal_sel(did, "owner", owners, d.get("owner") or "", disabled=_ro)}</td>'
+            f'<td>{_udeal_sel(did, "sub_owner", owners, d.get("sub_owner") or "", disabled=_ro)}</td>'
+            f'<td>{_udeal_sel(did, "business_type_l1", l1_list, d.get("business_type_l1") or "", cascade_l1=True, disabled=_ro)}</td>'
+            f'<td>{_udeal_sel(did, "business_type_l2", l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{did}", disabled=_ro)}</td>'
             f'<td>{inp_budget}</td><td>{inp_total}</td>'
             f'<td>{inp_ms_date}</td><td>{inp_ms_label}</td>'
             f'<td>{tool_cell}</td><td>{close_btn}</td></tr>'
