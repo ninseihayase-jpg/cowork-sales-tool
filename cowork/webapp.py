@@ -1647,30 +1647,54 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         f'<b>{len(open_rows)}</b>件・単発計 <b>{sum_lump:,.0f}</b>万 / 継続 <b>{sum_rec:,.0f}</b>万', open_tbl,
         warn="金額未入力(NULL)は0扱い。桁違いの仮入力・重複商談があると総額が跳ねる。単位が『万円』で統一されているか要確認。")
 
-    # 5) 展示会ファネル（コホート）
-    exh_rows = con.execute(
-        "SELECT d.deal_name, acc.name acc, d.stage, d.close_reason, "
-        "(SELECT COUNT(DISTINCT COALESCE(a.occurred_on, 'a'||a.id)) "
-        " FROM activities a WHERE a.deal_id=d.id AND a.type='面談') mtg "
-        "FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id "
-        "WHERE d.lead_pattern='Exh.' ORDER BY mtg DESC", ).fetchall()
-    total = len(exh_rows)
-    no_need = sum(1 for r in exh_rows if r["close_reason"] == "ニーズなし")
-    canceled = sum(1 for r in exh_rows if r["close_reason"] == "キャンセル")
-    first = sum(1 for r in exh_rows if (r["mtg"] or 0) >= 1)
-    second = sum(1 for r in exh_rows if (r["mtg"] or 0) >= 2)
-    won = sum(1 for r in exh_rows if r["stage"] == "受注")
+    # 5) 展示会ファネル（コホート・新ファネル #27）
+    import cowork.weekly_report as _wr
+    _today = _today_jst().isoformat()
+    exh_all = _wr.exhibition_deal_rows(con)
+    for _r in exh_all:
+        _r["_bucket"] = _wr.classify_exhibition_deal(_r, _today)
+    _bucket_label = dict(_wr.EXH_BUCKETS)
+    _bucket_counts = {k: 0 for k, _ in _wr.EXH_BUCKETS}
+    for _r in exh_all:
+        _bucket_counts[_r["_bucket"]] += 1
+    # ツリー状のサマリ表示
+    _tree_lines = []
+    total = len(exh_all)
+    _mtg0 = _bucket_counts["waiting"] + _bucket_counts["no_deal"]
+    _mtg1 = _bucket_counts["first_closed"] + _bucket_counts["first_open"]
+    _mtg2 = total - _mtg0 - _mtg1
+    _dev_yes = sum(1 for r in exh_all if (r.get("mtg") or 0) >= 2 and r.get("has_dev"))
+    _dev_no = _mtg2 - _dev_yes
+    # first_closed の終了理由内訳
+    _fc_reason = {}
+    for r in exh_all:
+        if r["_bucket"] == "first_closed":
+            _cr = r.get("close_reason") or "（理由未設定）"
+            _fc_reason[_cr] = _fc_reason.get(_cr, 0) + 1
+    _fc_reason_txt = "／".join(f"{k} {v}" for k, v in _fc_reason.items()) or "—"
+    exh_summary = (
+        f'総数 <b>{total}</b>件<br>'
+        f'├ 面談実施なし <b>{_mtg0}</b>（初回面談待ち {_bucket_counts["waiting"]}／不成立(要検証) {_bucket_counts["no_deal"]}）<br>'
+        f'├ 1次面談どまり <b>{_mtg1}</b>（終了 {_bucket_counts["first_closed"]}：{_esc(_fc_reason_txt)}／継続中 {_bucket_counts["first_open"]}）<br>'
+        f'└ 2次面談に進捗 <b>{_mtg2}</b>（開発案件 あり {_dev_yes}／なし {_dev_no}）<br>'
+        f'&nbsp;&nbsp;&nbsp;→ 提案 <b>{_bucket_counts["proposal"]}</b>／クロージング <b>{_bucket_counts["closing"]}</b>'
+        f'／受注 <b>{_bucket_counts["won"]}</b>／失注 <b>{_bucket_counts["lost"]}</b>'
+        f'／終了(失注以外) {_bucket_counts["second_closed_other"]}／進行中(要件詰め等) {_bucket_counts["second_open_other"]}')
     exh_tbl = _audit_table(
-        ["案件名", "アカウント", "ステージ", "終了理由", "面談回数"],
-        [[_esc(r["deal_name"] or "—"), _esc(r["acc"] or "—"), _esc(r["stage"] or "—"),
-          _esc(r["close_reason"] or "—"), str(r["mtg"] or 0)] for r in exh_rows])
+        ["区分", "案件名", "アカウント", "面談", "ステージ", "状態", "終了理由", "次回MS", "開発"],
+        [[_esc(_bucket_label.get(r["_bucket"], r["_bucket"])), _esc(r["deal_name"] or "—"),
+          _esc(r["acc"] or "—"), str(r["mtg"] or 0), _esc(r["stage"] or "—"),
+          ("クローズ" if (r.get("status") == "closed") else "open"),
+          _esc(r["close_reason"] or "—"), _esc(r["next_milestone_date"] or "—"),
+          ("✓" if r.get("has_dev") else "—")] for r in exh_all])
     sec_exh = _audit_section(
-        "展示会ファネル", "lead_pattern='Exh.' の商談が母集団。面談回数は activities.type='面談' の件数。"
-        f"有効母数=総数−ニーズなし。初回面談=面談≧1、次商談=面談≧2、受注=stage'受注'。",
-        f'総数 <b>{total}</b>／有効 <b>{total - no_need}</b>（ニーズなし {no_need}・ｷｬﾝｾﾙ {canceled}）'
-        f' → 面談1+ <b>{first}</b> → 面談2+ <b>{second}</b> → 受注 <b>{won}</b>', exh_tbl,
-        warn="母集団は『lead_pattern=Exh.』のタグに全依存。展示会由来なのにタグ漏れ／逆に別経路が混入していると全数字がズレる。"
-             "面談回数は『同一日=1面談』で重複排除済み（同じ商談で同日に複数活動があっても1回）。")
+        "展示会ファネル（新）", "lead_pattern='Exh.' が母集団。面談は『同一日=1面談』。"
+        "面談0回で次回MSが翌日以降=初回面談待ち／それ以外=不成立(要検証)。1次どまりの終了はcloseのみ理由別。"
+        "2次以降は開発案件起票有無＋現フェーズ(提案/クロージング/受注/失注)。",
+        exh_summary, exh_tbl,
+        warn="母集団は『lead_pattern=Exh.』タグに全依存（タグ漏れ/誤混入で全数字ズレ）。"
+             "『不成立(要検証)』＝面談0回だが初回面談待ちでない件。中身(closed/次回MS無し等)を区分・状態・次回MS列で確認し、"
+             "想定外のケースがあれば分類ルールを見直す。展示会名(どの展示会か)は別タスクでフラグ化予定。")
 
     # 6) ステージ別（open）
     stage_rows = con.execute(

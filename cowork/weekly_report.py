@@ -123,8 +123,8 @@ def compute_weekly_numbers(con, as_of: date | None = None) -> dict:
         f"LEFT JOIN accounts a ON a.id=d.account_id "
         f"WHERE {_OPEN} AND d.stage='クロージング' ORDER BY d.next_milestone_date")]
 
-    # コホート（展示会ファネル。lead_pattern='Exh.'の商談＝展示会由来を、面談回数で段階分け）
-    exhibition = _exhibition_funnel(con)
+    # コホート（展示会ファネル。lead_pattern='Exh.'の商談＝展示会由来を、新ファネル(#27)で段階分け）
+    exhibition = _exhibition_funnel(con, today=(as_of or date.today()).isoformat())
 
     # 前週比（ストックはスナップショット差分。<2週なら未確定）
     wow = _stock_wow(con, wk_start, prev_start)
@@ -205,12 +205,16 @@ def render_number_rail(nums: dict) -> str:
                           _wow_ar(wow.get("pipeline_recurring")) if wow_ok else ""))
 
     if exh:
+        _c = exh.get("counts", {}) or {}
         parts.append('<div class="rail-h sub">展示会ファネル</div>')
-        parts.append(fn("商談化（総数）", _num(exh.get("total", 0))))
-        parts.append(fn("有効母数（ニーズ有）", _num(exh.get("valid_total", 0))))
-        parts.append(fn("面談1回以上", _num(exh.get("first_meeting", 0))))
-        parts.append(fn("面談2回以上", _num(exh.get("second_meeting", 0))))
-        parts.append(fn("受注", _num(exh.get("won", 0))))
+        parts.append(fn("総数", _num(exh.get("total", 0))))
+        parts.append(fn("初回面談待ち", _num(_c.get("waiting", 0))))
+        parts.append(fn("不成立（面談なし）", _num(_c.get("no_deal", 0))))
+        parts.append(fn("1次どまり（終了）", _num(_c.get("first_closed", 0))))
+        parts.append(fn("2次以降→提案", _num(_c.get("proposal", 0))))
+        parts.append(fn("2次以降→クロージング", _num(_c.get("closing", 0))))
+        parts.append(fn("2次以降→受注", _num(_c.get("won", 0))))
+        parts.append(fn("2次以降→失注", _num(_c.get("lost", 0))))
 
     funnel = stock.get("funnel") or []
     if funnel:
@@ -227,33 +231,94 @@ def render_number_rail(nums: dict) -> str:
     return "".join(parts)
 
 
-def _exhibition_funnel(con) -> dict:
-    """展示会由来(lead_pattern='Exh.')商談の面談回数ベースのファネル。
-    - total: 展示会由来の商談総数
-    - no_need / canceled: 終了理由タグ(#19)別の件数
-    - valid_total: 有効母数（総数 − ニーズなし）。"最初から見込みゼロ"を分母から外して率を誠実にする
-    - first_meeting: 面談1回以上 / second_meeting: 面談2回以上（=次の商談に進んだ） / won: 受注
-    """
-    total = con.execute(
-        "SELECT COUNT(*) n FROM deals WHERE lead_pattern='Exh.'").fetchone()["n"]
-    by_reason = {r["cr"]: r["n"] for r in con.execute(
-        "SELECT close_reason cr, COUNT(*) n FROM deals WHERE lead_pattern='Exh.' "
-        "AND close_reason IS NOT NULL GROUP BY close_reason")}
-    no_need = by_reason.get("ニーズなし", 0)
-    canceled = by_reason.get("キャンセル", 0)
-    # 面談回数は「同一日=1面談」で数える（同じ商談で同日に複数活動があっても1回）。
-    # occurred_on が無い面談は活動id単位で個別カウント（潰さない）。
-    mtg_counts = {r["deal_id"]: r["c"] for r in con.execute(
-        "SELECT a.deal_id, COUNT(DISTINCT COALESCE(a.occurred_on, 'a'||a.id)) c "
-        "FROM activities a JOIN deals d ON d.id=a.deal_id "
-        "WHERE d.lead_pattern='Exh.' AND a.type='面談' GROUP BY a.deal_id")}
-    first = sum(1 for c in mtg_counts.values() if c >= 1)
-    second = sum(1 for c in mtg_counts.values() if c >= 2)
-    won = con.execute(
-        "SELECT COUNT(*) n FROM deals WHERE lead_pattern='Exh.' AND stage='受注'").fetchone()["n"]
-    return {"total": total, "no_need": no_need, "canceled": canceled,
-            "valid_total": total - no_need,
-            "first_meeting": first, "second_meeting": second, "won": won}
+def exhibition_deal_rows(con) -> list[dict]:
+    """展示会由来(lead_pattern='Exh.')商談＋面談回数(同一日=1)＋開発案件有無＋status/stage/理由/次回MS。
+    ファネル分類と監査ドリルダウンの共通ソース。"""
+    rows = con.execute(
+        "SELECT d.id, d.deal_name, d.stage, d.status, d.close_reason, d.next_milestone_date, "
+        "acc.name acc, "
+        "(SELECT COUNT(DISTINCT COALESCE(a.occurred_on, 'a'||a.id)) FROM activities a "
+        "   WHERE a.deal_id=d.id AND a.type='面談') mtg, "
+        "EXISTS(SELECT 1 FROM dev_projects dp WHERE dp.deal_id=d.id) has_dev "
+        "FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id "
+        "WHERE d.lead_pattern='Exh.' ORDER BY mtg DESC, d.id").fetchall()
+    return [dict(r) for r in rows]
+
+
+# 新ファネルのバケット定義（#27でユーザー確定）。表示順もこの順。
+EXH_BUCKETS = [
+    ("waiting", "初回面談待ち（進行中）"),
+    ("no_deal", "不成立（面談なし・要検証）"),
+    ("first_closed", "1次面談どまり（終了・理由別）"),
+    ("first_open", "1次面談後・継続中"),
+    ("proposal", "2次以降→提案フェーズ"),
+    ("closing", "2次以降→クロージング"),
+    ("won", "2次以降→受注"),
+    ("lost", "2次以降→失注"),
+    ("second_closed_other", "2次以降→終了（失注以外）"),
+    ("second_open_other", "2次以降→進行中（要件詰め等）"),
+]
+
+
+def classify_exhibition_deal(row: dict, today: str) -> str:
+    """展示会商談を新ファネルのバケットkeyに分類。today は 'YYYY-MM-DD'（JST基準を渡す）。"""
+    mtg = row.get("mtg") or 0
+    status = row.get("status") or "open"
+    stage = row.get("stage") or ""
+    cr = row.get("close_reason") or ""
+    nms = row.get("next_milestone_date") or ""
+    closed = (status == "closed")
+    if mtg == 0:
+        # 面談0回: 次回MSが翌日以降(未来)＝初回面談待ち、それ以外＝不成立(要検証)
+        if not closed and nms and nms > today:
+            return "waiting"
+        return "no_deal"
+    if mtg == 1:
+        return "first_closed" if closed else "first_open"
+    # mtg >= 2（2次面談以降）
+    if stage == "受注":
+        return "won"
+    if closed:
+        return "lost" if cr == "失注" else "second_closed_other"
+    if stage == "クロージング":
+        return "closing"
+    if stage == "提案":
+        return "proposal"
+    return "second_open_other"
+
+
+def _exhibition_funnel(con, today: str | None = None) -> dict:
+    """展示会由来商談の新ファネル（#27）。バケット別件数＋補助内訳を返す。
+    旧キー(total/valid_total/first_meeting/second_meeting/won)も後方互換で維持。"""
+    today = today or date.today().isoformat()
+    rows = exhibition_deal_rows(con)
+    counts = {k: 0 for k, _ in EXH_BUCKETS}
+    first_closed_by_reason: dict = {}
+    dev_yes = dev_no = 0
+    for r in rows:
+        b = classify_exhibition_deal(r, today)
+        counts[b] += 1
+        if b == "first_closed":
+            cr = r.get("close_reason") or "（理由未設定）"
+            first_closed_by_reason[cr] = first_closed_by_reason.get(cr, 0) + 1
+        if (r.get("mtg") or 0) >= 2:
+            if r.get("has_dev"):
+                dev_yes += 1
+            else:
+                dev_no += 1
+    total = len(rows)
+    first_meeting = sum(1 for r in rows if (r.get("mtg") or 0) >= 1)
+    second_meeting = sum(1 for r in rows if (r.get("mtg") or 0) >= 2)
+    won = counts["won"]
+    return {
+        "total": total,
+        "counts": counts,
+        "first_closed_by_reason": first_closed_by_reason,
+        "dev_yes": dev_yes, "dev_no": dev_no,
+        # 後方互換
+        "valid_total": total - counts["no_deal"],
+        "first_meeting": first_meeting, "second_meeting": second_meeting, "won": won,
+    }
 
 
 def _stock_wow(con, week_start: str, prev_start: str) -> dict:

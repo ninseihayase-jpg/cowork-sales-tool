@@ -205,20 +205,32 @@ def test_weekly_snapshot_roundtrip(con):
     assert sfa_db.list_snapshot_weeks(con) == ["2026-07-06"]
 
 
-def test_exhibition_funnel_valid_total(con, acc_id):
+def test_exhibition_funnel_new_buckets(con, acc_id):
+    """新ファネル(#27)のバケット分類を検証。"""
     mk = lambda **k: sfa_db.upsert_deal(con, account_id=acc_id, lead_pattern="Exh.", **k)
-    d1 = mk(deal_name="有望", stage="提案", status="open")
-    d2 = mk(deal_name="ニーズ無", stage="失注", status="closed")
-    mk(deal_name="受注", stage="受注", status="open")
-    con.execute("UPDATE deals SET close_reason='ニーズなし' WHERE id=?", (d2,))
-    for dt in ("2026-07-07", "2026-07-09"):
-        con.execute("INSERT INTO activities(deal_id,type,occurred_on) VALUES(?,?,?)", (d1, "面談", dt))
+
+    def meet(did, *dates):
+        for dt in dates:
+            con.execute("INSERT INTO activities(deal_id,type,occurred_on) VALUES(?,?,?)", (did, "面談", dt))
+
+    d_prop = mk(deal_name="提案中", stage="提案", status="open"); meet(d_prop, "2026-07-01", "2026-07-03")
+    d_won = mk(deal_name="受注", stage="受注", status="open"); meet(d_won, "2026-07-01", "2026-07-03")
+    d_lost = mk(deal_name="失注", stage="クロージング", status="closed"); meet(d_lost, "2026-07-01", "2026-07-03")
+    con.execute("UPDATE deals SET close_reason='失注' WHERE id=?", (d_lost,))
+    d_first = mk(deal_name="1次終了", stage="要件詰め", status="closed"); meet(d_first, "2026-07-02")
+    con.execute("UPDATE deals SET close_reason='ニーズなし' WHERE id=?", (d_first,))
+    mk(deal_name="面談待ち", stage="初回アポ実施", status="open", next_milestone_date="2026-07-20")
+    mk(deal_name="不成立", stage="初回アポ実施", status="closed")
     con.commit()
-    exh = wr._exhibition_funnel(con)
-    assert exh["total"] == 3
-    assert exh["no_need"] == 1
-    assert exh["valid_total"] == 2          # 総数 - ニーズなし
-    assert exh["first_meeting"] == 1 and exh["second_meeting"] == 1 and exh["won"] == 1
+
+    exh = wr._exhibition_funnel(con, today="2026-07-10")
+    c = exh["counts"]
+    assert exh["total"] == 6
+    assert c["proposal"] == 1 and c["won"] == 1 and c["lost"] == 1
+    assert c["first_closed"] == 1
+    assert c["waiting"] == 1 and c["no_deal"] == 1
+    assert exh["first_closed_by_reason"].get("ニーズなし") == 1
+    assert exh["valid_total"] == 6 - 1     # 総数 - 不成立(no_deal)
 
 
 def test_backfill_lists(con, acc_id):
