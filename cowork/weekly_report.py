@@ -60,8 +60,12 @@ def record_snapshot(con, as_of: date | None = None) -> str:
 # ---- フロー指標（日付から任意週を直接集計） ----
 
 def _flow_for_week(con, wk_start: str, wk_end: str) -> dict:
+    # 面談は「同一商談(SFA#)×同一日」を1件に重複排除（同じ日に複数の活動を登録しても1面談）。
+    # deal_idが無い活動は活動id単位で個別カウント（潰さない）。
     meetings = con.execute(
-        "SELECT COUNT(*) n FROM activities WHERE type='面談' AND occurred_on BETWEEN ? AND ?",
+        "SELECT COUNT(DISTINCT CASE WHEN deal_id IS NOT NULL "
+        "THEN deal_id || '|' || occurred_on ELSE 'a' || id END) n "
+        "FROM activities WHERE type='面談' AND occurred_on BETWEEN ? AND ?",
         (wk_start, wk_end)).fetchone()["n"]
     companies = con.execute(
         "SELECT COUNT(DISTINCT d.account_id) n FROM activities a JOIN deals d ON d.id=a.deal_id "

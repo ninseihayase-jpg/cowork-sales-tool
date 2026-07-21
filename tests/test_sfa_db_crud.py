@@ -369,3 +369,24 @@ def test_list_overdue_deals_exclude_today(con):
     excl = {d["id"] for d in sfa_db.list_overdue_deals(con, today=tstr, exclude_today=True)}
     assert d_today not in excl           # 当日ちょうどは除外
     assert d_yday in excl and d_null in excl  # 前日以前・未設定は残る
+
+
+def test_flow_meetings_dedup_same_deal_same_day(con):
+    """面談は同一商談×同一日を1件に重複排除して数える（weekly_report._flow_for_week）。"""
+    from cowork import weekly_report
+    acc = sfa_db.upsert_account(con, id=None, name="面談社")
+    d1 = sfa_db.upsert_deal(con, account_id=acc, deal_name="商談1")
+    d2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="商談2")
+    # 商談1: 同日に2件の面談 → 1件に集約
+    sfa_db.add_activity(con, deal_id=d1, type="面談", occurred_on="2026-07-15")
+    sfa_db.add_activity(con, deal_id=d1, type="面談", occurred_on="2026-07-15")
+    # 商談1: 別日の面談 → 別1件
+    sfa_db.add_activity(con, deal_id=d1, type="面談", occurred_on="2026-07-16")
+    # 商談2: 同日1件 → 1件
+    sfa_db.add_activity(con, deal_id=d2, type="面談", occurred_on="2026-07-15")
+    # 面談以外は無視
+    sfa_db.add_activity(con, deal_id=d2, type="メール", occurred_on="2026-07-15")
+
+    flow = weekly_report._flow_for_week(con, "2026-07-13", "2026-07-19")
+    # 集約後: (d1,7/15)=1, (d1,7/16)=1, (d2,7/15)=1 → 3件（活動は4件だが重複排除で3）
+    assert flow["meetings"] == 3

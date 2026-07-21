@@ -1577,20 +1577,34 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
     ws, we, _prev = weekly_report._week_bounds(as_of)
     open_cond = "(d.status='open' OR d.status IS NULL)"
 
-    # 1) 面談（フロー）
+    # 1) 面談（フロー）。同一商談(SFA#)×同一日は1面談に重複排除して数える。
     mtg_rows = con.execute(
-        "SELECT a.occurred_on, acc.name acc, d.deal_name, a.contact_name, a.type "
+        "SELECT a.id, a.deal_id, a.occurred_on, acc.name acc, d.deal_name, a.contact_name, a.type "
         "FROM activities a LEFT JOIN deals d ON d.id=a.deal_id LEFT JOIN accounts acc ON acc.id=d.account_id "
         "WHERE a.type='面談' AND a.occurred_on BETWEEN ? AND ? ORDER BY a.occurred_on", (ws, we)).fetchall()
     mtg_companies = len({r["acc"] for r in mtg_rows if r["acc"]})
+    # 重複排除キー: deal_idがあれば (deal_id, 日付)、無ければ活動id単位
+    _mtg_keys = {}
+    for r in mtg_rows:
+        _k = (f"d{r['deal_id']}|{r['occurred_on']}" if r["deal_id"] is not None else f"a{r['id']}")
+        _mtg_keys.setdefault(_k, 0)
+        _mtg_keys[_k] += 1
+    mtg_dedup = len(_mtg_keys)
+    _dup_activities = len(mtg_rows) - mtg_dedup  # 同一商談・同日で潰れた活動数
     mtg_tbl = _audit_table(
-        ["面談日", "アカウント", "案件", "相手"],
+        ["面談日", "アカウント", "案件", "相手", "重複"],
         [[_esc(r["occurred_on"]), _esc(r["acc"] or "—"), _esc(r["deal_name"] or "—"),
-          _esc(r["contact_name"] or "—")] for r in mtg_rows])
+          _esc(r["contact_name"] or "—"),
+          ("↩ 同一商談・同日" if (r["deal_id"] is not None
+            and _mtg_keys.get(f"d{r['deal_id']}|{r['occurred_on']}", 0) > 1) else "")]
+         for r in mtg_rows])
     sec_mtg = _audit_section(
-        "面談数", f"activities.type='面談' かつ occurred_on が {ws}〜{we}。相手社数=案件経由のaccount重複排除。",
-        f'<b>{len(mtg_rows)}</b>件（相手 {mtg_companies}社）', mtg_tbl,
-        warn="occurred_on 未入力の面談はここに出ません。面談を activities に『面談』種別で登録しているか要確認。")
+        "面談数", f"activities.type='面談' かつ occurred_on が {ws}〜{we}。"
+        "同一商談(SFA#)×同一日は1面談に重複排除。相手社数=案件経由のaccount重複排除。",
+        f'<b>{mtg_dedup}</b>件（相手 {mtg_companies}社／元activities {len(mtg_rows)}件・'
+        f'重複排除 {_dup_activities}件）', mtg_tbl,
+        warn="occurred_on 未入力の面談はここに出ません。面談を activities に『面談』種別で登録しているか要確認。"
+             "『重複』列が付いた行は同一商談・同日のため件数上は1件に集約しています。")
 
     # 2) 新規リード（フロー）
     lead_rows = con.execute(
