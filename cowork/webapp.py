@@ -3721,6 +3721,29 @@ def data_tagging_page(con) -> str:
         )
     ll_rows = "".join(ll_list) or '<tr><td colspan=3 class=muted>未分類の lost リードはありません。</td></tr>'
 
+    # ④ 日付なしの活動履歴（面談集計に載らない不整合データ）のクリーンアップ
+    undated = sfa_db.list_undated_activities(con)
+    ud_list = []
+    for a in undated:
+        aid = a["id"]
+        if a.get("deal_id"):
+            _dl = (f'<a href="/deal/{a["deal_id"]}">'
+                   f'{_esc(a.get("account_name") or a.get("deal_name") or ("商談#" + str(a["deal_id"])))}</a>')
+        else:
+            _dl = '<span class="muted">（商談なし）</span>'
+        ud_list.append(
+            f'<tr id="udrow_{aid}">'
+            f'<td>{_dl}<br><span class="muted" style="font-size:.85em">{_esc(a.get("deal_name") or "")}</span></td>'
+            f'<td>{_esc(a.get("type") or "—")}</td>'
+            f'<td>{_esc(a.get("contact_name") or "—")}</td>'
+            f'<td style="font-size:.85em;max-width:340px">{_note_preview(a.get("body"))}</td>'
+            f'<td style="white-space:nowrap">'
+            f'<input type="date" id="ud_date_{aid}" style="font-size:12px;padding:1px 3px"> '
+            f'<button class="btn sec" style="font-size:11px;padding:3px 8px" onclick="udSetDate({aid})">日付保存</button> '
+            f'<button class="btn" style="font-size:11px;padding:3px 8px;background:#c53030;color:#fff;border-color:#c53030" '
+            f'onclick="udDelete({aid})">削除</button></td></tr>')
+    ud_rows = "".join(ud_list) or '<tr><td colspan=5 class=muted>日付なしの活動履歴はありません。</td></tr>'
+
     return f"""
     <style>
       .tagbtns{{display:flex;flex-wrap:wrap;gap:5px}}
@@ -3732,7 +3755,7 @@ def data_tagging_page(con) -> str:
     <div class="card">
       <h2>データ整備 — タグ付け</h2>
       <p class="muted" style="margin:0 0 4px">選択肢を<b>クリックすると即保存</b>され「✓ 値」に変わります（ドロップダウンを開く必要はありません）。</p>
-      <p class="muted" style="margin:0">残り：次回MS種別 <b>{len(ms_deals)}</b>件／終了理由(商談) <b>{len(closed_deals)}</b>件／終了理由(リード) <b>{len(lost_leads)}</b>件</p>
+      <p class="muted" style="margin:0">残り：次回MS種別 <b>{len(ms_deals)}</b>件／終了理由(商談) <b>{len(closed_deals)}</b>件／終了理由(リード) <b>{len(lost_leads)}</b>件／日付なし活動 <b>{len(undated)}</b>件</p>
     </div>
 
     <div class="card">
@@ -3768,6 +3791,16 @@ def data_tagging_page(con) -> str:
       </table></div>
     </div>
 
+    <div class="card">
+      <h2>④ 日付なしの活動履歴（{len(undated)}件）</h2>
+      <p class="muted" style="margin:0 0 8px">日付が未入力の活動は面談集計に数えません。正しい日付を入れて保存するか、不要なら削除してください。</p>
+      <div style="overflow:auto;max-height:60vh">
+      <table style="min-width:900px"><tr>
+        {_sticky_th('商談')}{_sticky_th('種別')}{_sticky_th('相手')}{_sticky_th('内容（先頭のみ）')}{_sticky_th('日付を入れる / 削除')}</tr>
+      {ud_rows}
+      </table></div>
+    </div>
+
     <script>
     function _tagPost(url, field, value) {{
       return fetch(url, {{method:'POST',
@@ -3787,6 +3820,21 @@ def data_tagging_page(con) -> str:
     function tagLead(id, value, btn) {{
       _tagPost('/leads/' + id + '/field', 'lost_reason', value)
         .then(d => {{ if (d.ok) _tagOk(btn, value); else alert('更新エラー'); }})
+        .catch(() => alert('通信エラー'));
+    }}
+    function udSetDate(id) {{
+      var el = document.getElementById('ud_date_' + id);
+      var v = el ? el.value : '';
+      if (!v) {{ alert('日付を選択してください'); return; }}
+      _tagPost('/activity/' + id + '/field', 'occurred_on', v)
+        .then(d => {{ if (d.ok) {{ var r = document.getElementById('udrow_' + id); if (r) r.remove(); }}
+                    else alert('更新エラー'); }})
+        .catch(() => alert('通信エラー'));
+    }}
+    function udDelete(id) {{
+      if (!confirm('この活動履歴を削除しますか？')) return;
+      fetch('/activity/' + id + '/delete', {{method:'POST'}})
+        .then(() => {{ var r = document.getElementById('udrow_' + id); if (r) r.remove(); }})
         .catch(() => alert('通信エラー'));
     }}
     </script>

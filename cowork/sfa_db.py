@@ -1563,6 +1563,19 @@ def delete_activity(con, activity_id: int) -> None:
     con.commit()
 
 
+def list_undated_activities(con) -> list[dict]:
+    """日付(occurred_on)が未入力の活動履歴（データ整備・クリーンアップ対象）。
+    商談・アカウント名と内容の文脈つきで返す。"""
+    return [dict(r) for r in con.execute(
+        "SELECT a.id, a.type, a.contact_name, a.body, a.deal_id, "
+        "d.deal_name, acc.name AS account_name "
+        "FROM activities a "
+        "LEFT JOIN deals d ON d.id=a.deal_id "
+        "LEFT JOIN accounts acc ON acc.id=d.account_id "
+        "WHERE a.occurred_on IS NULL OR a.occurred_on='' "
+        "ORDER BY a.deal_id, a.id")]
+
+
 # ---- ピッチテーマ ----
 
 def list_pitch_themes(con, active_only: bool = False) -> list[dict]:

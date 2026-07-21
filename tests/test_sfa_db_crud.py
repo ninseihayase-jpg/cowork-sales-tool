@@ -443,3 +443,15 @@ def test_pipeline_counts_only_requirement_stage_onward(con):
     m = weekly_report.compute_snapshot_metrics(con)
     assert m["open_deals"] == 3               # 要件詰め/提案/クロージングのみ
     assert m["pipeline_lump"] == 200 + 300 + 400  # 初回アポ/受注/保留中は除外
+
+
+def test_list_undated_activities(con):
+    """日付なし活動のみ抽出（クリーンアップ対象）。"""
+    acc = sfa_db.upsert_account(con, id=None, name="日付なし社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="商談")
+    sfa_db.add_activity(con, deal_id=did, type="面談", occurred_on="2026-07-15")  # 日付あり
+    sfa_db.add_activity(con, deal_id=did, type="面談", occurred_on=None)            # 日付なし
+    sfa_db.add_activity(con, deal_id=did, type="メモ", occurred_on="")             # 空文字
+    undated = sfa_db.list_undated_activities(con)
+    assert len(undated) == 2  # 日付なし(None)＋空文字の2件のみ（日付ありは除外）
+    assert {u["type"] for u in undated} == {"面談", "メモ"}
