@@ -70,12 +70,13 @@ def _flow_for_week(con, wk_start: str, wk_end: str) -> dict:
     companies = con.execute(
         "SELECT COUNT(DISTINCT d.account_id) n FROM activities a JOIN deals d ON d.id=a.deal_id "
         "WHERE a.type='面談' AND a.occurred_on BETWEEN ? AND ?", (wk_start, wk_end)).fetchone()["n"]
-    # 新規商談＝「その週に最初の活動があった商談」（#27: created_at=登録日だと一括取込で膨張するため）。
-    # 各商談の最初の活動(occurred_on最小)が週内にあるものを数える。活動未登録の商談は含まれない。
+    # 新規商談＝「その週に初めて“面談”した商談」（#27）。
+    # type='面談' の活動のうち最古(occurred_on最小)が週内にある商談を数える。
+    # メモ/メール等の非面談活動が初回だと新規に数えない（例: 継続案件のコストデータ受領メモ）。
     new_deals = con.execute(
         "SELECT COUNT(*) n FROM ("
         "  SELECT a.deal_id, MIN(a.occurred_on) first_act FROM activities a"
-        "  WHERE a.occurred_on IS NOT NULL AND a.occurred_on != ''"
+        "  WHERE a.type='面談' AND a.occurred_on IS NOT NULL AND a.occurred_on != ''"
         "  GROUP BY a.deal_id HAVING first_act BETWEEN ? AND ?"
         ")", (wk_start, wk_end)).fetchone()["n"]
     # リードは活動を持たないため従来どおり created_at(登録日) 基準。

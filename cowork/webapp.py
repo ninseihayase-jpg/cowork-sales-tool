@@ -1620,24 +1620,24 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         warn="created_at は『SFAへ登録した日時』。過去分を後からまとめて登録すると、その週の新規として二重に膨らむ。"
              "実際の獲得日で数えたい場合は基準列の見直しが必要（#27）。")
 
-    # 3) 新規商談（フロー）＝「その週に最初の活動があった商談」（#27で定義変更）
+    # 3) 新規商談（フロー）＝「その週に初めて“面談”した商談」（#27で定義変更）
     deal_rows = con.execute(
         "SELECT fa.first_act, acc.name acc, d.deal_name, d.stage, d.owner FROM ("
         "  SELECT a.deal_id, MIN(a.occurred_on) first_act FROM activities a"
-        "  WHERE a.occurred_on IS NOT NULL AND a.occurred_on != ''"
+        "  WHERE a.type='面談' AND a.occurred_on IS NOT NULL AND a.occurred_on != ''"
         "  GROUP BY a.deal_id HAVING first_act BETWEEN ? AND ?"
         ") fa JOIN deals d ON d.id=fa.deal_id LEFT JOIN accounts acc ON acc.id=d.account_id "
         "ORDER BY fa.first_act", (ws, we)).fetchall()
     deal_tbl = _audit_table(
-        ["初回活動日", "アカウント", "案件名", "ステージ", "担当"],
+        ["初回面談日", "アカウント", "案件名", "ステージ", "担当"],
         [[_esc(r["first_act"]), _esc(r["acc"] or "—"), _esc(r["deal_name"] or "—"),
           _esc(r["stage"] or "—"), _esc(r["owner"] or "—")] for r in deal_rows])
     sec_deal = _audit_section(
-        "新規商談", f"その商談の最初の活動(activities.occurred_onの最小)が {ws}〜{we} にある商談。"
-        "（旧: 登録日created_at基準は一括取込で膨張したため定義変更 #27）",
+        "新規商談", f"その商談の最初の“面談”(activities.type='面談' の occurred_on 最小)が {ws}〜{we} にある商談。"
+        "（旧: 登録日created_at基準→初回活動基準→初回面談基準 と定義変更 #27）",
         f'<b>{len(deal_rows)}</b>件', deal_tbl,
-        warn="活動が1件も登録されていない商談は『新規』に数えられない。面談/活動を activities に"
-             "登録する運用が前提。occurred_on が空の活動は無視。")
+        warn="面談(type='面談')が1件も登録されていない商談は『新規』に数えられない。メモ/メール等の"
+             "非面談活動が初回でも新規には数えない（継続案件のメモ起点の誤カウントを防ぐ）。occurred_on が空の面談は無視。")
 
     # 4) パイプライン（ストック＝現在のopen商談）
     open_rows = con.execute(

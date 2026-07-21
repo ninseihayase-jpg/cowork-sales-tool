@@ -409,3 +409,22 @@ def test_exhibition_funnel_meeting_dedup_same_day(con):
     assert f["total"] == 2
     assert f["first_meeting"] == 2   # A・Bとも面談1回以上
     assert f["second_meeting"] == 1  # 別日2回のBのみ（Aは同日集約で1回）
+
+
+def test_new_deals_requires_meeting(con):
+    """新規商談は『今週に初めて面談した商談』。メモのみの商談は数えない（#27）。"""
+    from cowork import weekly_report
+    acc = sfa_db.upsert_account(con, id=None, name="新規判定社")
+    # 面談が今週初回 → 新規に数える
+    d_mtg = sfa_db.upsert_deal(con, account_id=acc, deal_name="面談あり")
+    sfa_db.add_activity(con, deal_id=d_mtg, type="面談", occurred_on="2026-07-15")
+    # メモのみ（面談なし）→ 数えない（プライムポリマー相当）
+    d_memo = sfa_db.upsert_deal(con, account_id=acc, deal_name="メモのみ")
+    sfa_db.add_activity(con, deal_id=d_memo, type="メモ", occurred_on="2026-07-15")
+    # 面談の初回が先週 → 今週の新規ではない
+    d_prev = sfa_db.upsert_deal(con, account_id=acc, deal_name="先週初回面談")
+    sfa_db.add_activity(con, deal_id=d_prev, type="面談", occurred_on="2026-07-06")
+    sfa_db.add_activity(con, deal_id=d_prev, type="面談", occurred_on="2026-07-15")
+
+    flow = weekly_report._flow_for_week(con, "2026-07-13", "2026-07-19")
+    assert flow["new_deals"] == 1  # d_mtgのみ
