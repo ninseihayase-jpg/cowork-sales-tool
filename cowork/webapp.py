@@ -3688,7 +3688,7 @@ def data_tagging_page(con) -> str:
         btns = _tag_buttons(lambda v, i=did: f"tagDeal({i},'next_milestone_type','{v}',this)", sfa_db.NEXT_MS_TYPES)
         ms_list.append(
             f'<tr>'
-            f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a></td>'
+            f'<td><a href="/deal/{did}?return_to=%2Fdata-tagging">{_esc(d.get("account_name"))}</a></td>'
             f'<td>{_esc(d.get("deal_name"))}</td>'
             f'<td>{btns}</td>'
             f'<td style="white-space:nowrap">{_esc(d.get("next_milestone_date"))}</td>'
@@ -3702,7 +3702,7 @@ def data_tagging_page(con) -> str:
         btns = _tag_buttons(lambda v, i=did: f"tagDeal({i},'close_reason','{v}',this)", sfa_db.CLOSE_REASONS)
         cd_list.append(
             f'<tr>'
-            f'<td><a href="/deal/{did}">{_esc(d.get("account_name"))}</a><br>'
+            f'<td><a href="/deal/{did}?return_to=%2Fdata-tagging">{_esc(d.get("account_name"))}</a><br>'
             f'<span class="muted" style="font-size:.85em">{_esc(d.get("deal_name"))} / {_esc(d.get("stage"))}</span></td>'
             f'<td>{btns}</td>'
             f'<td style="font-size:.85em;max-width:420px">{_note_preview(d.get("note"))}</td></tr>'
@@ -3728,7 +3728,7 @@ def data_tagging_page(con) -> str:
     for a in undated:
         aid = a["id"]
         if a.get("deal_id"):
-            _dl = (f'<a href="/deal/{a["deal_id"]}">'
+            _dl = (f'<a href="/deal/{a["deal_id"]}?return_to=%2Fdata-tagging">'
                    f'{_esc(a.get("account_name") or a.get("deal_name") or ("商談#" + str(a["deal_id"])))}</a>')
         else:
             _dl = '<span class="muted">（商談なし）</span>'
