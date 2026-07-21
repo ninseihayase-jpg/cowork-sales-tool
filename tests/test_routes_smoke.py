@@ -544,3 +544,40 @@ def test_resolve_default_tab_excludes_today_for_fallback(tmp_dir):
         assert webapp.resolve_default_deals_tab(con, None) == "active"
     finally:
         con.close()
+
+
+def test_activity_add_requires_date_and_type(server, db_path):
+    """活動追加: 日付なしで内容だけだと登録されずエラー。日付+種別ありで登録。メモ/MSのみは空活動を作らない。"""
+    con = sfa_db.connect(db_path)
+    try:
+        acc = sfa_db.upsert_account(con, id=None, name="活動検証社")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="活動検証商談")
+        con.commit()
+    finally:
+        con.close()
+
+    def _act_count():
+        c = sfa_db.connect(db_path)
+        try:
+            return c.execute("SELECT COUNT(*) n FROM activities WHERE deal_id=?", (did,)).fetchone()["n"]
+        finally:
+            c.close()
+
+    # 日付なし・内容ありは登録されない（エラー差し戻し）
+    code, body = _post(server + "/activity/add",
+                       {"deal_id": str(did), "type": "面談", "body": "日付なしメモ"},
+                       headers=_auth_header())
+    assert code == 200 and "日付".encode() in body
+    assert _act_count() == 0
+
+    # メモ/MSだけ更新（活動欄すべて空）は空活動を作らない
+    _post(server + "/activity/add",
+          {"deal_id": str(did), "type": "面談", "update_note": "現状メモだけ更新"},
+          headers=_auth_header())
+    assert _act_count() == 0
+
+    # 日付+種別ありは登録される
+    _post(server + "/activity/add",
+          {"deal_id": str(did), "type": "面談", "occurred_on": "2026-07-15", "body": "面談実施"},
+          headers=_auth_header())
+    assert _act_count() == 1

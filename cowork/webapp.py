@@ -9434,13 +9434,29 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     except (ValueError, KeyError):
                         self._redirect("/deals")
                         return
-                    sfa_db.add_activity(
-                        con, deal_id=did,
-                        type=f.get("type") or None,
-                        occurred_on=f.get("occurred_on") or None,
-                        contact_name=f.get("contact_name") or None,
-                        body=f.get("body") or None,
-                    )
+                    # 活動履歴は「日付＋種別」が必須。相手/内容/日付のいずれかが入っていれば
+                    # 活動登録の意図とみなし、日付か種別が欠けていればエラーで差し戻す。
+                    # 何も入っていなければ活動は作らず、状況メモ/次回MSの更新だけ行う
+                    # （このフォームはメモ/MS更新も兼ねるため。日付なし空「面談」の混入を防ぐ）。
+                    _occ = (f.get("occurred_on") or "").strip()
+                    _typ = (f.get("type") or "").strip()
+                    _contact = (f.get("contact_name") or "").strip()
+                    _body = (f.get("body") or "").strip()
+                    _wants_activity = bool(_occ or _contact or _body)
+                    if _wants_activity and (not _occ or not _typ):
+                        _deal = sfa_db.get_deal(con, did)
+                        _rt = self._qs().get("return_to", [None])[0]
+                        self._send(render(
+                            deal_form(con, _deal, return_to=_rt) if _deal
+                            else "<div class=card>商談が見つかりません</div>",
+                            flash="❌ 活動履歴の登録には「日付」と「種別」が必須です。"
+                                  "（状況メモ・次回MSだけを更新したい場合は、日付・相手・内容を空のままにしてください）"))
+                        return
+                    if _wants_activity:
+                        sfa_db.add_activity(
+                            con, deal_id=did, type=_typ, occurred_on=_occ,
+                            contact_name=_contact or None, body=_body or None,
+                        )
                     # 商談の現状メモ・次回MSを同時更新（入力があった場合のみ）
                     update_note = f.get("update_note", "").strip()
                     ms_date = f.get("next_milestone_date", "").strip()
