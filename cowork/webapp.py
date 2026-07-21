@@ -3756,6 +3756,11 @@ def data_tagging_page(con) -> str:
 def account_form(con, acc=None) -> str:
     acc = acc or {}
     cancel_url = f"/account/{acc['id']}" if acc.get("id") else "/accounts"
+    # 業界はマスタ(industries)由来のドロップダウン。マスタ外の既存値は消さないよう先頭に補完。
+    _ind_list = sfa_db.get_master_list(con, "industries") or list(sfa_db.INDUSTRIES)
+    _cur_ind = acc.get("industry") or ""
+    if _cur_ind and _cur_ind not in _ind_list:
+        _ind_list = [_cur_ind] + _ind_list
     return f"""
     <div class="card"><h2>{'アカウント編集' if acc.get('id') else '新規アカウント'}</h2>
     {_save_bar('accForm', cancel_url=cancel_url)}
@@ -3763,7 +3768,9 @@ def account_form(con, acc=None) -> str:
       <input type="hidden" name="id" value="{_esc(acc.get('id'))}">
       <label>企業名 *</label><input name="name" required value="{_esc(acc.get('name'))}">
       <div class="grid">
-        <div><label>業界</label><input name="industry" value="{_esc(acc.get('industry'))}"></div>
+        <div><label>業界</label>
+          <select name="industry">{_opt(_ind_list, _cur_ind)}</select>
+        </div>
         <div><label>企業規模</label>
           <select name="company_size">{_opt(sfa_db.COMPANY_SIZES, acc.get('company_size'))}</select>
         </div>

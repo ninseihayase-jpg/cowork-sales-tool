@@ -837,8 +837,8 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 f"• アカウント: {account_name}\n"
                 f"• 案件名: {deal_name}\n"
                 f"• create_mode: {'商談のみ' if create_mode == 'deal_only' else '商談＋活動履歴'}\n\n"
-                f"「はい」で追加確定 / 「いいえ」でアカウント名を修正（「アカウント名: 正しい名前」と返信後「確定」）\n"
-                f"「キャンセル」でやり直し")
+                f"「はい」で追加確定 / アカウント名を直すなら「アカウント名: 正しい名前」と返信→「確定」\n"
+                f"（テンプレートごと直すなら「いいえ」／「キャンセル」でやり直し）")
             if new_bot_ts:
                 con.execute(
                     "UPDATE slack_threads SET state='new_deal_acc_confirm', bot_message_ts=?, meta=? WHERE thread_ts=?",
@@ -883,6 +883,24 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
             pass
         create_mode = meta_dict.get("create_mode", "deal_only")
 
+        # アカウント名の直接上書きを受け付ける（活動履歴修正と同じ仕様）。
+        # 「アカウント名: 正しい名前」または「アカウント: 正しい名前」で修正 →「確定/ok」で反映。
+        if text_l not in ("はい", "yes", "y", "ok", "確定", "いいえ", "no", "n"):
+            _acc_ov = _extract_field(text, "アカウント名") or _extract_field(text, "アカウント")
+            if _acc_ov:
+                _new_name = _acc_ov.strip()
+                meta_dict["new_account_name"] = _new_name
+                _pf = meta_dict.get("pending_fields", {}) or {}
+                _pf["アカウント名"] = _new_name
+                meta_dict["pending_fields"] = _pf
+                con.execute("UPDATE slack_threads SET meta=? WHERE thread_ts=?",
+                            (json.dumps(meta_dict, ensure_ascii=False), thread_ts))
+                con.commit()
+                post_message(channel, thread_ts,
+                    f"✍️ アカウント名を「{_new_name}」で受け付けました。"
+                    "反映するには「確定」または「ok」と返信してください。")
+                return
+
         if text_l in ("いいえ", "no", "n"):
             # テンプレートを再投稿して pending に戻す
             from cowork import sfa_db as _sfa_db
@@ -921,12 +939,14 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 print(f"[SlackBot] post_message failed — state stays new_deal_acc_confirm: thread={thread_ts}", flush=True)
             return
 
-        if text_l not in ("はい", "yes", "y", "ok"):
+        if text_l not in ("はい", "yes", "y", "ok", "確定"):
             post_message(channel, thread_ts,
-                "「はい」でアカウント・商談を追加、「いいえ」でアカウント名を修正します。")
+                "「はい」/「確定」/「ok」でアカウント・商談を追加、"
+                "「アカウント名: 正しい名前」で名称を修正、「いいえ」でテンプレート再編集、"
+                "「キャンセル」でやり直し。")
             return
 
-        # 「はい」→ アカウント + 商談を作成
+        # 「はい」/「確定」/「ok」→ アカウント + 商談を作成
         fields = meta_dict.get("pending_fields", {})
         account_name = meta_dict.get("new_account_name", (fields.get("アカウント名") or "").strip())
         try:
