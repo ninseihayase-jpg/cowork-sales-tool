@@ -1701,7 +1701,7 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
           ("✓" if r.get("has_dev") else "—")] for r in exh_all])
     sec_exh = _audit_section(
         "展示会ファネル（新）", "lead_pattern='Exh.' が母集団。面談は『同一日=1面談』。"
-        "面談0回で次回MSが翌日以降=初回面談待ち／それ以外=不成立(要検証)。1次どまりの終了はcloseのみ理由別。"
+        "面談0回で次回MSが当日以降(これから面談予定)=初回面談待ち／それ以外=不成立(要検証)。1次どまりの終了はcloseのみ理由別。"
         "2次以降は開発案件起票有無＋現フェーズ(提案/クロージング/受注/失注)。",
         exh_summary, exh_tbl,
         warn="母集団は『lead_pattern=Exh.』タグに全依存（タグ漏れ/誤混入で全数字ズレ）。"
