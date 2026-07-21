@@ -380,20 +380,50 @@ def draft_new_deal_template(thread_text: str, create_mode: str, con=None) -> str
 
 # ── Template parser ────────────────────────────────────────────────────────
 
+# テンプレートで使う全フィールドラベル（複数行フリーテキストの終端判定に使う）。
+_FIELD_LABELS_ALL = (
+    "活動日", "種別", "相手", "内容", "ステージ", "次回MS日", "次回MSラベル", "次回MS種別",
+    "追記メモ", "アカウント名", "案件名", "担当", "メモ", "現状メモ", "目標", "予算",
+)
+# 複数行になりうるフリーテキスト欄（値が次の行以降に続く）。次のラベル/区切り/フッタまで取り込む。
+_FREE_TEXT_FIELDS = ("内容", "追記メモ", "メモ", "現状メモ")
+
+
 def _extract_field(text: str, label: str) -> str | None:
     """テンプレートまたは返信テキストからフィールド値を抽出。
-    Slackの太字 *...*（行頭の*・ラベル直後の*・値末尾の*）に対応。"""
-    m = re.search(rf"^\*?{re.escape(label)}:\*? *(.+)$", text, re.MULTILINE)
-    if not m:
-        return None
-    val = m.group(1).strip()
-    # テンプレートのヒント部分（　　＊選択肢...）を除去
-    val = re.sub(r'[\s　]+＊.*$', '', val).strip()
-    # 行全体を太字にした場合の末尾 * を除去
-    val = val.rstrip('*').strip()
-    if val in ("-", "【記載なし】", "変更なし", "（なし）"):
-        return None
-    return val
+    Slackの太字 *...*（行頭の*・ラベル直後の*・値末尾の*）に対応。
+    内容/追記メモ 等のフリーテキストは、次のラベル行や区切り/フッタまで複数行を取り込む。"""
+    lines = text.split("\n")
+    label_pat = re.compile(rf"^\*?{re.escape(label)}:\*? *(.*)$")
+    _others = [l for l in _FIELD_LABELS_ALL if l != label]
+    other_label_pat = re.compile(r"^\*?(?:" + "|".join(re.escape(l) for l in _others) + r"):")
+    for i, line in enumerate(lines):
+        m = label_pat.match(line)
+        if not m:
+            continue
+        if label in _FREE_TEXT_FIELDS:
+            # 先頭行＋後続行を、次のラベル/区切り/フッタが来るまで取り込む。
+            collected = [m.group(1)]
+            for nxt in lines[i + 1:]:
+                s = nxt.strip()
+                if other_label_pat.match(nxt):
+                    break
+                if s[:1] in ("─", "—", "―", "✅", "✏️", "🏢", "🔄") or s.startswith(("※", "例)")):
+                    break
+                collected.append(nxt)
+            val = "\n".join(collected).strip()
+            val = val.rstrip("*").strip()
+            if val in ("-", "【記載なし】", "変更なし", "（なし）", ""):
+                return None
+            return val
+        # 単一行フィールド（従来どおり）
+        val = m.group(1).strip()
+        val = re.sub(r'[\s　]+＊.*$', '', val).strip()   # ヒント（　　＊選択肢...）除去
+        val = val.rstrip('*').strip()                     # 行全体太字の末尾*除去
+        if val in ("-", "【記載なし】", "変更なし", "（なし）", ""):
+            return None
+        return val
+    return None
 
 
 def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
