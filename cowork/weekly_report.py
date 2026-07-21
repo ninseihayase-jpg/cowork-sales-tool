@@ -237,7 +237,7 @@ def exhibition_deal_rows(con) -> list[dict]:
     面談回数は『日付(occurred_on)のある面談』のみを同一日=1で数える（日付なしはカウントしない）。"""
     rows = con.execute(
         "SELECT d.id, d.deal_name, d.stage, d.status, d.close_reason, d.next_milestone_date, "
-        "d.exhibition_name, acc.name acc, "
+        "d.next_milestone_type, d.exhibition_name, acc.name acc, "
         "(SELECT COUNT(DISTINCT a.occurred_on) FROM activities a "
         "   WHERE a.deal_id=d.id AND a.type='面談' "
         "     AND a.occurred_on IS NOT NULL AND a.occurred_on != '') mtg, "
@@ -254,12 +254,13 @@ EXH_BUCKETS = [
     ("no_deal", "② 不成立（面談0・要検証）"),
     ("first_open", "③ 1次面談どまり・継続中"),
     ("first_closed", "④ 1次面談どまり・終了（理由別）"),
-    ("second_open_other", "⑤ 2次以降・進行中（要件詰め等）"),
-    ("proposal", "⑥ 2次以降・提案フェーズ"),
-    ("closing", "⑦ 2次以降・クロージング"),
-    ("won", "⑧ 2次以降・受注"),
-    ("lost", "⑨ 2次以降・失注"),
-    ("second_closed_other", "⑩ 2次以降・終了（失注以外）"),
+    ("second_appt", "⑤ 2次面談アポ済（1次実施・次回アポ確定）"),
+    ("second_open_other", "⑥ 2次以降・進行中（要件詰め等）"),
+    ("proposal", "⑦ 2次以降・提案フェーズ"),
+    ("closing", "⑧ 2次以降・クロージング"),
+    ("won", "⑨ 2次以降・受注"),
+    ("lost", "⑩ 2次以降・失注"),
+    ("second_closed_other", "⑪ 2次以降・終了（失注以外）"),
 ]
 
 
@@ -278,6 +279,11 @@ def classify_exhibition_deal(row: dict, today: str) -> str:
             return "waiting"
         return "no_deal"
     if mtg == 1:
+        # 1次面談実施済みでも、次回MSに「アポ」(=2次商談)が当日以降で入っていれば
+        # 『2次面談アポ済(実施待ち)』＝進捗扱い。1次どまりにしない（ユーザー確定 #27）。
+        _nms_type = row.get("next_milestone_type") or ""
+        if not closed and _nms_type == "アポ" and nms and nms >= today:
+            return "second_appt"
         return "first_closed" if closed else "first_open"
     # mtg >= 2（2次面談以降）
     if stage == "受注":

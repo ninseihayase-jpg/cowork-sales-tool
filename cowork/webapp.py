@@ -1656,78 +1656,80 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         f'<b>{len(open_rows)}</b>件・単発計 <b>{sum_lump:,.0f}</b>万 / 継続 <b>{sum_rec:,.0f}</b>万', open_tbl,
         warn="金額未入力(NULL)は0扱い。桁違いの仮入力・重複商談があると総額が跳ねる。単位が『万円』で統一されているか要確認。")
 
-    # 5) 展示会ファネル（コホート・新ファネル #27）
+    # 5) 展示会ファネル（クライアント側フィルタ・分類別 #27）。展示会/分類の絞り込みは遷移なしで即時。
     import cowork.weekly_report as _wr
     _today = _today_jst().isoformat()
     exh_all = _wr.exhibition_deal_rows(con)
     for _r in exh_all:
         _r["_bucket"] = _wr.classify_exhibition_deal(_r, _today)
-    # 展示会名フィルタ（__none__=未設定のみ／特定名／未指定=全展示会）。カウント前に適用。
-    _exh_names = sfa_db.list_exhibition_names(con)
-    if exh_filter == "__none__":
-        exh_all = [r for r in exh_all if not (r.get("exhibition_name") or "").strip()]
-    elif exh_filter:
-        exh_all = [r for r in exh_all if (r.get("exhibition_name") or "") == exh_filter]
     _bucket_label = dict(_wr.EXH_BUCKETS)
-    # ドリルダウンをファネルの進行順（EXH_BUCKETSの並び）に並べ替え、同一区分内は面談回数の多い順。
     _bucket_order = {k: i for i, (k, _) in enumerate(_wr.EXH_BUCKETS)}
     exh_all.sort(key=lambda r: (_bucket_order.get(r["_bucket"], 99),
                                 -(r.get("mtg") or 0), r.get("id") or 0))
-    _bucket_counts = {k: 0 for k, _ in _wr.EXH_BUCKETS}
-    for _r in exh_all:
-        _bucket_counts[_r["_bucket"]] += 1
-    # ツリー状のサマリ表示
-    _tree_lines = []
-    total = len(exh_all)
-    _mtg0 = _bucket_counts["waiting"] + _bucket_counts["no_deal"]
-    _mtg1 = _bucket_counts["first_closed"] + _bucket_counts["first_open"]
-    _mtg2 = total - _mtg0 - _mtg1
-    _dev_yes = sum(1 for r in exh_all if (r.get("mtg") or 0) >= 2 and r.get("has_dev"))
-    _dev_no = _mtg2 - _dev_yes
-    # first_closed の終了理由内訳
-    _fc_reason = {}
-    for r in exh_all:
-        if r["_bucket"] == "first_closed":
-            _cr = r.get("close_reason") or "（理由未設定）"
-            _fc_reason[_cr] = _fc_reason.get(_cr, 0) + 1
-    _fc_reason_txt = "／".join(f"{k} {v}" for k, v in _fc_reason.items()) or "—"
-    exh_summary = (
-        f'総数 <b>{total}</b>件<br>'
-        f'├ 面談実施なし <b>{_mtg0}</b>（初回面談待ち {_bucket_counts["waiting"]}／不成立(要検証) {_bucket_counts["no_deal"]}）<br>'
-        f'├ 1次面談どまり <b>{_mtg1}</b>（終了 {_bucket_counts["first_closed"]}：{_esc(_fc_reason_txt)}／継続中 {_bucket_counts["first_open"]}）<br>'
-        f'└ 2次面談に進捗 <b>{_mtg2}</b>（開発案件 あり {_dev_yes}／なし {_dev_no}）<br>'
-        f'&nbsp;&nbsp;&nbsp;→ 提案 <b>{_bucket_counts["proposal"]}</b>／クロージング <b>{_bucket_counts["closing"]}</b>'
-        f'／受注 <b>{_bucket_counts["won"]}</b>／失注 <b>{_bucket_counts["lost"]}</b>'
-        f'／終了(失注以外) {_bucket_counts["second_closed_other"]}／進行中(要件詰め等) {_bucket_counts["second_open_other"]}')
-    # 展示会名フィルタのドロップダウン（as_ofを保持）
-    _wk_v = as_of.isoformat() if hasattr(as_of, "isoformat") else ""
-    _ex_opts = ('<option value="">全展示会</option>'
-                + f'<option value="__none__"{" selected" if exh_filter == "__none__" else ""}>（展示会名 未設定）</option>'
-                + "".join(f'<option value="{_esc(n)}"{" selected" if exh_filter == n else ""}>{_esc(n)}</option>'
-                          for n in _exh_names))
-    _exh_filter_form = (
-        '<form method="get" action="/weekly-numbers/audit" class="filter-row" style="margin:0 0 10px">'
-        f'<input type="hidden" name="as_of" value="{_wk_v}">'
-        f'<label style="font-size:13px">展示会で絞り込み: '
-        f'<select name="exh" onchange="this.form.submit()">{_ex_opts}</select></label> '
-        '<a class="btn sec" href="/weekly-numbers/audit">クリア</a> '
-        '<a class="btn sec" href="/exhibition-tagging">🎪 展示会名をタグ付け</a></form>')
-    exh_tbl = _exh_filter_form + _audit_table(
-        ["区分", "展示会", "案件名", "アカウント", "面談", "ステージ", "状態", "終了理由", "次回MS", "開発"],
-        [[_esc(_bucket_label.get(r["_bucket"], r["_bucket"])),
-          _esc(r.get("exhibition_name") or "—"), _esc(r["deal_name"] or "—"),
-          _esc(r["acc"] or "—"), str(r["mtg"] or 0), _esc(r["stage"] or "—"),
-          ("クローズ" if (r.get("status") == "closed") else "open"),
-          _esc(r["close_reason"] or "—"), _esc(r["next_milestone_date"] or "—"),
-          ("✓" if r.get("has_dev") else "—")] for r in exh_all])
+    _exh_names = sfa_db.list_exhibition_names(con)
+    _total_all = len(exh_all)
+    # フィルタ選択肢（すべてクライアント側）
+    _exh_sel = ('<option value="__all__">全展示会</option><option value="__none__">（未設定）</option>'
+                + "".join(f'<option value="{_esc(n)}">{_esc(n)}</option>' for n in _exh_names))
+    _bkt_sel = ('<option value="__all__">全分類</option>'
+                + "".join(f'<option value="{k}">{_esc(lbl)}</option>' for k, lbl in _wr.EXH_BUCKETS))
+    _cnt_html = "".join(
+        f'<span style="display:inline-block;margin:0 14px 4px 0;font-size:12px">'
+        f'{_esc(lbl)}: <b id="exc_{k}">0</b></span>' for k, lbl in _wr.EXH_BUCKETS)
+    _js_cnt = "".join(
+        f"var _c=document.getElementById('exc_{k}');if(_c)_c.textContent=(counts['{k}']||0);"
+        for k, _l in _wr.EXH_BUCKETS)
+    _thead = "".join(_sticky_th(h) for h in
+                     ["区分", "展示会", "案件名", "アカウント", "面談", "ステージ", "状態", "終了理由", "次回MS", "開発"])
+    _exrows = "".join(
+        f'<tr class="exrow" data-exh="{_esc(r.get("exhibition_name") or "")}" data-bucket="{r["_bucket"]}">'
+        f'<td>{_esc(_bucket_label.get(r["_bucket"], r["_bucket"]))}</td>'
+        f'<td>{_esc(r.get("exhibition_name") or "—")}</td>'
+        f'<td>{_esc(r["deal_name"] or "—")}</td><td>{_esc(r["acc"] or "—")}</td>'
+        f'<td>{r["mtg"] or 0}</td><td>{_esc(r["stage"] or "—")}</td>'
+        f'<td>{"クローズ" if (r.get("status") == "closed") else "open"}</td>'
+        f'<td>{_esc(r["close_reason"] or "—")}</td><td>{_esc(r["next_milestone_date"] or "—")}</td>'
+        f'<td>{"✓" if r.get("has_dev") else "—"}</td></tr>'
+        for r in exh_all) or '<tr><td colspan=10 class=muted>展示会由来(lead_pattern=Exh.)の商談はありません。</td></tr>'
+    _exh_detail = f"""
+      <div class="filter-row" style="margin:0 0 8px">
+        <label style="font-size:13px">展示会: <select id="exhSel" onchange="exhFilter()">{_exh_sel}</select></label>
+        <label style="font-size:13px">分類: <select id="bktSel" onchange="exhFilter()">{_bkt_sel}</select></label>
+        <button class="btn sec" type="button"
+          onclick="document.getElementById('exhSel').value='__all__';document.getElementById('bktSel').value='__all__';exhFilter()">クリア</button>
+        <a class="btn sec" href="/exhibition-tagging">🎪 展示会名をタグ付け</a>
+        <span id="exhVis" class="muted" style="font-size:12px;align-self:center"></span>
+      </div>
+      <div style="margin:0 0 10px;padding:8px 10px;background:#f8fafc;border-radius:6px">{_cnt_html}</div>
+      <div style="overflow:auto;max-height:64vh"><table id="exhTbl" style="min-width:980px">
+      <tr>{_thead}</tr>{_exrows}</table></div>
+      <script>
+      function exhFilter() {{
+        var ex = document.getElementById('exhSel').value;
+        var bk = document.getElementById('bktSel').value;
+        var counts = {{}}; var cohort = 0; var vis = 0;
+        document.querySelectorAll('#exhTbl tr.exrow').forEach(function(tr) {{
+          var e = tr.getAttribute('data-exh') || ''; var b = tr.getAttribute('data-bucket') || '';
+          var inC = (ex === '__all__') || (ex === '__none__' ? e === '' : e === ex);
+          if (inC) {{ cohort++; counts[b] = (counts[b] || 0) + 1; }}
+          var show = inC && (bk === '__all__' || b === bk);
+          tr.style.display = show ? '' : 'none'; if (show) vis++;
+        }});
+        {_js_cnt}
+        var v = document.getElementById('exhVis');
+        if (v) v.textContent = '対象 ' + cohort + '件 / 表示 ' + vis + '件';
+      }}
+      exhFilter();
+      </script>
+    """
     sec_exh = _audit_section(
-        "展示会ファネル（新）", "lead_pattern='Exh.' が母集団。面談は『同一日=1面談』。"
-        "面談0回で次回MSが当日以降(これから面談予定)=初回面談待ち／それ以外=不成立(要検証)。1次どまりの終了はcloseのみ理由別。"
-        "2次以降は開発案件起票有無＋現フェーズ(提案/クロージング/受注/失注)。",
-        exh_summary, exh_tbl,
-        warn="母集団は『lead_pattern=Exh.』タグに全依存（タグ漏れ/誤混入で全数字ズレ）。"
-             "『不成立(要検証)』＝面談0回だが初回面談待ちでない件。中身(closed/次回MS無し等)を区分・状態・次回MS列で確認し、"
-             "想定外のケースがあれば分類ルールを見直す。別の展示会が混在する場合は上の絞り込み／🎪タグ付けで展示会別に見る。")
+        "展示会ファネル（分類・展示会でフィルタ／画面遷移なし）",
+        "lead_pattern='Exh.' が母集団。面談は『同一日=1面談』(日付なしは除外)。面談0回で次回MS当日以降=初回面談待ち。"
+        "1次実施でも次回MSが『アポ』(2次商談)なら『2次面談アポ済』＝進捗扱い。展示会/分類の選択は即時フィルタ(遷移なし)。",
+        f'総数 <b>{_total_all}</b>件（下の分類別カウントは選択中の展示会に連動）',
+        _exh_detail,
+        warn="母集団は『lead_pattern=Exh.』タグに全依存。『不成立(要検証)』＝面談0回だが初回面談待ちでない件"
+             "(closed/次回MS無し等)。分類を選ぶとその区分の行だけ表示。展示会名は🎪タグ付けで付与。")
 
     # 6) ステージ別（open）
     stage_rows = con.execute(

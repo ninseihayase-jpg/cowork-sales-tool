@@ -304,3 +304,20 @@ def test_weekly_numbers_and_wow(con, acc_id):
     assert r["wow"]["available"] is True
     assert r["wow"]["open_deals"] == 0            # 今週1 - 先週1
     assert r["wow"]["pipeline_lump"] == 200       # 500 - 300
+
+
+def test_exhibition_second_appt_bucket(con, acc_id):
+    """1次面談実施済みでも次回MSがアポ(2次商談・当日以降)なら second_appt(進捗)扱い。"""
+    mk = lambda **k: sfa_db.upsert_deal(con, account_id=acc_id, lead_pattern="Exh.", **k)
+    # 1次面談1回＋次回MSがアポ(未来) → second_appt（1次どまりにしない）
+    d = mk(deal_name="2次アポ済", stage="初回アポ実施", status="open",
+           next_milestone_date="2026-07-20", next_milestone_type="アポ")
+    con.execute("INSERT INTO activities(deal_id,type,occurred_on) VALUES(?,?,?)", (d, "面談", "2026-07-05"))
+    # 1次面談1回＋次回MSがタスク → first_open（アポでないので1次どまり継続中）
+    d2 = mk(deal_name="1次タスク", stage="初回アポ実施", status="open",
+            next_milestone_date="2026-07-20", next_milestone_type="タスク")
+    con.execute("INSERT INTO activities(deal_id,type,occurred_on) VALUES(?,?,?)", (d2, "面談", "2026-07-05"))
+    con.commit()
+    exh = wr._exhibition_funnel(con, today="2026-07-10")
+    assert exh["counts"]["second_appt"] == 1
+    assert exh["counts"]["first_open"] == 1
