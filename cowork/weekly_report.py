@@ -249,18 +249,19 @@ def exhibition_deal_rows(con) -> list[dict]:
 
 # 新ファネルのバケット定義（#27でユーザー確定）。ファネルの進行順（浅い→深い→成果）で並べる。
 # この順が監査ドリルダウンの並び順にもなる。
+# ⑤以降(2次面談アポ取得以降)はステージ管理のみで分類する（#27でユーザー確定）。
 EXH_BUCKETS = [
     ("waiting", "① 初回面談待ち（面談0・進行中）"),
     ("no_deal", "② 不成立（面談0・要検証）"),
     ("first_open", "③ 1次面談どまり・継続中"),
     ("first_closed", "④ 1次面談どまり・終了（理由別）"),
-    ("second_appt", "⑤ 2次面談アポ済（1次実施・次回アポ確定）"),
-    ("second_open_other", "⑥ 2次以降・進行中（要件詰め等）"),
-    ("proposal", "⑦ 2次以降・提案フェーズ"),
-    ("closing", "⑧ 2次以降・クロージング"),
-    ("won", "⑨ 2次以降・受注"),
-    ("lost", "⑩ 2次以降・失注"),
-    ("second_closed_other", "⑪ 2次以降・終了（失注以外）"),
+    ("req", "⑤ 2次以降・要件詰め"),
+    ("proposal", "⑥ 2次以降・提案"),
+    ("closing", "⑦ 2次以降・クロージング"),
+    ("won", "⑧ 2次以降・受注"),
+    ("lost", "⑨ 2次以降・失注"),
+    ("adv_ended", "⑩ 2次以降・終了（失注以外）"),
+    ("review", "⑪ 要検証（2次以降だがステージが初回アポ実施/保留/未設定）"),
 ]
 
 
@@ -271,6 +272,7 @@ def classify_exhibition_deal(row: dict, today: str) -> str:
     stage = row.get("stage") or ""
     cr = row.get("close_reason") or ""
     nms = row.get("next_milestone_date") or ""
+    nms_type = row.get("next_milestone_type") or ""
     closed = (status == "closed")
     if mtg == 0:
         # 面談0回: 次回MSが当日以降(これから面談予定)＝初回面談待ち、それ以外＝不成立(要検証)。
@@ -278,23 +280,25 @@ def classify_exhibition_deal(row: dict, today: str) -> str:
         if not closed and nms and nms >= today:
             return "waiting"
         return "no_deal"
-    if mtg == 1:
-        # 1次面談実施済みでも、次回MSに「アポ」(=2次商談)が当日以降で入っていれば
-        # 『2次面談アポ済(実施待ち)』＝進捗扱い。1次どまりにしない（ユーザー確定 #27）。
-        _nms_type = row.get("next_milestone_type") or ""
-        if not closed and _nms_type == "アポ" and nms and nms >= today:
-            return "second_appt"
+    # 「2次面談アポ取得以降」の進捗判定（#27）:
+    #   面談2回以上実施済み、または 1次実施済み＆次回MSが『アポ』(=2次商談)で当日以降。
+    progressed = (mtg >= 2) or (mtg == 1 and not closed and nms_type == "アポ" and nms and nms >= today)
+    if not progressed:
+        # 面談1回で、2次アポ未取得（次回MSがアポでない/過去/未設定）＝1次面談どまり。
         return "first_closed" if closed else "first_open"
-    # mtg >= 2（2次面談以降）
+    # ⑤以降はステージ管理のみで分類。基本は要件詰め以降のはず。
     if stage == "受注":
         return "won"
     if closed:
-        return "lost" if cr == "失注" else "second_closed_other"
+        return "lost" if cr == "失注" else "adv_ended"
     if stage == "クロージング":
         return "closing"
     if stage == "提案":
         return "proposal"
-    return "second_open_other"
+    if stage == "要件詰め":
+        return "req"
+    # 進捗しているのにステージが初回アポ実施/保留中/未設定のまま＝要検証。
+    return "review"
 
 
 def _exhibition_funnel(con, today: str | None = None) -> dict:

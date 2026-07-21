@@ -306,18 +306,24 @@ def test_weekly_numbers_and_wow(con, acc_id):
     assert r["wow"]["pipeline_lump"] == 200       # 500 - 300
 
 
-def test_exhibition_second_appt_bucket(con, acc_id):
-    """1次面談実施済みでも次回MSがアポ(2次商談・当日以降)なら second_appt(進捗)扱い。"""
+def test_exhibition_progressed_by_stage(con, acc_id):
+    """⑤以降(2次アポ取得以降)はステージ管理のみ。進捗してるのに初回アポ実施のままは review(要検証)。
+    1次実施＋次回MSタスクは1次どまり継続中。1次実施＋2次アポ＆ステージ要件詰めは req。"""
     mk = lambda **k: sfa_db.upsert_deal(con, account_id=acc_id, lead_pattern="Exh.", **k)
-    # 1次面談1回＋次回MSがアポ(未来) → second_appt（1次どまりにしない）
-    d = mk(deal_name="2次アポ済", stage="初回アポ実施", status="open",
-           next_milestone_date="2026-07-20", next_milestone_type="アポ")
-    con.execute("INSERT INTO activities(deal_id,type,occurred_on) VALUES(?,?,?)", (d, "面談", "2026-07-05"))
-    # 1次面談1回＋次回MSがタスク → first_open（アポでないので1次どまり継続中）
-    d2 = mk(deal_name="1次タスク", stage="初回アポ実施", status="open",
-            next_milestone_date="2026-07-20", next_milestone_type="タスク")
+    # 1次実施＋2次アポ(未来)だがステージ初回アポ実施のまま → review(要検証)
+    d1 = mk(deal_name="進捗だが初回アポのまま", stage="初回アポ実施", status="open",
+            next_milestone_date="2026-07-20", next_milestone_type="アポ")
+    con.execute("INSERT INTO activities(deal_id,type,occurred_on) VALUES(?,?,?)", (d1, "面談", "2026-07-05"))
+    # 1次実施＋2次アポ＋ステージ要件詰め → req
+    d2 = mk(deal_name="要件詰め進行", stage="要件詰め", status="open",
+            next_milestone_date="2026-07-20", next_milestone_type="アポ")
     con.execute("INSERT INTO activities(deal_id,type,occurred_on) VALUES(?,?,?)", (d2, "面談", "2026-07-05"))
+    # 1次実施＋次回MSタスク → first_open（2次アポ未取得＝1次どまり継続中）
+    d3 = mk(deal_name="1次タスク", stage="初回アポ実施", status="open",
+            next_milestone_date="2026-07-20", next_milestone_type="タスク")
+    con.execute("INSERT INTO activities(deal_id,type,occurred_on) VALUES(?,?,?)", (d3, "面談", "2026-07-05"))
     con.commit()
-    exh = wr._exhibition_funnel(con, today="2026-07-10")
-    assert exh["counts"]["second_appt"] == 1
-    assert exh["counts"]["first_open"] == 1
+    c = wr._exhibition_funnel(con, today="2026-07-10")["counts"]
+    assert c["review"] == 1
+    assert c["req"] == 1
+    assert c["first_open"] == 1
