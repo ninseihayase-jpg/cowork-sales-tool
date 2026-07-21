@@ -280,8 +280,8 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
         f"現状メモ: {cur_memo}",
         "",
         "─── 今回の活動 ───",
-        f"活動日: {v(parsed.get('activity_date'))}",
-        f"種別: {v(parsed.get('activity_type'))}　　＊{' / '.join(_atypes)}",
+        f"*活動日: {v(parsed.get('activity_date'))}*",
+        f"*種別: {v(parsed.get('activity_type'))}*　　＊{' / '.join(_atypes)}",
         f"相手: {v(parsed.get('contact_name'))}",
         f"内容: {v(parsed.get('activity_content'))}",
         "",
@@ -362,8 +362,8 @@ def draft_new_deal_template(thread_text: str, create_mode: str, con=None) -> str
         lines += [
             "",
             "─── 活動履歴 ───",
-            f"活動日: {v(parsed.get('activity_date'))}",
-            f"種別: {v(parsed.get('activity_type'))}　　＊{' / '.join(_atypes)}",
+            f"*活動日: {v(parsed.get('activity_date'))}*",
+            f"*種別: {v(parsed.get('activity_type'))}*　　＊{' / '.join(_atypes)}",
             f"相手: {v(parsed.get('contact_name'))}",
             f"内容: {v(parsed.get('activity_content'))}",
         ]
@@ -921,8 +921,8 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 lines += [
                     "",
                     "─── 活動履歴 ───",
-                    f"活動日: {old_fields.get('活動日', '【記載なし】')}",
-                    f"種別: {old_fields.get('種別', '【記載なし】')}　　＊{' / '.join(_atypes)}",
+                    f"*活動日: {old_fields.get('活動日', '【記載なし】')}*",
+                    f"*種別: {old_fields.get('種別', '【記載なし】')}*　　＊{' / '.join(_atypes)}",
                     f"相手: {old_fields.get('相手', '【記載なし】')}",
                     f"内容: {old_fields.get('内容', '【記載なし】')}",
                 ]
