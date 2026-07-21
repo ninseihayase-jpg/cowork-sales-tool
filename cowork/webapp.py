@@ -4494,9 +4494,20 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         _acc_nm = next((a["name"] for a in accounts if a["id"] == deal.get("account_id")), "")
         _sb_title = f"SFA#{deal['id']}　{_acc_nm}／{deal.get('deal_name') or ''}"
         _st_label = "クローズ済" if deal.get("status") == "closed" else "進行中"
+        if deal.get("status") == "closed":
+            # クローズ済みは「終了理由」をその場で修正できる（リード化時の理由選択ミスを直す導線）。
+            _cr_cur = deal.get("close_reason") or ""
+            _cr_opts = "".join(
+                f'<option value="{_esc(v)}"{" selected" if v == _cr_cur else ""}>{_esc(v)}</option>'
+                for v in sfa_db.CLOSE_REASONS)
+            _did_js = deal["id"]
+            _cr_ctl = (f'<span class="muted" style="font-size:11px">終了理由</span>'
+                       f"<select onchange=\"updateDealField({_did_js}, 'close_reason', this.value)\" "
+                       f'style="font-size:12px;padding:1px 4px"><option value=""></option>{_cr_opts}</select>')
+        else:
+            _cr_ctl = '<span class="muted" style="font-size:11px">クローズは画面下部の「クローズ」ボタンから</span>'
         _sb_extra = (f'<span class="muted" style="font-size:11px">ステータス</span>'
-                     f'<span class="stage">{_st_label}</span>'
-                     f'<span class="muted" style="font-size:11px">クローズは画面下部の「クローズ」ボタンから</span>')
+                     f'<span class="stage">{_st_label}</span>{_cr_ctl}')
     if not deal.get("id"):
         new_acc_html = (
             '<div style="margin-top:5px;text-align:left">'
