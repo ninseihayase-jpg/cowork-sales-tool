@@ -428,3 +428,18 @@ def test_new_deals_requires_meeting(con):
 
     flow = weekly_report._flow_for_week(con, "2026-07-13", "2026-07-19")
     assert flow["new_deals"] == 1  # d_mtgのみ
+
+
+def test_pipeline_counts_only_requirement_stage_onward(con):
+    """パイプライン件数・金額は『要件詰め以降』(要件詰め/提案/クロージング)のみ集計（#27）。"""
+    from cowork import weekly_report
+    acc = sfa_db.upsert_account(con, id=None, name="PL社")
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="初回", stage="初回アポ実施", value_lumpsum=100)
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="要件", stage="要件詰め", value_lumpsum=200)
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="提案", stage="提案", value_lumpsum=300)
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="クロ", stage="クロージング", value_lumpsum=400)
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="受注", stage="受注", value_lumpsum=500)
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="保留", stage="保留中", value_lumpsum=600)
+    m = weekly_report.compute_snapshot_metrics(con)
+    assert m["open_deals"] == 3               # 要件詰め/提案/クロージングのみ
+    assert m["pipeline_lump"] == 200 + 300 + 400  # 初回アポ/受注/保留中は除外

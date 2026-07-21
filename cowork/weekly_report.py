@@ -34,9 +34,12 @@ def _week_bounds(as_of: date | None = None) -> tuple[str, str, str]:
 def compute_snapshot_metrics(con) -> dict:
     """現時点のストック指標（前週比対象）を算出して返す。"""
     m: dict = {}
+    # パイプライン（件数・金額）は「要件詰め以降」に限定（#27）。
+    _pipe_ph = ", ".join("?" for _ in sfa_db.PIPELINE_STAGES)
     row = con.execute(
         f"SELECT COUNT(*) n, COALESCE(SUM(value_lumpsum),0) lump, "
-        f"COALESCE(SUM(value_recurring),0) rec FROM deals d WHERE {_OPEN}").fetchone()
+        f"COALESCE(SUM(value_recurring),0) rec FROM deals d "
+        f"WHERE {_OPEN} AND d.stage IN ({_pipe_ph})", list(sfa_db.PIPELINE_STAGES)).fetchone()
     m["open_deals"] = row["n"]
     m["pipeline_lump"] = row["lump"]
     m["pipeline_recurring"] = row["rec"]
@@ -109,9 +112,11 @@ def compute_weekly_numbers(con, as_of: date | None = None) -> dict:
         f"SELECT COALESCE(stage,'未設定') s, COUNT(*) n, COALESCE(SUM(value_lumpsum),0) lump, "
         f"COALESCE(SUM(value_recurring),0) rec FROM deals d WHERE {_OPEN} "
         f"GROUP BY stage ORDER BY n DESC")]
+    _pipe_ph = ", ".join("?" for _ in sfa_db.PIPELINE_STAGES)
     stock_row = con.execute(
         f"SELECT COUNT(*) n, COALESCE(SUM(value_lumpsum),0) lump, "
-        f"COALESCE(SUM(value_recurring),0) rec FROM deals d WHERE {_OPEN}").fetchone()
+        f"COALESCE(SUM(value_recurring),0) rec FROM deals d "
+        f"WHERE {_OPEN} AND d.stage IN ({_pipe_ph})", list(sfa_db.PIPELINE_STAGES)).fetchone()
     closing = [dict(r) for r in con.execute(
         f"SELECT a.name AS account, d.deal_name, d.value_lumpsum AS lump, "
         f"d.next_milestone_date AS ms_date, d.owner FROM deals d "
@@ -188,11 +193,10 @@ def render_number_rail(nums: dict) -> str:
     parts.append(stat("面談",
                       f'{_num(flow.get("meetings", 0))}<span class="ar">/{_num(flow.get("meeting_companies", 0))}社</span>',
                       "件", flow_d("meetings")))
-    parts.append(stat("新規リード", _num(flow.get("new_leads", 0)), "件", flow_d("new_leads")))
     parts.append(stat("新規商談", _num(flow.get("new_deals", 0)), "件", flow_d("new_deals")))
 
     parts.append('<div class="rail-h sub">パイプライン</div>')
-    parts.append(stat("進行中の商談", _num(stock.get("open_deals", 0)), "件",
+    parts.append(stat("商談（要件詰め〜）", _num(stock.get("open_deals", 0)), "件",
                       _wow_ar(wow.get("open_deals")) if wow_ok else ""))
     parts.append(stat("金額（一括）", _num(stock.get("pipeline_lump", 0)), "万円",
                       _wow_ar(wow.get("pipeline_lump")) if wow_ok else ""))

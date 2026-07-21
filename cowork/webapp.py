@@ -1606,19 +1606,7 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         warn="occurred_on 未入力の面談はここに出ません。面談を activities に『面談』種別で登録しているか要確認。"
              "『重複』列が付いた行は同一商談・同日のため件数上は1件に集約しています。")
 
-    # 2) 新規リード（フロー）
-    lead_rows = con.execute(
-        "SELECT created_at, name, source, lead_status FROM leads "
-        "WHERE substr(created_at,1,10) BETWEEN ? AND ? ORDER BY created_at", (ws, we)).fetchall()
-    lead_tbl = _audit_table(
-        ["登録日時", "リード名", "経路", "状態"],
-        [[_esc((r["created_at"] or "")[:16]), _esc(r["name"] or "—"), _esc(r["source"] or "—"),
-          _esc(r["lead_status"] or "—")] for r in lead_rows])
-    sec_lead = _audit_section(
-        "新規リード", f"leads.created_at（登録日時）の日付が {ws}〜{we}。",
-        f'<b>{len(lead_rows)}</b>件', lead_tbl,
-        warn="created_at は『SFAへ登録した日時』。過去分を後からまとめて登録すると、その週の新規として二重に膨らむ。"
-             "実際の獲得日で数えたい場合は基準列の見直しが必要（#27）。")
+    # 2) 新規リードは集計不要（#27・ユーザー確定）のため監査ページから除外。
 
     # 3) 新規商談（フロー）＝「その週に初めて“面談”した商談」（#27で定義変更）
     deal_rows = con.execute(
@@ -1639,11 +1627,13 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         warn="面談(type='面談')が1件も登録されていない商談は『新規』に数えられない。メモ/メール等の"
              "非面談活動が初回でも新規には数えない（継続案件のメモ起点の誤カウントを防ぐ）。occurred_on が空の面談は無視。")
 
-    # 4) パイプライン（ストック＝現在のopen商談）
+    # 4) パイプライン（ストック＝open かつ「要件詰め以降」の商談。#27でユーザー確定）
+    _pipe_ph = ", ".join("?" for _ in sfa_db.PIPELINE_STAGES)
     open_rows = con.execute(
         f"SELECT acc.name acc, d.deal_name, d.stage, d.value_lumpsum lump, d.value_recurring rec "
-        f"FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id WHERE {open_cond} "
-        f"ORDER BY d.value_lumpsum DESC").fetchall()
+        f"FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id "
+        f"WHERE {open_cond} AND d.stage IN ({_pipe_ph}) "
+        f"ORDER BY d.value_lumpsum DESC", list(sfa_db.PIPELINE_STAGES)).fetchall()
     sum_lump = sum((r["lump"] or 0) for r in open_rows)
     sum_rec = sum((r["rec"] or 0) for r in open_rows)
     open_tbl = _audit_table(
@@ -1651,7 +1641,9 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         [[_esc(r["acc"] or "—"), _esc(r["deal_name"] or "—"), _esc(r["stage"] or "—"),
           f'{(r["lump"] or 0):,.0f}', f'{(r["rec"] or 0):,.0f}'] for r in open_rows])
     sec_pipe = _audit_section(
-        "パイプライン（進行中商談）", f"status='open'(またはNULL)の全商談。金額は value_lumpsum / value_recurring の合計。",
+        "パイプライン（要件詰め以降）",
+        f"status='open'(またはNULL) かつ ステージが {' / '.join(sfa_db.PIPELINE_STAGES)} の商談。"
+        "初回アポ実施・受注・保留中は除外。金額は提案金額（value_lumpsum 単発 / value_recurring 継続月）の合計＝顧客予算(client_budget)ではない。",
         f'<b>{len(open_rows)}</b>件・単発計 <b>{sum_lump:,.0f}</b>万 / 継続 <b>{sum_rec:,.0f}</b>万', open_tbl,
         warn="金額未入力(NULL)は0扱い。桁違いの仮入力・重複商談があると総額が跳ねる。単位が『万円』で統一されているか要確認。")
 
@@ -1705,7 +1697,7 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         <a class="btn sec" href="/weekly-numbers/audit">今週</a>
       </form>
     </div>
-    {sec_mtg}{sec_lead}{sec_deal}{sec_pipe}{sec_exh}{sec_stage}"""
+    {sec_mtg}{sec_deal}{sec_pipe}{sec_exh}{sec_stage}"""
 
 
 def sync_health_page(con, theme_client) -> str:
