@@ -3868,13 +3868,14 @@ def data_tagging_page(con) -> str:
 
 
 def exhibition_tagging_page(con) -> str:
-    """展示会由来商談(lead_pattern='Exh.')に「どの展示会か」を一括タグ付けする画面。
-    各行の入力欄で既存名を選ぶ/新規入力→フォーカスアウトで即保存(/deal/{id}/field, ajax)。"""
+    """展示会由来商談(lead_pattern='Exh.')に「どの展示会か」をタグ付けする画面。
+    各行の入力欄で即保存(ajax)。または複数選択→展示会名を一括設定(POST /exhibition-tagging/bulk)。
+    並びは登録が古い順(created_at昇順)。"""
     deals = [dict(r) for r in con.execute(
         "SELECT d.id, d.deal_name, d.exhibition_name, acc.name AS account_name "
         "FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id "
         "WHERE d.lead_pattern='Exh.' "
-        "ORDER BY (d.exhibition_name IS NULL OR d.exhibition_name=''), d.exhibition_name, acc.name")]
+        "ORDER BY d.created_at ASC, d.id ASC")]
     names = sfa_db.list_exhibition_names(con)
     _dl = "".join(f'<option value="{_esc(n)}">' for n in names)
     untagged = sum(1 for d in deals if not (d.get("exhibition_name") or "").strip())
@@ -3883,22 +3884,35 @@ def exhibition_tagging_page(con) -> str:
         did = d["id"]
         rows.append(
             f'<tr id="exrow_{did}">'
+            f'<td style="width:28px"><input type="checkbox" class="ex-chk" name="ids" value="{did}"></td>'
             f'<td><a href="/deal/{did}?return_to=%2Fexhibition-tagging">{_esc(d.get("account_name") or "—")}</a>'
             f'<br><span class="muted" style="font-size:.85em">{_esc(d.get("deal_name") or "")}</span></td>'
             f'<td><input type="text" id="exname_{did}" list="exNames" value="{_esc(d.get("exhibition_name") or "")}" '
             f'placeholder="展示会名を入力/選択" style="font-size:12px;padding:2px 6px;width:240px" '
             f'onchange="exSave({did})"> '
             f'<span id="exok_{did}" style="font-size:11px"></span></td></tr>')
-    body_rows = "".join(rows) or '<tr><td colspan=2 class=muted>展示会由来(lead_pattern=Exh.)の商談はありません。</td></tr>'
+    body_rows = "".join(rows) or '<tr><td colspan=3 class=muted>展示会由来(lead_pattern=Exh.)の商談はありません。</td></tr>'
     return f"""
     <div class="card">
       <h2>🎪 展示会名タグ付け（{len(deals)}件／未設定 {untagged}）</h2>
-      <p class="muted" style="margin:0 0 8px">展示会由来(lead_pattern='Exh.')の商談に「どの展示会か」を付けます。
-      入力欄で既存名を選ぶか新しい名前を入力→欄から離れると即保存。週次レポートの展示会ファネルを展示会別に見られます。</p>
+      <p class="muted" style="margin:0 0 8px">展示会由来(lead_pattern='Exh.')の商談に「どの展示会か」を付けます。登録が古い順。
+      個別は入力欄で即保存。まとめて付けるときは行を選択→下の「一括設定」。</p>
       <datalist id="exNames">{_dl}</datalist>
-      <div style="overflow:auto;max-height:74vh">
-      <table style="min-width:640px"><tr>{_sticky_th('商談')}{_sticky_th('展示会名')}</tr>
+      <form method="post" action="/exhibition-tagging/bulk">
+      <div class="filter-row" style="margin:0 0 10px">
+        <input type="text" name="exhibition_name" list="exNames" placeholder="一括設定する展示会名"
+          style="max-width:260px">
+        <button class="btn" type="submit"
+          onclick="return exBulkConfirm(this)">選択した件に一括設定</button>
+        <span class="muted" style="font-size:12px;align-self:center">＝チェックした行すべてにこの展示会名を設定</span>
+      </div>
+      <div style="overflow:auto;max-height:70vh">
+      <table style="min-width:680px"><tr>
+        <th class="sticky" style="width:28px"><input type="checkbox" id="exChkAll"
+          onchange="document.querySelectorAll('.ex-chk').forEach(function(c){{c.checked=this.checked;}}.bind(this))"></th>
+        {_sticky_th('商談')}{_sticky_th('展示会名')}</tr>
       {body_rows}</table></div>
+      </form>
     </div>
     <script>
     function exSave(id) {{
@@ -3910,6 +3924,12 @@ def exhibition_tagging_page(con) -> str:
         .then(r => r.json()).then(d => {{ if (s) {{ s.textContent = d.ok ? '✓ 保存' : 'エラー';
           s.style.color = d.ok ? '#166534' : '#c53030'; }} }})
         .catch(() => {{ if (s) {{ s.textContent = '通信エラー'; s.style.color = '#c53030'; }} }});
+    }}
+    function exBulkConfirm(btn) {{
+      var n = document.querySelectorAll('.ex-chk:checked').length;
+      if (!n) {{ alert('対象の行を選択してください'); return false; }}
+      var name = btn.form.exhibition_name.value.trim();
+      return confirm('選択した ' + n + ' 件の展示会名を「' + (name || '(空=クリア)') + '」に設定します。よろしいですか？');
     }}
     </script>"""
 
@@ -9033,6 +9053,24 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if ids:
                         con.commit()
                     self._redirect("/accounts")
+
+                elif path == "/exhibition-tagging/bulk":
+                    # 選択した展示会由来商談に展示会名を一括設定（空なら未設定へクリア）。
+                    _ids = [int(i) for i in f_list.get("ids", []) if str(i).isdigit()]
+                    _exname = (f.get("exhibition_name") or "").strip() or None
+                    _n = 0
+                    for _did in _ids:
+                        con.execute("UPDATE deals SET exhibition_name=? WHERE id=?", (_exname, _did))
+                        _n += 1
+                        if theme_client is not None:
+                            try:
+                                theme_link.sync_deal(theme_client, con, _did)
+                            except Exception as _exc:  # noqa: BLE001
+                                print(f"[theme_link] sync_deal failed (exhibition bulk): {_exc}")
+                    if _ids:
+                        con.commit()
+                    self._send(render(exhibition_tagging_page(con),
+                                      flash=f"{_n}件の展示会名を「{_exname or '(未設定)'}」に設定しました。"))
 
                 elif path == "/accounts/merge":
                     try:
