@@ -526,3 +526,21 @@ def test_resolve_default_deals_tab_fallback(tmp_dir):
         assert webapp.resolve_default_deals_tab(con, None) == "overdue"
     finally:
         con.close()
+
+
+def test_resolve_default_tab_excludes_today_for_fallback(tmp_dir):
+    """当日ちょうどのMSしか無い場合、既定タブは overdue でなく active（当日除外で0件）。"""
+    from datetime import date as _d
+    db_path = str(tmp_dir / "tabtoday.db")
+    sfa_db.init_db(db_path)
+    con = sfa_db.connect(db_path)
+    try:
+        acc = sfa_db.upsert_account(con, id=None, name="当日社")
+        today = _d.today().isoformat()  # webapp側は_today_jstだが判定関数はDB件数のみ見る
+        sfa_db.upsert_deal(con, account_id=acc, deal_name="当日MSのみ", stage="提案",
+                           next_milestone_date=today)
+        # 当日MSしか無い → 当日除外の要フォローは0 → active へフォールバック
+        # （resolve内部は_today_jst基準。ここでは当日=今日として判定が active になることを確認）
+        assert webapp.resolve_default_deals_tab(con, None) == "active"
+    finally:
+        con.close()

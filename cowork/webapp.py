@@ -3448,13 +3448,14 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
 
 def resolve_default_deals_tab(con, explicit_tab: str | None, owner: str | None = None) -> str:
     """商談一覧のデフォルトタブを決める。ユーザーがtabを明示していればそれを尊重。
-    未指定のときは「MS超過(overdue)」を既定とするが、MS超過(要フォロー)が0件なら
-    「進行中(active)」へフォールバックする（空タブを見せない）。"""
+    未指定のときは「MS超過(overdue)」を既定とするが、MS超過は既定で「当日MSを除く」ため、
+    当日ちょうどのMSを除いた要フォローが0件なら「進行中(active)」へフォールバックする
+    （＝当日MSしか無い/滞留も無いなら空のMS超過タブを見せない）。"""
     if explicit_tab:
         return explicit_tab
     try:
         return "overdue" if sfa_db.list_overdue_deals(
-            con, owner=owner, today=_today_jst().isoformat()) else "active"
+            con, owner=owner, today=_today_jst().isoformat(), exclude_today=True) else "active"
     except Exception:  # noqa: BLE001 — 集計失敗時は従来どおりoverdue
         return "overdue"
 
@@ -3572,21 +3573,21 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
     )
     # 選択するだけで自動絞り込み（onchangeで即送信・「担当で絞り込み」ボタンは廃止）
     # フィルタUIの並びは全タブ統一（サーバ側select群 → 次回MS種別 → 🔍アカウント検索 → リセット）。
-    # 「当日MSを除く」トグル。ON/OFFで同じタブの別URLへ（owner/ms_typeは維持）。
+    # 「当日MSを除く」トグル。既定は除外(exclude_today=True)。含める場合は exclude_today=0 を明示。
     _base_q = {"tab": "overdue", "owner": owner or "", "ms_type": ms_type or ""}
     if exclude_today:
-        _toggle_href = "/deals?" + urllib.parse.urlencode({**_base_q})
-        _toggle_btn = (f'<a class="btn" href="{_toggle_href}" '
-                       f'style="background:#2563eb" title="当日ちょうどのMSも含めて表示に戻す">'
+        _toggle_href = "/deals?" + urllib.parse.urlencode({**_base_q, "exclude_today": "0"})
+        _toggle_btn = (f'<a class="btn sec" href="{_toggle_href}" '
+                       f'title="当日ちょうどのMSも含めて表示する">'
                        f'🕑 当日MSを含める</a>')
     else:
         _toggle_href = "/deals?" + urllib.parse.urlencode({**_base_q, "exclude_today": "1"})
-        _toggle_btn = (f'<a class="btn sec" href="{_toggle_href}" '
-                       f'title="次回MS日が当日ちょうどの商談を隠し、前日以前の超過のみ表示">'
+        _toggle_btn = (f'<a class="btn" href="{_toggle_href}" '
+                       f'style="background:#2563eb" title="次回MS日が当日ちょうどの商談を隠し、前日以前の超過のみ表示">'
                        f'🕑 当日MSを除く</a>')
     form = f"""<form method="get" action="/deals" class="filter-row">
       <input type="hidden" name="tab" value="overdue">
-      {'<input type="hidden" name="exclude_today" value="1">' if exclude_today else ''}
+      <input type="hidden" name="exclude_today" value="{'1' if exclude_today else '0'}">
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
@@ -3595,7 +3596,7 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
       <a class="btn sec" href="/deals?tab=overdue">リセット</a>
     </form>"""
     _return_qs = urllib.parse.urlencode(
-        {**_base_q, **({"exclude_today": "1"} if exclude_today else {})})
+        {**_base_q, "exclude_today": "1" if exclude_today else "0"})
     return_to_url = f"/deals?{_return_qs}"
 
     deals = [dict(d) for d in sfa_db.list_overdue_deals(
@@ -7942,7 +7943,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         owner=_qs1("owner"),
                         status_filter=_qs1("status"), stage_filter=_qs1("stage"), date=_d,
                         ms_type=_qs1("ms_type"), week=_qs1("week"),
-                        exclude_today=bool(_qs1("exclude_today")),
+                        exclude_today=(_qs1("exclude_today") != "0"),  # 既定で当日MS除外
                     )))
                 elif path == "/dashboard":
                     self._send(render(dashboard_page(con)))
@@ -8155,7 +8156,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         owner=qs1("owner"),
                         status_filter=qs1("status"), stage_filter=qs1("stage"), date=_date_q,
                         ms_type=qs1("ms_type"), week=qs1("week"),
-                        exclude_today=bool(qs1("exclude_today")),
+                        exclude_today=(qs1("exclude_today") != "0"),  # 既定で当日MS除外
                     )))
                 elif path == "/deals/import":
                     self._send(render(deals_import_page(con)))
