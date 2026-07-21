@@ -441,6 +441,7 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
     <summary>⚙ 管理 ▾</summary>
     <div class="nav-menu-panel">
       <a href="/sync-health">🔍 同期チェック</a>
+      <a href="/data-tagging">🏷 データ整備</a>
       <a href="/masters">⚙ マスタ編集</a>
       <a href="/dev-point-master">🎯 開発点数マスタ</a>
       <a href="/tech-seed-master">🌱 技術シードマスタ</a>
