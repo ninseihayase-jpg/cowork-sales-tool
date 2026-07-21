@@ -455,3 +455,18 @@ def test_list_undated_activities(con):
     undated = sfa_db.list_undated_activities(con)
     assert len(undated) == 2  # 日付なし(None)＋空文字の2件のみ（日付ありは除外）
     assert {u["type"] for u in undated} == {"面談", "メモ"}
+
+
+def test_exhibition_name_column_and_list(con):
+    """exhibition_name列の保存とlist_exhibition_names（distinct・非空）。"""
+    acc = sfa_db.upsert_account(con, id=None, name="展示会名テスト社")
+    d1 = sfa_db.upsert_deal(con, account_id=acc, deal_name="A", lead_pattern="Exh.")
+    d2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="B", lead_pattern="Exh.")
+    d3 = sfa_db.upsert_deal(con, account_id=acc, deal_name="C", lead_pattern="Exh.")
+    # exhibition_nameはDEAL_FIELDS外のため直接UPDATE（/deal/field・/deal/save経路を模す）
+    con.execute("UPDATE deals SET exhibition_name=? WHERE id=?", ("製造DX展2026", d1))
+    con.execute("UPDATE deals SET exhibition_name=? WHERE id=?", ("製造DX展2026", d2))
+    con.execute("UPDATE deals SET exhibition_name=? WHERE id=?", ("物流展2026", d3))
+    con.commit()
+    assert sfa_db.get_deal(con, d1)["exhibition_name"] == "製造DX展2026"
+    assert sfa_db.list_exhibition_names(con) == ["物流展2026", "製造DX展2026"]  # distinct・ソート

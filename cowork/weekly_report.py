@@ -237,7 +237,7 @@ def exhibition_deal_rows(con) -> list[dict]:
     面談回数は『日付(occurred_on)のある面談』のみを同一日=1で数える（日付なしはカウントしない）。"""
     rows = con.execute(
         "SELECT d.id, d.deal_name, d.stage, d.status, d.close_reason, d.next_milestone_date, "
-        "acc.name acc, "
+        "d.exhibition_name, acc.name acc, "
         "(SELECT COUNT(DISTINCT a.occurred_on) FROM activities a "
         "   WHERE a.deal_id=d.id AND a.type='面談' "
         "     AND a.occurred_on IS NOT NULL AND a.occurred_on != '') mtg, "

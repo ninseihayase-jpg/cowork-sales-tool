@@ -442,6 +442,7 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
     <div class="nav-menu-panel">
       <a href="/sync-health">🔍 同期チェック</a>
       <a href="/data-tagging">🏷 データ整備</a>
+      <a href="/exhibition-tagging">🎪 展示会名タグ付け</a>
       <a href="/masters">⚙ マスタ編集</a>
       <a href="/dev-point-master">🎯 開発点数マスタ</a>
       <a href="/tech-seed-master">🌱 技術シードマスタ</a>
@@ -1578,7 +1579,7 @@ def _audit_section(title: str, definition: str, value_html: str, detail_html: st
             f'<div style="overflow-x:auto;margin-top:6px">{detail_html}</div></details></div>')
 
 
-def weekly_numbers_audit_page(con, as_of=None) -> str:
+def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
     """数字パックの「集計監査」ページ（#27）。各指標を 定義＋値＋元データ に展開し、
     集計の確からしさを人が元データで検証できるようにする。スナップショットは記録しない（読み取り専用）。"""
     import cowork.weekly_report as weekly_report
@@ -1661,6 +1662,12 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
     exh_all = _wr.exhibition_deal_rows(con)
     for _r in exh_all:
         _r["_bucket"] = _wr.classify_exhibition_deal(_r, _today)
+    # 展示会名フィルタ（__none__=未設定のみ／特定名／未指定=全展示会）。カウント前に適用。
+    _exh_names = sfa_db.list_exhibition_names(con)
+    if exh_filter == "__none__":
+        exh_all = [r for r in exh_all if not (r.get("exhibition_name") or "").strip()]
+    elif exh_filter:
+        exh_all = [r for r in exh_all if (r.get("exhibition_name") or "") == exh_filter]
     _bucket_label = dict(_wr.EXH_BUCKETS)
     # ドリルダウンをファネルの進行順（EXH_BUCKETSの並び）に並べ替え、同一区分内は面談回数の多い順。
     _bucket_order = {k: i for i, (k, _) in enumerate(_wr.EXH_BUCKETS)}
@@ -1692,9 +1699,23 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         f'&nbsp;&nbsp;&nbsp;→ 提案 <b>{_bucket_counts["proposal"]}</b>／クロージング <b>{_bucket_counts["closing"]}</b>'
         f'／受注 <b>{_bucket_counts["won"]}</b>／失注 <b>{_bucket_counts["lost"]}</b>'
         f'／終了(失注以外) {_bucket_counts["second_closed_other"]}／進行中(要件詰め等) {_bucket_counts["second_open_other"]}')
-    exh_tbl = _audit_table(
-        ["区分", "案件名", "アカウント", "面談", "ステージ", "状態", "終了理由", "次回MS", "開発"],
-        [[_esc(_bucket_label.get(r["_bucket"], r["_bucket"])), _esc(r["deal_name"] or "—"),
+    # 展示会名フィルタのドロップダウン（as_ofを保持）
+    _wk_v = as_of.isoformat() if hasattr(as_of, "isoformat") else ""
+    _ex_opts = ('<option value="">全展示会</option>'
+                + f'<option value="__none__"{" selected" if exh_filter == "__none__" else ""}>（展示会名 未設定）</option>'
+                + "".join(f'<option value="{_esc(n)}"{" selected" if exh_filter == n else ""}>{_esc(n)}</option>'
+                          for n in _exh_names))
+    _exh_filter_form = (
+        '<form method="get" action="/weekly-numbers/audit" class="filter-row" style="margin:0 0 10px">'
+        f'<input type="hidden" name="as_of" value="{_wk_v}">'
+        f'<label style="font-size:13px">展示会で絞り込み: '
+        f'<select name="exh" onchange="this.form.submit()">{_ex_opts}</select></label> '
+        '<a class="btn sec" href="/weekly-numbers/audit">クリア</a> '
+        '<a class="btn sec" href="/exhibition-tagging">🎪 展示会名をタグ付け</a></form>')
+    exh_tbl = _exh_filter_form + _audit_table(
+        ["区分", "展示会", "案件名", "アカウント", "面談", "ステージ", "状態", "終了理由", "次回MS", "開発"],
+        [[_esc(_bucket_label.get(r["_bucket"], r["_bucket"])),
+          _esc(r.get("exhibition_name") or "—"), _esc(r["deal_name"] or "—"),
           _esc(r["acc"] or "—"), str(r["mtg"] or 0), _esc(r["stage"] or "—"),
           ("クローズ" if (r.get("status") == "closed") else "open"),
           _esc(r["close_reason"] or "—"), _esc(r["next_milestone_date"] or "—"),
@@ -1706,7 +1727,7 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         exh_summary, exh_tbl,
         warn="母集団は『lead_pattern=Exh.』タグに全依存（タグ漏れ/誤混入で全数字ズレ）。"
              "『不成立(要検証)』＝面談0回だが初回面談待ちでない件。中身(closed/次回MS無し等)を区分・状態・次回MS列で確認し、"
-             "想定外のケースがあれば分類ルールを見直す。展示会名(どの展示会か)は別タスクでフラグ化予定。")
+             "想定外のケースがあれば分類ルールを見直す。別の展示会が混在する場合は上の絞り込み／🎪タグ付けで展示会別に見る。")
 
     # 6) ステージ別（open）
     stage_rows = con.execute(
@@ -3846,6 +3867,53 @@ def data_tagging_page(con) -> str:
     """
 
 
+def exhibition_tagging_page(con) -> str:
+    """展示会由来商談(lead_pattern='Exh.')に「どの展示会か」を一括タグ付けする画面。
+    各行の入力欄で既存名を選ぶ/新規入力→フォーカスアウトで即保存(/deal/{id}/field, ajax)。"""
+    deals = [dict(r) for r in con.execute(
+        "SELECT d.id, d.deal_name, d.exhibition_name, acc.name AS account_name "
+        "FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id "
+        "WHERE d.lead_pattern='Exh.' "
+        "ORDER BY (d.exhibition_name IS NULL OR d.exhibition_name=''), d.exhibition_name, acc.name")]
+    names = sfa_db.list_exhibition_names(con)
+    _dl = "".join(f'<option value="{_esc(n)}">' for n in names)
+    untagged = sum(1 for d in deals if not (d.get("exhibition_name") or "").strip())
+    rows = []
+    for d in deals:
+        did = d["id"]
+        rows.append(
+            f'<tr id="exrow_{did}">'
+            f'<td><a href="/deal/{did}?return_to=%2Fexhibition-tagging">{_esc(d.get("account_name") or "—")}</a>'
+            f'<br><span class="muted" style="font-size:.85em">{_esc(d.get("deal_name") or "")}</span></td>'
+            f'<td><input type="text" id="exname_{did}" list="exNames" value="{_esc(d.get("exhibition_name") or "")}" '
+            f'placeholder="展示会名を入力/選択" style="font-size:12px;padding:2px 6px;width:240px" '
+            f'onchange="exSave({did})"> '
+            f'<span id="exok_{did}" style="font-size:11px"></span></td></tr>')
+    body_rows = "".join(rows) or '<tr><td colspan=2 class=muted>展示会由来(lead_pattern=Exh.)の商談はありません。</td></tr>'
+    return f"""
+    <div class="card">
+      <h2>🎪 展示会名タグ付け（{len(deals)}件／未設定 {untagged}）</h2>
+      <p class="muted" style="margin:0 0 8px">展示会由来(lead_pattern='Exh.')の商談に「どの展示会か」を付けます。
+      入力欄で既存名を選ぶか新しい名前を入力→欄から離れると即保存。週次レポートの展示会ファネルを展示会別に見られます。</p>
+      <datalist id="exNames">{_dl}</datalist>
+      <div style="overflow:auto;max-height:74vh">
+      <table style="min-width:640px"><tr>{_sticky_th('商談')}{_sticky_th('展示会名')}</tr>
+      {body_rows}</table></div>
+    </div>
+    <script>
+    function exSave(id) {{
+      var el = document.getElementById('exname_' + id); var v = el ? el.value : '';
+      var s = document.getElementById('exok_' + id); if (s) {{ s.textContent = '…'; s.style.color = '#64748b'; }}
+      fetch('/deal/' + id + '/field', {{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field=exhibition_name&value=' + encodeURIComponent(v)}})
+        .then(r => r.json()).then(d => {{ if (s) {{ s.textContent = d.ok ? '✓ 保存' : 'エラー';
+          s.style.color = d.ok ? '#166534' : '#c53030'; }} }})
+        .catch(() => {{ if (s) {{ s.textContent = '通信エラー'; s.style.color = '#c53030'; }} }});
+    }}
+    </script>"""
+
+
 def account_form(con, acc=None) -> str:
     acc = acc or {}
     cancel_url = f"/account/{acc['id']}" if acc.get("id") else "/accounts"
@@ -4470,6 +4538,9 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           <select name="business_type_l2" id="biz_l2">{_opt_l2(deal.get('business_type_l1'), deal.get('business_type_l2'))}</select></div>
         <div><label>リード経路</label>
           <select name="lead_pattern">{_opt(sfa_db.get_master_list(con,'lead_patterns'), deal.get('lead_pattern'))}</select></div>
+        <div><label>展示会名（展示会由来のとき）</label>
+          <input name="exhibition_name" list="dealExhNames" value="{_esc(deal.get('exhibition_name'))}" placeholder="どの展示会か（任意）">
+          <datalist id="dealExhNames">{"".join(f'<option value="{_esc(_n)}">' for _n in sfa_db.list_exhibition_names(con))}</datalist></div>
         <div><label>ワンタイム総額（万円）</label>
           <input name="value_lumpsum" value="{_esc(deal.get('value_lumpsum'))}"></div>
         <div><label>ワンタイム月額換算（万円）</label>
@@ -8363,7 +8434,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _aod = date.fromisoformat(_aq)
                         except ValueError:
                             _aod = None
-                    self._send(render(weekly_numbers_audit_page(con, as_of=_aod)))
+                    _exf = (self._qs().get("exh", [""])[0] or "").strip() or None
+                    self._send(render(weekly_numbers_audit_page(con, as_of=_aod, exh_filter=_exf)))
+                elif path == "/exhibition-tagging":
+                    self._send(render(exhibition_tagging_page(con)))
                 elif path == "/data-tagging":
                     self._send(render(data_tagging_page(con)))
                 elif path == "/reports":
@@ -9123,6 +9197,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con.execute("UPDATE deals SET close_reason=? WHERE id=?",
                                     (_cr or None, did))
                         con.commit()
+                    # 展示会名もDEAL_FIELDS外。フォームから送られた時のみ更新。
+                    if "exhibition_name" in f:
+                        con.execute("UPDATE deals SET exhibition_name=? WHERE id=?",
+                                    (f.get("exhibition_name") or None, did))
+                        con.commit()
                     if theme_client is not None:
                         try:
                             theme_link.sync_deal(theme_client, con, did)
@@ -9555,7 +9634,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _DEAL_ALLOWED_FIELDS = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
                                              "client_budget", "value_lumpsum", "deal_name",
                                              "next_milestone_date", "next_milestone_label", "next_milestone_type",
-                                             "close_reason"}
+                                             "close_reason", "exhibition_name"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""

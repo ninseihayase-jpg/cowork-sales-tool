@@ -318,6 +318,7 @@ CREATE TABLE IF NOT EXISTS deals (
     sub_owner TEXT,                   -- サブ担当
     client_contact TEXT,              -- 先方（顧客側）担当者名
     client_dept TEXT,                 -- 先方 部署
+    exhibition_name TEXT,             -- 展示会由来(lead_pattern='Exh.')の場合、どの展示会か
     value_lumpsum REAL,               -- 単発総額（万円）
     value_lumpsum_monthly REAL,       -- 単発月額（万円）
     value_recurring REAL,             -- 継続月額（万円）
@@ -827,6 +828,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             ("close_reason", "TEXT"),
             ("client_contact", "TEXT"),
             ("client_dept", "TEXT"),
+            ("exhibition_name", "TEXT"),
         ]:
             if col not in deal_cols:
                 con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")
@@ -1561,6 +1563,13 @@ def update_activity_field(con, activity_id: int, field: str, value) -> None:
 def delete_activity(con, activity_id: int) -> None:
     con.execute("DELETE FROM activities WHERE id=?", (int(activity_id),))
     con.commit()
+
+
+def list_exhibition_names(con) -> list[str]:
+    """既存の展示会名（distinct・非空）。タグ付け入力のdatalist候補に使う。"""
+    return [r[0] for r in con.execute(
+        "SELECT DISTINCT exhibition_name FROM deals "
+        "WHERE exhibition_name IS NOT NULL AND exhibition_name != '' ORDER BY exhibition_name")]
 
 
 def list_undated_activities(con) -> list[dict]:
