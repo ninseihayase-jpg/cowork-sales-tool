@@ -443,6 +443,7 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
       <a href="/sync-health">🔍 同期チェック</a>
       <a href="/data-tagging">🏷 データ整備</a>
       <a href="/exhibition-tagging">🎪 展示会名タグ付け</a>
+      <a href="/slack-memo-backfill">🩹 Slack追記メモ復旧</a>
       <a href="/masters">⚙ マスタ編集</a>
       <a href="/dev-point-master">🎯 開発点数マスタ</a>
       <a href="/tech-seed-master">🌱 技術シードマスタ</a>
@@ -3932,6 +3933,89 @@ def exhibition_tagging_page(con) -> str:
       if (!n) {{ alert('対象の行を選択してください'); return false; }}
       var name = btn.form.exhibition_name.value.trim();
       return confirm('選択した ' + n + ' 件の展示会名を「' + (name || '(空=クリア)') + '」に設定します。よろしいですか？');
+    }}
+    </script>"""
+
+
+def slack_memo_backfill_page(con, offset: int = 0, limit: int = 25) -> str:
+    """過去のSlack確認スレッドから『追記メモ』を拾い直し、1件ずつ確認して現状メモへ転記する画面。
+    完了スレッド(slack_threads.state='completed')を新しい順に見て、Slackから本文を再取得→抽出。
+    書き込みは行ごとの「追記」ボタン(ajax /slack-memo-backfill/apply)で個別に行う。"""
+    from cowork import slack_bot as _sb
+    total = con.execute(
+        "SELECT COUNT(*) c FROM slack_threads WHERE state='completed' AND deal_id IS NOT NULL"
+    ).fetchone()["c"]
+    rows = con.execute(
+        "SELECT thread_ts, channel_id, deal_id, bot_message_ts FROM slack_threads "
+        "WHERE state='completed' AND deal_id IS NOT NULL ORDER BY rowid DESC LIMIT ? OFFSET ?",
+        (limit, offset)).fetchall()
+    cards = []
+    _fetched = 0
+    for r in rows:
+        did = r["deal_id"]
+        deal = sfa_db.get_deal(con, did)
+        if not deal:
+            continue
+        _fetched += 1
+        try:
+            msgs = _sb.get_thread_messages(r["channel_id"], r["thread_ts"])
+            fields = _sb.collect_fields(msgs, r["bot_message_ts"] or "", "")
+            memo = (fields.get("追記メモ") or "").strip()
+        except Exception as e:  # noqa: BLE001
+            cards.append(f'<div class="card"><b>SFA#{did}</b> {_esc(deal.get("deal_name") or "")}'
+                         f'<br><span class="muted">Slack取得エラー: {_esc(str(e))}</span></div>')
+            continue
+        if not memo:
+            continue
+        _note = deal.get("note") or ""
+        _already = memo in _note
+        _idx = f"{did}_{r['thread_ts']}"
+        _status = ('<span class="tagged-ok">✓ 既に現状メモに反映済み</span>' if _already
+                   else '<span class="muted" style="color:#b45309">未反映 — 内容を確認して追記</span>')
+        cards.append(f"""
+        <div class="card" id="bfcard_{_idx}">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+            <b><a href="/deal/{did}?return_to=%2Fslack-memo-backfill">SFA#{did}</a>　{_esc(deal.get("account_name") or "")} / {_esc(deal.get("deal_name") or "")}</b>
+            {_status}
+          </div>
+          <div class="muted" style="font-size:11px;margin:6px 0 2px">現状メモ（現在）</div>
+          <div style="font-size:12px;white-space:pre-wrap;background:#f8fafc;border-radius:6px;padding:6px 8px;max-height:120px;overflow:auto">{_esc(_note) or "（なし）"}</div>
+          <div class="muted" style="font-size:11px;margin:8px 0 2px">Slackから復旧した追記メモ（編集可）</div>
+          <textarea id="bfmemo_{_idx}" rows="6" style="width:100%;font-size:12px">{_esc(memo)}</textarea>
+          <div style="margin-top:6px">
+            <button class="btn" onclick="bfApply('{_idx}', {did})">この内容を現状メモに追記</button>
+            <span id="bfok_{_idx}" style="font-size:12px;margin-left:8px"></span>
+          </div>
+        </div>""")
+    body = "".join(cards) or '<div class="card muted">このページに転記候補（追記メモあり・未反映）はありません。</div>'
+    _next = offset + limit
+    nav = ""
+    if _next < total:
+        nav = (f'<p><a class="btn sec" href="/slack-memo-backfill?offset={_next}">次の{limit}件 →</a> '
+               f'<span class="muted">({offset + 1}〜{min(_next, total)} / 完了スレッド{total}件)</span></p>')
+    return f"""
+    <div class="card">
+      <h2>🩹 Slack追記メモの復旧（1件ずつ確認して転記）</h2>
+      <p class="muted" style="margin:0">過去のSlack確認スレッドから「追記メモ」を拾い直しました（新しい順・{limit}件ずつ）。
+      内容を確認・必要なら編集して、各カードの「追記」で現状メモへ転記します。既に反映済みの分は✓表示。
+      Slack履歴が消えているスレッドは復旧できません。</p>
+      <p class="muted" style="margin:6px 0 0;font-size:12px">完了スレッド {total}件中 {offset + 1}〜{min(offset + limit, total)} を表示（Slack再取得 {_fetched}件）。</p>
+    </div>
+    {body}
+    {nav}
+    <script>
+    function bfApply(idx, did) {{
+      var ta = document.getElementById('bfmemo_' + idx);
+      var memo = ta ? ta.value : '';
+      var s = document.getElementById('bfok_' + idx);
+      if (!memo.trim()) {{ if (s) {{ s.textContent = '空です'; s.style.color = '#c53030'; }} return; }}
+      if (s) {{ s.textContent = '追記中…'; s.style.color = '#64748b'; }}
+      fetch('/slack-memo-backfill/apply', {{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'deal_id=' + did + '&memo=' + encodeURIComponent(memo)}})
+        .then(r => r.json()).then(d => {{ if (s) {{ s.textContent = d.ok ? '✓ 現状メモに追記しました' : ('エラー: ' + (d.error || ''));
+          s.style.color = d.ok ? '#166534' : '#c53030'; }} }})
+        .catch(() => {{ if (s) {{ s.textContent = '通信エラー'; s.style.color = '#c53030'; }} }});
     }}
     </script>"""
 
@@ -8471,6 +8555,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(weekly_numbers_audit_page(con, as_of=_aod, exh_filter=_exf)))
                 elif path == "/exhibition-tagging":
                     self._send(render(exhibition_tagging_page(con)))
+                elif path == "/slack-memo-backfill":
+                    try:
+                        _off = max(0, int(self._qs().get("offset", ["0"])[0]))
+                    except (ValueError, TypeError):
+                        _off = 0
+                    self._send(render(slack_memo_backfill_page(con, offset=_off)))
                 elif path == "/data-tagging":
                     self._send(render(data_tagging_page(con)))
                 elif path == "/reports":
@@ -9066,6 +9156,33 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if ids:
                         con.commit()
                     self._redirect("/accounts")
+
+                elif path == "/slack-memo-backfill/apply":
+                    # 過去のSlack追記メモを、確認済みの内容で現状メモへ追記（1件ずつ）。
+                    try:
+                        _did = int(f["deal_id"])
+                    except (ValueError, KeyError):
+                        self._send(json.dumps({"ok": False, "error": "不正なID"}).encode(),
+                                   ctype="application/json")
+                    else:
+                        _memo = (f.get("memo") or "").strip()
+                        _deal = sfa_db.get_deal(con, _did)
+                        if not _memo or not _deal:
+                            self._send(json.dumps({"ok": False, "error": "メモ空 or 商談なし"}).encode(),
+                                       ctype="application/json")
+                        else:
+                            _existing = _deal.get("note") or ""
+                            _marker = f"[Slack復旧 {_today_jst().isoformat()}] "
+                            _new = (_existing + "\n" + _marker + _memo).strip() if _existing else (_marker + _memo)
+                            con.execute("UPDATE deals SET note=?, updated_at=datetime('now') WHERE id=?",
+                                        (_new, _did))
+                            con.commit()
+                            if theme_client is not None:
+                                try:
+                                    theme_link.sync_deal(theme_client, con, _did)
+                                except Exception as _exc:  # noqa: BLE001
+                                    print(f"[theme_link] sync_deal failed (memo backfill): {_exc}")
+                            self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
 
                 elif path == "/exhibition-tagging/bulk":
                     # 選択した展示会由来商談に展示会名を一括設定（空なら未設定へクリア）。
