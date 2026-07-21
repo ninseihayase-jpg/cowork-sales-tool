@@ -3446,7 +3446,7 @@ def resolve_default_deals_tab(con, explicit_tab: str | None, owner: str | None =
 
 def deals_page(con, *, tab: str = "active", owner: str | None = None, status_filter: str | None = None,
                stage_filter: str | None = None, date: str | None = None, ms_type: str | None = None,
-               week: str | None = None) -> str:
+               week: str | None = None, exclude_today: bool = False) -> str:
     """商談一覧をタブ化: 「進行中の商談」(既存home_page)・「特定日の商談」・「MS超過の商談」。"""
     is_by_date = tab == "byDate"
     is_overdue = tab == "overdue"
@@ -3457,7 +3457,7 @@ def deals_page(con, *, tab: str = "active", owner: str | None = None, status_fil
       <a class="{'btn' if not (is_by_date or is_overdue) else 'btn sec'}" href="/deals?tab=active">進行中の商談</a>
     </div>"""
     if is_overdue:
-        body = overdue_deals_page(con, owner=owner, ms_type=ms_type)
+        body = overdue_deals_page(con, owner=owner, ms_type=ms_type, exclude_today=exclude_today)
     elif is_by_date:
         body = deals_by_date_page(con, target_date=date, owner=owner, ms_type=ms_type, week=week)
     else:
@@ -3541,11 +3541,13 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     """
 
 
-def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = None) -> str:
+def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = None,
+                       exclude_today: bool = False) -> str:
     """次回MSが超過した／未設定の進行中商談の一覧・その場編集（要フォロー）。超過=next_milestone_date<=当日。
 
     担当・次回MS種別フィルタ（サーバ側）＋アカウント名検索（クライアント側）＋インライン編集。
     見せ方・編集挙動は「特定日の商談」タブに揃えている。
+    exclude_today=Trueで「次回MS日が当日ちょうど」の商談を除外（前日以前の超過のみ）。
     """
     owners = sfa_db.get_master_list(con, "owners")
     stages = sfa_db.get_master_list(con, "deal_stages")
@@ -3555,23 +3557,41 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
     )
     # 選択するだけで自動絞り込み（onchangeで即送信・「担当で絞り込み」ボタンは廃止）
     # フィルタUIの並びは全タブ統一（サーバ側select群 → 次回MS種別 → 🔍アカウント検索 → リセット）。
+    # 「当日MSを除く」トグル。ON/OFFで同じタブの別URLへ（owner/ms_typeは維持）。
+    _base_q = {"tab": "overdue", "owner": owner or "", "ms_type": ms_type or ""}
+    if exclude_today:
+        _toggle_href = "/deals?" + urllib.parse.urlencode({**_base_q})
+        _toggle_btn = (f'<a class="btn" href="{_toggle_href}" '
+                       f'style="background:#2563eb" title="当日ちょうどのMSも含めて表示に戻す">'
+                       f'🕑 当日MSを含める</a>')
+    else:
+        _toggle_href = "/deals?" + urllib.parse.urlencode({**_base_q, "exclude_today": "1"})
+        _toggle_btn = (f'<a class="btn sec" href="{_toggle_href}" '
+                       f'title="次回MS日が当日ちょうどの商談を隠し、前日以前の超過のみ表示">'
+                       f'🕑 当日MSを除く</a>')
     form = f"""<form method="get" action="/deals" class="filter-row">
       <input type="hidden" name="tab" value="overdue">
+      {'<input type="hidden" name="exclude_today" value="1">' if exclude_today else ''}
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
+      {_toggle_btn}
       <a class="btn sec" href="/deals?tab=overdue">リセット</a>
     </form>"""
-    _return_qs = urllib.parse.urlencode({"tab": "overdue", "owner": owner or "", "ms_type": ms_type or ""})
+    _return_qs = urllib.parse.urlencode(
+        {**_base_q, **({"exclude_today": "1"} if exclude_today else {})})
     return_to_url = f"/deals?{_return_qs}"
 
     deals = [dict(d) for d in sfa_db.list_overdue_deals(
-        con, owner=owner, today=_today_jst().isoformat())]
+        con, owner=owner, today=_today_jst().isoformat(), exclude_today=exclude_today)]
     deals = _filter_deals_by_ms_type(deals, ms_type)
+    _hint = ("次回MS日が<b>前日以前</b>の超過商談のみ（当日ちょうどのMSは除外中）＋次回MS未設定の進行中商談です。"
+             if exclude_today else
+             "次回MS日が本日以前、または次回MSが未設定の進行中商談です（要フォロー）。")
     return f"""
     <div class="card"><h2>MS超過の商談 {len(deals)}件</h2>
-    <p class="muted" style="margin:0 0 10px">次回MS日が本日以前、または次回MSが未設定の進行中商談です（要フォロー）。超過分を遅れている順に、次回MS未設定は末尾に並べています。</p>
+    <p class="muted" style="margin:0 0 10px">{_hint}超過分を遅れている順に、次回MS未設定は末尾に並べています。</p>
     {form}
     {unified_deal_table(con, deals, return_to_url=return_to_url, bulk=False)}
     </div>
@@ -7907,6 +7927,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         owner=_qs1("owner"),
                         status_filter=_qs1("status"), stage_filter=_qs1("stage"), date=_d,
                         ms_type=_qs1("ms_type"), week=_qs1("week"),
+                        exclude_today=bool(_qs1("exclude_today")),
                     )))
                 elif path == "/dashboard":
                     self._send(render(dashboard_page(con)))
@@ -8119,6 +8140,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         owner=qs1("owner"),
                         status_filter=qs1("status"), stage_filter=qs1("stage"), date=_date_q,
                         ms_type=qs1("ms_type"), week=qs1("week"),
+                        exclude_today=bool(qs1("exclude_today")),
                     )))
                 elif path == "/deals/import":
                     self._send(render(deals_import_page(con)))

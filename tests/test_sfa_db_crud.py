@@ -345,3 +345,27 @@ def test_list_lost_stage_deals(con):
     sfa_db.upsert_deal(con, account_id=acc, deal_name="受注B", stage="受注")
     lost = sfa_db.list_lost_stage_deals(con)
     assert [d["deal_name"] for d in lost] == ["失注A"]
+
+
+def test_list_overdue_deals_exclude_today(con):
+    """exclude_today=Trueで当日ちょうどのMSは除外、前日以前＋未設定は残る。"""
+    from datetime import date as _d, timedelta as _td
+    today = _d(2026, 7, 21)
+    yday = (today - _td(days=1)).isoformat()
+    tstr = today.isoformat()
+    future = (today + _td(days=3)).isoformat()
+    acc = sfa_db.upsert_account(con, id=None, name="超過テスト社")
+    d_today = sfa_db.upsert_deal(con, account_id=acc, deal_name="当日MS", stage="提案",
+                                 next_milestone_date=tstr)
+    d_yday = sfa_db.upsert_deal(con, account_id=acc, deal_name="前日MS", stage="提案",
+                                next_milestone_date=yday)
+    d_null = sfa_db.upsert_deal(con, account_id=acc, deal_name="未設定", stage="提案")
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="未来MS", stage="提案",
+                       next_milestone_date=future)
+
+    normal = {d["id"] for d in sfa_db.list_overdue_deals(con, today=tstr)}
+    assert d_today in normal and d_yday in normal and d_null in normal
+
+    excl = {d["id"] for d in sfa_db.list_overdue_deals(con, today=tstr, exclude_today=True)}
+    assert d_today not in excl           # 当日ちょうどは除外
+    assert d_yday in excl and d_null in excl  # 前日以前・未設定は残る

@@ -1117,23 +1117,27 @@ def list_deals_by_week(con, week_start: str, week_end: str, owner: str | None = 
     return [dict(r) for r in con.execute(q, params)]
 
 
-def list_overdue_deals(con, owner: str | None = None, today: str | None = None) -> list[dict]:
+def list_overdue_deals(con, owner: str | None = None, today: str | None = None,
+                       exclude_today: bool = False) -> list[dict]:
     """次回MSが超過した、または次回MSが未設定の進行中商談を返す（＝要フォロー一覧）。
 
     - 超過: next_milestone_date <= 当日
     - 未設定: next_milestone_date が NULL または空文字（次回アクション未定＝止まっている）
+    - exclude_today=True: 次回MS日が「当日ちょうど」の商談を除外し、前日以前の超過のみにする
+      （＝まだ当日で対応余地があるものを一覧から外す）。未設定(NULL/空)は引き続き含める。
     並び順は「超過（遅れている順に日付昇順）→ 未設定（末尾）」。
     """
     today = today or date.today().isoformat()
     # 受注/失注（決着済み）は次回MSが無くても要フォローに含めない
     _concluded_ph = ", ".join("?" for _ in CONCLUDED_DEAL_STAGES)
+    _date_cmp = "<" if exclude_today else "<="
     q = f"""SELECT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d
            LEFT JOIN accounts a ON a.id = d.account_id
            WHERE (d.status IS NULL OR d.status != 'closed')
                  AND (d.stage IS NULL OR d.stage NOT IN ({_concluded_ph}))
                  AND (d.next_milestone_date IS NULL OR d.next_milestone_date = ''
-                      OR d.next_milestone_date <= ?)"""
+                      OR d.next_milestone_date {_date_cmp} ?)"""
     params: list = list(CONCLUDED_DEAL_STAGES) + [today]
     if owner:
         q += " AND (d.owner = ? OR d.sub_owner = ?)"
