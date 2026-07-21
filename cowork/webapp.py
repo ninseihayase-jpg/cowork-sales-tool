@@ -1662,6 +1662,10 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
     for _r in exh_all:
         _r["_bucket"] = _wr.classify_exhibition_deal(_r, _today)
     _bucket_label = dict(_wr.EXH_BUCKETS)
+    # ドリルダウンをファネルの進行順（EXH_BUCKETSの並び）に並べ替え、同一区分内は面談回数の多い順。
+    _bucket_order = {k: i for i, (k, _) in enumerate(_wr.EXH_BUCKETS)}
+    exh_all.sort(key=lambda r: (_bucket_order.get(r["_bucket"], 99),
+                                -(r.get("mtg") or 0), r.get("id") or 0))
     _bucket_counts = {k: 0 for k, _ in _wr.EXH_BUCKETS}
     for _r in exh_all:
         _bucket_counts[_r["_bucket"]] += 1
