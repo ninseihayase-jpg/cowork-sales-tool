@@ -3837,7 +3837,8 @@ def accounts_page(con) -> str:
         )
     }
     rows_html = "".join(
-        f'<tr>'
+        f'<tr class="acc-row" data-name="{_esc((a.get("name") or "").lower())}" '
+        f'data-ind="{_esc(a.get("industry") or "")}" data-size="{_esc(a.get("company_size") or "")}">'
         f'<td style="width:32px"><input type="checkbox" name="ids" value="{a["id"]}"></td>'
         f'<td><a href="/account/{a["id"]}">{_esc(a["name"])}</a></td>'
         f'<td>{_esc(a.get("industry")) or "<span class=muted>―</span>"}</td>'
@@ -3850,12 +3851,31 @@ def accounts_page(con) -> str:
     _dup_n = len(sfa_db.find_duplicate_accounts(con))
     dup_link = (f'<a class="btn" style="background:#c53030" href="/accounts/duplicates">'
                 f'⚠ 重複を統合（{_dup_n}件）</a>' if _dup_n else "")
+    # フィルタ用の選択肢: マスタ ＋ 実データに存在する値（マスタ外の既存値も拾う）。
+    _ind_opts_list = list(sfa_db.get_master_list(con, "industries") or sfa_db.INDUSTRIES)
+    for a in accounts:
+        _iv = a.get("industry")
+        if _iv and _iv not in _ind_opts_list:
+            _ind_opts_list.append(_iv)
+    _ind_options = "".join(f'<option value="{_esc(v)}">{_esc(v)}</option>' for v in _ind_opts_list)
+    _size_options = "".join(f'<option value="{_esc(v)}">{_esc(v)}</option>' for v in sfa_db.COMPANY_SIZES)
+    filter_row = f"""<div class="filter-row" style="margin-bottom:12px">
+      <input type="text" id="accSearch" placeholder="🔍 企業名で検索..."
+        oninput="filterAccounts()" style="max-width:220px">
+      <select id="accIndFilter" onchange="filterAccounts()">
+        <option value="">業界:全て</option>{_ind_options}</select>
+      <select id="accSizeFilter" onchange="filterAccounts()">
+        <option value="">企業規模:全て</option>{_size_options}</select>
+      <a class="btn sec" href="/accounts">リセット</a>
+      <span id="accCount" class="muted" style="font-size:12px;align-self:center"></span>
+    </div>"""
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>アカウント一覧 ({len(accounts)})</span>
         <span style="display:flex;gap:8px">{dup_link}<a class="btn" href="/account/new">＋手動追加</a></span>
       </h2>
+      {filter_row}
       <form id="acc_bulk_form" method="post" action="/accounts/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
       <table>
@@ -3873,6 +3893,22 @@ def accounts_page(con) -> str:
     </div>
     <script>
     const ACC_DEAL_COUNTS = {deal_counts_json};
+    function filterAccounts() {{
+      var q = (document.getElementById('accSearch').value || '').toLowerCase();
+      var ind = document.getElementById('accIndFilter').value;
+      var sz = document.getElementById('accSizeFilter').value;
+      var shown = 0;
+      document.querySelectorAll('#acc_bulk_form tr.acc-row').forEach(function(r){{
+        var okName = !q || (r.getAttribute('data-name') || '').indexOf(q) >= 0;
+        var okInd = !ind || (r.getAttribute('data-ind') || '') === ind;
+        var okSize = !sz || (r.getAttribute('data-size') || '') === sz;
+        var vis = okName && okInd && okSize;
+        r.style.display = vis ? '' : 'none';
+        if (vis) shown++;
+      }});
+      var c = document.getElementById('accCount');
+      if (c) c.textContent = shown + '件表示';
+    }}
     function accBulkDelete() {{
       var ids = Array.from(document.querySelectorAll('#acc_bulk_form [name=ids]:checked')).map(function(c){{return c.value;}});
       if (!ids.length) {{ alert('削除するアカウントを選択してください。'); return; }}
