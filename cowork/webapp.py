@@ -502,10 +502,17 @@ _CLOSE_MODAL_HTML = (
     '}'
     # 事業種別L1変更時はL2の選択肢が変わるため、保存後にリロードして再描画（シンプル・確実）
     'function updateDealL1(id,l1){updateDealField(id,"business_type_l1",l1).then(function(){location.reload();});}'
+    # 商談一覧の絞り込み（アカウント名テキスト＋ステージ複数選択チェック。全タブ共通）。
     'function filterDealsByAccount(){'
-    ' var i=document.getElementById("accSearchInput"); if(!i)return; var q=(i.value||"").toLowerCase();'
+    ' var i=document.getElementById("accSearchInput"); var q=i?(i.value||"").toLowerCase():"";'
+    ' var st=[]; document.querySelectorAll(".stg-cb:checked").forEach(function(b){st.push(b.value);});'
+    ' var useSt=st.length>0;'
     ' document.querySelectorAll("tr[data-account]").forEach(function(tr){'
-    '  tr.style.display=tr.getAttribute("data-account").indexOf(q)>=0?"":"none";});'
+    '  var okA=tr.getAttribute("data-account").indexOf(q)>=0;'
+    '  var okS=!useSt||st.indexOf(tr.getAttribute("data-stage")||"")>=0;'
+    '  tr.style.display=(okA&&okS)?"":"none";});'
+    ' var lbl=document.getElementById("stgFilterLbl");'
+    ' if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
     '}'
     '</script>'
 )
@@ -3087,7 +3094,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                        f'onchange="updateDealField({did}, \'deal_name\', this.value)" '
                        f'style="font-size:12px;padding:2px 4px;width:150px{_ro_sty}">')
         rows.append(
-            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}">'
+            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}">'
             f'{cb_td}'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
             f'<td><a href="/deal/{did}?return_to={urllib.parse.quote(return_to_url, safe="")}">{_esc(d.get("account_name"))}</a></td>'
@@ -3224,6 +3231,24 @@ def _ms_type_opts(ms_type: str | None) -> str:
     )
 
 
+def _stage_multi_filter(stages: list[str]) -> str:
+    """ステージの複数選択フィルタ（クライアント側・チェックボックスのドロップダウン）。
+    チェック変更で filterDealsByAccount() を呼び、data-stage を持つ行を絞り込む。全タブ共通。"""
+    boxes = "".join(
+        f'<label style="display:block;padding:3px 8px;white-space:nowrap;font-size:12px;cursor:pointer">'
+        f'<input type="checkbox" class="stg-cb" value="{html.escape(s)}" onchange="filterDealsByAccount()"> '
+        f'{html.escape(s)}</label>'
+        for s in stages)
+    return (
+        '<details class="tb-menu" style="display:inline-block">'
+        '<summary class="btn sec" style="font-size:12px"><span id="stgFilterLbl">ステージ:全て</span> ▾</summary>'
+        f'<div class="tb-panel" style="padding:4px 0">{boxes}'
+        '<div style="border-top:1px solid #e5e7eb;margin-top:4px;padding-top:4px">'
+        '<a href="#" style="font-size:11px;padding:3px 8px;display:block" '
+        'onclick="document.querySelectorAll(\'.stg-cb\').forEach(function(c){c.checked=false;});'
+        'filterDealsByAccount();return false;">クリア</a></div></div></details>')
+
+
 def _filter_deals_by_ms_type(deals: list, ms_type: str | None) -> list:
     """次回MS種別で商談リストを後段フィルタ（"none"=未設定・未指定はそのまま）。"""
     if ms_type == "none":
@@ -3313,7 +3338,8 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
               stage_filter: str | None = None, ms_type: str | None = None) -> str:
     # デフォルトでclosedを除外（NULLもopenとして扱う）。"all"は全件表示
     effective_status = None if status_filter == "all" else (status_filter or "open")
-    deals = sfa_db.list_deals(con, status=effective_status, owner=owner, stage=stage_filter)
+    # ステージ絞り込みはクライアント側の複数選択(_stage_multi_filter)に統一したためサーバ側では絞らない。
+    deals = sfa_db.list_deals(con, status=effective_status, owner=owner)
     deals = _filter_deals_by_ms_type(deals, ms_type)  # 次回MS種別で後段フィルタ
     pending_sync = con.execute("SELECT COUNT(*) c FROM deals WHERE theme_id IS NULL").fetchone()["c"]
     owners = sfa_db.get_master_list(con, "owners")
@@ -3328,17 +3354,13 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         + f'<option value="open"{"  selected" if status_filter is None or status_filter=="open" else ""}>進行中のみ</option>'
         + f'<option value="closed"{" selected" if status_filter=="closed" else ""}>クローズ済のみ</option>'
     )
-    stage_opts = '<option value="">全ステージ</option>' + "".join(
-        f'<option value="{html.escape(s)}"{" selected" if s == stage_filter else ""}>{html.escape(s)}</option>'
-        for s in stages
-    )
     # 選択するだけで自動絞り込み（onchangeで即送信・「絞り込み」ボタンは廃止）
     # フィルタUIは全タブで「サーバ側select群 → 次回MS種別 → 🔍アカウント検索 → リセット」の順で統一。
     filter_row = f"""<form method="get" action="/deals" class="filter-row">
       <input type="hidden" name="tab" value="active">
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="status" onchange="this.form.submit()">{status_opts}</select>
-      <select name="stage" onchange="this.form.submit()">{stage_opts}</select>
+      {_stage_multi_filter(stages)}
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
@@ -3502,6 +3524,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     """特定日 または 特定週 に次回MS日付または活動がある商談の一覧・その場編集画面。
     week(YYYY-Www)が指定されればその週(月〜日)、無ければ日付(既定は当日)で表示する。"""
     owners = sfa_db.get_master_list(con, "owners")
+    stages = sfa_db.get_master_list(con, "deal_stages")
     owner_opts = '<option value="">全担当</option>' + "".join(
         f'<option value="{html.escape(o)}"{" selected" if o == owner else ""}>{html.escape(o)}</option>'
         for o in owners
@@ -3547,6 +3570,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       <a class="btn sec" href="{_next_href}">{_next_lbl}</a>
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
+      {_stage_multi_filter(stages)}
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=byDate">リセット</a>
