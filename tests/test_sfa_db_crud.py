@@ -390,3 +390,22 @@ def test_flow_meetings_dedup_same_deal_same_day(con):
     flow = weekly_report._flow_for_week(con, "2026-07-13", "2026-07-19")
     # 集約後: (d1,7/15)=1, (d1,7/16)=1, (d2,7/15)=1 → 3件（活動は4件だが重複排除で3）
     assert flow["meetings"] == 3
+
+
+def test_exhibition_funnel_meeting_dedup_same_day(con):
+    """展示会ファネルの面談回数も同一日=1面談で数える（second_meetingは別日2回で成立）。"""
+    from cowork import weekly_report
+    acc = sfa_db.upsert_account(con, id=None, name="展示会社")
+    # Exh商談A: 同日に面談2件 → 面談1回扱い（second_meetingに入らない）
+    dA = sfa_db.upsert_deal(con, account_id=acc, deal_name="Exh-A", lead_pattern="Exh.")
+    sfa_db.add_activity(con, deal_id=dA, type="面談", occurred_on="2026-07-15")
+    sfa_db.add_activity(con, deal_id=dA, type="面談", occurred_on="2026-07-15")
+    # Exh商談B: 別日に面談2件 → 面談2回扱い（second_meetingに入る）
+    dB = sfa_db.upsert_deal(con, account_id=acc, deal_name="Exh-B", lead_pattern="Exh.")
+    sfa_db.add_activity(con, deal_id=dB, type="面談", occurred_on="2026-07-15")
+    sfa_db.add_activity(con, deal_id=dB, type="面談", occurred_on="2026-07-16")
+
+    f = weekly_report._exhibition_funnel(con)
+    assert f["total"] == 2
+    assert f["first_meeting"] == 2   # A・Bとも面談1回以上
+    assert f["second_meeting"] == 1  # 別日2回のBのみ（Aは同日集約で1回）

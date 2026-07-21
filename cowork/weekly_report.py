@@ -236,8 +236,11 @@ def _exhibition_funnel(con) -> dict:
         "AND close_reason IS NOT NULL GROUP BY close_reason")}
     no_need = by_reason.get("ニーズなし", 0)
     canceled = by_reason.get("キャンセル", 0)
+    # 面談回数は「同一日=1面談」で数える（同じ商談で同日に複数活動があっても1回）。
+    # occurred_on が無い面談は活動id単位で個別カウント（潰さない）。
     mtg_counts = {r["deal_id"]: r["c"] for r in con.execute(
-        "SELECT a.deal_id, COUNT(*) c FROM activities a JOIN deals d ON d.id=a.deal_id "
+        "SELECT a.deal_id, COUNT(DISTINCT COALESCE(a.occurred_on, 'a'||a.id)) c "
+        "FROM activities a JOIN deals d ON d.id=a.deal_id "
         "WHERE d.lead_pattern='Exh.' AND a.type='面談' GROUP BY a.deal_id")}
     first = sum(1 for c in mtg_counts.values() if c >= 1)
     second = sum(1 for c in mtg_counts.values() if c >= 2)

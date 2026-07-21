@@ -1658,7 +1658,8 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
     # 5) 展示会ファネル（コホート）
     exh_rows = con.execute(
         "SELECT d.deal_name, acc.name acc, d.stage, d.close_reason, "
-        "(SELECT COUNT(*) FROM activities a WHERE a.deal_id=d.id AND a.type='面談') mtg "
+        "(SELECT COUNT(DISTINCT COALESCE(a.occurred_on, 'a'||a.id)) "
+        " FROM activities a WHERE a.deal_id=d.id AND a.type='面談') mtg "
         "FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id "
         "WHERE d.lead_pattern='Exh.' ORDER BY mtg DESC", ).fetchall()
     total = len(exh_rows)
@@ -1677,7 +1678,7 @@ def weekly_numbers_audit_page(con, as_of=None) -> str:
         f'総数 <b>{total}</b>／有効 <b>{total - no_need}</b>（ニーズなし {no_need}・ｷｬﾝｾﾙ {canceled}）'
         f' → 面談1+ <b>{first}</b> → 面談2+ <b>{second}</b> → 受注 <b>{won}</b>', exh_tbl,
         warn="母集団は『lead_pattern=Exh.』のタグに全依存。展示会由来なのにタグ漏れ／逆に別経路が混入していると全数字がズレる。"
-             "面談回数も occurred_on 有無でなく件数なので、二重登録があれば過大。")
+             "面談回数は『同一日=1面談』で重複排除済み（同じ商談で同日に複数活動があっても1回）。")
 
     # 6) ステージ別（open）
     stage_rows = con.execute(
