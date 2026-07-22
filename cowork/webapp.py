@@ -517,6 +517,9 @@ _CLOSE_MODAL_HTML = (
     ' var lbl=document.getElementById("stgFilterLbl");'
     ' if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
     '}'
+    # 初期表示時、URL由来で初期チェックされたステージがあれば絞り込みを適用（日付変更で保持）。
+    'document.addEventListener("DOMContentLoaded",function(){'
+    ' try{if(document.querySelector(".stg-cb:checked"))filterDealsByAccount();}catch(e){}});'
     '</script>'
 )
 
@@ -3260,17 +3263,21 @@ def _ms_type_opts(ms_type: str | None) -> str:
     )
 
 
-def _stage_multi_filter(stages: list[str]) -> str:
+def _stage_multi_filter(stages: list[str], selected=()) -> str:
     """ステージの複数選択フィルタ（クライアント側・チェックボックスのドロップダウン）。
-    チェック変更で filterDealsByAccount() を呼び、data-stage を持つ行を絞り込む。全タブ共通。"""
+    チェック変更で filterDealsByAccount() を呼び、data-stage を持つ行を絞り込む。全タブ共通。
+    name="stg" を付け、囲みフォーム送信(日付変更等)でも選択を持ち越せる。selectedは初期チェック。"""
+    sel = set(selected or ())
     boxes = "".join(
         f'<label style="display:block;padding:3px 8px;white-space:nowrap;font-size:12px;cursor:pointer">'
-        f'<input type="checkbox" class="stg-cb" value="{html.escape(s)}" onchange="filterDealsByAccount()"> '
+        f'<input type="checkbox" class="stg-cb" name="stg" value="{html.escape(s)}"'
+        f'{" checked" if s in sel else ""} onchange="filterDealsByAccount()"> '
         f'{html.escape(s)}</label>'
         for s in stages)
+    _lbl = f"ステージ:{len(sel)}選択" if sel else "ステージ:全て"
     return (
         '<details class="tb-menu" style="display:inline-block">'
-        '<summary class="btn sec" style="font-size:12px"><span id="stgFilterLbl">ステージ:全て</span> ▾</summary>'
+        f'<summary class="btn sec" style="font-size:12px"><span id="stgFilterLbl">{_lbl}</span> ▾</summary>'
         f'<div class="tb-panel" style="padding:4px 0">{boxes}'
         '<div style="border-top:1px solid #e5e7eb;margin-top:4px;padding-top:4px">'
         '<a href="#" style="font-size:11px;padding:3px 8px;display:block" '
@@ -3364,7 +3371,7 @@ def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, labe
 
 
 def home_page(con, owner: str | None = None, status_filter: str | None = None,
-              stage_filter: str | None = None, ms_type: str | None = None) -> str:
+              stage_filter: str | None = None, ms_type: str | None = None, stages_sel=None) -> str:
     # デフォルトでclosedを除外（NULLもopenとして扱う）。"all"は全件表示
     effective_status = None if status_filter == "all" else (status_filter or "open")
     # ステージ絞り込みはクライアント側の複数選択(_stage_multi_filter)に統一したためサーバ側では絞らない。
@@ -3389,7 +3396,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <input type="hidden" name="tab" value="active">
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="status" onchange="this.form.submit()">{status_opts}</select>
-      {_stage_multi_filter(stages)}
+      {_stage_multi_filter(stages, selected=stages_sel)}
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
@@ -3529,7 +3536,7 @@ def resolve_default_deals_tab(con, explicit_tab: str | None, owner: str | None =
 
 def deals_page(con, *, tab: str = "active", owner: str | None = None, status_filter: str | None = None,
                stage_filter: str | None = None, date: str | None = None, ms_type: str | None = None,
-               week: str | None = None, exclude_today: bool = False) -> str:
+               week: str | None = None, exclude_today: bool = False, stages_sel=None) -> str:
     """商談一覧をタブ化: 「進行中の商談」(既存home_page)・「特定日の商談」・「MS超過の商談」。"""
     is_by_date = tab == "byDate"
     is_overdue = tab == "overdue"
@@ -3542,14 +3549,16 @@ def deals_page(con, *, tab: str = "active", owner: str | None = None, status_fil
     if is_overdue:
         body = overdue_deals_page(con, owner=owner, ms_type=ms_type, exclude_today=exclude_today)
     elif is_by_date:
-        body = deals_by_date_page(con, target_date=date, owner=owner, ms_type=ms_type, week=week)
+        body = deals_by_date_page(con, target_date=date, owner=owner, ms_type=ms_type, week=week,
+                                  stages_sel=stages_sel)
     else:
-        body = home_page(con, owner=owner, status_filter=status_filter, stage_filter=stage_filter, ms_type=ms_type)
+        body = home_page(con, owner=owner, status_filter=status_filter, stage_filter=stage_filter,
+                         ms_type=ms_type, stages_sel=stages_sel)
     return tab_nav + body
 
 
 def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None = None,
-                       ms_type: str | None = None, week: str | None = None) -> str:
+                       ms_type: str | None = None, week: str | None = None, stages_sel=None) -> str:
     """特定日 または 特定週 に次回MS日付または活動がある商談の一覧・その場編集画面。
     week(YYYY-Www)が指定されればその週(月〜日)、無ければ日付(既定は当日)で表示する。"""
     owners = sfa_db.get_master_list(con, "owners")
@@ -3578,13 +3587,16 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
 
     _owner_qs = f"&owner={urllib.parse.quote(owner)}" if owner else ""
     _mstype_qs = f"&ms_type={urllib.parse.quote(ms_type)}" if ms_type else ""
+    # 日付/週を変えてもステージ絞り込みを保持（前後ナビのURLにstgを引き回す）。
+    _stg_qs = "".join(f"&stg={urllib.parse.quote(s)}" for s in (stages_sel or []))
+    _keep_qs = f"{_owner_qs}{_mstype_qs}{_stg_qs}"
     if week_mode:
-        _prev_href = f"/deals?tab=byDate&week={(wk_start - timedelta(days=7)).strftime('%G-W%V')}{_owner_qs}{_mstype_qs}"
-        _next_href = f"/deals?tab=byDate&week={(wk_start + timedelta(days=7)).strftime('%G-W%V')}{_owner_qs}{_mstype_qs}"
+        _prev_href = f"/deals?tab=byDate&week={(wk_start - timedelta(days=7)).strftime('%G-W%V')}{_keep_qs}"
+        _next_href = f"/deals?tab=byDate&week={(wk_start + timedelta(days=7)).strftime('%G-W%V')}{_keep_qs}"
         _prev_lbl, _next_lbl = "◀ 前週", "翌週 ▶"
     else:
-        _prev_href = f"/deals?tab=byDate&date={(_cur - timedelta(days=1)).isoformat()}{_owner_qs}{_mstype_qs}"
-        _next_href = f"/deals?tab=byDate&date={(_cur + timedelta(days=1)).isoformat()}{_owner_qs}{_mstype_qs}"
+        _prev_href = f"/deals?tab=byDate&date={(_cur - timedelta(days=1)).isoformat()}{_keep_qs}"
+        _next_href = f"/deals?tab=byDate&date={(_cur + timedelta(days=1)).isoformat()}{_keep_qs}"
         _prev_lbl, _next_lbl = "◀ 前日", "翌日 ▶"
     _date_val = "" if week_mode else target_date
     _week_val = week if week_mode else ""
@@ -3599,7 +3611,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       <a class="btn sec" href="{_next_href}">{_next_lbl}</a>
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
-      {_stage_multi_filter(stages)}
+      {_stage_multi_filter(stages, selected=stages_sel)}
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=byDate">リセット</a>
@@ -8268,6 +8280,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         status_filter=_qs1("status"), stage_filter=_qs1("stage"), date=_d,
                         ms_type=_qs1("ms_type"), week=_qs1("week"),
                         exclude_today=(_qs1("exclude_today") != "0"),  # 既定で当日MS除外
+                        stages_sel=[s for s in qs.get("stg", []) if s],
                     )))
                 elif path == "/dashboard":
                     self._send(render(dashboard_page(con)))
@@ -8481,6 +8494,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         status_filter=qs1("status"), stage_filter=qs1("stage"), date=_date_q,
                         ms_type=qs1("ms_type"), week=qs1("week"),
                         exclude_today=(qs1("exclude_today") != "0"),  # 既定で当日MS除外
+                        stages_sel=[s for s in qs.get("stg", []) if s],
                     )))
                 elif path == "/deals/import":
                     self._send(render(deals_import_page(con)))
