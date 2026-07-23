@@ -105,6 +105,15 @@ MASTER_LABELS = {
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
+# Delivery（受注後・納品）アサイン計画（#75）。デモ開発とは別系統。
+DELIVERY_STATUSES = ["進行中", "完了", "保留"]
+DELIVERY_VIEW_WEEKS = 16              # 全社稼働テーブルの初期表示週数（今週〜。調整可）
+POINTS_PER_FTE = 20                   # デモ開発点数→FTE%換算の基準（20点≒100%FTE）※デモ負荷率自体は個人上限基準
+# Delivery案件を自動起票するステージ（「提案」到達以降）。
+DELIVERY_TRIGGER_STAGES = ("提案", "クロージング", "受注")
+# ヒートマップ閾値(%)。100%超が常態のため150%も閾値に。定数で調整可。
+DELIVERY_HEAT_THRESHOLDS = {"ok": 70, "full": 100, "over": 150}
+
 # 開発案件（商談に紐づく開発テーマの管理）
 DEV_PROJECT_STATUSES = ["開発中", "完成", "中止"]
 DEV_PROJECT_STAGES = ["プロト", "PoC", "本番"]
@@ -685,6 +694,46 @@ CREATE TABLE IF NOT EXISTS dev_coefficient (
     coef_value REAL NOT NULL,
     updated_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (coef_type, coef_key)
+);
+
+-- Delivery（受注後・納品）案件（#75）。デモ開発(dev_projects)とは別系統。商談が「提案」到達で自動起票。
+-- 1商談に複数可（deal_id は非UNIQUE）。見込み/確定の確度は紐づく deal.stage から都度導出（専用列は持たない）。
+CREATE TABLE IF NOT EXISTS deliveries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id     INTEGER NOT NULL,          -- 紐づく商談（非UNIQUE）
+    title       TEXT,                      -- 納品案件名（既定=商談名）
+    start_week  TEXT,                      -- 開始週の月曜(YYYY-MM-DD)
+    end_week    TEXT,                      -- 終了週の月曜(YYYY-MM-DD)
+    status      TEXT DEFAULT '進行中',      -- 進行中/完了/保留
+    overview    TEXT,                      -- 概要・納品方針（自由記述）
+    created_at  TEXT DEFAULT (datetime('now')),
+    updated_at  TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE
+);
+
+-- アサインブロック（#75）。入力の最小単位＝(メンバー・開始週〜終了週・FTE%)。
+-- 週へは読み出し時に展開・合算する（20週手打ち回避）。特定週調整は from=to の1週ブロック。
+CREATE TABLE IF NOT EXISTS delivery_assignments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_id  INTEGER NOT NULL,
+    owner        TEXT NOT NULL,            -- メンバー（OWNERS）
+    from_week    TEXT NOT NULL,            -- 開始週の月曜(YYYY-MM-DD)
+    to_week      TEXT NOT NULL,            -- 終了週の月曜(YYYY-MM-DD)
+    fte_pct      REAL NOT NULL DEFAULT 0,  -- 稼働率(%) 0〜（100超も可＝過負荷）
+    note         TEXT,
+    created_at   TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
+);
+
+-- ベース工数（#75）。案件に紐づかない恒常稼働（人×機能×%）。例: 早瀬 営業 30%。
+-- functionは自由入力。正本SFA＋Hishoからの書き戻し(POST /api/base_workload)で両方編集。
+CREATE TABLE IF NOT EXISTS base_workload (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner       TEXT NOT NULL,             -- メンバー（OWNERS）
+    function    TEXT NOT NULL,             -- 機能（自由入力: 営業/管理/採用 等）
+    pct         REAL NOT NULL DEFAULT 0,   -- 恒常稼働率(%)
+    updated_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(owner, function)
 );
 """
 
@@ -2543,6 +2592,192 @@ def add_dev_project_tool(con, *, dev_project_id: int, url: str,
 def delete_dev_project_tool(con, tool_id: int) -> None:
     con.execute("DELETE FROM dev_project_tools WHERE id=?", (int(tool_id),))
     con.commit()
+
+
+# ---- Delivery（受注後・納品）アサイン計画（#75） ----
+
+def _monday_of(d: date) -> str:
+    """dを含む週の月曜(YYYY-MM-DD文字列)。"""
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def _weeks_from(start_monday: str, n: int) -> list[str]:
+    """start_monday(月曜)からn週分の月曜日付リスト。"""
+    d0 = date.fromisoformat(start_monday)
+    return [(d0 + timedelta(days=7 * i)).isoformat() for i in range(max(0, n))]
+
+
+def create_delivery(con, *, deal_id: int, title: str = "", start_week: str | None = None,
+                    end_week: str | None = None, status: str = "進行中",
+                    overview: str = "") -> int:
+    cur = con.execute(
+        "INSERT INTO deliveries (deal_id, title, start_week, end_week, status, overview) "
+        "VALUES (?,?,?,?,?,?)",
+        (int(deal_id), title or None, start_week or None, end_week or None,
+         status or "進行中", overview or None))
+    con.commit()
+    return cur.lastrowid
+
+
+def get_delivery(con, delivery_id: int) -> dict | None:
+    r = con.execute(
+        "SELECT dv.*, d.deal_name, d.stage AS deal_stage, d.status AS deal_status, "
+        "acc.name AS account_name "
+        "FROM deliveries dv JOIN deals d ON d.id=dv.deal_id "
+        "LEFT JOIN accounts acc ON acc.id=d.account_id WHERE dv.id=?",
+        (int(delivery_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def list_deliveries(con, *, deal_id: int | None = None) -> list[dict]:
+    """Delivery一覧（deal名・stage・status付き）。deal_id指定でその商談分のみ。"""
+    sql = ("SELECT dv.*, d.deal_name, d.stage AS deal_stage, d.status AS deal_status, "
+           "acc.name AS account_name "
+           "FROM deliveries dv JOIN deals d ON d.id=dv.deal_id "
+           "LEFT JOIN accounts acc ON acc.id=d.account_id ")
+    args: list = []
+    if deal_id is not None:
+        sql += "WHERE dv.deal_id=? "
+        args.append(int(deal_id))
+    sql += "ORDER BY dv.created_at DESC, dv.id DESC"
+    return [dict(r) for r in con.execute(sql, args)]
+
+
+def update_delivery(con, delivery_id: int, **fields) -> None:
+    allowed = {"title", "start_week", "end_week", "status", "overview"}
+    sets, args = [], []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k}=?")
+            args.append(v if v != "" else None)
+    if not sets:
+        return
+    args.append(int(delivery_id))
+    con.execute(f"UPDATE deliveries SET {', '.join(sets)}, updated_at=datetime('now') WHERE id=?", args)
+    con.commit()
+
+
+def delete_delivery(con, delivery_id: int) -> None:
+    # delivery_assignments は ON DELETE CASCADE。念のためFK ON前提でなくても消す。
+    con.execute("DELETE FROM delivery_assignments WHERE delivery_id=?", (int(delivery_id),))
+    con.execute("DELETE FROM deliveries WHERE id=?", (int(delivery_id),))
+    con.commit()
+
+
+def ensure_delivery_on_stage(con, deal_id: int, stage: str | None) -> int | None:
+    """商談が「提案」以降に到達し、まだDeliveryが無ければ1件自動起票（#75）。作成したidを返す。"""
+    if (stage or "") not in DELIVERY_TRIGGER_STAGES:
+        return None
+    n = con.execute("SELECT COUNT(*) c FROM deliveries WHERE deal_id=?", (int(deal_id),)).fetchone()["c"]
+    if n:
+        return None
+    deal = get_deal(con, deal_id)
+    if not deal:
+        return None
+    return create_delivery(con, deal_id=deal_id, title=(deal.get("deal_name") or ""))
+
+
+def list_delivery_assignments(con, delivery_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM delivery_assignments WHERE delivery_id=? ORDER BY owner, from_week",
+        (int(delivery_id),))]
+
+
+def add_delivery_assignment(con, *, delivery_id: int, owner: str, from_week: str,
+                            to_week: str, fte_pct: float, note: str = "") -> int:
+    cur = con.execute(
+        "INSERT INTO delivery_assignments (delivery_id, owner, from_week, to_week, fte_pct, note) "
+        "VALUES (?,?,?,?,?,?)",
+        (int(delivery_id), owner, from_week, to_week, float(fte_pct or 0), note or None))
+    con.commit()
+    return cur.lastrowid
+
+
+def delete_delivery_assignment(con, assignment_id: int) -> None:
+    con.execute("DELETE FROM delivery_assignments WHERE id=?", (int(assignment_id),))
+    con.commit()
+
+
+def delivery_grid(con, delivery_id: int) -> dict:
+    """1Deliveryのアサインをメンバー×週に展開したプレビュー用グリッド。
+    週の範囲はブロックの最小from〜最大to（無ければ空）。cell=合算fte_pct。"""
+    blocks = list_delivery_assignments(con, delivery_id)
+    if not blocks:
+        return {"weeks": [], "owners": [], "cells": {}}
+    fmin = min(b["from_week"] for b in blocks)
+    tmax = max(b["to_week"] for b in blocks)
+    d0, d1 = date.fromisoformat(fmin), date.fromisoformat(tmax)
+    n = (d1 - d0).days // 7 + 1
+    weeks = _weeks_from(_monday_of(d0), n)
+    cells: dict = {}
+    owners: list = []
+    for b in blocks:
+        if b["owner"] not in owners:
+            owners.append(b["owner"])
+        for wk in weeks:
+            if b["from_week"] <= wk <= b["to_week"]:
+                cells.setdefault(b["owner"], {})[wk] = cells.get(b["owner"], {}).get(wk, 0.0) + (b["fte_pct"] or 0)
+    return {"weeks": weeks, "owners": owners, "cells": cells}
+
+
+def list_base_workload(con, owner: str | None = None) -> list[dict]:
+    if owner:
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM base_workload WHERE owner=? ORDER BY function", (owner,))]
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM base_workload ORDER BY owner, function")]
+
+
+def base_workload_by_owner(con) -> dict:
+    """{owner: 合算pct} を返す（総工数計算用）。"""
+    return {r["owner"]: r["p"] for r in con.execute(
+        "SELECT owner, COALESCE(SUM(pct),0) p FROM base_workload GROUP BY owner")}
+
+
+def upsert_base_workload(con, owner: str, function: str, pct: float) -> None:
+    con.execute(
+        "INSERT INTO base_workload (owner, function, pct, updated_at) VALUES (?,?,?,datetime('now')) "
+        "ON CONFLICT(owner, function) DO UPDATE SET pct=excluded.pct, updated_at=datetime('now')",
+        (owner, function, float(pct or 0)))
+    con.commit()
+
+
+def delete_base_workload(con, base_id: int) -> None:
+    con.execute("DELETE FROM base_workload WHERE id=?", (int(base_id),))
+    con.commit()
+
+
+def compute_delivery_load(con, *, start_week: str | None = None,
+                          n_weeks: int = DELIVERY_VIEW_WEEKS) -> dict:
+    """全社の Delivery 稼働(FTE%)を メンバー×週 に展開・合算（#75）。
+    確度は紐づく deal.stage から導出: 受注=確定(committed)/提案・クロージング=見込み(forecast)。
+    クローズ済みかつ非受注（失注・リード戻し等）は集計から除外。
+    デモ開発負荷は別系統(Hisho側で加算)。ここでは delivery と base のみ返す。"""
+    start_week = start_week or _monday_of(date.today())
+    weeks = _weeks_from(start_week, n_weeks)
+    cells: dict = {}  # owner -> week -> {"committed":x, "forecast":y}
+    for r in con.execute(
+        "SELECT da.owner, da.from_week, da.to_week, da.fte_pct, d.stage, d.status "
+        "FROM delivery_assignments da "
+        "JOIN deliveries dv ON dv.id=da.delivery_id "
+        "JOIN deals d ON d.id=dv.deal_id"):
+        stage = r["stage"] or ""
+        status = r["status"] or "open"
+        if status == "closed" and stage != "受注":
+            continue  # 提案でクローズ（失注/リード戻し）は見込みから除外
+        committed = (stage == "受注")
+        for wk in weeks:
+            if r["from_week"] <= wk <= r["to_week"]:
+                c = cells.setdefault(r["owner"], {}).setdefault(wk, {"committed": 0.0, "forecast": 0.0})
+                if committed:
+                    c["committed"] += r["fte_pct"] or 0
+                else:
+                    c["forecast"] += r["fte_pct"] or 0
+    base = base_workload_by_owner(con)
+    owners = sorted(set(list(base.keys()) + list(cells.keys())),
+                    key=lambda o: (OWNERS.index(o) if o in OWNERS else 999, o))
+    return {"start_week": start_week, "weeks": weeks, "owners": owners,
+            "base": base, "cells": cells}
 
 
 def set_deal_issue_ai_summary(con, issue_id: int, summary: str) -> None:
