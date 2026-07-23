@@ -1122,9 +1122,9 @@ def deliveries_page(con) -> str:
         <tr class="dv-row" data-search="{_search}" data-status="{_esc(dv.get('status') or '進行中')}" data-conf="{lbl}">
           <td style="width:26px"><input type="checkbox" name="ids" value="{_id}"></td>
           <td class="muted" style="font-size:.8em"><a href="/delivery/{_id}">#{_id}</a></td>
+          <td>{_esc(dv.get('account_name') or '—')}</td>
           <td><input type="text" value="{_esc(dv.get('title') or '')}" style="width:180px;font-size:12px"
                  onchange="dvField({_id},'title',this.value)"></td>
-          <td>{_esc(dv.get('account_name') or '—')}</td>
           <td><span style="background:{col};color:#fff;border-radius:5px;padding:1px 7px;font-size:11px">{lbl}</span></td>
           <td><select style="font-size:12px" onchange="dvField({_id},'status',this.value)">{_st_opts}</select></td>
           <td><input type="date" value="{_esc(dv.get('start_week') or '')}" style="font-size:11px"
@@ -1169,7 +1169,7 @@ def deliveries_page(con) -> str:
       <div style="overflow:auto;max-height:72vh"><table style="min-width:1040px">
         <tr>
           <th class="sticky" style="width:26px"><input type="checkbox" id="dvAll" onclick="dvToggleAll(this)" title="表示中を全選択"></th>
-          <th class="sticky">#</th><th class="sticky">案件</th><th class="sticky">クライアント</th>
+          <th class="sticky">#</th><th class="sticky">クライアント</th><th class="sticky">案件</th>
           <th class="sticky">確度</th><th class="sticky">状態</th><th class="sticky">開始週</th><th class="sticky">終了週</th>
           <th class="sticky">平均FTE</th><th class="sticky">アサイン</th><th class="sticky"></th>
         </tr>
