@@ -3108,9 +3108,13 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         )
         dev_links += (f'<a href="/dev-projects/new?deal_id={did}&return_to={_ret_q}" '
                       f'title="この商談に開発案件を新規追加" style="{_add_pill}">＋開発案件</a>')
+        # 開発案件のツールリンク（主/追加）をこの場で貼れるフローティングを開くトリガー（#2）
+        _link_trg = (f'<button type="button" class="toollink-trigger" '
+                     f'onclick="openToolLinkPanel({did}, this)" '
+                     f'title="制作したツール/追加リンクを貼る">🔗 リンク貼付</button>')
         tool_cell = (f'<div style="min-width:150px;display:flex;flex-direction:column;gap:4px;align-items:flex-start">'
                      f'<div>{tool_btns}</div>'
-                     f'<div style="display:flex;flex-wrap:wrap;gap:4px">{dev_links}</div></div>')
+                     f'<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">{dev_links}{_link_trg}</div></div>')
         if d.get("status") != "closed":
             close_btn = (f'<button type="button" class="btn sec" style="font-size:11px;padding:4px 8px;'
                          f'background:#c53030;color:#fff;border-color:#c53030"'
@@ -3142,7 +3146,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         )
     body = "".join(rows) or f'<tr><td colspan={16 if bulk else 15} class=muted>商談がありません。</td></tr>'
     return (f'<div style="overflow:auto;max-height:70vh"><table style="min-width:1560px">'
-            f'{header}{body}</table></div>' + _MS_PANEL_BLOCK)
+            f'{header}{body}</table></div>' + _MS_PANEL_BLOCK + _TOOL_LINK_PANEL_BLOCK)
 
 
 # 一覧の「次回MS」欄から全MSを確認/追加/編集/削除するポップオーバー（#48）。全タブ共通・1回だけ出力。
@@ -3246,6 +3250,138 @@ _MS_PANEL_BLOCK = """
     var p=panelEl(); if(!p||p.style.display!=='block') return;
     if(p.contains(e.target)) return;
     if(e.target.closest('.ms-trigger')) return;
+    closePanel();
+  });
+})();
+</script>
+"""
+
+
+# 一覧のツール欄から、開発案件の「制作したツール(主)」「追加リンク」をその場で貼れるポップオーバー（#2）。
+# 全タブ共通・1回だけ出力。1商談に開発案件が複数ある場合はセレクトで選択、0件なら作成を促す。
+_TOOL_LINK_PANEL_BLOCK = """
+<style>
+.toollink-trigger{font-size:11px;background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc;border-radius:6px;
+  padding:2px 8px;cursor:pointer;white-space:nowrap}
+.toollink-trigger:hover{background:#cffafe}
+#dealToolPanel{position:fixed;z-index:1200;display:none;background:#fff;border:1px solid #cbd5e1;
+  border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.22);padding:12px 14px;width:420px;max-width:94vw;
+  max-height:74vh;overflow:auto;font-size:12px}
+#dealToolPanel h4{margin:0 0 8px;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+#dealToolPanel .tlp-sec{border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-bottom:10px}
+#dealToolPanel .tlp-sec h5{margin:0 0 6px;font-size:12px;color:#334155}
+#dealToolPanel label.tlp-f{display:block;margin-bottom:5px;color:#475569;font-size:11px}
+#dealToolPanel input[type=text]{width:100%;box-sizing:border-box;font-size:12px;padding:3px 5px;margin-top:1px}
+#dealToolPanel select{font-size:12px;padding:3px 5px;max-width:100%}
+#dealToolPanel .tlp-btn{background:#0891b2;color:#fff;border:0;border-radius:6px;cursor:pointer;padding:4px 12px;font-size:12px}
+#dealToolPanel .tlp-btn.add{background:#4f46e5}
+#dealToolPanel .tlp-hint{color:#64748b;font-size:10px;margin:0 0 8px}
+#dealToolPanel .tlp-links a{display:inline-block;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;
+  border-radius:6px;padding:1px 7px;font-size:11px;margin:0 4px 4px 0;text-decoration:none;max-width:100%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+#dealToolPanel .tlp-msg{font-size:11px;margin:4px 0}
+</style>
+<div id="dealToolPanel"></div>
+<script>
+(function(){
+  function esc(s){return (s==null?'':String(s)).replace(/[&<>\\"]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','\\"':'&quot;'}[c];});}
+  function panelEl(){return document.getElementById('dealToolPanel');}
+  function post(url,body){return fetch(url,{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body}).then(function(r){return r.json();});}
+  function enc(v){return encodeURIComponent(v||'');}
+  function proj(){ if(!window.__tlData) return null;
+    return window.__tlData.projects.filter(function(p){return p.id===window.__tlSel;})[0]||null; }
+  function render(){
+    var p=panelEl(), d=window.__tlData;
+    if(!d){ p.innerHTML=''; return; }
+    var head='<h4>ツールリンクを貼る <span data-close="1" style="cursor:pointer;color:#94a3b8">✕</span></h4>';
+    if(!d.projects.length){
+      p.innerHTML=head+'<p class="tlp-hint">この商談には開発案件がまだありません。先に開発案件を作成してください。</p>'
+        +'<a class="tlp-btn add" style="text-decoration:none" href="/dev-projects/new?deal_id='+d.deal_id+'">＋開発案件を作成</a>';
+      bindClose(); return;
+    }
+    var selHtml='';
+    if(d.projects.length>1){
+      selHtml='<label class="tlp-f">対象の開発案件<select id="tlpProj">'
+        +d.projects.map(function(x){return '<option value="'+x.id+'"'+(x.id===window.__tlSel?' selected':'')+'>'+esc(x.theme)+'</option>';}).join('')
+        +'</select></label>';
+    } else {
+      selHtml='<p class="tlp-hint">開発案件: <b>'+esc(d.projects[0].theme)+'</b></p>';
+    }
+    var pr=proj();
+    var mainSec='<div class="tlp-sec"><h5>制作したツール（主リンク）</h5>'
+      +'<label class="tlp-f">URL<input type="text" id="tlpMainUrl" value="'+esc(pr.tool_url)+'" placeholder="https://..."></label>'
+      +'<label class="tlp-f">ログインID<input type="text" id="tlpMainId" value="'+esc(pr.tool_login_id)+'"></label>'
+      +'<label class="tlp-f">ログインPASS<input type="text" id="tlpMainPass" value="'+esc(pr.tool_login_pass)+'"></label>'
+      +'<button type="button" class="tlp-btn" data-savemain="1">主リンクを保存</button>'
+      +'<span class="tlp-msg" id="tlpMainMsg"></span></div>';
+    var links=(pr.extra||[]).map(function(e){
+      return '<a href="'+esc(e.url)+'" target="_blank" rel="noopener" title="'+esc(e.url)+'">'+esc(e.label||e.url)+'</a>';}).join('');
+    var addSec='<div class="tlp-sec"><h5>追加リンク</h5>'
+      +'<div class="tlp-links">'+(links||'<span class="tlp-hint">まだありません</span>')+'</div>'
+      +'<label class="tlp-f">URL<input type="text" id="tlpAddUrl" placeholder="https://..."></label>'
+      +'<label class="tlp-f">ラベル<input type="text" id="tlpAddLabel" placeholder="表示名（任意）"></label>'
+      +'<label class="tlp-f">ログインID<input type="text" id="tlpAddId"></label>'
+      +'<label class="tlp-f">ログインPASS<input type="text" id="tlpAddPass"></label>'
+      +'<button type="button" class="tlp-btn add" data-addlink="1">追加リンクを保存</button>'
+      +'<span class="tlp-msg" id="tlpAddMsg"></span></div>';
+    p.innerHTML=head+selHtml+mainSec+addSec
+      +'<p class="tlp-hint">保存内容は個別開発案件のリンクに直接連携されます。一覧のボタン表示はページ再読込後に反映されます。</p>';
+    var sp=document.getElementById('tlpProj');
+    if(sp) sp.addEventListener('change',function(){ window.__tlSel=parseInt(sp.value,10); render(); });
+    var sm=p.querySelector('[data-savemain]');
+    if(sm) sm.addEventListener('click',function(){
+      var msg=document.getElementById('tlpMainMsg'); msg.textContent='保存中…'; msg.style.color='#64748b';
+      post('/dev-project/'+window.__tlSel+'/tool-main',
+        'url='+enc(document.getElementById('tlpMainUrl').value)
+        +'&login_id='+enc(document.getElementById('tlpMainId').value)
+        +'&login_pass='+enc(document.getElementById('tlpMainPass').value))
+      .then(function(r){ if(r&&r.ok){ msg.textContent='✓ 保存しました'; msg.style.color='#059669';
+          var pp=proj(); if(pp){pp.tool_url=document.getElementById('tlpMainUrl').value;
+            pp.tool_login_id=document.getElementById('tlpMainId').value;
+            pp.tool_login_pass=document.getElementById('tlpMainPass').value;} }
+        else { msg.textContent='✕ '+((r&&r.error)||'保存に失敗しました'); msg.style.color='#b91c1c'; } });
+    });
+    var al=p.querySelector('[data-addlink]');
+    if(al) al.addEventListener('click',function(){
+      var msg=document.getElementById('tlpAddMsg'); var url=document.getElementById('tlpAddUrl').value.trim();
+      if(!/^https?:\\/\\//i.test(url)){ msg.textContent='✕ URLはhttp(s)で入力してください'; msg.style.color='#b91c1c'; return; }
+      msg.textContent='保存中…'; msg.style.color='#64748b';
+      post('/dev-project/'+window.__tlSel+'/tool-add',
+        'url='+enc(url)+'&label='+enc(document.getElementById('tlpAddLabel').value)
+        +'&login_id='+enc(document.getElementById('tlpAddId').value)
+        +'&login_pass='+enc(document.getElementById('tlpAddPass').value))
+      .then(function(r){ if(r&&r.ok){ reload(); }
+        else { msg.textContent='✕ '+((r&&r.error)||'保存に失敗しました'); msg.style.color='#b91c1c'; } });
+    });
+    bindClose();
+  }
+  function bindClose(){var cl=panelEl().querySelector('[data-close]'); if(cl) cl.addEventListener('click',closePanel);}
+  function closePanel(){var p=panelEl(); if(p) p.style.display='none';}
+  function reload(){
+    fetch('/deal/'+window.__tlDid+'/dev-tools').then(function(r){return r.json();}).then(function(d){
+      window.__tlData=d;
+      if(d.projects.length && !d.projects.some(function(x){return x.id===window.__tlSel;})) window.__tlSel=d.projects[0].id;
+      render();
+    });
+  }
+  window.openToolLinkPanel=function(did, btn){
+    window.__tlDid=did; window.__tlSel=null;
+    fetch('/deal/'+did+'/dev-tools').then(function(r){return r.json();}).then(function(d){
+      window.__tlData=d; if(d.projects.length) window.__tlSel=d.projects[0].id;
+      var p=panelEl(); render(); p.style.display='block';
+      var rc=btn.getBoundingClientRect();
+      var left=Math.min(rc.left, window.innerWidth-p.offsetWidth-10);
+      var top=rc.bottom+6;
+      if(top+p.offsetHeight>window.innerHeight) top=Math.max(8, window.innerHeight-p.offsetHeight-8);
+      p.style.left=Math.max(8,left)+'px'; p.style.top=top+'px';
+    });
+  };
+  document.addEventListener('click',function(e){
+    var p=panelEl(); if(!p||p.style.display!=='block') return;
+    if(p.contains(e.target)) return;
+    if(e.target.closest('.toollink-trigger')) return;
     closePanel();
   });
 })();
@@ -8182,6 +8318,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     sfa_db.ensure_milestones_materialized(con, _did)
                     self._send(json.dumps(_ms_panel_json(con, _did), ensure_ascii=False).encode(),
                                ctype="application/json")
+                elif (path.startswith("/deal/") and path.endswith("/dev-tools")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # 一覧のツールリンクパネル用: 商談に紐づく開発案件とそのツールリンクをJSONで返す
+                    _did = int(path.split("/")[2])
+                    _projs = sfa_db.list_dev_projects(con, deal_id=_did)
+                    _out = []
+                    for _p in _projs:
+                        _extra = sfa_db.list_dev_project_tools(con, _p["id"])
+                        _out.append({
+                            "id": _p["id"],
+                            "theme": _p.get("theme") or f"開発案件#{_p['id']}",
+                            "tool_url": _p.get("tool_url") or "",
+                            "tool_login_id": _p.get("tool_login_id") or "",
+                            "tool_login_pass": _p.get("tool_login_pass") or "",
+                            "extra": [{"id": e["id"], "label": e.get("label") or "",
+                                       "url": e.get("url") or ""} for e in _extra],
+                        })
+                    self._send(json.dumps({"ok": True, "deal_id": _did, "projects": _out},
+                                          ensure_ascii=False).encode(), ctype="application/json")
                 elif path == "/api/deals":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
@@ -9533,6 +9688,37 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._redirect(_rt if _rt.startswith("/") else f"/dev-project/{pid}/edit")
                     else:
                         self._redirect("/dev-projects")
+
+                elif (path.startswith("/dev-project/") and path.endswith("/tool-main")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # 一覧のツールリンクパネルから「制作したツールのリンク（主）」を保存（ajax）。
+                    pid = int(path.split("/")[2])
+                    con.execute(
+                        "UPDATE dev_projects SET tool_url=?, tool_login_id=?, tool_login_pass=?, "
+                        "updated_at=datetime('now') WHERE id=?",
+                        (f.get("url") or None, f.get("login_id") or None, f.get("login_pass") or None, pid))
+                    con.commit()
+                    if theme_client is not None:
+                        try:
+                            dev_project_link.sync_dev_project(theme_client, con, pid)
+                        except Exception as _exc:  # noqa: BLE001
+                            print(f"[dev_project_link] sync_dev_project failed (tool-main): {_exc}")
+                    self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+
+                elif (path.startswith("/dev-project/") and path.endswith("/tool-add")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # 一覧のツールリンクパネルから「追加リンク」を保存（ajax）。
+                    pid = int(path.split("/")[2])
+                    _url = (f.get("url") or "").strip()
+                    if _url and _url.lower().startswith(("http://", "https://")):
+                        sfa_db.add_dev_project_tool(
+                            con, dev_project_id=pid, url=_url,
+                            label=f.get("label") or None, login_id=f.get("login_id") or None,
+                            login_pass=f.get("login_pass") or None)
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                    else:
+                        self._send(json.dumps({"ok": False, "error": "URLはhttp(s)で入力してください"}).encode(),
+                                   ctype="application/json")
 
                 elif path.startswith("/dev-project/") and path.endswith("/delete"):
                     try:
