@@ -9012,6 +9012,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _load = sfa_db.compute_delivery_load(con, start_week=_sw, n_weeks=_nw)
                         _load["thresholds"] = sfa_db.DELIVERY_HEAT_THRESHOLDS
                         _load["points_per_fte"] = sfa_db.POINTS_PER_FTE
+                        _load["owner_order"] = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
                         self._send_cors_json(json.dumps(_load, ensure_ascii=False).encode())
                 elif path == "/api/base_workload":
                     # Hishoダッシュボード用: ベース工数(人×機能×%)。{owner:pct}合算＋明細（#75）。
