@@ -1253,24 +1253,36 @@ def delivery_form(con, delivery_id: int) -> str:
             _weeks_val = str((date.fromisoformat(dv["end_week"]) - date.fromisoformat(dv["start_week"])).days // 7 + 1)
     except Exception:  # noqa: BLE001
         _weeks_val = ""
-    # 既存ブロック（各行を編集フォームに）
+    # 体制（役割の並び順）を先に取得。アサインはこの並びに合わせて表示する。
+    roles = sfa_db.list_delivery_roles(con, delivery_id)
+    _role_order = {r["role"]: i for i, r in enumerate(roles)}
+    # 既存ブロック（各行を編集フォーム＝入力で自動保存）。体制の役割順→役割名→idで整列。
     blocks = sfa_db.list_delivery_assignments(con, delivery_id)
+    blocks.sort(key=lambda b: (_role_order.get(b.get("role") or "", 10_000),
+                               b.get("role") or "￿", b.get("id") or 0))
     bedit = ""
     for b in blocks:
         bedit += f"""
         <form method="post" action="/delivery/{delivery_id}/assignment/{b['id']}/update" class="asgForm"
               style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border:1px solid #e6e9f0;border-radius:8px;padding:8px;margin-bottom:6px">
           {_delivery_row_fields(_owners, b)}
-          <button class="btn sec" style="font-size:12px">保存</button>
+          <span class="asgSaved" style="font-size:10px;color:#94a3b8;align-self:center">自動保存</span>
           <button formaction="/delivery/{delivery_id}/assignment/{b['id']}/delete" formnovalidate
                   class="btn sec" style="font-size:11px;color:#c53030"
                   onclick="return confirm('このアサインを削除しますか？')">×削除</button>
         </form>"""
     if not bedit:
-        bedit = '<p class="muted">まだアサインがありません。下で追加してください。</p>'
-    # プレビューグリッド（実想定を主に色付け・請求は小さく併記）
+        bedit = '<p class="muted">まだアサインがありません。体制で役割を追加するか、各役割の「＋メンバー」で追加します。</p>'
+    # プレビューグリッド（実想定を主に色付け・請求は小さく併記）。行の並びは体制の役割順に合わせる。
     grid = sfa_db.delivery_grid(con, delivery_id)
+    _own_role_idx = {}
+    for b in blocks:
+        _ow = b.get("owner") or ""
+        _idx = _role_order.get(b.get("role") or "", 10_000)
+        if _ow not in _own_role_idx or _idx < _own_role_idx[_ow]:
+            _own_role_idx[_ow] = _idx
     if grid["weeks"]:
+        grid["owners"] = sorted(grid["owners"], key=lambda o: (_own_role_idx.get(o, 10_000), o))
         head = "".join(f'<th style="font-size:11px;white-space:nowrap">{_fmt_week(w)}</th>' for w in grid["weeks"])
         grows = ""
         for ow in grid["owners"]:
@@ -1294,8 +1306,7 @@ def delivery_form(con, delivery_id: int) -> str:
     else:
         grid_html = '<p class="muted">アサインを追加するとここに週別グリッドが表示されます。</p>'
 
-    # 体制（役割ごとの目標稼働率）。役割合計とアサイン合計の整合チェックに使う。
-    roles = sfa_db.list_delivery_roles(con, delivery_id)
+    # 体制（役割ごとの目標稼働率）。役割の期間平均とアサインの期間平均の整合チェックに使う（rolesは上で取得済み）。
     role_targets = {}
     role_rows = ""
     for r in roles:
@@ -1308,8 +1319,10 @@ def delivery_form(con, delivery_id: int) -> str:
           <label style="font-size:11px">役割<br><input type="text" name="role" class="rRole" value="{_esc(r['role'])}" style="width:120px"></label>
           <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" class="rTgtB" min="0" max="300" step="5" value="{_num_pct(_rb) if _rb is not None else ''}" style="width:74px"></label>
           <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" class="rTgtA" min="0" max="300" step="5" value="{_num_pct(_ra) if _ra is not None else ''}" style="width:74px"></label>
-          <span style="font-size:11px;color:#64748b">現在合計 請<b class="curB">-</b>% / 実<b class="curA">-</b>%</span>
-          <button class="btn sec" style="font-size:11px">保存</button>
+          <span style="font-size:11px;color:#64748b">現在(期間平均) 請<b class="curB">-</b>% / 実<b class="curA">-</b>%</span>
+          <span class="asgSaved" style="font-size:10px;color:#94a3b8">自動保存</span>
+          <button formaction="/delivery/{delivery_id}/role/{r['id']}/add-member" formnovalidate
+                  class="btn sec" style="font-size:11px;color:#0e7490">＋メンバー</button>
           <button formaction="/delivery/{delivery_id}/role/{r['id']}/delete" formnovalidate
                   class="btn sec" style="font-size:11px;color:#c53030"
                   onclick="return confirm('この役割を体制から削除しますか？（アサイン行は消えません）')">×</button>
@@ -1317,12 +1330,7 @@ def delivery_form(con, delivery_id: int) -> str:
     if not role_rows:
         role_rows = '<p class="muted" style="font-size:11px">体制未設定。下で役割を追加すると、その役割のアサイン行が自動生成されます。</p>'
     import json as _json
-    role_targets_json = _json.dumps(role_targets, ensure_ascii=False)
-
-    add_fields = _delivery_row_fields(_owners, {
-        "member_kind": "内部", "owner": "", "role": "",
-        "from_week": dv.get("start_week") or "", "to_week": dv.get("end_week") or "",
-        "fte_billing": 50, "fte_pct": 50, "note": ""})
+    role_targets_json = _json.dumps(role_targets, ensure_ascii=False)  # noqa: F841 (旧ハイライト用・保持)
 
     return f"""
     <div class="card">
@@ -1347,7 +1355,7 @@ def delivery_form(con, delivery_id: int) -> str:
             </div>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
-            <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は下の「アサイン追加」の週の初期値（ガイド）です。</p>
+            <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は体制「＋メンバー」で生成する行の初期値（ガイド）です。</p>
           </form>
         </div>
         <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
@@ -1365,14 +1373,8 @@ def delivery_form(con, delivery_id: int) -> str:
       </div>
 
       <h3 style="margin:16px 0 6px;font-size:14px">アサイン（役割 × 区分 × メンバー × 期間 × 稼働率）</h3>
-      <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は<b>請求</b>（クライアント請求上）と<b>実想定</b>（実稼働・負荷計算はこちら）。区分「外部」でメンバーを自由記述。各行は編集して「保存」。</p>
+      <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は<b>請求</b>（クライアント請求上）と<b>実想定</b>（実稼働・負荷計算はこちら）。区分「外部」でメンバーを自由記述。<b>入力すると自動保存</b>されます。行の追加は体制の「＋メンバー」から。並びは体制の役割順。</p>
       {bedit}
-
-      <form method="post" action="/delivery/{delivery_id}/assignment/add" class="asgForm"
-            style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-top:8px">
-        {add_fields}
-        <button class="btn" style="font-size:12px">＋アサイン追加</button>
-      </form>
 
       <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
       {grid_html}
@@ -1384,7 +1386,6 @@ def delivery_form(con, delivery_id: int) -> str:
       </div>
     </div>
     <script>
-    var ROLE_TARGETS = {role_targets_json};
     function _mondayOf(s){{ if(!s) return ''; var p=String(s).split('-'); if(p.length!==3) return s;
       var d=new Date(+p[0], +p[1]-1, +p[2]); if(isNaN(d)) return s;
       var wd=(d.getDay()+6)%7; d.setDate(d.getDate()-wd);
@@ -1399,27 +1400,37 @@ def delivery_form(con, delivery_id: int) -> str:
       var mi=f.querySelector('.mint'), me=f.querySelector('.mext');
       if(sel.value==='外部'){{ if(mi)mi.style.display='none'; if(me)me.style.display=''; }}
       else {{ if(mi)mi.style.display=''; if(me)me.style.display='none'; }} }}
-    function _setFte(v){{ var f=document.querySelector('.asgForm [name=fte_pct]'); }}
-    function checkRoleTotals(){{
-      var sums={{}};
+    // 役割ごとの「期間平均」稼働率を算出（週別に積み上げ→在籍週で平均）。
+    // 同じ役割で途中メンバー交代（重複期間なし）なら合計ではなく実効の平均になる。
+    function roleWeeklyAvg(role){{
+      var wk={{}};
       document.querySelectorAll('.asgForm').forEach(function(f){{
-        var rl=f.querySelector('[name=role]'); var role=rl?rl.value.trim():''; if(!role) return;
+        var rl=f.querySelector('[name=role]'); if(!rl||rl.value.trim()!==role) return;
+        var fw=(f.querySelector('[name=from_week]')||{{}}).value, tw=(f.querySelector('[name=to_week]')||{{}}).value;
         var a=parseFloat((f.querySelector('[name=fte_pct]')||{{}}).value)||0;
         var b=parseFloat((f.querySelector('[name=fte_billing]')||{{}}).value)||0;
-        sums[role]=sums[role]||{{a:0,b:0}}; sums[role].a+=a; sums[role].b+=b;
+        if(!fw||!tw) return; var p1=_mondayOf(fw).split('-'), p2=_mondayOf(tw).split('-');
+        var d=new Date(+p1[0],+p1[1]-1,+p1[2]), e=new Date(+p2[0],+p2[1]-1,+p2[2]), g=0;
+        while(d<=e && g<520){{ var k=d.getFullYear()+'_'+d.getMonth()+'_'+d.getDate();
+          wk[k]=wk[k]||{{a:0,b:0}}; wk[k].a+=a; wk[k].b+=b; d.setDate(d.getDate()+7); g++; }}
       }});
+      var ks=Object.keys(wk); if(!ks.length) return {{a:0,b:0,n:0}};
+      var sa=0,sb=0; ks.forEach(function(k){{sa+=wk[k].a; sb+=wk[k].b;}});
+      return {{a:sa/ks.length, b:sb/ks.length, n:ks.length}};
+    }}
+    function _r1(x){{ return Math.round(x*10)/10; }}
+    function checkRoleTotals(){{
       document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing]').forEach(function(i){{i.style.background='';i.style.outline='';}});
-      // 体制の各行（目標）はライブで入力値から読む
       document.querySelectorAll('.roleRow').forEach(function(row){{
         var rInp=row.querySelector('.rRole'); var role=rInp?rInp.value.trim():'';
         var tbi=row.querySelector('.rTgtB'), tai=row.querySelector('.rTgtA');
         var tb=tbi&&tbi.value!==''?parseFloat(tbi.value):NaN;
         var ta=tai&&tai.value!==''?parseFloat(tai.value):NaN;
-        var s=sums[role]||{{a:0,b:0}};
+        var avg=roleWeeklyAvg(role);
         var cb=row.querySelector('.curB'), ca=row.querySelector('.curA');
-        if(cb)cb.textContent=(s.b||0); if(ca)ca.textContent=(s.a||0);
-        var hlB=!isNaN(tb)&&Math.abs(s.b-tb)>0.01;
-        var hlA=!isNaN(ta)&&Math.abs(s.a-ta)>0.01;
+        if(cb)cb.textContent=_r1(avg.b); if(ca)ca.textContent=_r1(avg.a);
+        var hlB=!isNaN(tb)&&Math.abs(avg.b-tb)>0.01;
+        var hlA=!isNaN(ta)&&Math.abs(avg.a-ta)>0.01;
         if(tbi)tbi.style.background=hlB?'#fef3c7':''; if(tai)tai.style.background=hlA?'#fef3c7':'';
         if(cb)cb.style.color=hlB?'#b45309':'inherit'; if(ca)ca.style.color=hlA?'#b45309':'inherit';
         if(hlA||hlB) document.querySelectorAll('.asgForm').forEach(function(f){{
@@ -1429,12 +1440,25 @@ def delivery_form(con, delivery_id: int) -> str:
         }});
       }});
     }}
+    function autoSave(form){{
+      var st=form.querySelector('.asgSaved'); if(st){{st.textContent='保存中…';st.style.color='#94a3b8';}}
+      var body=new URLSearchParams(new FormData(form)); body.set('ajax','1');
+      fetch(form.action,{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:body.toString()}})
+        .then(function(r){{ if(st){{st.textContent=r.ok?'保存済み':'保存失敗';st.style.color=r.ok?'#059669':'#b91c1c';}} }})
+        .catch(function(){{ if(st){{st.textContent='保存失敗';st.style.color='#b91c1c';}} }});
+    }}
     document.addEventListener('DOMContentLoaded',function(){{
       document.querySelectorAll('.wkdate').forEach(function(el){{el.addEventListener('change',function(){{snapWk(el);}});}});
       document.querySelectorAll('.mkind').forEach(function(s){{tglMember(s);}});
+      // 入力（rate/role/target）で整合ライブ判定
       document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing],.asgForm [name=role],'
+        +'.asgForm [name=from_week],.asgForm [name=to_week],'
         +'.roleRow .rRole,.roleRow .rTgtB,.roleRow .rTgtA').forEach(function(i){{
         i.addEventListener('input',checkRoleTotals);}});
+      // 自動保存: 各アサイン行・体制行の変更でajax保存（保存ボタン不要）
+      document.querySelectorAll('.asgForm,.roleRow').forEach(function(form){{
+        form.addEventListener('change',function(){{autoSave(form);}});
+      }});
       checkRoleTotals();
     }});
     </script>"""
@@ -9924,7 +9948,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             fte_pct=_to_float(f.get("fte_pct"), 0.0),
                             fte_billing=_to_float(f.get("fte_billing"), None),
                             note=(f.get("note", "") or "").strip())
-                    self._redirect(f"/delivery/{_dvid}")
+                    if f.get("ajax"):
+                        self._send(b"", status=204)
+                    else:
+                        self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and path.endswith("/role/add")
                       and path.split("/")[2].isdigit()):
                     # 体制に役割を追加＋その役割のアサイン行を自動生成（目標稼働率を初期値に）
@@ -9952,6 +9979,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             con, int(_rid), role=_role,
                             fte_billing=_to_float(f.get("fte_billing"), None),
                             fte_pct=_to_float(f.get("fte_pct"), None))
+                    if f.get("ajax"):
+                        self._send(b"", status=204)
+                    else:
+                        self._redirect(f"/delivery/{_dvid}")
+                elif (path.startswith("/delivery/") and "/role/" in path
+                      and path.endswith("/add-member") and path.split("/")[2].isdigit()):
+                    # 体制の役割に対し、空メンバーのアサイン行を追加（役割名・目標を初期値に）
+                    _dvid = int(path.split("/")[2])
+                    _rid = path.split("/")[4]
+                    _rr = next((r for r in sfa_db.list_delivery_roles(con, _dvid)
+                                if str(r["id"]) == str(_rid)), None)
+                    if _rr:
+                        _dv = sfa_db.get_delivery(con, _dvid)
+                        sfa_db.add_delivery_assignment(
+                            con, delivery_id=_dvid, owner="", member_kind="内部", role=_rr["role"],
+                            from_week=_snap_monday((_dv or {}).get("start_week") or "") or "",
+                            to_week=_snap_monday((_dv or {}).get("end_week") or "") or "",
+                            fte_pct=(_rr.get("fte_pct") if _rr.get("fte_pct") is not None else 0.0),
+                            fte_billing=_rr.get("fte_billing"))
                     self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and "/role/" in path
                       and path.endswith("/delete") and path.split("/")[2].isdigit()):
