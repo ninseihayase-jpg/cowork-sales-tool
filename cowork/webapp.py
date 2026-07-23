@@ -1303,18 +1303,19 @@ def delivery_form(con, delivery_id: int) -> str:
         _ra = r.get("fte_pct")
         role_targets[r["role"]] = {"b": _rb, "a": _ra}
         role_rows += f"""
-        <tr class="roleRow" data-role="{_esc(r['role'])}">
-          <td><b>{_esc(r['role'])}</b></td>
-          <td style="text-align:right">{_num_pct(_rb) if _rb is not None else '—'}%</td>
-          <td style="text-align:right">{_num_pct(_ra) if _ra is not None else '—'}%</td>
-          <td style="text-align:right" class="curB">-</td>
-          <td style="text-align:right" class="curA">-</td>
-          <td><form method="post" action="/delivery/{delivery_id}/role/{r['id']}/delete" style="margin:0"
-                onsubmit="return confirm('この役割を体制から削除しますか？（アサイン行は消えません）')">
-            <button class="btn sec" style="font-size:11px;color:#c53030">×</button></form></td>
-        </tr>"""
+        <form class="roleRow" method="post" action="/delivery/{delivery_id}/role/{r['id']}/update"
+              style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;border:1px solid #eef1f6;border-radius:6px;padding:6px;margin-bottom:5px">
+          <label style="font-size:11px">役割<br><input type="text" name="role" class="rRole" value="{_esc(r['role'])}" style="width:120px"></label>
+          <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" class="rTgtB" min="0" max="300" step="5" value="{_num_pct(_rb) if _rb is not None else ''}" style="width:74px"></label>
+          <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" class="rTgtA" min="0" max="300" step="5" value="{_num_pct(_ra) if _ra is not None else ''}" style="width:74px"></label>
+          <span style="font-size:11px;color:#64748b">現在合計 請<b class="curB">-</b>% / 実<b class="curA">-</b>%</span>
+          <button class="btn sec" style="font-size:11px">保存</button>
+          <button formaction="/delivery/{delivery_id}/role/{r['id']}/delete" formnovalidate
+                  class="btn sec" style="font-size:11px;color:#c53030"
+                  onclick="return confirm('この役割を体制から削除しますか？（アサイン行は消えません）')">×</button>
+        </form>"""
     if not role_rows:
-        role_rows = '<tr><td colspan=6 class=muted>体制未設定。役割を追加すると、その役割のアサイン行が自動生成されます。</td></tr>'
+        role_rows = '<p class="muted" style="font-size:11px">体制未設定。下で役割を追加すると、その役割のアサイン行が自動生成されます。</p>'
     import json as _json
     role_targets_json = _json.dumps(role_targets, ensure_ascii=False)
 
@@ -1351,11 +1352,8 @@ def delivery_form(con, delivery_id: int) -> str:
         </div>
         <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
           <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
-          <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当の稼働率欄が黄色くハイライトされます。</p>
-          <div style="overflow:auto;flex:1"><table style="min-width:520px;font-size:12px">
-            <tr><th>役割</th><th>目標(請求)%</th><th>目標(実想定)%</th><th>現在合計(請求)</th><th>現在合計(実想定)</th><th></th></tr>
-            {role_rows}
-          </table></div>
+          <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。</p>
+          <div style="overflow:auto;flex:1">{role_rows}</div>
           <form method="post" action="/delivery/{delivery_id}/role/add"
                 style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-top:6px">
             <label style="font-size:11px">役割<br><input type="text" name="role" required placeholder="PM/エンジニア等" style="width:130px"></label>
@@ -1411,15 +1409,21 @@ def delivery_form(con, delivery_id: int) -> str:
         sums[role]=sums[role]||{{a:0,b:0}}; sums[role].a+=a; sums[role].b+=b;
       }});
       document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing]').forEach(function(i){{i.style.background='';i.style.outline='';}});
-      document.querySelectorAll('.roleRow').forEach(function(tr){{
-        var role=tr.getAttribute('data-role'); var s=sums[role]||{{a:0,b:0}}; var t=ROLE_TARGETS[role]||{{}};
-        var cb=tr.querySelector('.curB'), ca=tr.querySelector('.curA');
+      // 体制の各行（目標）はライブで入力値から読む
+      document.querySelectorAll('.roleRow').forEach(function(row){{
+        var rInp=row.querySelector('.rRole'); var role=rInp?rInp.value.trim():'';
+        var tbi=row.querySelector('.rTgtB'), tai=row.querySelector('.rTgtA');
+        var tb=tbi&&tbi.value!==''?parseFloat(tbi.value):NaN;
+        var ta=tai&&tai.value!==''?parseFloat(tai.value):NaN;
+        var s=sums[role]||{{a:0,b:0}};
+        var cb=row.querySelector('.curB'), ca=row.querySelector('.curA');
         if(cb)cb.textContent=(s.b||0); if(ca)ca.textContent=(s.a||0);
-        var hlB=(t.b!=null)&&Math.abs(s.b-t.b)>0.01;
-        var hlA=(t.a!=null)&&Math.abs(s.a-t.a)>0.01;
-        if(cb)cb.style.background=hlB?'#fef3c7':''; if(ca)ca.style.background=hlA?'#fef3c7':'';
+        var hlB=!isNaN(tb)&&Math.abs(s.b-tb)>0.01;
+        var hlA=!isNaN(ta)&&Math.abs(s.a-ta)>0.01;
+        if(tbi)tbi.style.background=hlB?'#fef3c7':''; if(tai)tai.style.background=hlA?'#fef3c7':'';
+        if(cb)cb.style.color=hlB?'#b45309':'inherit'; if(ca)ca.style.color=hlA?'#b45309':'inherit';
         if(hlA||hlB) document.querySelectorAll('.asgForm').forEach(function(f){{
-          var rl=f.querySelector('[name=role]'); if(!rl||rl.value.trim()!==role) return;
+          var rl=f.querySelector('[name=role]'); if(!rl||rl.value.trim()!==role||!role) return;
           if(hlB){{var i=f.querySelector('[name=fte_billing]'); if(i){{i.style.background='#fef3c7';i.style.outline='2px solid #f59e0b';}}}}
           if(hlA){{var i=f.querySelector('[name=fte_pct]'); if(i){{i.style.background='#fef3c7';i.style.outline='2px solid #f59e0b';}}}}
         }});
@@ -1428,7 +1432,8 @@ def delivery_form(con, delivery_id: int) -> str:
     document.addEventListener('DOMContentLoaded',function(){{
       document.querySelectorAll('.wkdate').forEach(function(el){{el.addEventListener('change',function(){{snapWk(el);}});}});
       document.querySelectorAll('.mkind').forEach(function(s){{tglMember(s);}});
-      document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing],.asgForm [name=role]').forEach(function(i){{
+      document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing],.asgForm [name=role],'
+        +'.roleRow .rRole,.roleRow .rTgtB,.roleRow .rTgtA').forEach(function(i){{
         i.addEventListener('input',checkRoleTotals);}});
       checkRoleTotals();
     }});
@@ -9936,6 +9941,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             from_week=_snap_monday((_dv or {}).get("start_week") or "") or "",
                             to_week=_snap_monday((_dv or {}).get("end_week") or "") or "",
                             fte_pct=(_ra if _ra is not None else 0.0), fte_billing=_rb)
+                    self._redirect(f"/delivery/{_dvid}")
+                elif (path.startswith("/delivery/") and "/role/" in path
+                      and path.endswith("/update") and path.split("/")[2].isdigit()):
+                    _dvid = int(path.split("/")[2])
+                    _rid = path.split("/")[4]
+                    _role = (f.get("role", "") or "").strip()
+                    if _rid.isdigit() and _role:
+                        sfa_db.update_delivery_role(
+                            con, int(_rid), role=_role,
+                            fte_billing=_to_float(f.get("fte_billing"), None),
+                            fte_pct=_to_float(f.get("fte_pct"), None))
                     self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and "/role/" in path
                       and path.endswith("/delete") and path.split("/")[2].isdigit()):

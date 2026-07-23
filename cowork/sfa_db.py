@@ -2786,6 +2786,15 @@ def add_delivery_role(con, *, delivery_id: int, role: str, fte_billing: float | 
     return cur.lastrowid
 
 
+def update_delivery_role(con, role_id: int, *, role: str, fte_billing: float | None = None,
+                         fte_pct: float | None = None) -> None:
+    con.execute(
+        "UPDATE delivery_roles SET role=?, fte_billing=?, fte_pct=? WHERE id=?",
+        (role, (float(fte_billing) if fte_billing is not None else None),
+         (float(fte_pct) if fte_pct is not None else None), int(role_id)))
+    con.commit()
+
+
 def delete_delivery_role(con, role_id: int) -> None:
     con.execute("DELETE FROM delivery_roles WHERE id=?", (int(role_id),))
     con.commit()
