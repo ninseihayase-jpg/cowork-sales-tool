@@ -1087,49 +1087,95 @@ def _heat_style(pct: float) -> str:
 
 
 def deliveries_page(con) -> str:
-    """Delivery案件一覧（旧・外部スプシリンクの置換）。#75。"""
+    """Delivery案件一覧（検索/フィルタ・インライン編集・一括削除・平均FTE）。#75。"""
+    _statuses = sfa_db.DELIVERY_STATUSES
     rows = ""
     for dv in sfa_db.list_deliveries(con):
+        _id = dv["id"]
         lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
-        blocks = sfa_db.list_delivery_assignments(con, dv["id"])
+        blocks = sfa_db.list_delivery_assignments(con, _id)
         who = "、".join(sorted({b["owner"] for b in blocks})) or "—"
-        period = (f'{_fmt_week(dv.get("start_week"))}〜{_fmt_week(dv.get("end_week"))}'
-                  if dv.get("start_week") or dv.get("end_week") else "—")
-        rows += (
-            f'<tr>'
-            f'<td class="muted" style="font-size:.8em">#{dv["id"]}</td>'
-            f'<td><a href="/delivery/{dv["id"]}"><b>{_esc(dv.get("title") or "(無題)")}</b></a></td>'
-            f'<td>{_esc(dv.get("account_name") or "—")}</td>'
-            f'<td><span style="background:{col};color:#fff;border-radius:5px;padding:1px 7px;font-size:11px">{lbl}</span></td>'
-            f'<td>{_esc(dv.get("status") or "")}</td>'
-            f'<td class="muted">{period}</td>'
-            f'<td>{_esc(who)}</td>'
-            f'<td><a class="btn sec" style="font-size:11px" href="/delivery/{dv["id"]}">編集</a></td>'
-            f'</tr>')
+        # 平均FTE（実想定＝算出基準・請求も併記）: 各アサインブロックの平均
+        if blocks:
+            _avg_a = sum((b.get("fte_pct") or 0) for b in blocks) / len(blocks)
+            _avg_b = sum(sfa_db._billing_of(b) for b in blocks) / len(blocks)
+            avg_html = f'実{_num_pct(_avg_a)}% <span class="muted" style="font-size:10px">/ 請{_num_pct(_avg_b)}%</span>'
+        else:
+            avg_html = '<span class="muted">—</span>'
+        _st_opts = "".join(
+            f'<option value="{_esc(s)}"{" selected" if (dv.get("status") or "進行中") == s else ""}>{_esc(s)}</option>'
+            for s in _statuses)
+        _search = _esc(((dv.get("account_name") or "") + " " + (dv.get("title") or "")).lower())
+        rows += f"""
+        <tr class="dv-row" data-search="{_search}" data-status="{_esc(dv.get('status') or '進行中')}" data-conf="{lbl}">
+          <td style="width:26px"><input type="checkbox" name="ids" value="{_id}"></td>
+          <td class="muted" style="font-size:.8em"><a href="/delivery/{_id}">#{_id}</a></td>
+          <td><input type="text" value="{_esc(dv.get('title') or '')}" style="width:180px;font-size:12px"
+                 onchange="dvField({_id},'title',this.value)"></td>
+          <td>{_esc(dv.get('account_name') or '—')}</td>
+          <td><span style="background:{col};color:#fff;border-radius:5px;padding:1px 7px;font-size:11px">{lbl}</span></td>
+          <td><select style="font-size:12px" onchange="dvField({_id},'status',this.value)">{_st_opts}</select></td>
+          <td><input type="date" value="{_esc(dv.get('start_week') or '')}" style="font-size:11px"
+                 onchange="dvField({_id},'start_week',this.value)"></td>
+          <td><input type="date" value="{_esc(dv.get('end_week') or '')}" style="font-size:11px"
+                 onchange="dvField({_id},'end_week',this.value)"></td>
+          <td style="white-space:nowrap">{avg_html}</td>
+          <td>{_esc(who)}</td>
+          <td><a class="btn sec" style="font-size:11px" href="/delivery/{_id}">編集</a></td>
+        </tr>"""
     if not rows:
-        rows = '<tr><td colspan=8 class=muted>Deliveryはまだありません。商談が「提案」に至ると自動で起票されます。</td></tr>'
-    # 手動起票（提案以降のopen商談から選択）
+        rows = '<tr><td colspan=11 class=muted>Deliveryはまだありません。商談が「提案」に至ると自動で起票されます。</td></tr>'
     _cands = [d for d in sfa_db.list_deals(con, status="open")
               if (d.get("stage") or "") in sfa_db.DELIVERY_TRIGGER_STAGES]
     _cand_opts = "".join(
         f'<option value="{d["id"]}">{_esc(d.get("account_name") or "")}：{_esc(d.get("deal_name") or "")}（{_esc(d.get("stage") or "")}）</option>'
         for d in _cands)
+    _st_filter = "".join(f'<option value="{_esc(s)}">{_esc(s)}</option>' for s in _statuses)
     return f"""
     <div class="card">
       <h2 style="margin:0 0 4px">🚚 Delivery（受注後・アサイン計画）</h2>
-      <p class="muted" style="margin:0 0 12px">商談が「提案」に至ると自動でDelivery案件が起票されます。ここでアサイン（誰が・いつ・何%）を入力すると、
-        Hisho経営ダッシュボードの「稼働予定」に反映されます。単位＝FTE割合(%)。
-        <a href="/base-workload">▶ ベース工数（営業・管理など恒常稼働）を設定</a></p>
-      <div style="overflow:auto"><table style="min-width:900px">
-        <tr><th>#</th><th>案件</th><th>クライアント</th><th>確度</th><th>状態</th><th>期間(週)</th><th>アサイン</th><th></th></tr>
+      <p class="muted" style="margin:0 0 10px">商談が「提案」に至ると自動でDelivery案件が起票されます。案件名・状態・期間はこの一覧で直接編集できます（期間は初期入力のガイド用。既存アサインの週は変わりません）。
+        <a href="/base-workload">▶ ベース工数を設定</a></p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <input type="text" id="dvSearch" placeholder="🔍 案件名・クライアントで検索" style="font-size:12px;padding:4px 8px;width:260px" oninput="filterDeliveries()">
+        <select id="dvStatusF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全状態</option>{_st_filter}</select>
+        <select id="dvConfF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全確度</option>
+          <option value="確定">確定</option><option value="見込み">見込み</option><option value="無効(終了)">無効(終了)</option></select>
+        <span id="dvCount" class="muted" style="font-size:12px"></span>
+      </div>
+      <form id="dv_bulk" method="post" action="/deliveries/bulk_delete"
+            onsubmit="return confirm('選択したDeliveryを削除します。アサインも消えます。よろしいですか？')">
+      <div style="overflow:auto"><table style="min-width:1040px">
+        <tr><th></th><th>#</th><th>案件</th><th>クライアント</th><th>確度</th><th>状態</th><th>開始週</th><th>終了週</th><th>平均FTE</th><th>アサイン</th><th></th></tr>
         {rows}
       </table></div>
-      <form method="post" action="/deliveries/new" style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn sec" type="submit" style="font-size:12px;color:#c53030;margin-top:8px">🗑 選択したDeliveryを削除</button>
+      </form>
+      <form method="post" action="/deliveries/new" style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid #eee;padding-top:12px">
         <span class="muted" style="font-size:12px">手動で追加:</span>
         <select name="deal_id" required style="font-size:12px;max-width:420px"><option value="">商談を選択（提案以降）</option>{_cand_opts}</select>
         <button class="btn sec" style="font-size:12px">＋Delivery追加</button>
       </form>
-    </div>"""
+    </div>
+    <script>
+    function dvField(id, field, value){{
+      fetch('/delivery/'+id+'/field',{{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)}})
+      .then(function(r){{return r.json();}}).catch(function(){{}});
+    }}
+    function filterDeliveries(){{
+      var q=(document.getElementById('dvSearch').value||'').toLowerCase();
+      var st=document.getElementById('dvStatusF').value, cf=document.getElementById('dvConfF').value;
+      var n=0;
+      document.querySelectorAll('#dv_bulk tr.dv-row').forEach(function(row){{
+        var ok=(!q||row.dataset.search.indexOf(q)>=0)&&(!st||row.dataset.status===st)&&(!cf||row.dataset.conf===cf);
+        row.style.display=ok?'':'none'; if(ok)n++;
+      }});
+      var c=document.getElementById('dvCount'); if(c)c.textContent=n+'件';
+    }}
+    document.addEventListener('DOMContentLoaded',filterDeliveries);
+    </script>"""
 
 
 def delivery_form(con, delivery_id: int) -> str:
@@ -1207,7 +1253,7 @@ def delivery_form(con, delivery_id: int) -> str:
         </div>
         <label style="font-size:12px;display:block;margin-top:8px">概要・納品方針<br>
           <textarea name="overview" rows="2" style="width:100%">{_esc(dv.get("overview") or "")}</textarea></label>
-        <p class="muted" style="font-size:11px;margin:4px 0 0">※週は入力後、自動でその週の月曜に丸めます。</p>
+        <p class="muted" style="font-size:11px;margin:4px 0 0">※週は自動でその週の月曜に丸めます。開始週・終了週は下の「アサイン追加」の週の初期値（ガイド）になります（既存アサインの週は変わりません）。</p>
       </form>
 
       <h3 style="margin:0 0 6px;font-size:14px">アサイン（メンバー × 期間 × 稼働率）</h3>
@@ -1217,8 +1263,8 @@ def delivery_form(con, delivery_id: int) -> str:
       <form method="post" action="/delivery/{delivery_id}/assignment/add" id="blkForm"
             style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-top:8px">
         <label style="font-size:12px">メンバー<br><select name="owner" required style="font-size:12px">{owner_opts}</select></label>
-        <label style="font-size:12px">開始週<br><input type="date" name="from_week" required></label>
-        <label style="font-size:12px">終了週<br><input type="date" name="to_week" required></label>
+        <label style="font-size:12px">開始週<br><input type="date" name="from_week" value="{_esc(dv.get('start_week') or '')}" required></label>
+        <label style="font-size:12px">終了週<br><input type="date" name="to_week" value="{_esc(dv.get('end_week') or '')}" required></label>
         <label style="font-size:12px">稼働率(請求)%<br><input type="number" name="fte_billing" id="blkBill" min="0" max="300" step="5" value="50" style="width:80px"></label>
         <label style="font-size:12px">稼働率(実想定)%<br>
           <input type="number" name="fte_pct" id="blkFte" min="0" max="300" step="5" value="50" style="width:80px">
@@ -9649,6 +9695,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._redirect(f"/delivery/{_created[0]}")
                     else:
                         self._redirect("/deliveries")
+                elif (path.startswith("/delivery/") and path.endswith("/field")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # 一覧のインライン編集（ajax）。期間編集は既存アサインの週を変えない（ガイドのみ）。
+                    _dvid = int(path.split("/")[2])
+                    _fld = (f.get("field", "") or "").strip()
+                    _val = f.get("value", "")
+                    if _fld in ("title", "status", "start_week", "end_week", "overview"):
+                        if _fld in ("start_week", "end_week"):
+                            _val = _snap_monday(_val)
+                        sfa_db.update_delivery(con, _dvid, **{_fld: _val})
+                        self._send(json.dumps({"ok": True, "value": _val}).encode(), ctype="application/json")
+                    else:
+                        self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(),
+                                   ctype="application/json")
+                elif path == "/deliveries/bulk_delete":
+                    for _idr in f_list.get("ids", []):
+                        if str(_idr).isdigit():
+                            sfa_db.delete_delivery(con, int(_idr))
+                    self._redirect("/deliveries")
                 elif path == "/deliveries/new":
                     _did = (f.get("deal_id", "") or "").strip()
                     if _did.isdigit() and sfa_db.get_deal(con, int(_did)):
