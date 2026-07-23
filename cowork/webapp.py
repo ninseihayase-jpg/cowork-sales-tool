@@ -1332,33 +1332,39 @@ def delivery_form(con, delivery_id: int) -> str:
         <a href="/deal/{dv["deal_id"]}">{_esc(dv.get("account_name") or "")}：{_esc(dv.get("deal_name") or "")}</a>
         （ステージ: {_esc(dv.get("deal_stage") or "")}）</p>
 
-      <form method="post" action="/delivery/{delivery_id}/save" style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;margin-bottom:14px">
-        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
-          <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:220px"></label>
-          <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:64px" oninput="hdrCalcEnd()"></label>
-          <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd()"></label>
-          <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}"></label>
-          <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
-          <button class="btn" style="font-size:12px">保存</button>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;margin-bottom:14px">
+        <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+          <h3 style="margin:0 0 8px;font-size:14px">基礎情報</h3>
+          <form method="post" action="/delivery/{delivery_id}/save" style="display:flex;flex-direction:column;flex:1">
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+              <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:200px"></label>
+              <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:60px" oninput="hdrCalcEnd()"></label>
+              <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd()"></label>
+              <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}"></label>
+              <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
+              <button class="btn" style="font-size:12px">保存</button>
+            </div>
+            <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
+              <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
+            <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は下の「アサイン追加」の週の初期値（ガイド）です。</p>
+          </form>
         </div>
-        <label style="font-size:12px;display:block;margin-top:8px">概要・納品方針<br>
-          <textarea name="overview" rows="2" style="width:100%">{_esc(dv.get("overview") or "")}</textarea></label>
-        <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は下の「アサイン追加」の週の初期値（ガイド）です。</p>
-      </form>
-
-      <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
-      <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当の稼働率欄が黄色くハイライトされます。</p>
-      <div style="overflow:auto"><table style="min-width:560px;font-size:12px">
-        <tr><th>役割</th><th>目標(請求)%</th><th>目標(実想定)%</th><th>現在合計(請求)</th><th>現在合計(実想定)</th><th></th></tr>
-        {role_rows}
-      </table></div>
-      <form method="post" action="/delivery/{delivery_id}/role/add"
-            style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-top:6px">
-        <label style="font-size:11px">役割<br><input type="text" name="role" required placeholder="PM/エンジニア等" style="width:140px"></label>
-        <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="100" style="width:80px"></label>
-        <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="100" style="width:80px"></label>
-        <button class="btn sec" style="font-size:12px">＋体制に役割を追加（アサイン行も生成）</button>
-      </form>
+        <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+          <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
+          <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当の稼働率欄が黄色くハイライトされます。</p>
+          <div style="overflow:auto;flex:1"><table style="min-width:520px;font-size:12px">
+            <tr><th>役割</th><th>目標(請求)%</th><th>目標(実想定)%</th><th>現在合計(請求)</th><th>現在合計(実想定)</th><th></th></tr>
+            {role_rows}
+          </table></div>
+          <form method="post" action="/delivery/{delivery_id}/role/add"
+                style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-top:6px">
+            <label style="font-size:11px">役割<br><input type="text" name="role" required placeholder="PM/エンジニア等" style="width:130px"></label>
+            <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="100" style="width:76px"></label>
+            <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="100" style="width:76px"></label>
+            <button class="btn sec" style="font-size:12px">＋役割追加（アサイン行も生成）</button>
+          </form>
+        </div>
+      </div>
 
       <h3 style="margin:16px 0 6px;font-size:14px">アサイン（役割 × 区分 × メンバー × 期間 × 稼働率）</h3>
       <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は<b>請求</b>（クライアント請求上）と<b>実想定</b>（実稼働・負荷計算はこちら）。区分「外部」でメンバーを自由記述。各行は編集して「保存」。</p>
