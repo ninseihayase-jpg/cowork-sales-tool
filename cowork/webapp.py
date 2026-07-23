@@ -5162,20 +5162,21 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
                   '</form></div>'
             )
         extra_links_html = (
-            '<div style="margin:4px 0 14px;padding:8px 10px;background:#f8f9fb;border:1px solid #e6e9f0;border-radius:8px">'
+            '<div style="margin:0;padding:8px 10px;background:#f8f9fb;border:1px solid #e6e9f0;border-radius:8px;'
+            'width:100%;box-sizing:border-box;text-align:left">'
             '<label style="font-size:11px;color:#6b7689;display:block;margin-bottom:4px">追加のツールリンク（主リンクの他に複数登録できます）</label>'
             + (_erows or '<span class="muted" style="font-size:11px">なし</span>')
             + f'<form method="post" action="/dev-project/{p["id"]}/tools/add" '
               'style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-start">'
-              '<input type="url" name="url" required placeholder="追加リンク https://..." style="width:220px;font-size:12px;padding:4px 6px">'
-              '<input type="text" name="label" placeholder="表示名(任意)" style="width:100px;font-size:11px;padding:4px 6px">'
-              '<input type="text" name="login_id" placeholder="ID(任意)" style="width:78px;font-size:11px;padding:4px 6px">'
-              '<input type="text" name="login_pass" placeholder="PASS(任意)" style="width:78px;font-size:11px;padding:4px 6px">'
+              '<input type="url" name="url" required placeholder="追加リンク https://..." style="width:100%;font-size:12px;padding:4px 6px">'
+              '<input type="text" name="label" placeholder="表示名(任意)" style="width:88px;font-size:11px;padding:4px 6px">'
+              '<input type="text" name="login_id" placeholder="ID(任意)" style="width:70px;font-size:11px;padding:4px 6px">'
+              '<input type="text" name="login_pass" placeholder="PASS(任意)" style="width:70px;font-size:11px;padding:4px 6px">'
               '<button class="btn sec" type="submit" style="font-size:11px">＋追加</button></form>'
             '</div>'
         )
     else:
-        extra_links_html = ('<p class="muted" style="font-size:11px;margin:6px 0 0;text-align:right">'
+        extra_links_html = ('<p class="muted" style="font-size:11px;margin:0;text-align:right;width:100%">'
                             '追加リンクは保存後に登録できます</p>')
 
     # 必要な技術シード（ツリー: L1カテゴリごとにグループ表示・複数選択, #60）
@@ -5208,20 +5209,22 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
           <p style="margin:0 0 10px"><a class="btn sec" href="{_esc(back_href)}">← 戻る</a></p>
           <h2 style="margin:0">{'開発案件を編集' if is_edit else '開発案件 新規入力'}</h2>
         </div>
-        <div style="text-align:right">
-          <label style="font-size:11px;color:#6b7689;margin:0 0 2px;display:block">制作したツールのリンク（主）</label>
-          <input type="url" name="tool_url" form="dpForm" placeholder="https://..."
-            value="{_esc(p.get('tool_url'))}" style="width:220px;font-size:12px;padding:5px 8px">
-          <div style="display:flex;gap:4px;margin-top:4px">
-            <input type="text" name="tool_login_id" form="dpForm" placeholder="ID（必要な場合）"
-              value="{_esc(p.get('tool_login_id'))}" style="width:106px;font-size:11px;padding:4px 6px">
-            <input type="text" name="tool_login_pass" form="dpForm" placeholder="PASS（必要な場合）"
-              value="{_esc(p.get('tool_login_pass'))}" style="width:106px;font-size:11px;padding:4px 6px">
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;width:300px;max-width:100%">
+          <div style="text-align:right;width:100%">
+            <label style="font-size:11px;color:#6b7689;margin:0 0 2px;display:block">制作したツールのリンク（主）</label>
+            <input type="url" name="tool_url" form="dpForm" placeholder="https://..."
+              value="{_esc(p.get('tool_url'))}" style="width:220px;font-size:12px;padding:5px 8px">
+            <div style="display:flex;gap:4px;margin-top:4px;justify-content:flex-end">
+              <input type="text" name="tool_login_id" form="dpForm" placeholder="ID（必要な場合）"
+                value="{_esc(p.get('tool_login_id'))}" style="width:106px;font-size:11px;padding:4px 6px">
+              <input type="text" name="tool_login_pass" form="dpForm" placeholder="PASS（必要な場合）"
+                value="{_esc(p.get('tool_login_pass'))}" style="width:106px;font-size:11px;padding:4px 6px">
+            </div>
           </div>
+          {extra_links_html}
         </div>
       </div>
       {_save_bar('dpForm', cancel_url=back_href)}
-      {extra_links_html}
       <form method="post" action="{action}" id="dpForm">
         {return_to_field}
         <label>商談</label>
