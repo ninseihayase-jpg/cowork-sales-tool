@@ -510,12 +510,16 @@ _CLOSE_MODAL_HTML = (
     ' var i=document.getElementById("accSearchInput"); var q=i?(i.value||"").toLowerCase():"";'
     ' var st=[]; document.querySelectorAll(".stg-cb:checked").forEach(function(b){st.push(b.value);});'
     ' var useSt=st.length>0;'
+    ' var n=0;'
     ' document.querySelectorAll("tr[data-account]").forEach(function(tr){'
     '  var okA=tr.getAttribute("data-account").indexOf(q)>=0;'
     '  var okS=!useSt||st.indexOf(tr.getAttribute("data-stage")||"")>=0;'
-    '  tr.style.display=(okA&&okS)?"":"none";});'
+    '  var show=(okA&&okS); tr.style.display=show?"":"none";'
+    '  if(show)n++; else {var c=tr.querySelector("[name=ids]"); if(c)c.checked=false;}});'
     ' var lbl=document.getElementById("stgFilterLbl");'
     ' if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
+    ' var dc=document.getElementById("dealCount"); if(dc)dc.textContent=n;'
+    ' var ca=document.getElementById("deal_chk_all"); if(ca)ca.checked=false;'
     '}'
     # 初期表示時、URL由来で初期チェックされたステージがあれば絞り込みを適用（日付変更で保持）。
     'document.addEventListener("DOMContentLoaded",function(){'
@@ -1131,6 +1135,15 @@ def deliveries_page(con) -> str:
         f'<option value="{d["id"]}">{_esc(d.get("account_name") or "")}：{_esc(d.get("deal_name") or "")}（{_esc(d.get("stage") or "")}）</option>'
         for d in _cands)
     _st_filter = "".join(f'<option value="{_esc(s)}">{_esc(s)}</option>' for s in _statuses)
+    # 誤起票の掃除: アサイン未入力（空）のDelivery件数
+    _empty_n = con.execute(
+        "SELECT COUNT(*) c FROM deliveries WHERE id NOT IN "
+        "(SELECT DISTINCT delivery_id FROM delivery_assignments)").fetchone()["c"]
+    _empty_cleanup = (
+        f'<form method="post" action="/deliveries/delete_empty" style="margin-top:6px" '
+        f'onsubmit="return confirm(\'アサイン未入力のDelivery {_empty_n}件を削除します。よろしいですか？\')">'
+        f'<button class="btn sec" style="font-size:12px;color:#c53030">🧹 アサイン未入力のDeliveryを一括削除（{_empty_n}件）</button>'
+        f'</form>') if _empty_n else ""
     return f"""
     <div class="card">
       <h2 style="margin:0 0 4px">🚚 Delivery（受注後・アサイン計画）</h2>
@@ -1156,6 +1169,7 @@ def deliveries_page(con) -> str:
       </table></div>
       <button class="btn sec" type="submit" style="font-size:12px;color:#c53030;margin-top:8px">🗑 選択したDeliveryを削除</button>
       </form>
+      {_empty_cleanup}
       <form method="post" action="/deliveries/new" style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid #eee;padding-top:12px">
         <span class="muted" style="font-size:12px">手動で追加:</span>
         <select name="deal_id" required style="font-size:12px;max-width:420px"><option value="">商談を選択（提案以降）</option>{_cand_opts}</select>
@@ -3930,7 +3944,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     )
     return f"""
     <div class="card"><h2 style="display:flex;justify-content:space-between;align-items:center">
-      <span>商談 ({len(deals)})</span>
+      <span>商談 (<span id="dealCount">{len(deals)}</span>)</span>
       <span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         {sync_fail_btn}
         {sync_btn}
@@ -4000,12 +4014,8 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         if (!d.ok) alert('更新エラー');
       }}).catch(() => alert('通信エラー'));
     }}
-    function filterDealsByAccount() {{
-      var q = document.getElementById('accSearchInput').value.trim().toLowerCase();
-      document.querySelectorAll('#deal_bulk_form tr.deal-row').forEach(function(row) {{
-        row.style.display = (!q || row.dataset.account.includes(q)) ? '' : 'none';
-      }});
-    }}
+    // filterDealsByAccount は PAGE 共通のもの（アカウント名＋ステージ複数選択＋件数更新＋非表示行のチェック解除）を使う。
+    // ここで再定義するとステージ絞り込みが無効化されるため定義しない（#75不具合修正）。
     function repopulateDealBulkValue() {{
       var field = document.getElementById('deal_bulk_field').value;
       var opts = DEAL_BULK_OPTIONS[field] || [];
@@ -9728,6 +9738,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     for _idr in f_list.get("ids", []):
                         if str(_idr).isdigit():
                             sfa_db.delete_delivery(con, int(_idr))
+                    self._redirect("/deliveries")
+                elif path == "/deliveries/delete_empty":
+                    # アサイン未入力（空）のDeliveryを一括削除。誤って大量起票した分の掃除用。
+                    _empty = [r["id"] for r in con.execute(
+                        "SELECT id FROM deliveries WHERE id NOT IN "
+                        "(SELECT DISTINCT delivery_id FROM delivery_assignments)")]
+                    for _eid in _empty:
+                        sfa_db.delete_delivery(con, _eid)
                     self._redirect("/deliveries")
                 elif path == "/deliveries/new":
                     _did = (f.get("deal_id", "") or "").strip()
