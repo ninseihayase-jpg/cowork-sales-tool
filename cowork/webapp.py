@@ -1212,7 +1212,8 @@ def delivery_form(con, delivery_id: int) -> str:
         return '<div class="card"><p>Deliveryが見つかりません。<a href="/deliveries">← 一覧</a></p></div>'
     lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
     status_opts = _opt(sfa_db.DELIVERY_STATUSES, dv.get("status") or "進行中")
-    owner_opts = _opt(sfa_db.OWNERS, None)
+    _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # マスタ優先（後追加メンバーも反映）
+    owner_opts = _opt(_owners, None)
     # 既存ブロック（各行を編集フォームに）
     blocks = sfa_db.list_delivery_assignments(con, delivery_id)
     bedit = ""
@@ -1222,7 +1223,7 @@ def delivery_form(con, delivery_id: int) -> str:
         bedit += f"""
         <form method="post" action="/delivery/{delivery_id}/assignment/{b['id']}/update"
               style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border:1px solid #e6e9f0;border-radius:8px;padding:8px;margin-bottom:6px">
-          <label style="font-size:11px">メンバー<br><select name="owner" style="font-size:12px">{_opt(sfa_db.OWNERS, b['owner'])}</select></label>
+          <label style="font-size:11px">メンバー<br><select name="owner" style="font-size:12px">{_opt(_owners, b['owner'])}</select></label>
           <label style="font-size:11px">開始週<br><input type="date" name="from_week" value="{_esc(b['from_week'])}"></label>
           <label style="font-size:11px">終了週<br><input type="date" name="to_week" value="{_esc(b['to_week'])}"></label>
           <label style="font-size:11px">稼働率(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="{_num_pct(_bill)}" style="width:80px"></label>
@@ -1334,7 +1335,7 @@ def base_workload_page(con) -> str:
     # 担当ごとの合算
     by_owner = sfa_db.base_workload_by_owner(con)
     sums = "、".join(f"{_esc(o)} {_num_pct(p)}%" for o, p in sorted(by_owner.items())) or "—"
-    owner_opts = _opt(sfa_db.OWNERS, None)
+    owner_opts = _opt(sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS), None)
     return f"""
     <div class="card">
       <p style="margin:0 0 8px"><a href="/deliveries">← Delivery一覧</a></p>
