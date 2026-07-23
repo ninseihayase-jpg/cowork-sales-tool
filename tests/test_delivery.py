@@ -77,10 +77,12 @@ def test_compute_load_forecast_committed_and_exclusion(con, acc_id):
                                    from_week=W0, to_week="2026-08-03", fte_pct=100)
     load = sfa_db.compute_delivery_load(con, start_week=W0, n_weeks=4)
     cell = load["cells"]["早瀬"][W0]
-    assert cell["forecast"] == 50    # 提案案件のみ（失注案件は除外）
-    assert cell["committed"] == 80   # 受注案件
+    assert cell["actual"]["forecast"] == 50    # 提案案件のみ（失注案件は除外）
+    assert cell["actual"]["committed"] == 80   # 受注案件
+    # billingはfte_billing未指定なら実想定と同値
+    assert cell["billing"]["forecast"] == 50
     # 範囲外の週は0（案件は8/10まで/8/3まで）
-    assert load["cells"]["早瀬"].get("2026-08-17", {"committed": 0, "forecast": 0})["forecast"] == 0
+    assert "2026-08-17" not in load["cells"]["早瀬"]
 
 
 def test_base_workload_sum_and_upsert(con):
@@ -101,7 +103,24 @@ def test_delivery_grid_expansion(con, acc_id):
                                    from_week="2026-07-27", to_week="2026-08-10", fte_pct=60)
     grid = sfa_db.delivery_grid(con, dvid)
     assert grid["weeks"] == ["2026-07-27", "2026-08-03", "2026-08-10"]
-    assert grid["cells"]["中島"]["2026-08-03"] == 60
+    assert grid["cells"]["中島"]["2026-08-03"]["actual"] == 60
+
+
+def test_billing_and_update(con, acc_id):
+    did = _deal(con, acc_id, "受注")
+    sfa_db.ensure_delivery_on_stage(con, did, "受注")
+    dvid = sfa_db.list_deliveries(con, deal_id=did)[0]["id"]
+    aid = sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬",
+                                         from_week="2026-07-27", to_week="2026-07-27",
+                                         fte_pct=80, fte_billing=100)
+    load = sfa_db.compute_delivery_load(con, start_week="2026-07-27", n_weeks=1)
+    c = load["cells"]["早瀬"]["2026-07-27"]
+    assert c["actual"]["committed"] == 80 and c["billing"]["committed"] == 100
+    # 編集: 実想定/請求/メンバーを更新
+    sfa_db.update_delivery_assignment(con, aid, owner="中島", from_week="2026-07-27",
+                                      to_week="2026-07-27", fte_pct=40, fte_billing=60, note="改")
+    b = sfa_db.list_delivery_assignments(con, dvid)[0]
+    assert b["owner"] == "中島" and b["fte_pct"] == 40 and b["fte_billing"] == 60 and b["note"] == "改"
 
 
 def test_delivery_cascade_delete(con, acc_id):

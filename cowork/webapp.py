@@ -1041,6 +1041,17 @@ def _num_pct(v) -> str:
     return str(int(f)) if f == int(f) else f"{f:.1f}"
 
 
+def _to_float(v, default=None):
+    """フォーム値をfloatに。空/不正は default（Noneも可）。"""
+    try:
+        s = v.strip() if isinstance(v, str) else v
+        if s is None or s == "":
+            return default
+        return float(s)
+    except (TypeError, ValueError):
+        return default
+
+
 def _snap_monday(s) -> str:
     """任意の日付文字列(YYYY-MM-DD)をその週の月曜に丸める。空/不正は空文字。"""
     s = (s or "").strip()
@@ -1129,23 +1140,29 @@ def delivery_form(con, delivery_id: int) -> str:
     lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
     status_opts = _opt(sfa_db.DELIVERY_STATUSES, dv.get("status") or "進行中")
     owner_opts = _opt(sfa_db.OWNERS, None)
-    # 既存ブロック
+    # 既存ブロック（各行を編集フォームに）
     blocks = sfa_db.list_delivery_assignments(con, delivery_id)
-    brows = ""
+    bedit = ""
     for b in blocks:
-        brows += (
-            f'<tr>'
-            f'<td>{_esc(b["owner"])}</td>'
-            f'<td>{_fmt_week(b["from_week"])}〜{_fmt_week(b["to_week"])}</td>'
-            f'<td style="text-align:right">{_num_pct(b["fte_pct"])}%</td>'
-            f'<td class="muted">{_esc(b.get("note") or "")}</td>'
-            f'<td><form method="post" action="/delivery/{delivery_id}/assignment/{b["id"]}/delete" style="margin:0" '
-            f'onsubmit="return confirm(\'このブロックを削除しますか？\')">'
-            f'<button class="btn sec" style="font-size:11px;color:#c53030">×</button></form></td>'
-            f'</tr>')
-    if not brows:
-        brows = '<tr><td colspan=5 class=muted>まだアサインがありません。下で追加してください。</td></tr>'
-    # プレビューグリッド
+        _bill = b.get("fte_billing")
+        _bill = b.get("fte_pct") if _bill is None else _bill
+        bedit += f"""
+        <form method="post" action="/delivery/{delivery_id}/assignment/{b['id']}/update"
+              style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border:1px solid #e6e9f0;border-radius:8px;padding:8px;margin-bottom:6px">
+          <label style="font-size:11px">メンバー<br><select name="owner" style="font-size:12px">{_opt(sfa_db.OWNERS, b['owner'])}</select></label>
+          <label style="font-size:11px">開始週<br><input type="date" name="from_week" value="{_esc(b['from_week'])}"></label>
+          <label style="font-size:11px">終了週<br><input type="date" name="to_week" value="{_esc(b['to_week'])}"></label>
+          <label style="font-size:11px">稼働率(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="{_num_pct(_bill)}" style="width:80px"></label>
+          <label style="font-size:11px">稼働率(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="{_num_pct(b['fte_pct'])}" style="width:80px"></label>
+          <label style="font-size:11px">メモ<br><input type="text" name="note" value="{_esc(b.get('note') or '')}" style="width:150px"></label>
+          <button class="btn sec" style="font-size:12px">保存</button>
+        </form>
+        <form method="post" action="/delivery/{delivery_id}/assignment/{b['id']}/delete" style="margin:-4px 0 10px"
+              onsubmit="return confirm('このアサインを削除しますか？')">
+          <button class="btn sec" style="font-size:11px;color:#c53030">× このアサインを削除</button></form>"""
+    if not bedit:
+        bedit = '<p class="muted">まだアサインがありません。下で追加してください。</p>'
+    # プレビューグリッド（実想定を主に色付け・請求は小さく併記）
     grid = sfa_db.delivery_grid(con, delivery_id)
     if grid["weeks"]:
         head = "".join(f'<th style="font-size:11px;white-space:nowrap">{_fmt_week(w)}</th>' for w in grid["weeks"])
@@ -1153,13 +1170,21 @@ def delivery_form(con, delivery_id: int) -> str:
         for ow in grid["owners"]:
             cells = ""
             for w in grid["weeks"]:
-                v = grid["cells"].get(ow, {}).get(w, 0)
-                cells += f'<td style="text-align:center;{_heat_style(v)}">{_num_pct(v)+"%" if v else "·"}</td>'
+                cv = grid["cells"].get(ow, {}).get(w) or {}
+                a = cv.get("actual", 0)
+                bil = cv.get("billing", 0)
+                if a or bil:
+                    _sub = (f'<br><span style="font-size:9px;opacity:.7">請{_num_pct(bil)}</span>'
+                            if abs((bil or 0) - (a or 0)) > 0.01 else "")
+                    inner = f'{_num_pct(a)}%{_sub}'
+                else:
+                    inner = "·"
+                cells += f'<td style="text-align:center;{_heat_style(a)}">{inner}</td>'
             grows += f'<tr><th style="text-align:left;white-space:nowrap">{_esc(ow)}</th>{cells}</tr>'
         grid_html = (f'<div style="overflow:auto"><table style="border-collapse:collapse">'
                      f'<tr><th></th>{head}</tr>{grows}</table></div>'
-                     '<p class="muted" style="font-size:11px;margin:6px 0 0">※このグリッドはこのDelivery分のみ。'
-                     '全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。</p>')
+                     '<p class="muted" style="font-size:11px;margin:6px 0 0">※色は<b>実想定</b>基準。請求が実想定と異なる週は小さく「請◯」を併記。'
+                     'このグリッドはこのDelivery分のみ。全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。</p>')
     else:
         grid_html = '<p class="muted">アサインを追加するとここに週別グリッドが表示されます。</p>'
 
@@ -1185,26 +1210,27 @@ def delivery_form(con, delivery_id: int) -> str:
         <p class="muted" style="font-size:11px;margin:4px 0 0">※週は入力後、自動でその週の月曜に丸めます。</p>
       </form>
 
-      <h3 style="margin:0 0 6px;font-size:14px">アサイン（メンバー × 期間 × FTE%）</h3>
-      <div style="overflow:auto"><table style="min-width:520px">
-        <tr><th>メンバー</th><th>期間</th><th style="text-align:right">FTE%</th><th>メモ</th><th></th></tr>
-        {brows}
-      </table></div>
+      <h3 style="margin:0 0 6px;font-size:14px">アサイン（メンバー × 期間 × 稼働率）</h3>
+      <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は2種類：<b>請求</b>＝クライアント請求上の稼働、<b>実想定</b>＝実際に見込む稼働（負荷計算はこちら）。各行は編集して「保存」。</p>
+      {bedit}
 
       <form method="post" action="/delivery/{delivery_id}/assignment/add" id="blkForm"
             style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-top:8px">
         <label style="font-size:12px">メンバー<br><select name="owner" required style="font-size:12px">{owner_opts}</select></label>
         <label style="font-size:12px">開始週<br><input type="date" name="from_week" required></label>
         <label style="font-size:12px">終了週<br><input type="date" name="to_week" required></label>
-        <label style="font-size:12px">FTE%<br>
-          <input type="number" name="fte_pct" id="blkFte" min="0" max="300" step="5" value="50" style="width:70px">
+        <label style="font-size:12px">稼働率(請求)%<br><input type="number" name="fte_billing" id="blkBill" min="0" max="300" step="5" value="50" style="width:80px"></label>
+        <label style="font-size:12px">稼働率(実想定)%<br>
+          <input type="number" name="fte_pct" id="blkFte" min="0" max="300" step="5" value="50" style="width:80px">
           <span style="white-space:nowrap">
-            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="document.getElementById('blkFte').value=25">25</button>
-            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="document.getElementById('blkFte').value=50">50</button>
-            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="document.getElementById('blkFte').value=100">100</button>
+            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="_setFte(25)">25</button>
+            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="_setFte(50)">50</button>
+            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="_setFte(100)">100</button>
           </span></label>
-        <label style="font-size:12px">メモ<br><input type="text" name="note" placeholder="担当領域など" style="width:160px"></label>
+        <label style="font-size:12px">メモ<br><input type="text" name="note" placeholder="担当領域など" style="width:150px"></label>
         <button class="btn" style="font-size:12px">＋アサイン追加</button>
+        <script>function _setFte(v){{var f=document.getElementById('blkFte'),b=document.getElementById('blkBill');
+          var same=(f.value===b.value); f.value=v; if(same)b.value=v;}}</script>
       </form>
 
       <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
@@ -9652,13 +9678,27 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if _ow and _fw and _tw:
                         if _tw < _fw:
                             _fw, _tw = _tw, _fw   # 逆順は入れ替え
-                        try:
-                            _fte = float(f.get("fte_pct", "0") or 0)
-                        except ValueError:
-                            _fte = 0.0
+                        _fte = _to_float(f.get("fte_pct"), 0.0)
+                        _bill = _to_float(f.get("fte_billing"), None)
                         sfa_db.add_delivery_assignment(
                             con, delivery_id=_dvid, owner=_ow, from_week=_fw, to_week=_tw,
-                            fte_pct=_fte, note=(f.get("note", "") or "").strip())
+                            fte_pct=_fte, fte_billing=_bill, note=(f.get("note", "") or "").strip())
+                    self._redirect(f"/delivery/{_dvid}")
+                elif (path.startswith("/delivery/") and "/assignment/" in path
+                      and path.endswith("/update") and path.split("/")[2].isdigit()):
+                    _dvid = int(path.split("/")[2])
+                    _aid = path.split("/")[4]
+                    _ow = (f.get("owner", "") or "").strip()
+                    _fw = _snap_monday(f.get("from_week", ""))
+                    _tw = _snap_monday(f.get("to_week", ""))
+                    if _aid.isdigit() and _ow and _fw and _tw:
+                        if _tw < _fw:
+                            _fw, _tw = _tw, _fw
+                        sfa_db.update_delivery_assignment(
+                            con, int(_aid), owner=_ow, from_week=_fw, to_week=_tw,
+                            fte_pct=_to_float(f.get("fte_pct"), 0.0),
+                            fte_billing=_to_float(f.get("fte_billing"), None),
+                            note=(f.get("note", "") or "").strip())
                     self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and "/assignment/" in path
                       and path.endswith("/delete") and path.split("/")[2].isdigit()):

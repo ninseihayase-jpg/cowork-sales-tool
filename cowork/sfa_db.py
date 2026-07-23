@@ -719,7 +719,8 @@ CREATE TABLE IF NOT EXISTS delivery_assignments (
     owner        TEXT NOT NULL,            -- メンバー（OWNERS）
     from_week    TEXT NOT NULL,            -- 開始週の月曜(YYYY-MM-DD)
     to_week      TEXT NOT NULL,            -- 終了週の月曜(YYYY-MM-DD)
-    fte_pct      REAL NOT NULL DEFAULT 0,  -- 稼働率(%) 0〜（100超も可＝過負荷）
+    fte_pct      REAL NOT NULL DEFAULT 0,  -- 稼働率(実想定)(%) 0〜（100超も可＝過負荷）。負荷計算はこちら
+    fte_billing  REAL,                     -- 稼働率(請求)(%)。請求上の稼働。NULL=実想定と同値扱い
     note         TEXT,
     created_at   TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
@@ -946,6 +947,12 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE dev_owner_capacity ADD COLUMN change_from_week TEXT")
         if _cap_cols and "weekly_max_points2" not in _cap_cols:
             con.execute("ALTER TABLE dev_owner_capacity ADD COLUMN weekly_max_points2 REAL")
+        # Delivery アサイン: 稼働率を「実想定(fte_pct)」＋「請求(fte_billing)」の2本立てに（#75）。
+        # 既存行は請求=実想定で初期化。
+        _da_cols = {r[1] for r in con.execute("PRAGMA table_info(delivery_assignments)")}
+        if _da_cols and "fte_billing" not in _da_cols:
+            con.execute("ALTER TABLE delivery_assignments ADD COLUMN fte_billing REAL")
+            con.execute("UPDATE delivery_assignments SET fte_billing=fte_pct WHERE fte_billing IS NULL")
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -2683,14 +2690,34 @@ def list_delivery_assignments(con, delivery_id: int) -> list[dict]:
         (int(delivery_id),))]
 
 
+def _billing_of(b: dict) -> float:
+    """アサイン行の請求稼働率。fte_billingがNULLなら実想定(fte_pct)にフォールバック。"""
+    v = b.get("fte_billing")
+    return float(v) if v is not None else float(b.get("fte_pct") or 0)
+
+
 def add_delivery_assignment(con, *, delivery_id: int, owner: str, from_week: str,
-                            to_week: str, fte_pct: float, note: str = "") -> int:
+                            to_week: str, fte_pct: float, fte_billing: float | None = None,
+                            note: str = "") -> int:
+    """fte_pct=実想定(負荷計算に使う), fte_billing=請求(NoneならSQL側はNULL=実想定と同値扱い)。"""
     cur = con.execute(
-        "INSERT INTO delivery_assignments (delivery_id, owner, from_week, to_week, fte_pct, note) "
-        "VALUES (?,?,?,?,?,?)",
-        (int(delivery_id), owner, from_week, to_week, float(fte_pct or 0), note or None))
+        "INSERT INTO delivery_assignments (delivery_id, owner, from_week, to_week, fte_pct, fte_billing, note) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (int(delivery_id), owner, from_week, to_week, float(fte_pct or 0),
+         (float(fte_billing) if fte_billing is not None else None), note or None))
     con.commit()
     return cur.lastrowid
+
+
+def update_delivery_assignment(con, assignment_id: int, *, owner: str, from_week: str,
+                               to_week: str, fte_pct: float, fte_billing: float | None = None,
+                               note: str = "") -> None:
+    con.execute(
+        "UPDATE delivery_assignments SET owner=?, from_week=?, to_week=?, fte_pct=?, fte_billing=?, note=? "
+        "WHERE id=?",
+        (owner, from_week, to_week, float(fte_pct or 0),
+         (float(fte_billing) if fte_billing is not None else None), note or None, int(assignment_id)))
+    con.commit()
 
 
 def delete_delivery_assignment(con, assignment_id: int) -> None:
@@ -2700,7 +2727,7 @@ def delete_delivery_assignment(con, assignment_id: int) -> None:
 
 def delivery_grid(con, delivery_id: int) -> dict:
     """1Deliveryのアサインをメンバー×週に展開したプレビュー用グリッド。
-    週の範囲はブロックの最小from〜最大to（無ければ空）。cell=合算fte_pct。"""
+    週の範囲はブロックの最小from〜最大to（無ければ空）。cell={actual, billing}の合算。"""
     blocks = list_delivery_assignments(con, delivery_id)
     if not blocks:
         return {"weeks": [], "owners": [], "cells": {}}
@@ -2716,7 +2743,9 @@ def delivery_grid(con, delivery_id: int) -> dict:
             owners.append(b["owner"])
         for wk in weeks:
             if b["from_week"] <= wk <= b["to_week"]:
-                cells.setdefault(b["owner"], {})[wk] = cells.get(b["owner"], {}).get(wk, 0.0) + (b["fte_pct"] or 0)
+                c = cells.setdefault(b["owner"], {}).setdefault(wk, {"actual": 0.0, "billing": 0.0})
+                c["actual"] += b["fte_pct"] or 0
+                c["billing"] += _billing_of(b)
     return {"weeks": weeks, "owners": owners, "cells": cells}
 
 
@@ -2755,9 +2784,15 @@ def compute_delivery_load(con, *, start_week: str | None = None,
     デモ開発負荷は別系統(Hisho側で加算)。ここでは delivery と base のみ返す。"""
     start_week = start_week or _monday_of(date.today())
     weeks = _weeks_from(start_week, n_weeks)
-    cells: dict = {}  # owner -> week -> {"committed":x, "forecast":y}
+    # owner -> week -> {actual:{committed,forecast}, billing:{committed,forecast}}
+    cells: dict = {}
+
+    def _blank():
+        return {"actual": {"committed": 0.0, "forecast": 0.0},
+                "billing": {"committed": 0.0, "forecast": 0.0}}
+
     for r in con.execute(
-        "SELECT da.owner, da.from_week, da.to_week, da.fte_pct, d.stage, d.status "
+        "SELECT da.owner, da.from_week, da.to_week, da.fte_pct, da.fte_billing, d.stage, d.status "
         "FROM delivery_assignments da "
         "JOIN deliveries dv ON dv.id=da.delivery_id "
         "JOIN deals d ON d.id=dv.deal_id"):
@@ -2765,14 +2800,14 @@ def compute_delivery_load(con, *, start_week: str | None = None,
         status = r["status"] or "open"
         if status == "closed" and stage != "受注":
             continue  # 提案でクローズ（失注/リード戻し）は見込みから除外
-        committed = (stage == "受注")
+        key = "committed" if stage == "受注" else "forecast"
+        actual = r["fte_pct"] or 0
+        billing = float(r["fte_billing"]) if r["fte_billing"] is not None else actual
         for wk in weeks:
             if r["from_week"] <= wk <= r["to_week"]:
-                c = cells.setdefault(r["owner"], {}).setdefault(wk, {"committed": 0.0, "forecast": 0.0})
-                if committed:
-                    c["committed"] += r["fte_pct"] or 0
-                else:
-                    c["forecast"] += r["fte_pct"] or 0
+                c = cells.setdefault(r["owner"], {}).setdefault(wk, _blank())
+                c["actual"][key] += actual
+                c["billing"][key] += billing
     base = base_workload_by_owner(con)
     owners = sorted(set(list(base.keys()) + list(cells.keys())),
                     key=lambda o: (OWNERS.index(o) if o in OWNERS else 999, o))
