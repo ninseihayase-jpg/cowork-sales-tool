@@ -3631,7 +3631,8 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     return_to_url = f"/deals?{urllib.parse.urlencode(_ret)}"
 
     return f"""
-    <div class="card"><h2>{_title} {len(deals)}件</h2>
+    <div class="card"><h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <span>{_title} {len(deals)}件</span><a class="btn" href="/deal/new">＋商談追加</a></h2>
     {form}
     {unified_deal_table(con, deals, return_to_url=return_to_url, bulk=False)}
     </div>
@@ -3687,7 +3688,8 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
              if exclude_today else
              "次回MS日が本日以前、または次回MSが未設定の進行中商談です（要フォロー）。")
     return f"""
-    <div class="card"><h2>MS超過の商談 {len(deals)}件</h2>
+    <div class="card"><h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <span>MS超過の商談 {len(deals)}件</span><a class="btn" href="/deal/new">＋商談追加</a></h2>
     <p class="muted" style="margin:0 0 10px">{_hint}超過分を遅れている順に、次回MS未設定は末尾に並べています。</p>
     {form}
     {unified_deal_table(con, deals, return_to_url=return_to_url, bulk=False)}
