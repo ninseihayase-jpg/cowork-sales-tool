@@ -1145,8 +1145,13 @@ def deliveries_page(con) -> str:
       </div>
       <form id="dv_bulk" method="post" action="/deliveries/bulk_delete"
             onsubmit="return confirm('選択したDeliveryを削除します。アサインも消えます。よろしいですか？')">
-      <div style="overflow:auto"><table style="min-width:1040px">
-        <tr><th></th><th>#</th><th>案件</th><th>クライアント</th><th>確度</th><th>状態</th><th>開始週</th><th>終了週</th><th>平均FTE</th><th>アサイン</th><th></th></tr>
+      <div style="overflow:auto;max-height:72vh"><table style="min-width:1040px">
+        <tr>
+          <th class="sticky" style="width:26px"><input type="checkbox" id="dvAll" onclick="dvToggleAll(this)" title="表示中を全選択"></th>
+          <th class="sticky">#</th><th class="sticky">案件</th><th class="sticky">クライアント</th>
+          <th class="sticky">確度</th><th class="sticky">状態</th><th class="sticky">開始週</th><th class="sticky">終了週</th>
+          <th class="sticky">平均FTE</th><th class="sticky">アサイン</th><th class="sticky"></th>
+        </tr>
         {rows}
       </table></div>
       <button class="btn sec" type="submit" style="font-size:12px;color:#c53030;margin-top:8px">🗑 選択したDeliveryを削除</button>
@@ -1164,6 +1169,13 @@ def deliveries_page(con) -> str:
         body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)}})
       .then(function(r){{return r.json();}}).catch(function(){{}});
     }}
+    function dvToggleAll(el){{
+      // フィルタで表示中の行のみ全選択/解除
+      document.querySelectorAll('#dv_bulk tr.dv-row').forEach(function(row){{
+        if(row.style.display==='none') return;
+        var cb=row.querySelector('input[name=ids]'); if(cb) cb.checked=el.checked;
+      }});
+    }}
     function filterDeliveries(){{
       var q=(document.getElementById('dvSearch').value||'').toLowerCase();
       var st=document.getElementById('dvStatusF').value, cf=document.getElementById('dvConfF').value;
@@ -1173,6 +1185,7 @@ def deliveries_page(con) -> str:
         row.style.display=ok?'':'none'; if(ok)n++;
       }});
       var c=document.getElementById('dvCount'); if(c)c.textContent=n+'件';
+      var all=document.getElementById('dvAll'); if(all) all.checked=false;  // フィルタ変更で全選択はリセット
     }}
     document.addEventListener('DOMContentLoaded',filterDeliveries);
     </script>"""
