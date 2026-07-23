@@ -891,6 +891,7 @@ def reports_manage_page(con, slug: str = "") -> str:
     """レポートの新規作成／編集フォーム（CRM側のガワ内・管理用）。
     本文は記事の中身HTML（fragment）を書く。カバー画像・本文中画像は
     ブラウザ側でリサイズしdata URI化して埋め込む（サーバはテキスト保存のみ）。"""
+    import cowork.weekly_report as weekly_report
     rep = sfa_db.get_weekly_report(con, slug) if slug else None
     v_slug = _esc(rep["slug"]) if rep else ""
     v_date = _esc(rep["report_date"] or "") if rep else ""
@@ -898,6 +899,9 @@ def reports_manage_page(con, slug: str = "") -> str:
     v_lead = _esc(rep["lead"] or "") if rep else ""
     v_body = _esc(rep["html_body"] or "") if rep else ""
     v_cover = _esc(rep["cover_image"] or "") if rep else ""
+    # 対象週(week_start=月曜)。新規は「今週の月曜(JST)」を既定に。数字レール自動注入の基準（#39）。
+    _dflt_ws, _, _ = weekly_report._week_bounds(_today_jst())
+    v_ws = _esc((rep.get("week_start") or "") if rep else "") or _dflt_ws
     cover_prev = (f'<img id="coverPreview" src="{v_cover}" style="max-height:120px;border-radius:8px;margin-top:8px">'
                   if v_cover else '<img id="coverPreview" style="display:none;max-height:120px;border-radius:8px;margin-top:8px">')
     slug_readonly = "readonly" if rep else ""
@@ -930,6 +934,10 @@ def reports_manage_page(con, slug: str = "") -> str:
                placeholder="2026-07-12" {slug_readonly}>
         <label>期間（一覧カードの日付表示）</label>
         <input type="text" name="report_date" value="{v_date}" placeholder="2026.7.6 – 7.12">
+        <label>対象週（週の月曜・数字レールの基準週）＊自動集計の元になります</label>
+        <input type="date" name="week_start" id="repWeekStart" value="{v_ws}"
+               onchange="loadRailPreview()">
+        <p class="muted" style="margin:4px 0 0">この週の数字が本文の <code>&lt;!--NUMBERS--&gt;</code> に自動で入ります（人は数字を手打ちしません）。</p>
         <label>表題（一覧カードの見出し）</label>
         <input type="text" name="title" value="{v_title}" placeholder="展示会が終わって、最初の一週間">
         <label>一言（一覧カードのリード）</label>
@@ -941,7 +949,18 @@ def reports_manage_page(con, slug: str = "") -> str:
         <input type="hidden" name="cover_image" id="coverData" value="{v_cover}">
         {cover_prev}
 
-        <label style="margin-top:14px">本文HTML（記事の単体HTMLをそのまま貼り付け）＊必須</label>
+        <label style="margin-top:14px">数字ブロック（自動集計）</label>
+        <div style="border:1px solid #e6e9f0;border-radius:8px;padding:10px 12px;background:#fbfaf7">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+            <button type="button" class="btn sec" style="font-size:12px" onclick="insertNumbersPlaceholder()">
+              本文に数字ブロックを挿入</button>
+            <span class="muted" style="font-size:12px">本文の入れたい位置にカーソルを置いて押すと <code>&lt;!--NUMBERS--&gt;</code> を挿入します。</span>
+          </div>
+          <p class="muted" style="margin:0 0 6px;font-size:12px">選択中の対象週のプレビュー（保存後、記事ではこの数字が入ります）:</p>
+          <div id="railPreview" style="max-height:320px;overflow:auto;background:#fff;border:1px solid #eee;border-radius:6px;padding:8px">
+            <span class="muted">読み込み中…</span></div>
+        </div>
+        <label style="margin-top:14px">本文HTML（記事の中身fragment。デザインはアプリ側で固定。数字は上のブロックで自動注入）＊必須</label>
         <textarea name="html_body" id="repBody" rows="18" required
                   style="font-family:monospace;font-size:11px;background:#fff;white-space:pre">{v_body}</textarea>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
@@ -980,6 +999,25 @@ def reports_manage_page(con, slug: str = "") -> str:
       var p=document.getElementById('coverPreview');p.src='';p.style.display='none';
       document.getElementById('coverFile').value='';
     }}
+    // #39: 対象週の数字レールをプレビュー表示（保存後、記事の<!--NUMBERS-->にこの数字が入る）。
+    function loadRailPreview(){{
+      var ws=(document.getElementById('repWeekStart')||{{}}).value||'';
+      var box=document.getElementById('railPreview');
+      if(!box) return;
+      box.innerHTML='<span class="muted">読み込み中…</span>';
+      fetch('/reports/rail-preview?ws='+encodeURIComponent(ws)).then(function(r){{return r.text();}})
+        .then(function(html){{ box.innerHTML=html||'<span class="muted">数字がありません。</span>'; }})
+        .catch(function(){{ box.innerHTML='<span class="muted" style="color:#b91c1c">プレビュー取得に失敗しました。</span>'; }});
+    }}
+    // 本文テキストエリアのカーソル位置に <!--NUMBERS--> を挿入（既にあれば警告）。
+    function insertNumbersPlaceholder(){{
+      var ta=document.getElementById('repBody'); if(!ta) return;
+      if(ta.value.indexOf('<!--NUMBERS-->')>=0){{ alert('本文に既に数字ブロック（<!--NUMBERS-->）があります。'); return; }}
+      var s=ta.selectionStart||0, e=ta.selectionEnd||0;
+      ta.value=ta.value.slice(0,s)+'\\n<!--NUMBERS-->\\n'+ta.value.slice(e);
+      ta.focus(); ta.selectionStart=ta.selectionEnd=s+13;
+    }}
+    document.addEventListener('DOMContentLoaded', loadRailPreview);
     </script>"""
 
 
@@ -8742,7 +8780,19 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/reports/manage":
                     _slug = (self._qs().get("slug", [""])[0] or "")
                     self._send(render(reports_manage_page(con, _slug)))
+                elif path == "/reports/rail-preview":
+                    # #39: 編集画面の数字プレビュー。指定週(ws=月曜)のレールHTML断片を返す。
+                    import cowork.weekly_report as weekly_report
+                    _ws = (self._qs().get("ws", [""])[0] or "").strip()
+                    try:
+                        _as_of = date.fromisoformat(_ws) if _ws else None
+                        _nums = weekly_report.compute_weekly_numbers(con, as_of=_as_of)
+                        _html = weekly_report.render_number_rail(_nums)
+                    except Exception as _exc:  # noqa: BLE001
+                        _html = f'<span class="muted" style="color:#b91c1c">集計エラー: {html.escape(str(_exc))}</span>'
+                    self._send(_html.encode("utf-8"), ctype="text/html; charset=utf-8")
                 elif path.startswith("/reports/"):
+                    import cowork.weekly_report as weekly_report
                     _slug = path[len("/reports/"):].strip("/")
                     _rep = sfa_db.get_weekly_report(con, _slug) if _SLUG_RE.fullmatch(_slug or "") else None
                     if _rep:
@@ -9271,6 +9321,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             (f.get("lead", "") or "").strip(),
                             _body,
                             _cover,
+                            week_start=(f.get("week_start", "") or "").strip(),
                         )
                         self._redirect(f"/reports/{_slug}")
                 elif path == "/reports/manage/delete":
