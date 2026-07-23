@@ -716,12 +716,26 @@ CREATE TABLE IF NOT EXISTS deliveries (
 CREATE TABLE IF NOT EXISTS delivery_assignments (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     delivery_id  INTEGER NOT NULL,
-    owner        TEXT NOT NULL,            -- メンバー（OWNERS）
+    role         TEXT,                     -- 役割（PM/エンジニア等・自由入力。体制欄から生成）
+    member_kind  TEXT DEFAULT '内部',       -- 内部/外部。内部=担当者マスタ選択、外部=自由記述
+    owner        TEXT NOT NULL,            -- メンバー（内部=マスタ名／外部=自由記述。未定は空文字可）
     from_week    TEXT NOT NULL,            -- 開始週の月曜(YYYY-MM-DD)
     to_week      TEXT NOT NULL,            -- 終了週の月曜(YYYY-MM-DD)
     fte_pct      REAL NOT NULL DEFAULT 0,  -- 稼働率(実想定)(%) 0〜（100超も可＝過負荷）。負荷計算はこちら
     fte_billing  REAL,                     -- 稼働率(請求)(%)。請求上の稼働。NULL=実想定と同値扱い
     note         TEXT,
+    created_at   TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
+);
+
+-- Delivery体制（#75）。役割ごとの目標稼働率（請求/実想定）。
+-- アサインメンバーの役割別合計がこの目標と一致しない場合、編集画面で稼働率欄をハイライトする。
+CREATE TABLE IF NOT EXISTS delivery_roles (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_id  INTEGER NOT NULL,
+    role         TEXT NOT NULL,            -- 役割（自由入力）
+    fte_billing  REAL,                     -- 目標 稼働率(請求)%
+    fte_pct      REAL,                     -- 目標 稼働率(実想定)%
     created_at   TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
 );
@@ -953,6 +967,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         if _da_cols and "fte_billing" not in _da_cols:
             con.execute("ALTER TABLE delivery_assignments ADD COLUMN fte_billing REAL")
             con.execute("UPDATE delivery_assignments SET fte_billing=fte_pct WHERE fte_billing IS NULL")
+        if _da_cols and "role" not in _da_cols:
+            con.execute("ALTER TABLE delivery_assignments ADD COLUMN role TEXT")
+        if _da_cols and "member_kind" not in _da_cols:
+            con.execute("ALTER TABLE delivery_assignments ADD COLUMN member_kind TEXT DEFAULT '内部'")
+            con.execute("UPDATE delivery_assignments SET member_kind='内部' WHERE member_kind IS NULL")
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -2698,24 +2717,26 @@ def _billing_of(b: dict) -> float:
 
 def add_delivery_assignment(con, *, delivery_id: int, owner: str, from_week: str,
                             to_week: str, fte_pct: float, fte_billing: float | None = None,
-                            note: str = "") -> int:
-    """fte_pct=実想定(負荷計算に使う), fte_billing=請求(NoneならSQL側はNULL=実想定と同値扱い)。"""
+                            note: str = "", role: str = "", member_kind: str = "内部") -> int:
+    """fte_pct=実想定(負荷計算に使う), fte_billing=請求(NoneならSQL側はNULL=実想定と同値扱い)。
+    role=役割, member_kind=内部/外部。owner未定は空文字可（体制欄から役割だけ先に作る場合）。"""
     cur = con.execute(
-        "INSERT INTO delivery_assignments (delivery_id, owner, from_week, to_week, fte_pct, fte_billing, note) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (int(delivery_id), owner, from_week, to_week, float(fte_pct or 0),
-         (float(fte_billing) if fte_billing is not None else None), note or None))
+        "INSERT INTO delivery_assignments "
+        "(delivery_id, role, member_kind, owner, from_week, to_week, fte_pct, fte_billing, note) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (int(delivery_id), role or None, member_kind or "内部", owner or "", from_week, to_week,
+         float(fte_pct or 0), (float(fte_billing) if fte_billing is not None else None), note or None))
     con.commit()
     return cur.lastrowid
 
 
 def update_delivery_assignment(con, assignment_id: int, *, owner: str, from_week: str,
                                to_week: str, fte_pct: float, fte_billing: float | None = None,
-                               note: str = "") -> None:
+                               note: str = "", role: str = "", member_kind: str = "内部") -> None:
     con.execute(
-        "UPDATE delivery_assignments SET owner=?, from_week=?, to_week=?, fte_pct=?, fte_billing=?, note=? "
-        "WHERE id=?",
-        (owner, from_week, to_week, float(fte_pct or 0),
+        "UPDATE delivery_assignments SET role=?, member_kind=?, owner=?, from_week=?, to_week=?, "
+        "fte_pct=?, fte_billing=?, note=? WHERE id=?",
+        (role or None, member_kind or "内部", owner or "", from_week, to_week, float(fte_pct or 0),
          (float(fte_billing) if fte_billing is not None else None), note or None, int(assignment_id)))
     con.commit()
 
@@ -2747,6 +2768,27 @@ def delivery_grid(con, delivery_id: int) -> dict:
                 c["actual"] += b["fte_pct"] or 0
                 c["billing"] += _billing_of(b)
     return {"weeks": weeks, "owners": owners, "cells": cells}
+
+
+def list_delivery_roles(con, delivery_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM delivery_roles WHERE delivery_id=? ORDER BY id", (int(delivery_id),))]
+
+
+def add_delivery_role(con, *, delivery_id: int, role: str, fte_billing: float | None = None,
+                      fte_pct: float | None = None) -> int:
+    cur = con.execute(
+        "INSERT INTO delivery_roles (delivery_id, role, fte_billing, fte_pct) VALUES (?,?,?,?)",
+        (int(delivery_id), role,
+         (float(fte_billing) if fte_billing is not None else None),
+         (float(fte_pct) if fte_pct is not None else None)))
+    con.commit()
+    return cur.lastrowid
+
+
+def delete_delivery_role(con, role_id: int) -> None:
+    con.execute("DELETE FROM delivery_roles WHERE id=?", (int(role_id),))
+    con.commit()
 
 
 def list_base_workload(con, owner: str | None = None) -> list[dict]:

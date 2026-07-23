@@ -1056,6 +1056,14 @@ def _to_float(v, default=None):
         return default
 
 
+def _delivery_owner_from_form(f) -> tuple[str, str]:
+    """アサインフォームから (member_kind, owner) を取り出す。外部=owner_txt自由記述／内部=owner_sel。"""
+    kind = (f.get("member_kind", "") or "内部").strip()
+    if kind == "外部":
+        return "外部", (f.get("owner_txt", "") or "").strip()
+    return "内部", (f.get("owner_sel", "") or "").strip()
+
+
 def _snap_monday(s) -> str:
     """任意の日付文字列(YYYY-MM-DD)をその週の月曜に丸める。空/不正は空文字。"""
     s = (s or "").strip()
@@ -1205,35 +1213,59 @@ def deliveries_page(con) -> str:
     </script>"""
 
 
+def _delivery_row_fields(owners: list, b: dict) -> str:
+    """アサイン1行分の入力フィールド群（役割→区分(内部/外部)→メンバー(sel/txt)→期間→請求→実想定→メモ）。
+    追加/編集の両方で使う。週入力は class=wkdate（JSで月曜スナップ）。"""
+    kind = b.get("member_kind") or "内部"
+    owner = b.get("owner") or ""
+    _bill = b.get("fte_billing")
+    _bill = b.get("fte_pct") if _bill is None else _bill
+    kind_opts = "".join(f'<option value="{k}"{" selected" if k == kind else ""}>{k}</option>'
+                        for k in ("内部", "外部"))
+    sel_disp = "display:none" if kind == "外部" else ""
+    txt_disp = "" if kind == "外部" else "display:none"
+    return (
+        f'<label style="font-size:11px">役割<br><input type="text" name="role" value="{_esc(b.get("role") or "")}" placeholder="PM/エンジニア等" style="width:110px"></label>'
+        f'<label style="font-size:11px">区分<br><select name="member_kind" class="mkind" onchange="tglMember(this)" style="font-size:12px">{kind_opts}</select></label>'
+        f'<label style="font-size:11px">メンバー<br>'
+        f'<select name="owner_sel" class="mint" style="font-size:12px;{sel_disp}">{_opt(owners, owner if kind != "外部" else None)}</select>'
+        f'<input type="text" name="owner_txt" class="mext" placeholder="外部メンバー名" value="{_esc(owner if kind == "外部" else "")}" style="width:120px;{txt_disp}"></label>'
+        f'<label style="font-size:11px">開始週<br><input type="date" class="wkdate" name="from_week" value="{_esc(b.get("from_week") or "")}"></label>'
+        f'<label style="font-size:11px">終了週<br><input type="date" class="wkdate" name="to_week" value="{_esc(b.get("to_week") or "")}"></label>'
+        f'<label style="font-size:11px">稼働率(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="{_num_pct(_bill)}" style="width:80px"></label>'
+        f'<label style="font-size:11px">稼働率(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="{_num_pct(b.get("fte_pct"))}" style="width:80px"></label>'
+        f'<label style="font-size:11px">メモ<br><input type="text" name="note" value="{_esc(b.get("note") or "")}" style="width:130px"></label>'
+    )
+
+
 def delivery_form(con, delivery_id: int) -> str:
-    """1Deliveryの編集：ヘッダ＋アサインブロック入力＋プレビューグリッド。#75。"""
+    """1Deliveryの編集：ヘッダ（週数・体制）＋アサイン（役割/区分/メンバー）＋プレビュー。#75。"""
     dv = sfa_db.get_delivery(con, delivery_id)
     if not dv:
         return '<div class="card"><p>Deliveryが見つかりません。<a href="/deliveries">← 一覧</a></p></div>'
     lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
     status_opts = _opt(sfa_db.DELIVERY_STATUSES, dv.get("status") or "進行中")
     _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # マスタ優先（後追加メンバーも反映）
-    owner_opts = _opt(_owners, None)
+    # 現在の週数（開始/終了が両方あれば算出）
+    _weeks_val = ""
+    try:
+        if dv.get("start_week") and dv.get("end_week"):
+            _weeks_val = str((date.fromisoformat(dv["end_week"]) - date.fromisoformat(dv["start_week"])).days // 7 + 1)
+    except Exception:  # noqa: BLE001
+        _weeks_val = ""
     # 既存ブロック（各行を編集フォームに）
     blocks = sfa_db.list_delivery_assignments(con, delivery_id)
     bedit = ""
     for b in blocks:
-        _bill = b.get("fte_billing")
-        _bill = b.get("fte_pct") if _bill is None else _bill
         bedit += f"""
-        <form method="post" action="/delivery/{delivery_id}/assignment/{b['id']}/update"
+        <form method="post" action="/delivery/{delivery_id}/assignment/{b['id']}/update" class="asgForm"
               style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border:1px solid #e6e9f0;border-radius:8px;padding:8px;margin-bottom:6px">
-          <label style="font-size:11px">メンバー<br><select name="owner" style="font-size:12px">{_opt(_owners, b['owner'])}</select></label>
-          <label style="font-size:11px">開始週<br><input type="date" name="from_week" value="{_esc(b['from_week'])}"></label>
-          <label style="font-size:11px">終了週<br><input type="date" name="to_week" value="{_esc(b['to_week'])}"></label>
-          <label style="font-size:11px">稼働率(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="{_num_pct(_bill)}" style="width:80px"></label>
-          <label style="font-size:11px">稼働率(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="{_num_pct(b['fte_pct'])}" style="width:80px"></label>
-          <label style="font-size:11px">メモ<br><input type="text" name="note" value="{_esc(b.get('note') or '')}" style="width:150px"></label>
+          {_delivery_row_fields(_owners, b)}
           <button class="btn sec" style="font-size:12px">保存</button>
-        </form>
-        <form method="post" action="/delivery/{delivery_id}/assignment/{b['id']}/delete" style="margin:-4px 0 10px"
-              onsubmit="return confirm('このアサインを削除しますか？')">
-          <button class="btn sec" style="font-size:11px;color:#c53030">× このアサインを削除</button></form>"""
+          <button formaction="/delivery/{delivery_id}/assignment/{b['id']}/delete" formnovalidate
+                  class="btn sec" style="font-size:11px;color:#c53030"
+                  onclick="return confirm('このアサインを削除しますか？')">×削除</button>
+        </form>"""
     if not bedit:
         bedit = '<p class="muted">まだアサインがありません。下で追加してください。</p>'
     # プレビューグリッド（実想定を主に色付け・請求は小さく併記）
@@ -1262,6 +1294,35 @@ def delivery_form(con, delivery_id: int) -> str:
     else:
         grid_html = '<p class="muted">アサインを追加するとここに週別グリッドが表示されます。</p>'
 
+    # 体制（役割ごとの目標稼働率）。役割合計とアサイン合計の整合チェックに使う。
+    roles = sfa_db.list_delivery_roles(con, delivery_id)
+    role_targets = {}
+    role_rows = ""
+    for r in roles:
+        _rb = r.get("fte_billing")
+        _ra = r.get("fte_pct")
+        role_targets[r["role"]] = {"b": _rb, "a": _ra}
+        role_rows += f"""
+        <tr class="roleRow" data-role="{_esc(r['role'])}">
+          <td><b>{_esc(r['role'])}</b></td>
+          <td style="text-align:right">{_num_pct(_rb) if _rb is not None else '—'}%</td>
+          <td style="text-align:right">{_num_pct(_ra) if _ra is not None else '—'}%</td>
+          <td style="text-align:right" class="curB">-</td>
+          <td style="text-align:right" class="curA">-</td>
+          <td><form method="post" action="/delivery/{delivery_id}/role/{r['id']}/delete" style="margin:0"
+                onsubmit="return confirm('この役割を体制から削除しますか？（アサイン行は消えません）')">
+            <button class="btn sec" style="font-size:11px;color:#c53030">×</button></form></td>
+        </tr>"""
+    if not role_rows:
+        role_rows = '<tr><td colspan=6 class=muted>体制未設定。役割を追加すると、その役割のアサイン行が自動生成されます。</td></tr>'
+    import json as _json
+    role_targets_json = _json.dumps(role_targets, ensure_ascii=False)
+
+    add_fields = _delivery_row_fields(_owners, {
+        "member_kind": "内部", "owner": "", "role": "",
+        "from_week": dv.get("start_week") or "", "to_week": dv.get("end_week") or "",
+        "fte_billing": 50, "fte_pct": 50, "note": ""})
+
     return f"""
     <div class="card">
       <p style="margin:0 0 8px"><a href="/deliveries">← Delivery一覧</a></p>
@@ -1273,38 +1334,40 @@ def delivery_form(con, delivery_id: int) -> str:
 
       <form method="post" action="/delivery/{delivery_id}/save" style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;margin-bottom:14px">
         <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
-          <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:240px"></label>
-          <label style="font-size:12px">開始週<br><input type="date" name="start_week" value="{_esc(dv.get("start_week") or "")}"></label>
-          <label style="font-size:12px">終了週<br><input type="date" name="end_week" value="{_esc(dv.get("end_week") or "")}"></label>
+          <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:220px"></label>
+          <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:64px" oninput="hdrCalcEnd()"></label>
+          <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd()"></label>
+          <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}"></label>
           <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
           <button class="btn" style="font-size:12px">保存</button>
         </div>
         <label style="font-size:12px;display:block;margin-top:8px">概要・納品方針<br>
           <textarea name="overview" rows="2" style="width:100%">{_esc(dv.get("overview") or "")}</textarea></label>
-        <p class="muted" style="font-size:11px;margin:4px 0 0">※週は自動でその週の月曜に丸めます。開始週・終了週は下の「アサイン追加」の週の初期値（ガイド）になります（既存アサインの週は変わりません）。</p>
+        <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は下の「アサイン追加」の週の初期値（ガイド）です。</p>
       </form>
 
-      <h3 style="margin:0 0 6px;font-size:14px">アサイン（メンバー × 期間 × 稼働率）</h3>
-      <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は2種類：<b>請求</b>＝クライアント請求上の稼働、<b>実想定</b>＝実際に見込む稼働（負荷計算はこちら）。各行は編集して「保存」。</p>
+      <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
+      <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当の稼働率欄が黄色くハイライトされます。</p>
+      <div style="overflow:auto"><table style="min-width:560px;font-size:12px">
+        <tr><th>役割</th><th>目標(請求)%</th><th>目標(実想定)%</th><th>現在合計(請求)</th><th>現在合計(実想定)</th><th></th></tr>
+        {role_rows}
+      </table></div>
+      <form method="post" action="/delivery/{delivery_id}/role/add"
+            style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-top:6px">
+        <label style="font-size:11px">役割<br><input type="text" name="role" required placeholder="PM/エンジニア等" style="width:140px"></label>
+        <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="100" style="width:80px"></label>
+        <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="100" style="width:80px"></label>
+        <button class="btn sec" style="font-size:12px">＋体制に役割を追加（アサイン行も生成）</button>
+      </form>
+
+      <h3 style="margin:16px 0 6px;font-size:14px">アサイン（役割 × 区分 × メンバー × 期間 × 稼働率）</h3>
+      <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は<b>請求</b>（クライアント請求上）と<b>実想定</b>（実稼働・負荷計算はこちら）。区分「外部」でメンバーを自由記述。各行は編集して「保存」。</p>
       {bedit}
 
-      <form method="post" action="/delivery/{delivery_id}/assignment/add" id="blkForm"
+      <form method="post" action="/delivery/{delivery_id}/assignment/add" class="asgForm"
             style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-top:8px">
-        <label style="font-size:12px">メンバー<br><select name="owner" required style="font-size:12px">{owner_opts}</select></label>
-        <label style="font-size:12px">開始週<br><input type="date" name="from_week" value="{_esc(dv.get('start_week') or '')}" required></label>
-        <label style="font-size:12px">終了週<br><input type="date" name="to_week" value="{_esc(dv.get('end_week') or '')}" required></label>
-        <label style="font-size:12px">稼働率(請求)%<br><input type="number" name="fte_billing" id="blkBill" min="0" max="300" step="5" value="50" style="width:80px"></label>
-        <label style="font-size:12px">稼働率(実想定)%<br>
-          <input type="number" name="fte_pct" id="blkFte" min="0" max="300" step="5" value="50" style="width:80px">
-          <span style="white-space:nowrap">
-            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="_setFte(25)">25</button>
-            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="_setFte(50)">50</button>
-            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="_setFte(100)">100</button>
-          </span></label>
-        <label style="font-size:12px">メモ<br><input type="text" name="note" placeholder="担当領域など" style="width:150px"></label>
+        {add_fields}
         <button class="btn" style="font-size:12px">＋アサイン追加</button>
-        <script>function _setFte(v){{var f=document.getElementById('blkFte'),b=document.getElementById('blkBill');
-          var same=(f.value===b.value); f.value=v; if(same)b.value=v;}}</script>
       </form>
 
       <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
@@ -1315,7 +1378,55 @@ def delivery_form(con, delivery_id: int) -> str:
               onsubmit="return confirm('このDelivery案件を削除します。アサインも消えます。よろしいですか？')">
           <button class="btn sec" style="font-size:12px;color:#c53030">このDeliveryを削除</button></form>
       </div>
-    </div>"""
+    </div>
+    <script>
+    var ROLE_TARGETS = {role_targets_json};
+    function _mondayOf(s){{ if(!s) return ''; var p=String(s).split('-'); if(p.length!==3) return s;
+      var d=new Date(+p[0], +p[1]-1, +p[2]); if(isNaN(d)) return s;
+      var wd=(d.getDay()+6)%7; d.setDate(d.getDate()-wd);
+      return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
+    function snapWk(el){{ if(el.value) el.value=_mondayOf(el.value); }}
+    function hdrCalcEnd(){{ var w=parseInt(document.getElementById('hdrWeeks').value,10),
+      s=document.getElementById('hdrStart').value, e=document.getElementById('hdrEnd');
+      if(!(w>0)||!s) return; var mo=_mondayOf(s); var p=mo.split('-');
+      var d=new Date(+p[0], +p[1]-1, +p[2]); d.setDate(d.getDate()+(w-1)*7);
+      e.value=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
+    function tglMember(sel){{ var f=sel.closest('form'); if(!f) return;
+      var mi=f.querySelector('.mint'), me=f.querySelector('.mext');
+      if(sel.value==='外部'){{ if(mi)mi.style.display='none'; if(me)me.style.display=''; }}
+      else {{ if(mi)mi.style.display=''; if(me)me.style.display='none'; }} }}
+    function _setFte(v){{ var f=document.querySelector('.asgForm [name=fte_pct]'); }}
+    function checkRoleTotals(){{
+      var sums={{}};
+      document.querySelectorAll('.asgForm').forEach(function(f){{
+        var rl=f.querySelector('[name=role]'); var role=rl?rl.value.trim():''; if(!role) return;
+        var a=parseFloat((f.querySelector('[name=fte_pct]')||{{}}).value)||0;
+        var b=parseFloat((f.querySelector('[name=fte_billing]')||{{}}).value)||0;
+        sums[role]=sums[role]||{{a:0,b:0}}; sums[role].a+=a; sums[role].b+=b;
+      }});
+      document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing]').forEach(function(i){{i.style.background='';i.style.outline='';}});
+      document.querySelectorAll('.roleRow').forEach(function(tr){{
+        var role=tr.getAttribute('data-role'); var s=sums[role]||{{a:0,b:0}}; var t=ROLE_TARGETS[role]||{{}};
+        var cb=tr.querySelector('.curB'), ca=tr.querySelector('.curA');
+        if(cb)cb.textContent=(s.b||0); if(ca)ca.textContent=(s.a||0);
+        var hlB=(t.b!=null)&&Math.abs(s.b-t.b)>0.01;
+        var hlA=(t.a!=null)&&Math.abs(s.a-t.a)>0.01;
+        if(cb)cb.style.background=hlB?'#fef3c7':''; if(ca)ca.style.background=hlA?'#fef3c7':'';
+        if(hlA||hlB) document.querySelectorAll('.asgForm').forEach(function(f){{
+          var rl=f.querySelector('[name=role]'); if(!rl||rl.value.trim()!==role) return;
+          if(hlB){{var i=f.querySelector('[name=fte_billing]'); if(i){{i.style.background='#fef3c7';i.style.outline='2px solid #f59e0b';}}}}
+          if(hlA){{var i=f.querySelector('[name=fte_pct]'); if(i){{i.style.background='#fef3c7';i.style.outline='2px solid #f59e0b';}}}}
+        }});
+      }});
+    }}
+    document.addEventListener('DOMContentLoaded',function(){{
+      document.querySelectorAll('.wkdate').forEach(function(el){{el.addEventListener('change',function(){{snapWk(el);}});}});
+      document.querySelectorAll('.mkind').forEach(function(s){{tglMember(s);}});
+      document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing],.asgForm [name=role]').forEach(function(i){{
+        i.addEventListener('input',checkRoleTotals);}});
+      checkRoleTotals();
+    }});
+    </script>"""
 
 
 def base_workload_page(con) -> str:
@@ -9771,33 +9882,61 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif (path.startswith("/delivery/") and path.endswith("/assignment/add")
                       and path.split("/")[2].isdigit()):
                     _dvid = int(path.split("/")[2])
-                    _ow = (f.get("owner", "") or "").strip()
+                    _kind, _ow = _delivery_owner_from_form(f)
                     _fw = _snap_monday(f.get("from_week", ""))
                     _tw = _snap_monday(f.get("to_week", ""))
-                    if _ow and _fw and _tw:
+                    if _fw and _tw:  # ownerは未定(空)でも可（体制生成行など）
                         if _tw < _fw:
                             _fw, _tw = _tw, _fw   # 逆順は入れ替え
-                        _fte = _to_float(f.get("fte_pct"), 0.0)
-                        _bill = _to_float(f.get("fte_billing"), None)
                         sfa_db.add_delivery_assignment(
-                            con, delivery_id=_dvid, owner=_ow, from_week=_fw, to_week=_tw,
-                            fte_pct=_fte, fte_billing=_bill, note=(f.get("note", "") or "").strip())
+                            con, delivery_id=_dvid, owner=_ow, member_kind=_kind,
+                            role=(f.get("role", "") or "").strip(),
+                            from_week=_fw, to_week=_tw,
+                            fte_pct=_to_float(f.get("fte_pct"), 0.0),
+                            fte_billing=_to_float(f.get("fte_billing"), None),
+                            note=(f.get("note", "") or "").strip())
                     self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and "/assignment/" in path
                       and path.endswith("/update") and path.split("/")[2].isdigit()):
                     _dvid = int(path.split("/")[2])
                     _aid = path.split("/")[4]
-                    _ow = (f.get("owner", "") or "").strip()
+                    _kind, _ow = _delivery_owner_from_form(f)
                     _fw = _snap_monday(f.get("from_week", ""))
                     _tw = _snap_monday(f.get("to_week", ""))
-                    if _aid.isdigit() and _ow and _fw and _tw:
+                    if _aid.isdigit() and _fw and _tw:
                         if _tw < _fw:
                             _fw, _tw = _tw, _fw
                         sfa_db.update_delivery_assignment(
-                            con, int(_aid), owner=_ow, from_week=_fw, to_week=_tw,
+                            con, int(_aid), owner=_ow, member_kind=_kind,
+                            role=(f.get("role", "") or "").strip(),
+                            from_week=_fw, to_week=_tw,
                             fte_pct=_to_float(f.get("fte_pct"), 0.0),
                             fte_billing=_to_float(f.get("fte_billing"), None),
                             note=(f.get("note", "") or "").strip())
+                    self._redirect(f"/delivery/{_dvid}")
+                elif (path.startswith("/delivery/") and path.endswith("/role/add")
+                      and path.split("/")[2].isdigit()):
+                    # 体制に役割を追加＋その役割のアサイン行を自動生成（目標稼働率を初期値に）
+                    _dvid = int(path.split("/")[2])
+                    _role = (f.get("role", "") or "").strip()
+                    if _role:
+                        _rb = _to_float(f.get("fte_billing"), None)
+                        _ra = _to_float(f.get("fte_pct"), None)
+                        sfa_db.add_delivery_role(con, delivery_id=_dvid, role=_role,
+                                                 fte_billing=_rb, fte_pct=_ra)
+                        _dv = sfa_db.get_delivery(con, _dvid)
+                        sfa_db.add_delivery_assignment(
+                            con, delivery_id=_dvid, owner="", member_kind="内部", role=_role,
+                            from_week=_snap_monday((_dv or {}).get("start_week") or "") or "",
+                            to_week=_snap_monday((_dv or {}).get("end_week") or "") or "",
+                            fte_pct=(_ra if _ra is not None else 0.0), fte_billing=_rb)
+                    self._redirect(f"/delivery/{_dvid}")
+                elif (path.startswith("/delivery/") and "/role/" in path
+                      and path.endswith("/delete") and path.split("/")[2].isdigit()):
+                    _dvid = int(path.split("/")[2])
+                    _rid = path.split("/")[4]
+                    if _rid.isdigit():
+                        sfa_db.delete_delivery_role(con, int(_rid))
                     self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and "/assignment/" in path
                       and path.endswith("/delete") and path.split("/")[2].isdigit()):
