@@ -420,11 +420,11 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
 </head><body>
 <header>
   <h1>Inproc Salesforce</h1>
-  <!-- 日常: 商談(ホーム)・開発案件・Delivery(稼働案件スプシ) -->
+  <!-- 日常: 商談(ホーム)・開発案件・Delivery(受注後アサイン計画・#75) -->
   <a href="/deals">商談</a>
   <a href="/dev-projects">開発</a>
   <a href="/tasks">✅ タスク</a>
-  <a href="{delivery_url}" target="_blank" style="opacity:.85;font-size:13px">🚚 Delivery ↗</a>
+  <a href="/deliveries" style="opacity:.85;font-size:13px">🚚 Delivery</a>
   <span class="nav-sep"></span>
   <!-- 次: ヒアリング・論点 -->
   <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
@@ -1019,6 +1019,241 @@ def reports_manage_page(con, slug: str = "") -> str:
     }}
     document.addEventListener('DOMContentLoaded', loadRailPreview);
     </script>"""
+
+
+# ── Delivery（受注後・納品）アサイン計画（#75）─────────────────────────────
+
+def _fmt_week(mon: str) -> str:
+    """YYYY-MM-DD(月曜) → 'M/D' 週ラベル。"""
+    try:
+        d = date.fromisoformat(mon)
+        return f"{d.month}/{d.day}"
+    except Exception:
+        return mon or ""
+
+
+def _num_pct(v) -> str:
+    """FTE%を整数なら整数、端数あれば小数1桁で表示（50.0→50, 12.5→12.5）。"""
+    try:
+        f = float(v or 0)
+    except (TypeError, ValueError):
+        return "0"
+    return str(int(f)) if f == int(f) else f"{f:.1f}"
+
+
+def _snap_monday(s) -> str:
+    """任意の日付文字列(YYYY-MM-DD)をその週の月曜に丸める。空/不正は空文字。"""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    try:
+        return sfa_db._monday_of(date.fromisoformat(s))
+    except ValueError:
+        return ""
+
+
+def _delivery_confidence(deal_stage: str, deal_status: str) -> tuple[str, str]:
+    """(ラベル, 色) を返す。受注=確定/提案・クロージング=見込み/クローズ非受注=無効。"""
+    if deal_status == "closed" and deal_stage != "受注":
+        return ("無効(終了)", "#9ca3af")
+    if deal_stage == "受注":
+        return ("確定", "#047857")
+    return ("見込み", "#b45309")
+
+
+def _heat_style(pct: float) -> str:
+    """総合負荷率%→背景色（100/150閾値。#75）。"""
+    t = sfa_db.DELIVERY_HEAT_THRESHOLDS
+    if pct <= 0:
+        return "background:transparent;color:#cbd5e1"
+    if pct < t["ok"]:
+        return "background:#f0fdf4;color:#166534"
+    if pct < t["full"]:
+        return "background:#dcfce7;color:#166534"
+    if pct < t["over"]:
+        return "background:#fef3c7;color:#92400e"
+    return "background:#dc2626;color:#fff;font-weight:700"
+
+
+def deliveries_page(con) -> str:
+    """Delivery案件一覧（旧・外部スプシリンクの置換）。#75。"""
+    rows = ""
+    for dv in sfa_db.list_deliveries(con):
+        lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
+        blocks = sfa_db.list_delivery_assignments(con, dv["id"])
+        who = "、".join(sorted({b["owner"] for b in blocks})) or "—"
+        period = (f'{_fmt_week(dv.get("start_week"))}〜{_fmt_week(dv.get("end_week"))}'
+                  if dv.get("start_week") or dv.get("end_week") else "—")
+        rows += (
+            f'<tr>'
+            f'<td class="muted" style="font-size:.8em">#{dv["id"]}</td>'
+            f'<td><a href="/delivery/{dv["id"]}"><b>{_esc(dv.get("title") or "(無題)")}</b></a></td>'
+            f'<td>{_esc(dv.get("account_name") or "—")}</td>'
+            f'<td><span style="background:{col};color:#fff;border-radius:5px;padding:1px 7px;font-size:11px">{lbl}</span></td>'
+            f'<td>{_esc(dv.get("status") or "")}</td>'
+            f'<td class="muted">{period}</td>'
+            f'<td>{_esc(who)}</td>'
+            f'<td><a class="btn sec" style="font-size:11px" href="/delivery/{dv["id"]}">編集</a></td>'
+            f'</tr>')
+    if not rows:
+        rows = '<tr><td colspan=8 class=muted>Deliveryはまだありません。商談が「提案」に至ると自動で起票されます。</td></tr>'
+    # 手動起票（提案以降のopen商談から選択）
+    _cands = [d for d in sfa_db.list_deals(con, status="open")
+              if (d.get("stage") or "") in sfa_db.DELIVERY_TRIGGER_STAGES]
+    _cand_opts = "".join(
+        f'<option value="{d["id"]}">{_esc(d.get("account_name") or "")}：{_esc(d.get("deal_name") or "")}（{_esc(d.get("stage") or "")}）</option>'
+        for d in _cands)
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 4px">🚚 Delivery（受注後・アサイン計画）</h2>
+      <p class="muted" style="margin:0 0 12px">商談が「提案」に至ると自動でDelivery案件が起票されます。ここでアサイン（誰が・いつ・何%）を入力すると、
+        Hisho経営ダッシュボードの「稼働予定」に反映されます。単位＝FTE割合(%)。
+        <a href="/base-workload">▶ ベース工数（営業・管理など恒常稼働）を設定</a></p>
+      <div style="overflow:auto"><table style="min-width:900px">
+        <tr><th>#</th><th>案件</th><th>クライアント</th><th>確度</th><th>状態</th><th>期間(週)</th><th>アサイン</th><th></th></tr>
+        {rows}
+      </table></div>
+      <form method="post" action="/deliveries/new" style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="muted" style="font-size:12px">手動で追加:</span>
+        <select name="deal_id" required style="font-size:12px;max-width:420px"><option value="">商談を選択（提案以降）</option>{_cand_opts}</select>
+        <button class="btn sec" style="font-size:12px">＋Delivery追加</button>
+      </form>
+    </div>"""
+
+
+def delivery_form(con, delivery_id: int) -> str:
+    """1Deliveryの編集：ヘッダ＋アサインブロック入力＋プレビューグリッド。#75。"""
+    dv = sfa_db.get_delivery(con, delivery_id)
+    if not dv:
+        return '<div class="card"><p>Deliveryが見つかりません。<a href="/deliveries">← 一覧</a></p></div>'
+    lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
+    status_opts = _opt(sfa_db.DELIVERY_STATUSES, dv.get("status") or "進行中")
+    owner_opts = _opt(sfa_db.OWNERS, None)
+    # 既存ブロック
+    blocks = sfa_db.list_delivery_assignments(con, delivery_id)
+    brows = ""
+    for b in blocks:
+        brows += (
+            f'<tr>'
+            f'<td>{_esc(b["owner"])}</td>'
+            f'<td>{_fmt_week(b["from_week"])}〜{_fmt_week(b["to_week"])}</td>'
+            f'<td style="text-align:right">{_num_pct(b["fte_pct"])}%</td>'
+            f'<td class="muted">{_esc(b.get("note") or "")}</td>'
+            f'<td><form method="post" action="/delivery/{delivery_id}/assignment/{b["id"]}/delete" style="margin:0" '
+            f'onsubmit="return confirm(\'このブロックを削除しますか？\')">'
+            f'<button class="btn sec" style="font-size:11px;color:#c53030">×</button></form></td>'
+            f'</tr>')
+    if not brows:
+        brows = '<tr><td colspan=5 class=muted>まだアサインがありません。下で追加してください。</td></tr>'
+    # プレビューグリッド
+    grid = sfa_db.delivery_grid(con, delivery_id)
+    if grid["weeks"]:
+        head = "".join(f'<th style="font-size:11px;white-space:nowrap">{_fmt_week(w)}</th>' for w in grid["weeks"])
+        grows = ""
+        for ow in grid["owners"]:
+            cells = ""
+            for w in grid["weeks"]:
+                v = grid["cells"].get(ow, {}).get(w, 0)
+                cells += f'<td style="text-align:center;{_heat_style(v)}">{_num_pct(v)+"%" if v else "·"}</td>'
+            grows += f'<tr><th style="text-align:left;white-space:nowrap">{_esc(ow)}</th>{cells}</tr>'
+        grid_html = (f'<div style="overflow:auto"><table style="border-collapse:collapse">'
+                     f'<tr><th></th>{head}</tr>{grows}</table></div>'
+                     '<p class="muted" style="font-size:11px;margin:6px 0 0">※このグリッドはこのDelivery分のみ。'
+                     '全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。</p>')
+    else:
+        grid_html = '<p class="muted">アサインを追加するとここに週別グリッドが表示されます。</p>'
+
+    return f"""
+    <div class="card">
+      <p style="margin:0 0 8px"><a href="/deliveries">← Delivery一覧</a></p>
+      <h2 style="margin:0 0 2px">{_esc(dv.get("title") or "(無題)")}
+        <span style="background:{col};color:#fff;border-radius:5px;padding:1px 8px;font-size:12px;vertical-align:middle">{lbl}</span></h2>
+      <p class="muted" style="margin:0 0 12px">
+        <a href="/deal/{dv["deal_id"]}">{_esc(dv.get("account_name") or "")}：{_esc(dv.get("deal_name") or "")}</a>
+        （ステージ: {_esc(dv.get("deal_stage") or "")}）</p>
+
+      <form method="post" action="/delivery/{delivery_id}/save" style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;margin-bottom:14px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+          <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:240px"></label>
+          <label style="font-size:12px">開始週<br><input type="date" name="start_week" value="{_esc(dv.get("start_week") or "")}"></label>
+          <label style="font-size:12px">終了週<br><input type="date" name="end_week" value="{_esc(dv.get("end_week") or "")}"></label>
+          <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
+          <button class="btn" style="font-size:12px">保存</button>
+        </div>
+        <label style="font-size:12px;display:block;margin-top:8px">概要・納品方針<br>
+          <textarea name="overview" rows="2" style="width:100%">{_esc(dv.get("overview") or "")}</textarea></label>
+        <p class="muted" style="font-size:11px;margin:4px 0 0">※週は入力後、自動でその週の月曜に丸めます。</p>
+      </form>
+
+      <h3 style="margin:0 0 6px;font-size:14px">アサイン（メンバー × 期間 × FTE%）</h3>
+      <div style="overflow:auto"><table style="min-width:520px">
+        <tr><th>メンバー</th><th>期間</th><th style="text-align:right">FTE%</th><th>メモ</th><th></th></tr>
+        {brows}
+      </table></div>
+
+      <form method="post" action="/delivery/{delivery_id}/assignment/add" id="blkForm"
+            style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-top:8px">
+        <label style="font-size:12px">メンバー<br><select name="owner" required style="font-size:12px">{owner_opts}</select></label>
+        <label style="font-size:12px">開始週<br><input type="date" name="from_week" required></label>
+        <label style="font-size:12px">終了週<br><input type="date" name="to_week" required></label>
+        <label style="font-size:12px">FTE%<br>
+          <input type="number" name="fte_pct" id="blkFte" min="0" max="300" step="5" value="50" style="width:70px">
+          <span style="white-space:nowrap">
+            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="document.getElementById('blkFte').value=25">25</button>
+            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="document.getElementById('blkFte').value=50">50</button>
+            <button type="button" class="btn sec" style="font-size:10px;padding:2px 5px" onclick="document.getElementById('blkFte').value=100">100</button>
+          </span></label>
+        <label style="font-size:12px">メモ<br><input type="text" name="note" placeholder="担当領域など" style="width:160px"></label>
+        <button class="btn" style="font-size:12px">＋アサイン追加</button>
+      </form>
+
+      <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
+      {grid_html}
+
+      <div style="margin-top:18px;border-top:1px solid #eee;padding-top:10px">
+        <form method="post" action="/delivery/{delivery_id}/delete" style="display:inline"
+              onsubmit="return confirm('このDelivery案件を削除します。アサインも消えます。よろしいですか？')">
+          <button class="btn sec" style="font-size:12px;color:#c53030">このDeliveryを削除</button></form>
+      </div>
+    </div>"""
+
+
+def base_workload_page(con) -> str:
+    """ベース工数（人×機能×%）の編集。#75。SFA正本。"""
+    rows = ""
+    for r in sfa_db.list_base_workload(con):
+        rows += (
+            f'<tr>'
+            f'<td>{_esc(r["owner"])}</td>'
+            f'<td>{_esc(r["function"])}</td>'
+            f'<td style="text-align:right">{_num_pct(r["pct"])}%</td>'
+            f'<td><form method="post" action="/base-workload/{r["id"]}/delete" style="margin:0" '
+            f'onsubmit="return confirm(\'削除しますか？\')"><button class="btn sec" style="font-size:11px;color:#c53030">×</button></form></td>'
+            f'</tr>')
+    if not rows:
+        rows = '<tr><td colspan=4 class=muted>まだありません。</td></tr>'
+    # 担当ごとの合算
+    by_owner = sfa_db.base_workload_by_owner(con)
+    sums = "、".join(f"{_esc(o)} {_num_pct(p)}%" for o, p in sorted(by_owner.items())) or "—"
+    owner_opts = _opt(sfa_db.OWNERS, None)
+    return f"""
+    <div class="card">
+      <p style="margin:0 0 8px"><a href="/deliveries">← Delivery一覧</a></p>
+      <h2 style="margin:0 0 4px">ベース工数（恒常稼働：人 × 機能 × %）</h2>
+      <p class="muted" style="margin:0 0 12px">案件に紐づかない恒常的な稼働（営業・管理・採用など）を人ごとに%で登録します。
+        Hishoの総工数（デモ開発＋Delivery＋<b>ベース</b>）に加算されます。例: 早瀬 営業 30%。</p>
+      <div style="overflow:auto"><table style="min-width:420px">
+        <tr><th>メンバー</th><th>機能</th><th style="text-align:right">%</th><th></th></tr>
+        {rows}
+      </table></div>
+      <p class="muted" style="font-size:12px;margin:8px 0 0">合算: {sums}</p>
+      <form method="post" action="/base-workload/save" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-top:10px">
+        <label style="font-size:12px">メンバー<br><select name="owner" required style="font-size:12px">{owner_opts}</select></label>
+        <label style="font-size:12px">機能（自由入力）<br><input type="text" name="function" required placeholder="営業 / 管理 / 採用 …" style="width:160px"></label>
+        <label style="font-size:12px">%<br><input type="number" name="pct" min="0" max="100" step="5" value="20" style="width:70px"></label>
+        <button class="btn" style="font-size:12px">保存（同一メンバー×機能は上書き）</button>
+      </form>
+    </div>"""
 
 
 # ── メールパターン管理 ───────────────────────────────────────────────────────────
@@ -4566,6 +4801,33 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           <p class="muted" style="margin:0">開発案件なし</p>
         </div>"""
 
+    # #75: Delivery（受注後アサイン計画）導線。提案以降 or 既存Deliveryがあるとき表示。
+    delivery_html = ""
+    if deal.get("id"):
+        _dvs = sfa_db.list_deliveries(con, deal_id=deal["id"])
+        _stg = deal.get("stage") or ""
+        if _dvs or _stg in sfa_db.DELIVERY_TRIGGER_STAGES:
+            if _dvs:
+                _dv_rows = "".join(
+                    f'<tr><td><a href="/delivery/{d["id"]}">{_esc(d.get("title") or "(無題)")}</a></td>'
+                    f'<td>{_esc(d.get("status") or "")}</td>'
+                    f'<td class="muted">{_fmt_week(d.get("start_week"))}〜{_fmt_week(d.get("end_week"))}</td></tr>'
+                    for d in _dvs)
+                _dv_body = f'<table><tr><th>Delivery</th><th>状態</th><th>期間</th></tr>{_dv_rows}</table>'
+            else:
+                _dv_body = ('<p class="muted" style="margin:0 0 8px">この商談のDeliveryはまだありません'
+                            '（提案到達時に自動起票されます）。</p>')
+            delivery_html = f"""
+        <div class="card">
+          <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <span>🚚 Delivery（アサイン計画）</span>
+            <form method="post" action="/deliveries/new" style="margin:0">
+              <input type="hidden" name="deal_id" value="{deal["id"]}">
+              <button class="btn sec" style="font-size:12px">＋Delivery追加</button></form>
+          </h2>
+          {_dv_body}
+        </div>"""
+
     deal_issues_html = ""
     if deal.get("id"):
         issues = sfa_db.list_deal_issues(con, deal_id=deal["id"])
@@ -4894,6 +5156,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     {other_deals_html}
     {hearing_html}
     {dev_projects_html}
+    {delivery_html}
     {deal_issues_html}
     {activities_html}"""
 
@@ -8445,6 +8708,33 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
                         self._send_cors_json(json.dumps(sfa_db.get_owner_capacities(con), ensure_ascii=False).encode())
+                elif path == "/api/delivery_load":
+                    # Hishoダッシュボード用: Delivery稼働(FTE%) を owner×week に展開・見込み/確定別（#75）。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        try:
+                            _nw = int(qs.get("weeks", [str(sfa_db.DELIVERY_VIEW_WEEKS)])[0])
+                        except (ValueError, TypeError):
+                            _nw = sfa_db.DELIVERY_VIEW_WEEKS
+                        _sw = (qs.get("start", [None])[0] or None)
+                        _load = sfa_db.compute_delivery_load(con, start_week=_sw, n_weeks=_nw)
+                        _load["thresholds"] = sfa_db.DELIVERY_HEAT_THRESHOLDS
+                        _load["points_per_fte"] = sfa_db.POINTS_PER_FTE
+                        self._send_cors_json(json.dumps(_load, ensure_ascii=False).encode())
+                elif path == "/api/base_workload":
+                    # Hishoダッシュボード用: ベース工数(人×機能×%)。{owner:pct}合算＋明細（#75）。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        self._send_cors_json(json.dumps({
+                            "by_owner": sfa_db.base_workload_by_owner(con),
+                            "items": sfa_db.list_base_workload(con),
+                        }, ensure_ascii=False).encode())
                 elif path == "/api/memo/list_all":
                     # スプシ出力用: 全メモ + deals/accounts JOIN
                     qs = self._qs()
@@ -8775,6 +9065,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(slack_memo_backfill_page(con, offset=_off)))
                 elif path == "/data-tagging":
                     self._send(render(data_tagging_page(con)))
+                elif path == "/deliveries":
+                    self._send(render(deliveries_page(con)))
+                elif path == "/base-workload":
+                    self._send(render(base_workload_page(con)))
+                elif (path.startswith("/delivery/") and len(path.split("/")) == 3
+                      and path.split("/")[2].isdigit()):
+                    self._send(render(delivery_form(con, int(path.split("/")[2]))))
                 elif path == "/reports":
                     self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":
@@ -9304,6 +9601,71 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         sfa_db.set_owner_capacity(con, _owner, _bv, _from, _p2v)
                     self._redirect("/dev-point-master")
 
+                # ── Delivery（受注後・アサイン計画。#75） ──
+                elif path == "/deliveries/new":
+                    _did = (f.get("deal_id", "") or "").strip()
+                    if _did.isdigit() and sfa_db.get_deal(con, int(_did)):
+                        _nid = sfa_db.create_delivery(
+                            con, deal_id=int(_did),
+                            title=(sfa_db.get_deal(con, int(_did)) or {}).get("deal_name") or "")
+                        self._redirect(f"/delivery/{_nid}")
+                    else:
+                        self._redirect("/deliveries")
+                elif (path.startswith("/delivery/") and path.endswith("/save")
+                      and path.split("/")[2].isdigit()):
+                    _dvid = int(path.split("/")[2])
+                    sfa_db.update_delivery(
+                        con, _dvid,
+                        title=(f.get("title", "") or "").strip(),
+                        start_week=_snap_monday(f.get("start_week", "")),
+                        end_week=_snap_monday(f.get("end_week", "")),
+                        status=(f.get("status", "") or "進行中").strip(),
+                        overview=(f.get("overview", "") or "").strip())
+                    self._redirect(f"/delivery/{_dvid}")
+                elif (path.startswith("/delivery/") and path.endswith("/assignment/add")
+                      and path.split("/")[2].isdigit()):
+                    _dvid = int(path.split("/")[2])
+                    _ow = (f.get("owner", "") or "").strip()
+                    _fw = _snap_monday(f.get("from_week", ""))
+                    _tw = _snap_monday(f.get("to_week", ""))
+                    if _ow and _fw and _tw:
+                        if _tw < _fw:
+                            _fw, _tw = _tw, _fw   # 逆順は入れ替え
+                        try:
+                            _fte = float(f.get("fte_pct", "0") or 0)
+                        except ValueError:
+                            _fte = 0.0
+                        sfa_db.add_delivery_assignment(
+                            con, delivery_id=_dvid, owner=_ow, from_week=_fw, to_week=_tw,
+                            fte_pct=_fte, note=(f.get("note", "") or "").strip())
+                    self._redirect(f"/delivery/{_dvid}")
+                elif (path.startswith("/delivery/") and "/assignment/" in path
+                      and path.endswith("/delete") and path.split("/")[2].isdigit()):
+                    _dvid = int(path.split("/")[2])
+                    _aid = path.split("/")[4]
+                    if _aid.isdigit():
+                        sfa_db.delete_delivery_assignment(con, int(_aid))
+                    self._redirect(f"/delivery/{_dvid}")
+                elif (path.startswith("/delivery/") and path.endswith("/delete")
+                      and path.split("/")[2].isdigit() and len(path.split("/")) == 4):
+                    _dvid = int(path.split("/")[2])
+                    sfa_db.delete_delivery(con, _dvid)
+                    self._redirect("/deliveries")
+                elif path == "/base-workload/save":
+                    _ow = (f.get("owner", "") or "").strip()
+                    _fn = (f.get("function", "") or "").strip()
+                    if _ow and _fn:
+                        try:
+                            _p = float(f.get("pct", "0") or 0)
+                        except ValueError:
+                            _p = 0.0
+                        sfa_db.upsert_base_workload(con, _ow, _fn, _p)
+                    self._redirect("/base-workload")
+                elif (path.startswith("/base-workload/") and path.endswith("/delete")
+                      and path.split("/")[2].isdigit()):
+                    sfa_db.delete_base_workload(con, int(path.split("/")[2]))
+                    self._redirect("/base-workload")
+
                 # ── 週次レポート（本文はDBのみ・Git非保存） ──
                 elif path == "/reports/manage/save":
                     _slug = (f.get("slug", "") or "").strip()
@@ -9559,6 +9921,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         fee_rate=num("fee_rate"),
                         diagnosis_cost=num("diagnosis_cost"),
                     )
+                    # #75: 提案以降ステージで保存されたらDeliveryを自動起票（未作成時のみ）
+                    try:
+                        sfa_db.ensure_delivery_on_stage(con, did, f.get("stage") or "")
+                    except Exception as _exc:  # noqa: BLE001
+                        print(f"[delivery] ensure_delivery_on_stage failed: {_exc}")
                     # 次回MS（複数, #48）: フォームからのMS行で置き換え→キャッシュ(next_milestone_*)再計算。
                     # deal_formは ms_*[] 配列を、quick-add等は単一 next_milestone_* を送る。両対応。
                     _ms_dates = f_list.get("ms_date[]", [])
@@ -10083,6 +10450,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 )
                                 con.commit()
                                 _ok = True
+                                # #75: 提案以降に到達したらDeliveryを自動起票（未作成時のみ）
+                                try:
+                                    sfa_db.ensure_delivery_on_stage(con, deal_id, value)
+                                except Exception as _exc:  # noqa: BLE001
+                                    print(f"[delivery] ensure_delivery_on_stage failed: {_exc}")
                         elif field in ("next_milestone_date", "next_milestone_label", "next_milestone_type"):
                             # 次回MSは複数対応（#48）: 未完了で最古のMSを更新（無ければ作成）→キャッシュ再計算
                             _mf = {"next_milestone_date": "date", "next_milestone_label": "label",
