@@ -3399,8 +3399,9 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
     # 次回MSの本数（#48）: 一覧の「ほかN件」バッジ用（未完了MSが2件以上のとき表示）
     ms_counts = sfa_db.count_open_milestones(con, [d["id"] for d in deals])
 
-    cb_th = ('<th class="sticky" style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択"'
-             ' onchange="var v=this.checked;document.querySelectorAll(\'[name=ids]\').forEach(function(c){c.checked=v;});">'
+    cb_th = ('<th class="sticky" style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択（表示中のみ）"'
+             ' onchange="var v=this.checked;document.querySelectorAll(\'#deal_bulk_form tr.deal-row\').forEach('
+             'function(r){if(r.style.display!==\'none\'){var c=r.querySelector(\'[name=ids]\');if(c)c.checked=v;}});">'
              '</th>') if bulk else ""
     _th_total = _sticky_th("提案総額<br><span style='font-size:10px;color:#8893a8'>(万円)</span>")
     header = (
@@ -3953,7 +3954,8 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       </span>
     </h2>
     {filter_row}
-    <form id="deal_bulk_form" method="post" action="/deals/bulk_edit">
+    <form id="deal_bulk_form" method="post" action="/deals/bulk_edit"
+          onsubmit="document.querySelectorAll('#deal_bulk_form tr.deal-row').forEach(function(r){{if(r.style.display==='none'){{var c=r.querySelector('[name=ids]');if(c)c.checked=false;}}}});return true;">
     {unified_deal_table(con, deals, return_to_url="/deals", bulk=True)}
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
       <select id="deal_bulk_field" name="field" style="width:auto">
