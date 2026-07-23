@@ -3879,6 +3879,10 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       </select>
       <select id="deal_bulk_value" name="value" style="width:auto"></select>
       <button class="btn sec" type="submit">選択した件を一括変更</button>
+      <span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px"></span>
+      <button class="btn sec" type="submit" formaction="/deliveries/bulk_new" formnovalidate
+              title="チェックした商談にDelivery（受注後アサイン計画）を登録します"
+              style="background:#ecfeff;color:#0e7490;border-color:#a5f3fc">🚚 選択商談にDeliveryを登録</button>
     </div>
     </form>
     </div>
@@ -9602,6 +9606,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect("/dev-point-master")
 
                 # ── Delivery（受注後・アサイン計画。#75） ──
+                elif path == "/deliveries/bulk_new":
+                    # 商談一覧でチェックした商談にDeliveryを登録（既に有ればスキップ＝重複防止）
+                    _ids = [x for x in f_list.get("ids", []) if str(x).isdigit()]
+                    _created = []
+                    for _idr in _ids:
+                        _dealid = int(_idr)
+                        _deal = sfa_db.get_deal(con, _dealid)
+                        if not _deal:
+                            continue
+                        if sfa_db.list_deliveries(con, deal_id=_dealid):
+                            continue  # 既存があれば作らない
+                        _created.append(sfa_db.create_delivery(
+                            con, deal_id=_dealid, title=_deal.get("deal_name") or ""))
+                    if len(_created) == 1:
+                        self._redirect(f"/delivery/{_created[0]}")
+                    else:
+                        self._redirect("/deliveries")
                 elif path == "/deliveries/new":
                     _did = (f.get("deal_id", "") or "").strip()
                     if _did.isdigit() and sfa_db.get_deal(con, int(_did)):
