@@ -1377,7 +1377,7 @@ def delivery_form(con, delivery_id: int) -> str:
       {bedit}
 
       <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
-      {grid_html}
+      <div id="dvPreview">{grid_html}</div>
 
       <div style="margin-top:18px;border-top:1px solid #eee;padding-top:10px">
         <form method="post" action="/delivery/{delivery_id}/delete" style="display:inline"
@@ -1447,19 +1447,60 @@ def delivery_form(con, delivery_id: int) -> str:
         .then(function(r){{ if(st){{st.textContent=r.ok?'保存済み':'保存失敗';st.style.color=r.ok?'#059669':'#b91c1c';}} }})
         .catch(function(){{ if(st){{st.textContent='保存失敗';st.style.color='#b91c1c';}} }});
     }}
+    function _heatJs(p){{ if(p<=0) return 'background:transparent;color:#cbd5e1';
+      if(p<70) return 'background:#f0fdf4;color:#166534'; if(p<100) return 'background:#dcfce7;color:#166534';
+      if(p<150) return 'background:#fef3c7;color:#92400e'; return 'background:#dc2626;color:#fff;font-weight:700'; }}
+    function _esc3(s){{ return String(s).replace(/[&<>]/g,function(c){{return{{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c];}}); }}
+    function _isoAdd(iso,wks){{ var p=iso.split('-'); var d=new Date(+p[0],+p[1]-1,+p[2]); d.setDate(d.getDate()+wks*7);
+      return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
+    // クライアント側でプレビューを再構築（メンバー選択・稼働率の編集に即追従）。行=メンバー(未定は役割)。
+    function renderPreview(){{
+      var box=document.getElementById('dvPreview'); if(!box) return;
+      var rows=[], idx={{}}, minW=null, maxW=null;
+      document.querySelectorAll('.asgForm').forEach(function(f){{
+        var role=((f.querySelector('[name=role]')||{{}}).value||'').trim();
+        var kind=(f.querySelector('[name=member_kind]')||{{}}).value||'内部';
+        var owner=(kind==='外部'?(f.querySelector('[name=owner_txt]')||{{}}).value:(f.querySelector('[name=owner_sel]')||{{}}).value)||'';
+        owner=owner.trim();
+        var label=owner||('['+(role||'未設定')+'] 未定');
+        var fw=_mondayOf((f.querySelector('[name=from_week]')||{{}}).value), tw=_mondayOf((f.querySelector('[name=to_week]')||{{}}).value);
+        var a=parseFloat((f.querySelector('[name=fte_pct]')||{{}}).value)||0, b=parseFloat((f.querySelector('[name=fte_billing]')||{{}}).value)||0;
+        if(!fw||!tw) return;
+        if(minW===null||fw<minW)minW=fw; if(maxW===null||tw>maxW)maxW=tw;
+        if(!(label in idx)){{ idx[label]=rows.length; rows.push({{label:label,cells:{{}}}}); }}
+        var row=rows[idx[label]]; var w=fw, g=0;
+        while(w<=tw && g<520){{ row.cells[w]=row.cells[w]||{{a:0,b:0}}; row.cells[w].a+=a; row.cells[w].b+=b; w=_isoAdd(w,1); g++; }}
+      }});
+      if(minW===null){{ box.innerHTML='<p class="muted">アサインを入力するとここに週別グリッドが表示されます。</p>'; return; }}
+      var weeks=[], w=minW, g=0; while(w<=maxW && g<520){{ weeks.push(w); w=_isoAdd(w,1); g++; }}
+      var html='<div style="overflow:auto"><table style="border-collapse:collapse"><tr><th></th>'
+        +weeks.map(function(k){{var p=k.split('-');return '<th style="font-size:11px;white-space:nowrap">'+(+p[1])+'/'+(+p[2])+'</th>';}}).join('')+'</tr>';
+      rows.forEach(function(r){{
+        html+='<tr><th style="text-align:left;white-space:nowrap">'+_esc3(r.label)+'</th>';
+        weeks.forEach(function(k){{ var c=r.cells[k];
+          if(c&&(c.a||c.b)){{ var sub=(Math.abs((c.b||0)-(c.a||0))>0.01)?'<br><span style="font-size:9px;opacity:.7">請'+_r1(c.b)+'</span>':'';
+            html+='<td style="text-align:center;'+_heatJs(c.a)+'">'+_r1(c.a)+'%'+sub+'</td>'; }}
+          else {{ html+='<td style="text-align:center;color:#cbd5e1">·</td>'; }} }});
+        html+='</tr>';
+      }});
+      html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。</p>';
+      box.innerHTML=html;
+    }}
+    function recompute(){{ checkRoleTotals(); renderPreview(); }}
     document.addEventListener('DOMContentLoaded',function(){{
       document.querySelectorAll('.wkdate').forEach(function(el){{el.addEventListener('change',function(){{snapWk(el);}});}});
       document.querySelectorAll('.mkind').forEach(function(s){{tglMember(s);}});
-      // 入力（rate/role/target）で整合ライブ判定
+      // 入力（rate/role/target/メンバー/期間）で整合＋プレビューをライブ更新
       document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing],.asgForm [name=role],'
-        +'.asgForm [name=from_week],.asgForm [name=to_week],'
+        +'.asgForm [name=from_week],.asgForm [name=to_week],.asgForm [name=owner_sel],'
+        +'.asgForm [name=owner_txt],.asgForm [name=member_kind],'
         +'.roleRow .rRole,.roleRow .rTgtB,.roleRow .rTgtA').forEach(function(i){{
-        i.addEventListener('input',checkRoleTotals);}});
+        i.addEventListener('input',recompute); i.addEventListener('change',recompute);}});
       // 自動保存: 各アサイン行・体制行の変更でajax保存（保存ボタン不要）
       document.querySelectorAll('.asgForm,.roleRow').forEach(function(form){{
         form.addEventListener('change',function(){{autoSave(form);}});
       }});
-      checkRoleTotals();
+      recompute();
     }});
     </script>"""
 
