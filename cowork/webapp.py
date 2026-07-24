@@ -1275,7 +1275,7 @@ def delivery_form(con, delivery_id: int) -> str:
                   onclick="return confirm('このアサインを削除しますか？')">×削除</button>
         </form>"""
     if not bedit:
-        bedit = '<p class="muted">まだアサインがありません。体制で役割を追加するか、各役割の「＋メンバー」で追加します。</p>'
+        bedit = '<p class="muted">まだアサインがありません。体制で役割を追加するか、各役割の「複製」で行を増やせます。</p>'
     # プレビューグリッド（実想定を主に色付け・請求は小さく併記）。行の並びは体制の役割順に合わせる。
     grid = sfa_db.delivery_grid(con, delivery_id)
     _own_role_idx = {}
@@ -1325,7 +1325,7 @@ def delivery_form(con, delivery_id: int) -> str:
           <span style="font-size:11px;color:#64748b">現在(期間平均) 請<b class="curB">-</b>% / 実<b class="curA">-</b>%</span>
           <span class="asgSaved" style="font-size:10px;color:#94a3b8">自動保存</span>
           <button formaction="/delivery/{delivery_id}/role/{r['id']}/add-member" formnovalidate
-                  class="btn sec" style="font-size:11px;color:#0e7490">＋メンバー</button>
+                  class="btn sec" style="font-size:11px;color:#0e7490" title="この役割のアサイン行を複製（空メンバーで追加）">複製</button>
           <button formaction="/delivery/{delivery_id}/role/{r['id']}/delete" formnovalidate
                   class="btn sec" style="font-size:11px;color:#c53030"
                   onclick="return confirm('この役割を体制から削除しますか？（アサイン行は消えません）')">×</button>
@@ -1358,7 +1358,7 @@ def delivery_form(con, delivery_id: int) -> str:
             </div>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
-            <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は体制「＋メンバー」で生成する行の初期値（ガイド）です。</p>
+            <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は体制「複製」で生成する行の初期値（ガイド）です。</p>
           </form>
         </div>
         <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
@@ -1376,7 +1376,7 @@ def delivery_form(con, delivery_id: int) -> str:
       </div>
 
       <h3 style="margin:16px 0 6px;font-size:14px">アサイン（役割 × 区分 × メンバー × 期間 × 稼働率）</h3>
-      <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は<b>請求</b>（クライアント請求上）と<b>実想定</b>（実稼働・負荷計算はこちら）。区分「外部」でメンバーを自由記述。<b>入力すると自動保存</b>されます。行の追加は体制の「＋メンバー」から。並びは体制の役割順。</p>
+      <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は<b>請求</b>（クライアント請求上）と<b>実想定</b>（実稼働・負荷計算はこちら）。区分「外部」でメンバーを自由記述。<b>入力すると自動保存</b>されます。行の追加は体制の「複製」から。並びは体制の役割順。</p>
       {bedit}
 
       <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
@@ -1516,6 +1516,7 @@ def base_workload_page(con) -> str:
     for r in sfa_db.list_base_workload(con):
         by_owner_rows.setdefault(r["owner"], []).append(r)
     by_owner_sum = sfa_db.base_workload_by_owner(con)
+    _base_max = sfa_db.get_owner_base_max(con)
     # マスタ外にベースを持つ人（旧データ等）も末尾に出す
     extra = [o for o in by_owner_rows if o not in set(_owners_ord)]
     order = _owners_ord + sorted(extra)
@@ -1536,13 +1537,17 @@ def base_workload_page(con) -> str:
                 f'<input type="number" name="pct" min="0" max="200" step="5" value="{pc}" placeholder="%" class="bwPct" style="width:56px;font-size:12px">'
                 f'<button type="button" class="btn sec" style="font-size:11px;color:#c53030;padding:2px 6px" '
                 f'onclick="bwClear(this)" title="この項目をクリア">×</button></span>')
+        _mx = _num_pct(_base_max[o]) if o in _base_max else "100"
         blocks += (
             f'<form class="bwForm" method="post" action="/base-workload/save-slots" data-owner="{_esc(o)}" '
             f'style="border:1px solid #eef1f6;border-radius:8px;padding:8px 10px;margin-bottom:6px">'
             f'<input type="hidden" name="owner" value="{_esc(o)}">'
-            f'<div style="font-size:12px;margin-bottom:4px"><b>{_esc(o)}</b> '
-            f'<span class="muted">合計 <span class="bwSum">{_num_pct(tot)}</span>%</span> '
-            f'<span class="bwSaved" style="font-size:10px;color:#94a3b8;margin-left:6px"></span></div>'
+            f'<div style="font-size:12px;margin-bottom:4px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>{_esc(o)}</b> '
+            f'<span class="muted">合計 <span class="bwSum">{_num_pct(tot)}</span>%</span>'
+            f'<label style="font-size:11px">ベース最大稼働率 '
+            f'<input type="number" name="max_pct" min="0" max="100" step="5" value="{_mx}" class="bwMax" style="width:60px;font-size:12px">%'
+            f'<span class="muted" style="font-size:10px">（InProcに割ける最大稼働率）</span></label>'
+            f'<span class="bwSaved" style="font-size:10px;color:#94a3b8"></span></div>'
             f'{cells}</form>')
     return f"""
     <div class="card">
@@ -9080,6 +9085,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _load["points_per_fte"] = sfa_db.POINTS_PER_FTE
                         _load["owner_order"] = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
                         _load["base_items"] = sfa_db.list_base_workload(con)  # 明細(人×機能×%)
+                        _load["base_max"] = sfa_db.get_owner_base_max(con)    # 人→最大稼働率%（未設定は100扱い）
                         self._send_cors_json(json.dumps(_load, ensure_ascii=False).encode())
                 elif path == "/api/base_workload":
                     # Hishoダッシュボード用: ベース工数(人×機能×%)。{owner:pct}合算＋明細（#75）。
@@ -10137,6 +10143,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         for _i, _fn in enumerate(_fns):
                             _items.append((_fn, _to_float(_pcs[_i] if _i < len(_pcs) else None, 0.0)))
                         sfa_db.replace_base_workload_for_owner(con, _ow, _items)
+                        if "max_pct" in f:
+                            sfa_db.set_owner_base_max(con, _ow, _to_float(f.get("max_pct"), 100.0))
                     if f.get("ajax"):
                         self._send(b"", status=204)
                     else:

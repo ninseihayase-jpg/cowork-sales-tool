@@ -740,6 +740,14 @@ CREATE TABLE IF NOT EXISTS delivery_roles (
     FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
 );
 
+-- ベース最大稼働率（#75）。その人がInProcに割ける最大稼働率(%)。稼働予定の負荷率の分母。
+-- 未設定は100%扱い。例: 週2の人=40%（総工数40%で負荷率100%表示）。
+CREATE TABLE IF NOT EXISTS owner_base_max (
+    owner       TEXT PRIMARY KEY,   -- メンバー（OWNERS）
+    max_pct     REAL NOT NULL DEFAULT 100,
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+
 -- ベース工数（#75）。案件に紐づかない恒常稼働（人×機能×%）。例: 早瀬 営業 30%。
 -- functionは自由入力。正本SFA＋Hishoからの書き戻し(POST /api/base_workload)で両方編集。
 CREATE TABLE IF NOT EXISTS base_workload (
@@ -2819,6 +2827,19 @@ def upsert_base_workload(con, owner: str, function: str, pct: float) -> None:
         "INSERT INTO base_workload (owner, function, pct, updated_at) VALUES (?,?,?,datetime('now')) "
         "ON CONFLICT(owner, function) DO UPDATE SET pct=excluded.pct, updated_at=datetime('now')",
         (owner, function, float(pct or 0)))
+    con.commit()
+
+
+def get_owner_base_max(con) -> dict:
+    """{owner: 最大稼働率%}。未設定は含まない（呼び出し側で100%既定）。"""
+    return {r["owner"]: r["max_pct"] for r in con.execute("SELECT owner, max_pct FROM owner_base_max")}
+
+
+def set_owner_base_max(con, owner: str, max_pct) -> None:
+    con.execute(
+        "INSERT INTO owner_base_max (owner, max_pct, updated_at) VALUES (?,?,datetime('now')) "
+        "ON CONFLICT(owner) DO UPDATE SET max_pct=excluded.max_pct, updated_at=datetime('now')",
+        (owner, float(max_pct if max_pct is not None else 100)))
     con.commit()
 
 
