@@ -2822,6 +2822,13 @@ def upsert_base_workload(con, owner: str, function: str, pct: float) -> None:
     con.commit()
 
 
+def update_base_workload(con, base_id: int, *, function: str, pct: float) -> None:
+    con.execute(
+        "UPDATE base_workload SET function=?, pct=?, updated_at=datetime('now') WHERE id=?",
+        (function, float(pct or 0), int(base_id)))
+    con.commit()
+
+
 def delete_base_workload(con, base_id: int) -> None:
     con.execute("DELETE FROM base_workload WHERE id=?", (int(base_id),))
     con.commit()
@@ -2849,10 +2856,11 @@ def compute_delivery_load(con, *, start_week: str | None = None,
 
     for r in con.execute(
         "SELECT da.owner, da.role, da.member_kind, da.from_week, da.to_week, da.fte_pct, da.fte_billing, "
-        "d.stage, d.status, d.deal_name, dv.title AS delivery_title "
+        "d.stage, d.status, d.deal_name, dv.title AS delivery_title, acc.name AS account_name "
         "FROM delivery_assignments da "
         "JOIN deliveries dv ON dv.id=da.delivery_id "
-        "JOIN deals d ON d.id=dv.deal_id"):
+        "JOIN deals d ON d.id=dv.deal_id "
+        "LEFT JOIN accounts acc ON acc.id=d.account_id"):
         stage = r["stage"] or ""
         status = r["status"] or "open"
         if status == "closed" and stage != "受注":
@@ -2874,6 +2882,7 @@ def compute_delivery_load(con, *, start_week: str | None = None,
                 "from_week": r["from_week"], "to_week": r["to_week"],
                 "actual": actual, "billing": billing, "committed": (stage == "受注"),
                 "deal_name": r["deal_name"] or "", "delivery_title": r["delivery_title"] or "",
+                "account_name": r["account_name"] or "",
             })
     base = base_workload_by_owner(con)
     owners = sorted(set(list(base.keys()) + list(cells.keys())),

@@ -446,6 +446,7 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
       <a href="/slack-memo-backfill">🩹 Slack追記メモ復旧</a>
       <a href="/masters">⚙ マスタ編集</a>
       <a href="/dev-point-master">🎯 開発点数マスタ</a>
+      <a href="/base-workload">🧑‍💼 ベース工数（恒常稼働）</a>
       <a href="/tech-seed-master">🌱 技術シードマスタ</a>
       <a href="/tech-seed-tagging">🏷 技術シード一括付け</a>
       <a href="/backups">🗄 バックアップ</a>
@@ -1511,16 +1512,18 @@ def base_workload_page(con) -> str:
     """ベース工数（人×機能×%）の編集。#75。SFA正本。"""
     rows = ""
     for r in sfa_db.list_base_workload(con):
-        rows += (
-            f'<tr>'
-            f'<td>{_esc(r["owner"])}</td>'
-            f'<td>{_esc(r["function"])}</td>'
-            f'<td style="text-align:right">{_num_pct(r["pct"])}%</td>'
-            f'<td><form method="post" action="/base-workload/{r["id"]}/delete" style="margin:0" '
-            f'onsubmit="return confirm(\'削除しますか？\')"><button class="btn sec" style="font-size:11px;color:#c53030">×</button></form></td>'
-            f'</tr>')
+        rows += f"""
+        <form method="post" action="/base-workload/{r['id']}/update"
+              style="display:flex;gap:8px;align-items:flex-end;border:1px solid #eef1f6;border-radius:6px;padding:6px;margin-bottom:5px">
+          <span style="font-size:12px;min-width:76px;padding-bottom:3px"><b>{_esc(r['owner'])}</b></span>
+          <label style="font-size:11px">機能<br><input type="text" name="function" value="{_esc(r['function'])}" style="width:160px"></label>
+          <label style="font-size:11px">%<br><input type="number" name="pct" min="0" max="100" step="5" value="{_num_pct(r['pct'])}" style="width:70px"></label>
+          <button class="btn sec" style="font-size:11px">保存</button>
+          <button formaction="/base-workload/{r['id']}/delete" formnovalidate class="btn sec" style="font-size:11px;color:#c53030"
+                  onclick="return confirm('削除しますか？')">×</button>
+        </form>"""
     if not rows:
-        rows = '<tr><td colspan=4 class=muted>まだありません。</td></tr>'
+        rows = '<p class="muted" style="font-size:12px">まだありません。</p>'
     # 担当ごとの合算
     by_owner = sfa_db.base_workload_by_owner(con)
     sums = "、".join(f"{_esc(o)} {_num_pct(p)}%" for o, p in sorted(by_owner.items())) or "—"
@@ -1531,10 +1534,7 @@ def base_workload_page(con) -> str:
       <h2 style="margin:0 0 4px">ベース工数（恒常稼働：人 × 機能 × %）</h2>
       <p class="muted" style="margin:0 0 12px">案件に紐づかない恒常的な稼働（営業・管理・採用など）を人ごとに%で登録します。
         Hishoの総工数（デモ開発＋Delivery＋<b>ベース</b>）に加算されます。例: 早瀬 営業 30%。</p>
-      <div style="overflow:auto"><table style="min-width:420px">
-        <tr><th>メンバー</th><th>機能</th><th style="text-align:right">%</th><th></th></tr>
-        {rows}
-      </table></div>
+      <div style="overflow:auto">{rows}</div>
       <p class="muted" style="font-size:12px;margin:8px 0 0">合算: {sums}</p>
       <form method="post" action="/base-workload/save" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-top:10px">
         <label style="font-size:12px">メンバー<br><select name="owner" required style="font-size:12px">{owner_opts}</select></label>
@@ -4103,12 +4103,20 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         oninput="filterDealsByAccount()" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=active">リセット</a>
     </form>"""
-    # バルク編集用JSオブジェクト構築
+    # バルク編集用JSオブジェクト構築（選択肢を持つフィールド）。フリー入力系はJS側でinput化。
+    _all_l2 = []
+    for _vs in sfa_db.BUSINESS_TYPE_L2_BY_L1.values():
+        for _v in _vs:
+            if _v not in _all_l2:
+                _all_l2.append(_v)
     deal_bulk_options = {
         "stage": [["", "（変更なし）"]] + [[s, s] for s in stages],
+        "importance": [["", "（変更なし）"]] + [[v, v] for v in sfa_db.IMPORTANCE_OPTIONS],
         "owner": [["", "（変更なし）"]] + [[o, o] for o in owners],
         "sub_owner": [["", "（変更なし）"]] + [[o, o] for o in owners],
         "business_type_l1": [["", "（変更なし）"]] + [[v, v] for v in biz_l1_list],
+        "business_type_l2": [["", "（変更なし）"]] + [[v, v] for v in _all_l2],
+        "next_milestone_type": [["", "（変更なし）"]] + [[v, v] for v in sfa_db.NEXT_MS_TYPES],
     }
     deal_bulk_options_json = json.dumps(deal_bulk_options, ensure_ascii=False)
 
@@ -4166,11 +4174,17 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
       <select id="deal_bulk_field" name="field" style="width:auto">
         <option value="stage">ステージ</option>
+        <option value="importance">重要度</option>
         <option value="owner">主担当</option>
         <option value="sub_owner">サブ担当</option>
-        <option value="business_type_l1">事業種別L1</option>
+        <option value="business_type_l1">種別L1</option>
+        <option value="business_type_l2">種別L2</option>
+        <option value="client_budget">予算</option>
+        <option value="value_lumpsum">提案総額</option>
+        <option value="next_milestone_date">次回MS日</option>
+        <option value="next_milestone_type">次回MS種別</option>
       </select>
-      <select id="deal_bulk_value" name="value" style="width:auto"></select>
+      <span id="deal_bulk_value_wrap"></span>
       <button class="btn sec" type="submit">選択した件を一括変更</button>
       <span style="width:1px;height:20px;background:#e5e7eb;margin:0 2px"></span>
       <button class="btn sec" type="submit" formaction="/deliveries/bulk_new" formnovalidate
@@ -4208,13 +4222,19 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     }}
     // filterDealsByAccount は PAGE 共通のもの（アカウント名＋ステージ複数選択＋件数更新＋非表示行のチェック解除）を使う。
     // ここで再定義するとステージ絞り込みが無効化されるため定義しない（#75不具合修正）。
+    // 選択肢を持たないフィールドは入力欄（フリー入力/数値/日付）で受ける
+    const BULK_INPUT_FIELDS = {{client_budget:'text', value_lumpsum:'number', next_milestone_date:'date'}};
     function repopulateDealBulkValue() {{
       var field = document.getElementById('deal_bulk_field').value;
+      var wrap = document.getElementById('deal_bulk_value_wrap');
+      if (BULK_INPUT_FIELDS[field]) {{
+        wrap.innerHTML = '<input type="'+BULK_INPUT_FIELDS[field]+'" name="value" id="deal_bulk_value" style="width:auto">';
+        return;
+      }}
       var opts = DEAL_BULK_OPTIONS[field] || [];
-      var sel = document.getElementById('deal_bulk_value');
-      sel.innerHTML = opts.map(function(pair) {{
-        return '<option value="' + escH(pair[0]) + '">' + escH(pair[1]) + '</option>';
-      }}).join('');
+      wrap.innerHTML = '<select name="value" id="deal_bulk_value" style="width:auto">'
+        + opts.map(function(pair) {{ return '<option value="' + escH(pair[0]) + '">' + escH(pair[1]) + '</option>'; }}).join('')
+        + '</select>';
     }}
     document.getElementById('deal_bulk_field').addEventListener('change', repopulateDealBulkValue);
     repopulateDealBulkValue();
@@ -10078,6 +10098,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _p = 0.0
                         sfa_db.upsert_base_workload(con, _ow, _fn, _p)
                     self._redirect("/base-workload")
+                elif (path.startswith("/base-workload/") and path.endswith("/update")
+                      and path.split("/")[2].isdigit()):
+                    _fn = (f.get("function", "") or "").strip()
+                    if _fn:
+                        sfa_db.update_base_workload(con, int(path.split("/")[2]),
+                                                    function=_fn, pct=_to_float(f.get("pct"), 0.0))
+                    self._redirect("/base-workload")
                 elif (path.startswith("/base-workload/") and path.endswith("/delete")
                       and path.split("/")[2].isdigit()):
                     sfa_db.delete_base_workload(con, int(path.split("/")[2]))
@@ -10238,29 +10265,45 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── 商談一括編集 ──
                 elif path == "/deals/bulk_edit":
-                    _DEAL_ALLOWED = {"stage", "owner", "sub_owner", "business_type_l1"}
-                    ids = f_list.get("ids", [])
+                    # 一覧に出る編集項目を一括変更対象に（#）。MS系はマイルストーンキャッシュ経由で更新。
+                    _DEAL_COL = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
+                                 "importance", "client_budget", "value_lumpsum"}
+                    _DEAL_MS = {"next_milestone_date", "next_milestone_label", "next_milestone_type"}
+                    ids = [int(x) for x in f_list.get("ids", []) if str(x).isdigit()]
                     field = f.get("field", "")
                     value = f.get("value", "")
-                    if field in _DEAL_ALLOWED and ids:
+                    if (field in _DEAL_COL or field in _DEAL_MS) and ids:
+                        _ok = True
                         if field == "stage":
-                            valid = sfa_db.get_master_list(con, "deal_stages")
-                            if value and value not in valid:
-                                self._redirect("/deals")
-                                return
-                        for did in ids:
-                            if str(did).isdigit():
-                                con.execute(
-                                    f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
-                                    (value or None, int(did)),
-                                )
-                        con.commit()
-                        if field == "stage" and theme_client is not None:
-                            for did in ids:
-                                if str(did).isdigit():
+                            if value and value not in sfa_db.get_master_list(con, "deal_stages"):
+                                _ok = False
+                        elif field == "importance" and value and value not in sfa_db.IMPORTANCE_OPTIONS:
+                            _ok = False
+                        elif field == "next_milestone_type" and value and value not in sfa_db.NEXT_MS_TYPES:
+                            _ok = False
+                        if _ok:
+                            if field in _DEAL_MS:
+                                _mf = {"next_milestone_date": "date", "next_milestone_label": "label",
+                                       "next_milestone_type": "type"}[field]
+                                for did in ids:
+                                    sfa_db.set_earliest_milestone_field(con, did, _mf, value)
+                            else:
+                                for did in ids:
+                                    con.execute(
+                                        f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
+                                        (value or None, did))
+                                con.commit()
+                                if field == "stage":
+                                    for did in ids:
+                                        try:
+                                            sfa_db.ensure_delivery_on_stage(con, did, value)
+                                        except Exception:  # noqa: BLE001
+                                            pass
+                            if theme_client is not None:
+                                for did in ids:
                                     try:
-                                        theme_link.sync_deal(theme_client, con, int(did))
-                                    except Exception:
+                                        theme_link.sync_deal(theme_client, con, did)
+                                    except Exception:  # noqa: BLE001
                                         pass
                     self._redirect("/deals")
 
