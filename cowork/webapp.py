@@ -510,11 +510,13 @@ _CLOSE_MODAL_HTML = (
     ' var i=document.getElementById("accSearchInput"); var q=i?(i.value||"").toLowerCase():"";'
     ' var st=[]; document.querySelectorAll(".stg-cb:checked").forEach(function(b){st.push(b.value);});'
     ' var useSt=st.length>0;'
+    ' var impEl=document.getElementById("impFilter"); var imp=impEl?impEl.value:"";'
     ' var n=0;'
     ' document.querySelectorAll("tr[data-account]").forEach(function(tr){'
     '  var okA=tr.getAttribute("data-account").indexOf(q)>=0;'
     '  var okS=!useSt||st.indexOf(tr.getAttribute("data-stage")||"")>=0;'
-    '  var show=(okA&&okS); tr.style.display=show?"":"none";'
+    '  var okI=!imp||(tr.getAttribute("data-importance")||"")===imp;'
+    '  var show=(okA&&okS&&okI); tr.style.display=show?"":"none";'
     '  if(show)n++; else {var c=tr.querySelector("[name=ids]"); if(c)c.checked=false;}});'
     ' var lbl=document.getElementById("stgFilterLbl");'
     ' if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
@@ -3608,7 +3610,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
     _th_total = _sticky_th("提案総額<br><span style='font-size:10px;color:#8893a8'>(万円)</span>")
     header = (
         f'<tr>{cb_th}{_sticky_th("#")}{_sticky_th("アカウント")}{_sticky_th("案件名")}{_sticky_th("ステージ")}'
-        f'{_sticky_th("主担当")}{_sticky_th("サブ担当")}{_sticky_th("種別L1")}{_sticky_th("種別L2")}'
+        f'{_sticky_th("重要度")}{_sticky_th("主担当")}{_sticky_th("サブ担当")}{_sticky_th("種別L1")}{_sticky_th("種別L2")}'
         f'{_sticky_th("予算")}{_th_total}'
         f'{_sticky_th("次回MS日")}{_sticky_th("次回MS")}{_sticky_th("ツール")}{_sticky_th("クローズ")}</tr>'
     )
@@ -3691,12 +3693,13 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                        f'onchange="updateDealField({did}, \'deal_name\', this.value)" '
                        f'style="font-size:12px;padding:2px 4px;width:150px{_ro_sty}">')
         rows.append(
-            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}">'
+            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}">'
             f'{cb_td}'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
             f'<td><a href="/deal/{did}?return_to={urllib.parse.quote(return_to_url, safe="")}">{_esc(d.get("account_name"))}</a></td>'
             f'<td>{_name_input}</td>'
             f'<td>{_udeal_sel(did, "stage", stages, d.get("stage") or "", disabled=_ro)}</td>'
+            f'<td>{_udeal_sel(did, "importance", sfa_db.IMPORTANCE_OPTIONS, d.get("importance") or "", disabled=_ro)}</td>'
             f'<td>{_udeal_sel(did, "owner", owners, d.get("owner") or "", disabled=_ro)}</td>'
             f'<td>{_udeal_sel(did, "sub_owner", owners, d.get("sub_owner") or "", disabled=_ro)}</td>'
             f'<td>{_udeal_sel(did, "business_type_l1", l1_list, d.get("business_type_l1") or "", cascade_l1=True, disabled=_ro)}</td>'
@@ -3705,7 +3708,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'<td>{inp_ms_date}</td><td>{inp_ms_label}</td>'
             f'<td>{tool_cell}</td><td>{close_btn}</td></tr>'
         )
-    body = "".join(rows) or f'<tr><td colspan={16 if bulk else 15} class=muted>商談がありません。</td></tr>'
+    body = "".join(rows) or f'<tr><td colspan={17 if bulk else 16} class=muted>商談がありません。</td></tr>'
     return (f'<div style="overflow:auto;max-height:70vh"><table style="min-width:1560px">'
             f'{header}{body}</table></div>' + _MS_PANEL_BLOCK + _TOOL_LINK_PANEL_BLOCK)
 
@@ -4094,6 +4097,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="status" onchange="this.form.submit()">{status_opts}</select>
       {_stage_multi_filter(stages, selected=stages_sel)}
+      <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option></select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
@@ -4310,6 +4314,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       {_stage_multi_filter(stages, selected=stages_sel)}
+      <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option></select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=byDate">リセット</a>
@@ -10835,7 +10840,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 # ── 商談インライン編集 ──
                 elif path.startswith("/deal/") and path.endswith("/field"):
                     _DEAL_ALLOWED_FIELDS = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
-                                             "client_budget", "value_lumpsum", "deal_name",
+                                             "client_budget", "value_lumpsum", "deal_name", "importance",
                                              "next_milestone_date", "next_milestone_label", "next_milestone_type",
                                              "close_reason", "exhibition_name"}
                     parts = path.split("/")
