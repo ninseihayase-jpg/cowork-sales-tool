@@ -1509,43 +1509,53 @@ def delivery_form(con, delivery_id: int) -> str:
 
 
 def base_workload_page(con) -> str:
-    """ベース工数（人×機能×%）の編集。#75。SFA正本。"""
+    """ベース工数（人×機能×%）の編集。#75。SFA正本。
+    マスタの全メンバーを（マスタ順で）常に表示。未入力の人は空欄（＝ベース0%）のまま。"""
     _owners_ord = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
-    _oidx = {o: i for i, o in enumerate(_owners_ord)}
-    _base_rows = sorted(sfa_db.list_base_workload(con),
-                        key=lambda r: (_oidx.get(r["owner"], 9999), r["owner"], r.get("function") or ""))
-    rows = ""
-    for r in _base_rows:
-        rows += f"""
-        <form method="post" action="/base-workload/{r['id']}/update"
-              style="display:flex;gap:8px;align-items:flex-end;border:1px solid #eef1f6;border-radius:6px;padding:6px;margin-bottom:5px">
-          <span style="font-size:12px;min-width:76px;padding-bottom:3px"><b>{_esc(r['owner'])}</b></span>
-          <label style="font-size:11px">機能<br><input type="text" name="function" value="{_esc(r['function'])}" style="width:160px"></label>
-          <label style="font-size:11px">%<br><input type="number" name="pct" min="0" max="100" step="5" value="{_num_pct(r['pct'])}" style="width:70px"></label>
-          <button class="btn sec" style="font-size:11px">保存</button>
-          <button formaction="/base-workload/{r['id']}/delete" formnovalidate class="btn sec" style="font-size:11px;color:#c53030"
-                  onclick="return confirm('削除しますか？')">×</button>
-        </form>"""
-    if not rows:
-        rows = '<p class="muted" style="font-size:12px">まだありません。</p>'
-    # 担当ごとの合算
-    by_owner = sfa_db.base_workload_by_owner(con)
-    sums = "、".join(f"{_esc(o)} {_num_pct(p)}%" for o, p in sorted(by_owner.items())) or "—"
-    owner_opts = _opt(sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS), None)
+    by_owner_rows: dict = {}
+    for r in sfa_db.list_base_workload(con):
+        by_owner_rows.setdefault(r["owner"], []).append(r)
+    by_owner_sum = sfa_db.base_workload_by_owner(con)
+    # マスタ外にベースを持つ人（旧データ等）も末尾に出す
+    extra = [o for o in by_owner_rows if o not in set(_owners_ord)]
+    order = _owners_ord + sorted(extra)
+
+    def _edit_form(r):
+        return (
+            f'<form method="post" action="/base-workload/{r["id"]}/update" '
+            f'style="display:inline-flex;gap:6px;align-items:flex-end;margin:0 8px 4px 0">'
+            f'<input type="text" name="function" value="{_esc(r["function"])}" style="width:130px;font-size:12px" title="機能">'
+            f'<input type="number" name="pct" min="0" max="100" step="5" value="{_num_pct(r["pct"])}" style="width:60px;font-size:12px" title="%">'
+            f'<button class="btn sec" style="font-size:11px">保存</button>'
+            f'<button formaction="/base-workload/{r["id"]}/delete" formnovalidate class="btn sec" '
+            f'style="font-size:11px;color:#c53030" onclick="return confirm(\'削除しますか？\')">×</button>'
+            f'</form>')
+
+    blocks = ""
+    for o in order:
+        rws = by_owner_rows.get(o, [])
+        tot = by_owner_sum.get(o, 0)
+        edits = "".join(_edit_form(r) for r in rws)
+        add = (
+            f'<form method="post" action="/base-workload/save" '
+            f'style="display:inline-flex;gap:6px;align-items:flex-end;margin:0 0 4px 0;background:#f8fafc;border-radius:6px;padding:2px 6px">'
+            f'<input type="hidden" name="owner" value="{_esc(o)}">'
+            f'<input type="text" name="function" placeholder="＋機能（営業/管理…）" required style="width:130px;font-size:12px">'
+            f'<input type="number" name="pct" min="0" max="100" step="5" placeholder="%" style="width:56px;font-size:12px">'
+            f'<button class="btn sec" style="font-size:11px">＋追加</button></form>')
+        blocks += (
+            f'<div style="border:1px solid #eef1f6;border-radius:8px;padding:8px 10px;margin-bottom:6px">'
+            f'<div style="font-size:12px;margin-bottom:4px"><b>{_esc(o)}</b> '
+            f'<span class="muted">合計 {_num_pct(tot)}%</span></div>'
+            f'{edits}{add}</div>')
     return f"""
     <div class="card">
       <p style="margin:0 0 8px"><a href="/deliveries">← Delivery一覧</a></p>
       <h2 style="margin:0 0 4px">ベース工数（恒常稼働：人 × 機能 × %）</h2>
       <p class="muted" style="margin:0 0 12px">案件に紐づかない恒常的な稼働（営業・管理・採用など）を人ごとに%で登録します。
+        マスタの全員を表示。未入力の人はベース0%扱い。既存の機能は編集して「保存」、右端「＋追加」で機能を足せます。
         Hishoの総工数（デモ開発＋Delivery＋<b>ベース</b>）に加算されます。例: 早瀬 営業 30%。</p>
-      <div style="overflow:auto">{rows}</div>
-      <p class="muted" style="font-size:12px;margin:8px 0 0">合算: {sums}</p>
-      <form method="post" action="/base-workload/save" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-top:10px">
-        <label style="font-size:12px">メンバー<br><select name="owner" required style="font-size:12px">{owner_opts}</select></label>
-        <label style="font-size:12px">機能（自由入力）<br><input type="text" name="function" required placeholder="営業 / 管理 / 採用 …" style="width:160px"></label>
-        <label style="font-size:12px">%<br><input type="number" name="pct" min="0" max="100" step="5" value="20" style="width:70px"></label>
-        <button class="btn" style="font-size:12px">保存（同一メンバー×機能は上書き）</button>
-      </form>
+      <div style="overflow:auto">{blocks}</div>
     </div>"""
 
 
