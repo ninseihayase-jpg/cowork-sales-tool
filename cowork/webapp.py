@@ -9009,10 +9009,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except (ValueError, TypeError):
                             _nw = sfa_db.DELIVERY_VIEW_WEEKS
                         _sw = (qs.get("start", [None])[0] or None)
-                        _load = sfa_db.compute_delivery_load(con, start_week=_sw, n_weeks=_nw)
+                        _int_only = (qs.get("internal_only", ["0"])[0] == "1")
+                        _load = sfa_db.compute_delivery_load(con, start_week=_sw, n_weeks=_nw,
+                                                             internal_only=_int_only)
                         _load["thresholds"] = sfa_db.DELIVERY_HEAT_THRESHOLDS
                         _load["points_per_fte"] = sfa_db.POINTS_PER_FTE
                         _load["owner_order"] = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
+                        _load["base_items"] = sfa_db.list_base_workload(con)  # 明細(人×機能×%)
                         self._send_cors_json(json.dumps(_load, ensure_ascii=False).encode())
                 elif path == "/api/base_workload":
                     # Hishoダッシュボード用: ベース工数(人×機能×%)。{owner:pct}合算＋明細（#75）。

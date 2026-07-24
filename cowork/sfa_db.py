@@ -2828,22 +2828,28 @@ def delete_base_workload(con, base_id: int) -> None:
 
 
 def compute_delivery_load(con, *, start_week: str | None = None,
-                          n_weeks: int = DELIVERY_VIEW_WEEKS) -> dict:
+                          n_weeks: int = DELIVERY_VIEW_WEEKS,
+                          internal_only: bool = False) -> dict:
     """全社の Delivery 稼働(FTE%)を メンバー×週 に展開・合算（#75）。
     確度は紐づく deal.stage から導出: 受注=確定(committed)/提案・クロージング=見込み(forecast)。
     クローズ済みかつ非受注（失注・リード戻し等）は集計から除外。
+    internal_only=True で 外部メンバー(member_kind='外部') を除外（Hisho稼働予定はこちら）。
+    items にはクリック明細用の各アサイン（案件名・役割・期間・稼働率・確度）を返す。
     デモ開発負荷は別系統(Hisho側で加算)。ここでは delivery と base のみ返す。"""
     start_week = start_week or _monday_of(date.today())
     weeks = _weeks_from(start_week, n_weeks)
+    week_end = weeks[-1] if weeks else start_week
     # owner -> week -> {actual:{committed,forecast}, billing:{committed,forecast}}
     cells: dict = {}
+    items: list = []
 
     def _blank():
         return {"actual": {"committed": 0.0, "forecast": 0.0},
                 "billing": {"committed": 0.0, "forecast": 0.0}}
 
     for r in con.execute(
-        "SELECT da.owner, da.from_week, da.to_week, da.fte_pct, da.fte_billing, d.stage, d.status "
+        "SELECT da.owner, da.role, da.member_kind, da.from_week, da.to_week, da.fte_pct, da.fte_billing, "
+        "d.stage, d.status, d.deal_name, dv.title AS delivery_title "
         "FROM delivery_assignments da "
         "JOIN deliveries dv ON dv.id=da.delivery_id "
         "JOIN deals d ON d.id=dv.deal_id"):
@@ -2851,6 +2857,8 @@ def compute_delivery_load(con, *, start_week: str | None = None,
         status = r["status"] or "open"
         if status == "closed" and stage != "受注":
             continue  # 提案でクローズ（失注/リード戻し）は見込みから除外
+        if internal_only and (r["member_kind"] or "内部") == "外部":
+            continue
         key = "committed" if stage == "受注" else "forecast"
         actual = r["fte_pct"] or 0
         billing = float(r["fte_billing"]) if r["fte_billing"] is not None else actual
@@ -2859,11 +2867,19 @@ def compute_delivery_load(con, *, start_week: str | None = None,
                 c = cells.setdefault(r["owner"], {}).setdefault(wk, _blank())
                 c["actual"][key] += actual
                 c["billing"][key] += billing
+        # 表示窓に期間が重なるアサインだけ明細に含める
+        if r["from_week"] <= week_end and r["to_week"] >= start_week:
+            items.append({
+                "owner": r["owner"], "role": r["role"] or "", "member_kind": r["member_kind"] or "内部",
+                "from_week": r["from_week"], "to_week": r["to_week"],
+                "actual": actual, "billing": billing, "committed": (stage == "受注"),
+                "deal_name": r["deal_name"] or "", "delivery_title": r["delivery_title"] or "",
+            })
     base = base_workload_by_owner(con)
     owners = sorted(set(list(base.keys()) + list(cells.keys())),
                     key=lambda o: (OWNERS.index(o) if o in OWNERS else 999, o))
     return {"start_week": start_week, "weeks": weeks, "owners": owners,
-            "base": base, "cells": cells}
+            "base": base, "cells": cells, "items": items}
 
 
 def set_deal_issue_ai_summary(con, issue_id: int, summary: str) -> None:
