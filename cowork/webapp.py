@@ -1520,43 +1520,68 @@ def base_workload_page(con) -> str:
     extra = [o for o in by_owner_rows if o not in set(_owners_ord)]
     order = _owners_ord + sorted(extra)
 
-    def _edit_form(r):
-        return (
-            f'<form method="post" action="/base-workload/{r["id"]}/update" '
-            f'style="display:inline-flex;gap:6px;align-items:flex-end;margin:0 8px 4px 0">'
-            f'<input type="text" name="function" value="{_esc(r["function"])}" style="width:130px;font-size:12px" title="機能">'
-            f'<input type="number" name="pct" min="0" max="100" step="5" value="{_num_pct(r["pct"])}" style="width:60px;font-size:12px" title="%">'
-            f'<button class="btn sec" style="font-size:11px">保存</button>'
-            f'<button formaction="/base-workload/{r["id"]}/delete" formnovalidate class="btn sec" '
-            f'style="font-size:11px;color:#c53030" onclick="return confirm(\'削除しますか？\')">×</button>'
-            f'</form>')
-
+    SLOTS = 5
     blocks = ""
     for o in order:
         rws = by_owner_rows.get(o, [])
         tot = by_owner_sum.get(o, 0)
-        edits = "".join(_edit_form(r) for r in rws)
-        add = (
-            f'<form method="post" action="/base-workload/save" '
-            f'style="display:inline-flex;gap:6px;align-items:flex-end;margin:0 0 4px 0;background:#f8fafc;border-radius:6px;padding:2px 6px">'
-            f'<input type="hidden" name="owner" value="{_esc(o)}">'
-            f'<input type="text" name="function" placeholder="＋機能（営業/管理…）" required style="width:130px;font-size:12px">'
-            f'<input type="number" name="pct" min="0" max="100" step="5" placeholder="%" style="width:56px;font-size:12px">'
-            f'<button class="btn sec" style="font-size:11px">＋追加</button></form>')
+        cells = ""
+        for i in range(SLOTS):
+            r = rws[i] if i < len(rws) else None
+            fn = _esc(r["function"]) if r else ""
+            pc = _num_pct(r["pct"]) if r else ""
+            cells += (
+                f'<span style="display:inline-flex;gap:3px;align-items:center;margin:0 6px 4px 0">'
+                f'<input type="text" name="function" value="{fn}" placeholder="機能{i+1}" class="bwFn" style="width:120px;font-size:12px">'
+                f'<input type="number" name="pct" min="0" max="200" step="5" value="{pc}" placeholder="%" class="bwPct" style="width:56px;font-size:12px">'
+                f'<button type="button" class="btn sec" style="font-size:11px;color:#c53030;padding:2px 6px" '
+                f'onclick="bwClear(this)" title="この項目をクリア">×</button></span>')
         blocks += (
-            f'<div style="border:1px solid #eef1f6;border-radius:8px;padding:8px 10px;margin-bottom:6px">'
+            f'<form class="bwForm" method="post" action="/base-workload/save-slots" data-owner="{_esc(o)}" '
+            f'style="border:1px solid #eef1f6;border-radius:8px;padding:8px 10px;margin-bottom:6px">'
+            f'<input type="hidden" name="owner" value="{_esc(o)}">'
             f'<div style="font-size:12px;margin-bottom:4px"><b>{_esc(o)}</b> '
-            f'<span class="muted">合計 {_num_pct(tot)}%</span></div>'
-            f'{edits}{add}</div>')
+            f'<span class="muted">合計 <span class="bwSum">{_num_pct(tot)}</span>%</span> '
+            f'<span class="bwSaved" style="font-size:10px;color:#94a3b8;margin-left:6px"></span></div>'
+            f'{cells}</form>')
     return f"""
     <div class="card">
       <p style="margin:0 0 8px"><a href="/deliveries">← Delivery一覧</a></p>
       <h2 style="margin:0 0 4px">ベース工数（恒常稼働：人 × 機能 × %）</h2>
-      <p class="muted" style="margin:0 0 12px">案件に紐づかない恒常的な稼働（営業・管理・採用など）を人ごとに%で登録します。
-        マスタの全員を表示。未入力の人はベース0%扱い。既存の機能は編集して「保存」、右端「＋追加」で機能を足せます。
+      <p class="muted" style="margin:0 0 12px">案件に紐づかない恒常的な稼働（営業・管理・採用など）を人ごとに最大{SLOTS}項目まで登録。工数は合計されます。
+        マスタの全員を表示・未入力はベース0%。<b>入力すると自動保存</b>（保存ボタンなし）。「×」でその項目をクリア。
         Hishoの総工数（デモ開発＋Delivery＋<b>ベース</b>）に加算されます。例: 早瀬 営業 30%。</p>
       <div style="overflow:auto">{blocks}</div>
-    </div>"""
+    </div>
+    <script>
+    function _bwRecalc(form){{
+      var s=0; form.querySelectorAll('.bwPct').forEach(function(i){{ var v=parseFloat(i.value); if(!isNaN(v)) s+=v; }});
+      var el=form.querySelector('.bwSum'); if(el) el.textContent=(Math.round(s*10)/10);
+    }}
+    function _bwSave(form){{
+      _bwRecalc(form);
+      var st=form.querySelector('.bwSaved'); if(st){{st.textContent='保存中…';st.style.color='#94a3b8';}}
+      var body=new URLSearchParams(new FormData(form)); body.set('ajax','1');
+      fetch(form.action,{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:body.toString()}})
+        .then(function(r){{ if(st){{st.textContent=r.ok?'保存済み':'保存失敗';st.style.color=r.ok?'#059669':'#b91c1c';}} }})
+        .catch(function(){{ if(st){{st.textContent='保存失敗';st.style.color='#b91c1c';}} }});
+    }}
+    function _bwPack(form){{ // 非空の項目を左詰め（クリア後の並べ直し）
+      var fns=form.querySelectorAll('.bwFn'), pcs=form.querySelectorAll('.bwPct'), pairs=[];
+      for(var i=0;i<fns.length;i++){{ if(fns[i].value.trim()) pairs.push([fns[i].value, pcs[i]?pcs[i].value:'']); }}
+      for(var j=0;j<fns.length;j++){{ if(j<pairs.length){{ fns[j].value=pairs[j][0]; pcs[j].value=pairs[j][1]; }}
+        else {{ fns[j].value=''; pcs[j].value=''; }} }}
+    }}
+    function bwClear(btn){{ var sp=btn.parentElement;
+      sp.querySelectorAll('input').forEach(function(i){{ i.value=''; }});
+      var form=btn.closest('.bwForm'); if(form){{ _bwPack(form); _bwSave(form); }} }}
+    document.addEventListener('DOMContentLoaded',function(){{
+      document.querySelectorAll('.bwForm').forEach(function(form){{
+        form.addEventListener('change',function(){{ _bwSave(form); }});
+        form.querySelectorAll('.bwPct').forEach(function(i){{ i.addEventListener('input',function(){{ _bwRecalc(form); }}); }});
+      }});
+    }});
+    </script>"""
 
 
 # ── メールパターン管理 ───────────────────────────────────────────────────────────
@@ -10102,6 +10127,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _dvid = int(path.split("/")[2])
                     sfa_db.delete_delivery(con, _dvid)
                     self._redirect("/deliveries")
+                elif path == "/base-workload/save-slots":
+                    # 5スロット固定UIの自動保存: メンバーのベース工数を送信内容で総入れ替え
+                    _ow = (f.get("owner", "") or "").strip()
+                    if _ow:
+                        _fns = f_list.get("function", [])
+                        _pcs = f_list.get("pct", [])
+                        _items = []
+                        for _i, _fn in enumerate(_fns):
+                            _items.append((_fn, _to_float(_pcs[_i] if _i < len(_pcs) else None, 0.0)))
+                        sfa_db.replace_base_workload_for_owner(con, _ow, _items)
+                    if f.get("ajax"):
+                        self._send(b"", status=204)
+                    else:
+                        self._redirect("/base-workload")
                 elif path == "/base-workload/save":
                     _ow = (f.get("owner", "") or "").strip()
                     _fn = (f.get("function", "") or "").strip()

@@ -2822,6 +2822,20 @@ def upsert_base_workload(con, owner: str, function: str, pct: float) -> None:
     con.commit()
 
 
+def replace_base_workload_for_owner(con, owner: str, items: list) -> None:
+    """指定メンバーのベース工数を items=[(function, pct), ...] で総入れ替え（空機能は無視）。
+    5スロット固定UIの自動保存用（#75）。同一機能は最後の値で上書き。"""
+    con.execute("DELETE FROM base_workload WHERE owner=?", (owner,))
+    for fn, pc in items:
+        fn = (fn or "").strip()
+        if not fn:
+            continue
+        con.execute(
+            "INSERT OR REPLACE INTO base_workload (owner, function, pct, updated_at) "
+            "VALUES (?,?,?,datetime('now'))", (owner, fn, float(pc or 0)))
+    con.commit()
+
+
 def update_base_workload(con, base_id: int, *, function: str, pct: float) -> None:
     con.execute(
         "UPDATE base_workload SET function=?, pct=?, updated_at=datetime('now') WHERE id=?",
