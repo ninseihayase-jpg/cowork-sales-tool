@@ -516,7 +516,7 @@ _CLOSE_MODAL_HTML = (
     ' document.querySelectorAll("tr[data-account]").forEach(function(tr){'
     '  var okA=tr.getAttribute("data-account").indexOf(q)>=0;'
     '  var okS=!useSt||st.indexOf(tr.getAttribute("data-stage")||"")>=0;'
-    '  var okI=!imp||(tr.getAttribute("data-importance")||"")===imp;'
+    '  var di=tr.getAttribute("data-importance")||""; var okI=!imp||(imp==="__none__"?di==="":di===imp);'
     '  var show=(okA&&okS&&okI); tr.style.display=show?"":"none";'
     '  if(show)n++; else {var c=tr.querySelector("[name=ids]"); if(c)c.checked=false;}});'
     ' var lbl=document.getElementById("stgFilterLbl");'
@@ -4097,7 +4097,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="status" onchange="this.form.submit()">{status_opts}</select>
       {_stage_multi_filter(stages, selected=stages_sel)}
-      <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option></select>
+      <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
@@ -4334,7 +4334,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       {_stage_multi_filter(stages, selected=stages_sel)}
-      <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option></select>
+      <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
         oninput="filterDealsByAccount()" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=byDate">リセット</a>
