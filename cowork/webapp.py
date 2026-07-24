@@ -1510,8 +1510,12 @@ def delivery_form(con, delivery_id: int) -> str:
 
 def base_workload_page(con) -> str:
     """ベース工数（人×機能×%）の編集。#75。SFA正本。"""
+    _owners_ord = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
+    _oidx = {o: i for i, o in enumerate(_owners_ord)}
+    _base_rows = sorted(sfa_db.list_base_workload(con),
+                        key=lambda r: (_oidx.get(r["owner"], 9999), r["owner"], r.get("function") or ""))
     rows = ""
-    for r in sfa_db.list_base_workload(con):
+    for r in _base_rows:
         rows += f"""
         <form method="post" action="/base-workload/{r['id']}/update"
               style="display:flex;gap:8px;align-items:flex-end;border:1px solid #eef1f6;border-radius:6px;padding:6px;margin-bottom:5px">
