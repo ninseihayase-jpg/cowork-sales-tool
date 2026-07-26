@@ -203,7 +203,7 @@ def test_inline_close_reason_and_ms_type_persist(server, db_path):
 
 
 @pytest.mark.parametrize("path", ["/", "/deals", "/dev-projects", "/deal-issues", "/accounts", "/leads",
-                                  "/deal-hygiene", "/weekly-numbers/audit"])
+                                  "/deal-hygiene", "/weekly-numbers/audit", "/tasks", "/desk-tasks"])
 def test_get_main_routes_return_200(server, path):
     code, resp = _get(server + path, headers=_auth_header())
     assert code == 200, f"{path} returned {code}"

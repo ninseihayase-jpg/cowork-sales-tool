@@ -426,6 +426,7 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
   <a href="/deals">商談</a>
   <a href="/dev-projects">開発</a>
   <a href="/tasks">✅ タスク</a>
+  <a href="/desk-tasks" style="opacity:.85;font-size:13px">🗂 事務タスク</a>
   <a href="/deliveries" style="opacity:.85;font-size:13px">🚚 Delivery</a>
   <span class="nav-sep"></span>
   <!-- 次: ヒアリング・論点 -->
@@ -3246,7 +3247,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     dev_map = {dp["id"]: dp for dp in sfa_db.list_dev_projects(con)}
     # プロジェクトはカンマ区切りで複数選択可（チップのトグルで増減）
     sel_projects = [p for p in (project or "").split(",") if p.strip()]
-    tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None)
+    # 事務タスク(is_admin=1)は専用ビュー(/desk-tasks)に分離。通常ボードには出さない。
+    tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None, admin=False)
     if sel_projects:
         _selset = set(sel_projects)
         tasks = [t for t in tasks if (t.get("project") or "") in _selset]
@@ -3444,6 +3446,237 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
       {filter_row}
       <div id="taskBoard">{columns}</div>
     </div>{quick_js}{_TASKS_JS}"""
+
+
+_DESK_JS = """<script>
+function deskField(id,field,value){
+  return fetch('/task/'+id+'/field',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'field='+field+'&value='+encodeURIComponent(value)}).then(function(r){return r.json();});
+}
+function deskStatus(id,sel){ deskField(id,'status',sel.value).then(function(){location.reload();}); }
+function deskDue(id,v){ deskField(id,'due_date',v).then(function(){location.reload();}); }
+function deskCat(id,v){ deskField(id,'category',v); }
+function deskAssign(id,v){ deskField(id,'assignee',v).then(function(){location.reload();}); }
+function deskPin(id,el){ var nv=el.classList.contains('on')?0:1;
+  deskField(id,'pinned',nv).then(function(){location.reload();}); }
+function deskDelete(id){ if(!confirm('このタスクを削除しますか？（元に戻せません）'))return;
+  fetch('/task/'+id+'/delete',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})
+    .then(function(){location.reload();}); }
+function deskSearch(){ var q=(document.getElementById('deskSearch').value||'').toLowerCase();
+  document.querySelectorAll('.desk-card').forEach(function(c){
+    c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
+</script>
+<style>
+.desk-cols{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
+.desk-col{flex:1 0 210px;min-width:210px;background:#f8fafc;border-radius:8px;padding:6px}
+.desk-col h3{margin:2px 0 6px;font-size:13px;color:#334155}
+.desk-card{background:#fff;border:1px solid #e2e8f0;border-left:4px solid #cbd5e1;border-radius:6px;
+  padding:7px 8px;margin-bottom:7px;font-size:12px}
+.desk-card.pinned{border-left-color:#f59e0b;background:#fffdf5}
+.desk-card .dc-ttl{font-weight:600;font-size:13px;display:block;margin-bottom:3px}
+.desk-card .dc-na{color:#475569;margin:2px 0}
+.desk-card .dc-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:4px}
+.dc-req{background:#eef2ff;color:#3730a3;border-radius:10px;padding:1px 7px;font-size:11px}
+.dc-cat{background:#f1f5f9;color:#475569;border-radius:10px;padding:1px 7px;font-size:11px}
+.dc-pin{cursor:pointer;border:none;background:none;color:#cbd5e1;font-size:14px}
+.dc-pin.on{color:#f59e0b}
+.desk-agg{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
+.desk-agg .box{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;font-size:12px}
+.desk-agg .box b{font-size:16px}
+.desk-alert-over b{color:#dc2626}.desk-alert-today b{color:#f59e0b}.desk-alert-tmr b{color:#eab308}
+</style>"""
+
+
+def desk_tasks_page(con, *, requester: str | None = None, status: str | None = None,
+                    category: str | None = None, urgency: str | None = None) -> str:
+    """事務員向けタスク管理ビュー（is_admin=1のみ）。各メンバーから降ってくる依頼を
+    受付・可視化する。受信箱→未着手→対応中→保留→完了のカンバン。依頼者・期限・緊急度・
+    カテゴリを表示。上部に依頼者別未完了件数と期限アラート集計（#事務タスク）。"""
+    owners = sfa_db.get_master_list(con, "owners")
+    cats = sfa_db.ADMIN_TASK_CATEGORIES
+    _td = _today_jst()
+    today = _td.isoformat()
+    d3 = sfa_db.add_business_days(_td, 3).isoformat()
+    weekend = (_td + timedelta(days=6 - _td.weekday())).isoformat()
+    tomorrow = (_td + timedelta(days=1)).isoformat()
+
+    all_admin = sfa_db.list_tasks(con, admin=True)
+    # 集計は全事務タスク（フィルタ非適用）の未完了ベース
+    open_admin = [t for t in all_admin if (t.get("status") or "") != "完了"]
+    req_counts: dict = {}
+    for t in open_admin:
+        r = (t.get("requester") or "").strip() or "（依頼者未設定）"
+        req_counts[r] = req_counts.get(r, 0) + 1
+    overdue_n = sum(1 for t in open_admin if (t.get("due_date") or "") and (t.get("due_date") or "") < today)
+    today_n = sum(1 for t in open_admin if (t.get("due_date") or "") == today)
+    tmr_n = sum(1 for t in open_admin if (t.get("due_date") or "") == tomorrow)
+    requesters_all = sorted({(t.get("requester") or "").strip() for t in all_admin if (t.get("requester") or "").strip()})
+
+    # 表示対象（フィルタ適用）
+    tasks = list(all_admin)
+    if category:
+        tasks = [t for t in tasks if (t.get("category") or "") == category]
+    if status:
+        tasks = [t for t in tasks if (t.get("status") or "") == status]
+    if requester:
+        tasks = [t for t in tasks if (t.get("requester") or "") == requester]
+    if urgency:
+        def _uok(t):
+            due = (t.get("due_date") or "").strip()
+            if urgency == "overdue":
+                return bool(due) and due < today
+            if urgency == "today":
+                return due == today
+            if urgency == "tomorrow":
+                return due == tomorrow
+            if urgency == "nodue":
+                return not due
+            return True
+        tasks = [t for t in tasks if _uok(t)]
+
+    cols = {s: [] for s in sfa_db.TASK_STATUSES}
+    for t in tasks:
+        cols.setdefault(t.get("status") or "受信箱", []).append(t)
+
+    _status_opts = lambda cur: "".join(
+        f'<option value="{html.escape(s)}"{" selected" if s == cur else ""}>{html.escape(s)}</option>'
+        for s in sfa_db.TASK_STATUSES)
+
+    def _asg_opts(cur):
+        # 担当候補＝事務員（DESK_ASSIGNEES：先頭=既定担当アミ、以降=パス先）。空=受信箱。
+        opts = list(sfa_db.DESK_ASSIGNEES)
+        if cur and cur not in opts:
+            opts = [cur] + opts
+        return '<option value="">受信箱</option>' + "".join(
+            f'<option value="{html.escape(a)}"{" selected" if a == cur else ""}>{html.escape(a)}</option>'
+            for a in opts)
+
+    def card(t):
+        tid = t["id"]
+        due = (t.get("due_date") or "").strip()
+        ucolor, ulabel = _task_urgency(due, today, d3, weekend)
+        pinned = bool(t.get("pinned"))
+        na = (t.get("next_action") or "").strip()
+        req = (t.get("requester") or "").strip()
+        cat = (t.get("category") or "").strip()
+        search = html.escape(" ".join(str(t.get(k) or "") for k in
+                             ("title", "detail", "requester", "category", "next_action")).lower())
+        req_html = f'<span class="dc-req" title="依頼者">👤{_esc(req)}</span>' if req else ""
+        cat_html = f'<span class="dc-cat">{_esc(cat)}</span>' if cat else ""
+        due_html = (f'<span style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
+                    if due else '<span style="color:#cbd5e1">📅期限なし</span>')
+        na_html = f'<div class="dc-na">▶ {_esc(na)}</div>' if na else ""
+        return (
+            f'<div class="desk-card{" pinned" if pinned else ""}" id="dc-{tid}" data-search="{search}" '
+            f'style="border-left-color:{ucolor if not pinned else "#f59e0b"}">'
+            f'<span class="dc-ttl">{_esc(t.get("title"))}'
+            f'<button type="button" class="dc-pin{" on" if pinned else ""}" title="★最優先ピン" '
+            f'onclick="deskPin({tid},this)">★</button></span>'
+            f'{na_html}'
+            f'<div class="dc-row">{req_html}{cat_html}{due_html}</div>'
+            f'<div class="dc-row">'
+            f'<input type="date" value="{_esc(due)}" title="期限" onchange="deskDue({tid},this.value)" '
+            f'style="font-size:11px;color:{ucolor}">'
+            f'<select title="種類" onchange="deskCat({tid},this.value)" style="font-size:11px">'
+            f'<option value="">種類</option>'
+            + "".join(f'<option value="{html.escape(c)}"{" selected" if c == cat else ""}>{html.escape(c)}</option>' for c in cats)
+            + '</select></div>'
+            f'<div class="dc-row">'
+            f'<select title="担当（受信箱＝未割当。磯部へパス可）" onchange="deskAssign({tid},this.value)" style="font-size:11px">{_asg_opts((t.get("assignee") or "").strip())}</select>'
+            f'<select title="状態を変更" onchange="deskStatus({tid},this)" style="font-size:11px">{_status_opts(t.get("status") or "受信箱")}</select>'
+            f'<a class="btn sec" href="/tasks/{tid}/edit" style="font-size:11px;padding:2px 8px">編集</a>'
+            f'<button type="button" class="btn sec" onclick="deskDelete({tid})" '
+            f'style="font-size:11px;padding:2px 8px;color:#c53030">🗑</button>'
+            f'</div></div>')
+
+    columns = ""
+    for s in sfa_db.TASK_STATUSES:
+        ts = cols.get(s, [])
+        inner = "".join(card(t) for t in ts)
+        columns += (f'<div class="desk-col"><h3>{s}（{len(ts)}）</h3>{inner}</div>')
+
+    # 集計ブロック
+    req_boxes = "".join(
+        f'<a class="box" href="/desk-tasks?requester={urllib.parse.quote(r)}" '
+        f'style="text-decoration:none;color:inherit">{_esc(r)} <b>{n}</b></a>'
+        for r, n in sorted(req_counts.items(), key=lambda kv: (-kv[1], kv[0]))) or \
+        '<span class="muted" style="font-size:12px">未完了の事務タスクはありません。</span>'
+    agg = f"""
+      <div class="desk-agg">
+        <a class="box desk-alert-over" href="/desk-tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b>{overdue_n}</b></a>
+        <a class="box desk-alert-today" href="/desk-tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
+        <a class="box desk-alert-tmr" href="/desk-tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
+      </div>
+      <div style="font-size:12px;color:#475569;margin:2px 0 4px">依頼者別 未完了：</div>
+      <div class="desk-agg">{req_boxes}</div>"""
+
+    # フィルタ行
+    def _fopt(values, cur, alllabel):
+        return f'<option value="">{alllabel}</option>' + "".join(
+            f'<option value="{html.escape(v)}"{" selected" if v == cur else ""}>{html.escape(v)}</option>'
+            for v in values)
+    _urg_opts = "".join(
+        f'<option value="{v}"{" selected" if urgency == v else ""}>{lbl}</option>'
+        for v, lbl in (("", "期限:全て"), ("overdue", "🔴 超過"), ("today", "🟠 今日まで"),
+                       ("tomorrow", "🟡 明日まで"), ("nodue", "⚪ 期限なし")))
+    filter_row = f"""<form method="get" action="/desk-tasks" class="filter-row">
+      <select name="requester" onchange="this.form.submit()">{_fopt(requesters_all, requester, '依頼者:全て')}</select>
+      <select name="status" onchange="this.form.submit()">{_fopt(sfa_db.TASK_STATUSES, status, '状態:全て')}</select>
+      <select name="category" onchange="this.form.submit()">{_fopt(cats, category, '種類:全て')}</select>
+      <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
+      <input type="text" id="deskSearch" placeholder="🔍 件名・依頼者・内容で検索…" oninput="deskSearch()" style="max-width:240px">
+      <a class="btn sec" href="/desk-tasks">リセット</a>
+    </form>"""
+
+    # 起票フォーム（手入力）
+    _req_datalist = "".join(f'<option value="{html.escape(o)}">' for o in
+                            sorted(set(owners) | set(requesters_all)))
+    _cat_opts = '<option value="">（AIには任せず選択）</option>' + "".join(
+        f'<option value="{html.escape(c)}">{html.escape(c)}</option>' for c in cats)
+    new_form = f"""
+    <details class="card" style="margin-bottom:10px">
+      <summary style="cursor:pointer;font-weight:600">＋ 事務依頼を起票する</summary>
+      <form method="post" action="/desk-tasks/save" style="margin-top:10px">
+        <div class="grid">
+          <div><label>依頼者（誰から）</label>
+            <input name="requester" list="deskReqList" placeholder="例: 早瀬" autocomplete="off">
+            <datalist id="deskReqList">{_req_datalist}</datalist></div>
+          <div><label>件名 *</label><input name="title" required placeholder="例: 交通費精算の入力"></div>
+          <div><label>種類</label><select name="category">{_cat_opts}</select></div>
+          <div><label>期限</label><input type="date" name="due_date"></div>
+          <div><label>優先度</label><select name="priority">{_opt(sfa_db.TASK_PRIORITIES, '中')}</select></div>
+          <div class="full"><label>内容・補足</label>
+            <textarea name="detail" rows="2" placeholder="依頼の詳細・添付・注意点など"></textarea></div>
+        </div>
+        <div style="margin-top:10px"><button class="btn" type="submit">＋受付（受信箱へ）</button></div>
+      </form>
+    </details>"""
+
+    _desk_note = ""
+    if not sfa_db.DESK_ASSIGNEE_DEFAULT:
+        _desk_note = ('<div class="muted" style="font-size:11px;margin-top:4px">'
+                      'ℹ 事務員の既定担当は未設定です（環境変数 <code>DESK_ASSIGNEE</code> で設定可）。'
+                      '未設定の受付は担当空欄のまま受信箱に入ります。</div>')
+    elif len(sfa_db.DESK_ASSIGNEES) >= 2:
+        _pass = "・".join(_esc(a) for a in sfa_db.DESK_ASSIGNEES[1:])
+        _desk_note = ('<div class="muted" style="font-size:11px;margin-top:4px">'
+                      f'ℹ 既定担当は <b>{_esc(sfa_db.DESK_ASSIGNEE_DEFAULT)}</b>（受付は原則この人に割当）。'
+                      f'各カードの担当欄で <b>{_pass}</b> にパス（再割当）できます。</div>')
+
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>🗂 事務タスク（{len(tasks)}）</span>
+        <a class="btn sec" href="/tasks" style="font-size:12px">✅ 通常タスクへ</a>
+      </h2>
+      {agg}
+      {new_form}
+      {filter_row}
+      {_desk_note}
+      <div class="desk-cols">{columns}</div>
+    </div>{_DESK_JS}"""
 
 
 def task_projects_page(con) -> str:
@@ -9585,6 +9818,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         category=(_tq.get("category", [""])[0] or None),
                         project=(_tq.get("project", [""])[0] or None),
                         urgency=(_tq.get("urgency", [""])[0] or None))))
+                elif path == "/desk-tasks":
+                    _dq = self._qs()
+                    self._send(render(desk_tasks_page(
+                        con, requester=(_dq.get("requester", [""])[0] or None),
+                        status=(_dq.get("status", [""])[0] or None),
+                        category=(_dq.get("category", [""])[0] or None),
+                        urgency=(_dq.get("urgency", [""])[0] or None))))
                 elif path == "/tasks/digest":
                     self._send(render(tasks_digest_page(con)))
                 elif path == "/task-projects":
@@ -9976,6 +10216,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 担当＋期限が揃っていれば受信箱→未着手へ自動整理
                     _task_auto_triage(con, _saved_id)
                     self._redirect("/tasks")
+
+                elif path == "/desk-tasks/save":
+                    # 事務タスク(is_admin=1)の手入力起票。既定担当は DESK_ASSIGNEE（無ければ空＝受信箱）。
+                    _cat = f.get("category") or None  # 事務はカテゴリ手選択（AI判定はしない）
+                    _saved_id = sfa_db.upsert_task(
+                        con,
+                        title=f.get("title") or "(無題)",
+                        detail=f.get("detail") or None,
+                        requester=(f.get("requester") or "").strip() or None,
+                        assignee=sfa_db.DESK_ASSIGNEE_DEFAULT or None,
+                        due_date=f.get("due_date") or None,
+                        priority=f.get("priority") or "中",
+                        category=_cat,
+                        status="受信箱", is_admin=1, source="web",
+                    )
+                    _task_auto_triage(con, _saved_id)
+                    self._redirect("/desk-tasks")
 
                 elif path == "/task-projects/save":
                     _pid = None
