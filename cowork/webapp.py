@@ -343,6 +343,8 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  .nav-menu-panel{{position:absolute;left:0;top:160%;z-index:300;background:#fff;border:1px solid #e6e9f0;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.28);padding:6px;min-width:184px;display:flex;flex-direction:column}}
  .nav-menu-panel a{{color:#1d2430;font-size:13px;padding:7px 10px;border-radius:6px;white-space:nowrap}}
  .nav-menu-panel a:hover{{background:#f1f4f9}}
+ .nav-menu-panel .grp{{font-size:10px;font-weight:700;color:#96a0b3;letter-spacing:.04em;padding:9px 10px 3px;border-top:1px solid #eef1f6;margin-top:3px}}
+ .nav-menu-panel .grp:first-child{{border-top:0;margin-top:0;padding-top:2px}}
  .tb-menu{{position:relative;display:inline-block}}
  .tb-menu>summary{{list-style:none;cursor:pointer}}
  .tb-menu>summary::-webkit-details-marker{{display:none}}
@@ -440,15 +442,21 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
   <details class="nav-menu">
     <summary>⚙ 管理 ▾</summary>
     <div class="nav-menu-panel">
-      <a href="/sync-health">🔍 同期チェック</a>
-      <a href="/data-tagging">🏷 データ整備</a>
-      <a href="/exhibition-tagging">🎪 展示会名タグ付け</a>
-      <a href="/slack-memo-backfill">🩹 Slack追記メモ復旧</a>
+      <div class="grp">数字・品質チェック</div>
+      <a href="/weekly-numbers/audit">🔍 数字パック集計監査</a>
+      <a href="/deal-hygiene">🩺 商談データ整備</a>
+      <a href="/sync-health">🔄 SFA↔Hisho同期チェック</a>
+      <div class="grp">マスタ設定</div>
       <a href="/masters">⚙ マスタ編集</a>
       <a href="/dev-point-master">🎯 開発点数マスタ</a>
       <a href="/base-workload">🧑‍💼 ベース工数（恒常稼働）</a>
       <a href="/tech-seed-master">🌱 技術シードマスタ</a>
-      <a href="/tech-seed-tagging">🏷 技術シード一括付け</a>
+      <div class="grp">一括タグ付け・取込（単発運用）</div>
+      <a href="/data-tagging">🏷 データ整備（終了理由・活動）</a>
+      <a href="/exhibition-tagging">🎪 展示会名タグ付け</a>
+      <a href="/tech-seed-tagging">🌱 技術シード一括付け</a>
+      <a href="/slack-memo-backfill">🩹 Slack追記メモ復旧</a>
+      <div class="grp">システム</div>
       <a href="/backups">🗄 バックアップ</a>
       <a href="/logout">🚪 ログアウト</a>
     </div>
@@ -2390,6 +2398,80 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
       </form>
     </div>
     {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_exh}"""
+
+
+def deal_hygiene_page(con) -> str:
+    """商談データ整備（#27）: ①不正ステージ ②受注なのにopen(クローズ漏れ) を検出し、その場で直す。
+    数字パックの母集団を歪める代表的な不整合を、実データで潰すためのページ。"""
+    valid = sfa_db.DEAL_STAGES
+    _ph = ", ".join("?" for _ in valid)
+    open_cond = "(d.status='open' OR d.status IS NULL)"
+    # ① 不正ステージ（DEAL_STAGESに無い・空でない）のopen商談＝表記ゆれ/レガシー
+    bad_rows = con.execute(
+        f"SELECT d.id, d.deal_name, d.stage, acc.name acc, d.owner FROM deals d "
+        f"LEFT JOIN accounts acc ON acc.id=d.account_id "
+        f"WHERE {open_cond} AND d.stage IS NOT NULL AND d.stage!='' AND d.stage NOT IN ({_ph}) "
+        f"ORDER BY d.stage, d.id", list(valid)).fetchall()
+    # ② 受注なのにopen（クローズ漏れ）＝進行中に受注が混ざる原因
+    won_rows = con.execute(
+        f"SELECT d.id, d.deal_name, acc.name acc, d.owner, d.updated_at FROM deals d "
+        f"LEFT JOIN accounts acc ON acc.id=d.account_id "
+        f"WHERE {open_cond} AND d.stage='受注' ORDER BY d.updated_at DESC").fetchall()
+
+    def _stage_sel(did, cur):
+        opts = "".join(f'<option value="{_esc(s)}"{" selected" if s == cur else ""}>{_esc(s)}</option>'
+                       for s in valid)
+        return (f'<select onchange="updateDealField({did},\'stage\',this.value)" '
+                f'style="font-size:12px;padding:2px 6px"><option value="">（正しいステージを選択）</option>{opts}</select>')
+
+    def _open_btn(did):
+        return (f'<a class="btn sec" style="font-size:11px;padding:3px 8px" '
+                f'href="/deal/{did}?return_to=%2Fdeal-hygiene">開く</a>')
+
+    if bad_rows:
+        _bad_body = "".join(
+            f'<tr><td>{_esc(r["acc"] or "—")}</td><td>{_esc(r["deal_name"] or "—")}</td>'
+            f'<td><span style="color:#b91c1c;font-weight:600">{_esc(r["stage"])}</span></td>'
+            f'<td>{_stage_sel(r["id"], r["stage"])}</td><td>{_esc(r["owner"] or "—")}</td>'
+            f'<td>{_open_btn(r["id"])}</td></tr>' for r in bad_rows)
+        bad_tbl = (f'<table style="font-size:13px;width:100%;border-collapse:collapse">'
+                   f'<tr><th>アカウント</th><th>案件名</th><th>現在(不正)</th><th>正しいステージに直す</th>'
+                   f'<th>担当</th><th></th></tr>{_bad_body}</table>')
+    else:
+        bad_tbl = '<p class="muted" style="margin:.3rem 0">不正ステージの商談はありません。✅</p>'
+
+    if won_rows:
+        _won_body = "".join(
+            f'<tr><td>{_esc(r["acc"] or "—")}</td><td>{_esc(r["deal_name"] or "—")}</td>'
+            f'<td>{_esc(r["owner"] or "—")}</td><td class="muted">{_esc((r["updated_at"] or "")[:10])}</td>'
+            f'<td><form method="post" action="/deal/{r["id"]}/close-won" style="display:inline" '
+            f'onsubmit="return confirm(\'この受注商談をクローズ（完了）します。Delivery稼働予定には影響しません（stage=受注のまま確定として残ります）。よろしいですか？\');">'
+            f'<input type="hidden" name="return_to" value="/deal-hygiene">'
+            f'<button class="btn" style="font-size:11px;padding:3px 8px;background:#047857;color:#fff;border-color:#047857">受注として完了（クローズ）</button>'
+            f'</form> {_open_btn(r["id"])}</td></tr>' for r in won_rows)
+        won_tbl = (f'<table style="font-size:13px;width:100%;border-collapse:collapse">'
+                   f'<tr><th>アカウント</th><th>案件名</th><th>担当</th><th>最終更新</th><th>操作</th></tr>{_won_body}</table>')
+    else:
+        won_tbl = '<p class="muted" style="margin:.3rem 0">受注なのにopenの商談はありません。✅</p>'
+
+    return f"""
+    <div class="card">
+      <h2>🩺 商談データ整備</h2>
+      <p class="muted" style="font-size:13px">数字パックの母集団を歪める不整合をここで潰します（#27）。
+      直すと即座に保存され、Hisho側にも同期されます。</p>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 4px">① 不正ステージの商談 <span class="stage" style="background:#fee2e2;color:#991b1b">{len(bad_rows)}件</span></h3>
+      <p class="muted" style="font-size:12px;margin:0 0 8px">正式ステージ（{' / '.join(valid)}）に無いステージ名の商談。
+      「アポ獲得」等はリードのステータス名が誤って入ったもの。右のセレクトで正しいステージへ直してください。</p>
+      {bad_tbl}
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 4px">② 受注なのに未クローズ（open）の商談 <span class="stage" style="background:#fef3c7;color:#92400e">{len(won_rows)}件</span></h3>
+      <p class="muted" style="font-size:12px;margin:0 0 8px">ステージ「受注」だが status=open のまま。「進行中商談」に受注が混ざる原因です。
+      「受注として完了」でクローズできます。<b>Delivery稼働予定は stage=受注 で判定するため、クローズしても確定稼働として残ります</b>（消えません）。</p>
+      {won_tbl}
+    </div>"""
 
 
 def sync_health_page(con, theme_client) -> str:
@@ -9430,6 +9512,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         ensure_ascii=False).encode(), ctype="application/json")
                 elif path == "/sync-health":
                     self._send(render(sync_health_page(con, theme_client)))
+                elif path == "/deal-hygiene":
+                    self._send(render(deal_hygiene_page(con)))
                 elif path == "/weekly-numbers":
                     self._send(render(weekly_numbers_page(con)))
                 elif path == "/weekly-numbers/audit":
@@ -11742,6 +11826,28 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             print(f"[convert] error lid={lid}: {_conv_e}", flush=True)
                             import traceback as _tb; _tb.print_exc()
                             self._redirect(f"/leads/{lid}")
+
+                # ── 商談: 受注として完了（クローズ） ── データ整備(#27)。stage='受注'を保ったままstatus=closed。
+                elif path.endswith("/close-won") and "/deal/" in path:
+                    _wid_s = path.split("/deal/")[1].split("/")[0]
+                    _rt = f.get("return_to") or "/deal-hygiene"
+                    _rt = _rt if _rt.startswith("/") else "/deal-hygiene"
+                    if _wid_s.isdigit():
+                        _wid = int(_wid_s)
+                        _wd = sfa_db.get_deal(con, _wid)
+                        # 受注ステージ かつ 未クローズ のものだけを完了扱いにする（直POST防御）
+                        if _wd and (_wd.get("stage") == "受注") and (_wd.get("status") or "open") != "closed":
+                            con.execute(
+                                "UPDATE deals SET status='closed', "
+                                "close_reason=COALESCE(NULLIF(close_reason,''),'受注'), "
+                                "updated_at=datetime('now') WHERE id=?", (_wid,))
+                            con.commit()
+                            if theme_client is not None:
+                                try:
+                                    theme_link.sync_deal(theme_client, con, _wid)
+                                except Exception as _exc:  # noqa: BLE001
+                                    print(f"[theme_link] sync_deal failed (close-won): {_exc}", flush=True)
+                    self._redirect(_rt)
 
                 # ── 商談 → リード戻し ──
                 elif path.endswith("/revert_to_lead") and "/deal/" in path:
