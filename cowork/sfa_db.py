@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
@@ -159,6 +160,13 @@ DEAL_ISSUE_MEMBERS = ["経営", "営業担当", "営業+開発担当", "開発�
 TASK_STATUSES = ["受信箱", "未着手", "対応中", "保留", "完了"]  # カンバン列。受信箱=未整理(Triage)
 TASK_OPEN_STATUSES = ["受信箱", "未着手", "対応中", "保留"]        # 完了以外
 TASK_PRIORITIES = ["高", "中", "低"]
+
+# 事務員向けタスク（is_admin=1）。各メンバーから事務員に降ってくる依頼を分離管理する専用ビュー
+# (/desk-tasks) 用。カテゴリは開発系タスク(TASK_CATEGORIES)とは別体系。
+ADMIN_TASK_CATEGORIES = ["書類作成", "経費・請求", "予約・手配", "データ入力", "連絡・調整", "庶務", "その他"]
+# 事務タスクの既定担当（事務員名）。環境変数 DESK_ASSIGNEE を優先。未設定なら空（＝受信箱で受付）。
+# 特定個人名をハードコードしない（owners マスタに存在する担当名を想定）。
+DESK_ASSIGNEE_DEFAULT = os.environ.get("DESK_ASSIGNEE", "").strip()
 TASK_LINK_TYPES = ["dev_project", "deal", "issue", "org", "personal"]
 TASK_LINK_LABELS = {"dev_project": "開発案件", "deal": "商談", "issue": "論点",
                     "org": "全社", "personal": "個人"}
@@ -566,6 +574,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority      TEXT DEFAULT '中',        -- 高/中/低（旧・優先度。緊急度は期限から自動算出へ移行）
     pinned        INTEGER DEFAULT 0,       -- ★最優先ピン（手動・例外用）。緊急度自動化の上書き
     category      TEXT,                    -- 種類（task_categoriesマスタ・AI自動判定）
+    is_admin      INTEGER DEFAULT 0,       -- 事務タスク判別（1=事務員向け /desk-tasks）
+    requester     TEXT,                    -- 依頼者（事務タスクで「誰から降ってきたか」）
     summary       TEXT,                    -- 議論メモのAIサマリ（追記のたび再生成）
     summary_at    TEXT,                    -- サマリ生成時刻
     link_type     TEXT,                    -- dev_project/deal/issue/org/personal
@@ -945,6 +955,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         if _task_cols and "summary" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN summary TEXT")
             con.execute("ALTER TABLE tasks ADD COLUMN summary_at TEXT")
+        # 事務員向けタスク（/desk-tasks）用の後方互換追加。破壊的変更はしない。
+        if _task_cols and "is_admin" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN is_admin INTEGER DEFAULT 0")
+        if _task_cols and "requester" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN requester TEXT")
         # project列が存在する状態でインデックスを作る（SCHEMAではなくここで＝既存DBでも安全）
         if _task_cols:
             con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")
@@ -2333,8 +2348,8 @@ def delete_deal_issue_memo(con, memo_id: int) -> None:
 
 TASK_FIELDS = [
     "title", "detail", "project", "next_action", "assignee", "due_date", "status",
-    "priority", "category", "link_type", "link_id", "source", "slack_channel",
-    "slack_ts", "created_by",
+    "priority", "category", "is_admin", "requester", "link_type", "link_id", "source",
+    "slack_channel", "slack_ts", "created_by",
 ]
 
 
@@ -2365,10 +2380,17 @@ def upsert_task(con, *, id=None, commit: bool = True, **fields) -> int:
 def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
                category: str | None = None, project: str | None = None,
                link_type: str | None = None,
-               link_id: int | None = None, exclude_done: bool = False) -> list[dict]:
+               link_id: int | None = None, exclude_done: bool = False,
+               admin: bool | None = None) -> list[dict]:
+    """admin=True で事務タスク(is_admin=1)のみ、admin=False で通常タスク(is_admin=0/NULL)のみ、
+    admin=None（既定）で両方。既存呼び出しは admin=None のため挙動不変。"""
     q = "SELECT * FROM tasks"
     conds: list = []
     params: list = []
+    if admin is True:
+        conds.append("COALESCE(is_admin,0) = 1")
+    elif admin is False:
+        conds.append("COALESCE(is_admin,0) = 0")
     if status:
         conds.append("status = ?"); params.append(status)
     if exclude_done:
