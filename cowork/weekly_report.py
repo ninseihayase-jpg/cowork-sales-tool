@@ -524,7 +524,7 @@ def _kpi_deal_rows(con) -> list[dict]:
     """全商談に面談集計(meeting_count / first_meeting / last_meeting)を付けて返す（A/C/F共通ソース）。
     面談＝activities.type='面談' かつ occurred_on が非空。meeting_count は面談“件数”。"""
     rows = con.execute(
-        "SELECT d.id, d.deal_name, d.stage, d.status, d.close_reason, d.business_type_l1, "
+        "SELECT d.id, d.deal_name, d.stage, d.status, d.close_reason, d.business_type_l1, d.cost_stage, "
         "d.client_budget, d.next_milestone_date, d.value_lumpsum, d.value_recurring, "
         "acc.name AS account, "
         "(SELECT COUNT(*) FROM activities a WHERE a.deal_id=d.id AND a.type='面談' "
@@ -553,7 +553,9 @@ def _kpi_position(rows: list[dict]) -> dict:
                 pipe_annual += (r.get("value_lumpsum") or 0) + (r.get("value_recurring") or 0) * 12
             elif _is_lost(r):                  # closed & close_reason='失注'
                 bucket = "lost"; n_lost += 1
-        elif _is_open(r):                      # コスト削減 & open
+        elif _is_open(r) or _is_won(r) or (r.get("cost_stage") or "") == "成果確定":
+            # コスト削減: 進行中に加え、勝ち(stage=受注/成果確定)はクローズ後も残す
+            # （SFAで受注完了クローズしても消えないように。Hisho側の集計と一致させる）
             bucket = "cost"; n_cost += 1
         if bucket:
             rr = dict(r); rr["_bucket"] = bucket; a_rows.append(rr)
