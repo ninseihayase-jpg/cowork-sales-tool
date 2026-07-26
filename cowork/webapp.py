@@ -2210,20 +2210,30 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         _mtg_keys[_k] += 1
     mtg_dedup = len(_mtg_keys)
     _dup_activities = len(mtg_rows) - mtg_dedup  # 同一商談・同日で潰れた活動数
+    # 件数と社数の母集団ズレ（#27検証）: 件数は商談未起票/アカウント未設定の面談も数えるが、
+    # 社数は「商談→アカウント」に辿れる面談だけを数える。辿れない面談＝社数に未計上。
+    _mtg_no_acc = sum(1 for r in mtg_rows if not r["acc"])
     mtg_tbl = _audit_table(
-        ["面談日", "アカウント", "案件", "相手", "重複"],
+        ["面談日", "アカウント", "案件", "相手", "社数計上", "重複"],
         [[_esc(r["occurred_on"]), _esc(r["acc"] or "—"), _esc(r["deal_name"] or "—"),
           _esc(r["contact_name"] or "—"),
+          ("○" if r["acc"] else '<span style="color:#b91c1c;font-weight:600">× 未計上</span>'),
           ("↩ 同一商談・同日" if (r["deal_id"] is not None
             and _mtg_keys.get(f"d{r['deal_id']}|{r['occurred_on']}", 0) > 1) else "")]
          for r in mtg_rows])
+    _mtg_warn = ("occurred_on 未入力の面談はここに出ません。面談を activities に『面談』種別で登録しているか要確認。"
+                 "『重複』列が付いた行は同一商談・同日のため件数上は1件に集約しています。")
+    if _mtg_no_acc:
+        _mtg_warn += (f"【件数と社数のズレ】面談『件数』は商談未起票・アカウント未設定の面談も数えますが、"
+                      f"『社数』は商談→アカウントに辿れる面談だけを数えます。今週は "
+                      f"{_mtg_no_acc}件が『× 未計上』＝件数には入るが社数には入りません。"
+                      f"この一覧で実例を見て、社数の母集団をどう揃えるか判断してください。")
     sec_mtg = _audit_section(
         "面談数", f"activities.type='面談' かつ occurred_on が {ws}〜{we}。"
         "同一商談(SFA#)×同一日は1面談に重複排除。相手社数=案件経由のaccount重複排除。",
         f'<b>{mtg_dedup}</b>件（相手 {mtg_companies}社／元activities {len(mtg_rows)}件・'
-        f'重複排除 {_dup_activities}件）', mtg_tbl,
-        warn="occurred_on 未入力の面談はここに出ません。面談を activities に『面談』種別で登録しているか要確認。"
-             "『重複』列が付いた行は同一商談・同日のため件数上は1件に集約しています。")
+        f'重複排除 {_dup_activities}件・社数未計上 {_mtg_no_acc}件）', mtg_tbl,
+        warn=_mtg_warn)
 
     # 2) 新規リードは集計不要（#27・ユーザー確定）のため監査ページから除外。
 
@@ -2341,14 +2351,27 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         warn="母集団は『lead_pattern=Exh.』タグに全依存。『不成立(要検証)』＝面談0回だが初回面談待ちでない件"
              "(closed/次回MS無し等)。分類を選ぶとその区分の行だけ表示。展示会名は🎪タグ付けで付与。")
 
-    # 6) ステージ別（open）
+    # 6) ステージ別（open）。パイプライン(要件詰め〜)との母集団差を明示（#27検証）。
     stage_rows = con.execute(
         f"SELECT COALESCE(d.stage,'未設定') s, COUNT(*) n FROM deals d WHERE {open_cond} "
         f"GROUP BY d.stage ORDER BY n DESC").fetchall()
-    stage_tbl = _audit_table(["ステージ", "件数"], [[_esc(r["s"]), str(r["n"])] for r in stage_rows])
+    _pipe_set = set(sfa_db.PIPELINE_STAGES)
+    _stage_all = sum(r["n"] for r in stage_rows)
+    _stage_pipe = sum(r["n"] for r in stage_rows if r["s"] in _pipe_set)
+    stage_tbl = _audit_table(
+        ["ステージ", "件数", "パイプライン母集団?"],
+        [[_esc(r["s"]), str(r["n"]),
+          ('<span style="color:#166534;font-weight:600">▶ 含む</span>' if r["s"] in _pipe_set
+           else '<span class="muted">— 除外</span>')] for r in stage_rows])
     sec_stage = _audit_section(
-        "ステージ別（進行中）", f"status='open'(またはNULL)を stage で集計。",
-        f'<b>{sum(r["n"] for r in stage_rows)}</b>件', stage_tbl)
+        "ステージ別（進行中）",
+        "status='open'(またはNULL)を stage で集計＝全open。上の『パイプライン(要件詰め以降)』は"
+        f"このうち {' / '.join(sfa_db.PIPELINE_STAGES)} だけの小計。",
+        f'全open <b>{_stage_all}</b>件 ／ うちパイプライン(要件詰め〜) <b>{_stage_pipe}</b>件', stage_tbl,
+        warn=f"【母集団の違い】レポート上段『商談（要件詰め〜）』={_stage_pipe}件、下段『ステージ別』を"
+             f"縦に足すと全open={_stage_all}件になり一致しません。差 {_stage_all - _stage_pipe} 件は"
+             "初回アポ実施・保留中・（openのままの受注）等。ステージ別も要件詰め以降に絞って一致させるか、"
+             "全体像として残しラベルで明示するか、この内訳を見て判断してください。")
 
     week_input = (as_of.isoformat() if hasattr(as_of, "isoformat") else "")
     return f"""
@@ -2366,7 +2389,7 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <a class="btn sec" href="/weekly-numbers/audit">今週</a>
       </form>
     </div>
-    {sec_mtg}{sec_deal}{sec_pipe}{sec_exh}{sec_stage}"""
+    {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_exh}"""
 
 
 def sync_health_page(con, theme_client) -> str:
