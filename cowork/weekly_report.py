@@ -215,12 +215,28 @@ def render_number_rail(nums: dict) -> str:
 
     funnel = stock.get("funnel") or []
     if funnel:
-        parts.append('<div class="rail-h sub">ステージ別（進行中）</div>')
         wow_funnel = wow.get("funnel", {}) if wow_ok else {}
-        for row in funnel:
-            stg = row.get("stage", "未設定")
+        _by_stage = {row.get("stage", "未設定"): row.get("count", 0) for row in funnel}
+        _won_open = _by_stage.get("受注", 0)  # 受注は「進行中」と分けて別枠で提示
+        parts.append('<div class="rail-h sub">ステージ別（進行中）</div>')
+        # 進行順（初回アポ実施→要件詰め→提案→クロージング→保留中）で表示。受注は除外。
+        _shown = set()
+        for stg in sfa_db.DEAL_STAGES:
+            if stg == "受注" or stg not in _by_stage:
+                continue
             ar = _wow_ar(wow_funnel.get(stg)) if stg in wow_funnel else ""
-            parts.append(fn(stg, f'{_num(row.get("count", 0))} {ar}'.strip()))
+            parts.append(fn(stg, f'{_num(_by_stage[stg])} {ar}'.strip()))
+            _shown.add(stg)
+        # DEAL_STAGESに無いステージ（表記ゆれ・レガシー）は末尾に※付きで（データ整備の気づき用）
+        for stg, cnt in _by_stage.items():
+            if stg == "受注" or stg in _shown:
+                continue
+            parts.append(fn(f"{stg}※(要確認)", _num(cnt)))
+        # 受注（クローズされずopenに残っている分）は進行中と別枠で提示
+        if _won_open:
+            parts.append('<div class="rail-h sub">受注（進行中に残存）</div>')
+            parts.append(fn("受注", f'{_num(_won_open)}'
+                             + (f' {_wow_ar(wow_funnel.get("受注"))}' if "受注" in wow_funnel else '')))
 
     if not wow_ok:
         parts.append('<div class="fn" style="border:0;color:var(--faint)">'
