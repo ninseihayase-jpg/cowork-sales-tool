@@ -2381,6 +2381,105 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
              "初回アポ実施・保留中・（openのままの受注）等。ステージ別も要件詰め以降に絞って一致させるか、"
              "全体像として残しラベルで明示するか、この内訳を見て判断してください。")
 
+    # 7) 経営KPI（A/C/F/G。SFA自身のDBから自前計算）。todayはJST基準。展示会の後ろに配置。
+    kpi = _wr.compute_kpi_pack(con, today=_today_jst())
+
+    # A. 商談ポジション内訳
+    A = kpi["A"]
+    _a_bl = {"pipe": "パイプライン(進行中)", "won": "受注", "lost": "失注", "cost": "コスト削減(進行中)"}
+    a_tbl = _audit_table(
+        ["区分", "アカウント", "案件名", "ステージ", "状態", "L1", "単発(万)", "継続月(万)"],
+        [[_esc(_a_bl.get(r["_bucket"], r["_bucket"])), _esc(r.get("account") or "—"),
+          _esc(r.get("deal_name") or "—"), _esc(r.get("stage") or "—"),
+          ("クローズ" if r.get("status") == "closed" else "open"),
+          _esc(r.get("business_type_l1") or "—"),
+          f'{(r.get("value_lumpsum") or 0):,.0f}', f'{(r.get("value_recurring") or 0):,.0f}']
+         for r in A["rows"]])
+    sec_A = _audit_section(
+        "商談ポジション内訳",
+        "sales=business_type_l1≠'コスト削減'。パイプライン=sales&open&stage≠受注／受注=stage='受注'(全status)／"
+        "失注=closed&close_reason='失注'／コスト削減=open&L1='コスト削減'。"
+        "パイプライン金額(年額換算)=Σ(単発+継続月額×12) をパイプライン対象で算出。",
+        f'パイプライン <b>{A["nPipe"]}</b>／受注 <b>{A["nWon"]}</b>／失注 <b>{A["nLost"]}</b>／'
+        f'コスト削減 <b>{A["nCost"]}</b>（合計 {A["nTotal"]}）・パイプライン金額(年額) <b>{A["pipeline_annual"]:,}</b>万',
+        a_tbl,
+        warn="受注は完了クローズしても『受注』として数える（Hisho側と一致）。失注はステージではなく"
+             "『クローズ＋終了理由=失注』で判定（#67でステージ失注は撤廃済み）。")
+
+    # C. プロセス品質 達成率4本
+    C = kpi["C"]
+
+    def _cq_tbl(kd):
+        rows = []
+        for r in kd["rows"]:
+            judge = ('<span style="color:#b91c1c;font-weight:600">✗ 未達</span>' if r.get("_miss")
+                     else '<span style="color:#166534">✓</span>')
+            rows.append([_esc(r.get("account") or "—"), _esc(r.get("deal_name") or "—"),
+                         _esc(r.get("stage") or "—"), _esc(r.get("_detail") or ""), judge])
+        return _audit_table(["アカウント", "案件名", "ステージ", "詳細", "判定"], rows)
+
+    def _cq_val(kd, avg_label=None):
+        v = f'達成率 <b>{kd["rate"]:g}%</b>（母数 {kd["denom"]}／未達 {kd["miss"]}）'
+        if avg_label and kd.get("avg") is not None:
+            v += f'・{avg_label} <b>{kd["avg"]:g}</b>日'
+        return v
+
+    sec_c1 = _audit_section(
+        "プロセス品質① 予算把握率",
+        "母数=sales&open&stage∈{初回アポ実施/要件詰め/提案/クロージング/保留中}。"
+        "未達=client_budgetが空 or '未確認'。達成率=(母数−未達)/母数×100。",
+        _cq_val(C["budget"]), _cq_tbl(C["budget"]))
+    sec_c2 = _audit_section(
+        "プロセス品質② 面談後→次回MS 1週以内",
+        "母数=sales&open&stage≠受注&直近面談(lastMeeting)あり。"
+        "未達=次回MS未設定 or 過去日 or (次回MS−直近面談)>7日。実績平均=面談→MSの日数平均(MSのある母数で)。",
+        _cq_val(C["ms"], "面談→MS平均"), _cq_tbl(C["ms"]))
+    sec_c3 = _audit_section(
+        "プロセス品質③ 初回面談→1ヶ月以内close（結果KPI）",
+        "母数=sales&面談1回以上(受注/失注含む・全status)。未達=open&stage≠受注&(今日−初回面談)>30日。"
+        "実績平均=進行中(open&stage≠受注)母数の初回面談からの経過日数。",
+        _cq_val(C["close30"], "経過日数平均"), _cq_tbl(C["close30"]))
+    sec_c4 = _audit_section(
+        "プロセス品質④ ステージ別 面談回数上限",
+        "母数=sales&open&stage∈上限定義。未達=面談回数>上限。"
+        "上限=初回アポ実施1/要件詰め3/提案4/クロージング5/保留中5。",
+        _cq_val(C["mtgcap"]), _cq_tbl(C["mtgcap"]))
+
+    # F. アウトカム転換率
+    F = kpi["F"]
+    f_tbl = _audit_table(
+        ["アカウント", "案件名", "ステージ", "面談", "初回面談到達", "提案到達", "受注"],
+        [[_esc(r.get("account") or "—"), _esc(r.get("deal_name") or "—"), _esc(r.get("stage") or "—"),
+          str(r.get("meeting_count") or 0),
+          ("○" if r.get("_fm") else "—"), ("○" if r.get("_prop") else "—"),
+          ("○" if r.get("_won") else "—")] for r in F["rows"]])
+    sec_F = _audit_section(
+        "アウトカム転換率（母数小・参考値）",
+        "sales全status対象。初回面談到達=面談1回以上／提案到達=stage∈{提案/クロージング/受注}／受注=stage='受注'。"
+        "cv1=提案到達/初回面談到達、cv2=受注/提案到達（展示会ファネルのCVと同じ到達ベースの発想）。",
+        f'cv1(初回面談→提案) <b>{F["cv1"]:g}%</b>（{F["reachedProp"]}/{F["reachedFM"]}）・'
+        f'cv2(提案→受注) <b>{F["cv2"]:g}%</b>（{F["won"]}/{F["reachedProp"]}）',
+        f_tbl,
+        warn="母数が小さいため率のブレが大きい参考値。件数の推移とあわせて読むこと。")
+
+    # G. デリバリー（進行中）
+    G = kpi["G"]
+    g_tbl = _audit_table(
+        ["納品案件", "商談", "状態", "金額計上", "継続月(万)", "単発(万)"],
+        [[_esc(r.get("title") or r.get("deal_name") or "—"), _esc(r.get("deal_name") or "—"),
+          _esc(r.get("status") or "—"),
+          ("○ この商談で計上" if r.get("_counts_amount") else "— 同一商談で計上済"),
+          f'{(r.get("_recurring") or 0):,.0f}', f'{(r.get("_lumpsum") or 0):,.0f}']
+         for r in G["rows"]])
+    sec_G = _audit_section(
+        "デリバリー（進行中）",
+        "active=delivery.status='進行中'（未設定なら紐づく商談がopen）。進行中案件数=activeなdeliveryの商談(deal_id)ユニーク数。"
+        "継続月額/単発総額は商談(deal_id)単位で1回だけ計上（1商談を複数deliveryに分割しても按分しない）。",
+        f'進行中案件 <b>{G["active_count"]}</b>件・継続月額計 <b>{G["recurring"]:,}</b>万/月・'
+        f'単発総額計 <b>{G["lumpsum"]:,}</b>万',
+        g_tbl,
+        warn="金額は商談単位で重複排除して1回だけ計上（按分しない）。1商談に複数の進行中deliveryがあっても金額は二重計上されません。")
+
     week_input = (as_of.isoformat() if hasattr(as_of, "isoformat") else "")
     return f"""
     <div class="card">
@@ -2397,7 +2496,7 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <a class="btn sec" href="/weekly-numbers/audit">今週</a>
       </form>
     </div>
-    {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_exh}"""
+    {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_exh}{sec_A}{sec_c1}{sec_c2}{sec_c3}{sec_c4}{sec_F}{sec_G}"""
 
 
 def deal_hygiene_page(con) -> str:
