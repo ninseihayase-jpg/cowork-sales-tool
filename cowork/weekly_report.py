@@ -208,13 +208,10 @@ def render_number_rail(nums: dict) -> str:
         _c = exh.get("counts", {}) or {}
         parts.append('<div class="rail-h sub">展示会ファネル</div>')
         parts.append(fn("総数", _num(exh.get("total", 0))))
-        parts.append(fn("初回面談待ち", _num(_c.get("waiting", 0))))
-        parts.append(fn("不成立（面談なし）", _num(_c.get("no_deal", 0))))
-        parts.append(fn("1次どまり（終了）", _num(_c.get("first_closed", 0))))
-        parts.append(fn("2次以降→提案", _num(_c.get("proposal", 0))))
-        parts.append(fn("2次以降→クロージング", _num(_c.get("closing", 0))))
-        parts.append(fn("2次以降→受注", _num(_c.get("won", 0))))
-        parts.append(fn("2次以降→失注", _num(_c.get("lost", 0))))
+        # 全11バケットを進行順(EXH_BUCKETS)で出す。7つに間引くと各項目の合計が総数と合わない
+        # ため、必ず全バケットを表示して「総数＝各項目の合計」が成立するようにする。
+        for _k, _ in EXH_BUCKETS:
+            parts.append(fn(_EXH_RAIL_LABELS.get(_k, _k), _num(_c.get(_k, 0))))
 
     funnel = stock.get("funnel") or []
     if funnel:
@@ -263,6 +260,21 @@ EXH_BUCKETS = [
     ("adv_ended", "⑩ 2次以降・終了（失注以外）"),
     ("review", "⑪ 要検証（2次以降だがステージが初回アポ実施/保留/未設定）"),
 ]
+
+# 記事レール(render_number_rail)用の短縮ラベル。EXH_BUCKETS と同一キー・同一順で全11件を出す。
+_EXH_RAIL_LABELS = {
+    "waiting": "① 初回面談待ち",
+    "no_deal": "② 不成立（面談0）",
+    "first_open": "③ 1次どまり・継続",
+    "first_closed": "④ 1次どまり・終了",
+    "req": "⑤ 2次〜要件詰め",
+    "proposal": "⑥ 2次〜提案",
+    "closing": "⑦ 2次〜クロージング",
+    "won": "⑧ 2次〜受注",
+    "lost": "⑨ 2次〜失注",
+    "adv_ended": "⑩ 2次〜終了(失注以外)",
+    "review": "⑪ 要検証",
+}
 
 
 def classify_exhibition_deal(row: dict, today: str) -> str:
