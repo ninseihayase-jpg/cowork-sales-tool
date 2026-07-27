@@ -2897,16 +2897,22 @@ def delivery_grid(con, delivery_id: int) -> dict:
     """1Deliveryのアサインをメンバー×週に展開したプレビュー用グリッド。
     週の範囲はブロックの最小from〜最大to（無ければ空）。cell={actual, billing}の合算。"""
     blocks = list_delivery_assignments(con, delivery_id)
-    if not blocks:
+    # from/to が未入力(空)の行（役割追加直後などは開始/終了週が空）は週展開できないので除外。
+    # これを弾かないと date.fromisoformat('') で ValueError → 画面が500/502になる。
+    dated = [b for b in blocks if (b.get("from_week") or "").strip() and (b.get("to_week") or "").strip()]
+    if not dated:
         return {"weeks": [], "owners": [], "cells": {}}
-    fmin = min(b["from_week"] for b in blocks)
-    tmax = max(b["to_week"] for b in blocks)
-    d0, d1 = date.fromisoformat(fmin), date.fromisoformat(tmax)
+    try:
+        fmin = min(b["from_week"] for b in dated)
+        tmax = max(b["to_week"] for b in dated)
+        d0, d1 = date.fromisoformat(fmin), date.fromisoformat(tmax)
+    except (TypeError, ValueError):
+        return {"weeks": [], "owners": [], "cells": {}}
     n = (d1 - d0).days // 7 + 1
     weeks = _weeks_from(_monday_of(d0), n)
     cells: dict = {}
     owners: list = []
-    for b in blocks:
+    for b in dated:
         if b["owner"] not in owners:
             owners.append(b["owner"])
         for wk in weeks:

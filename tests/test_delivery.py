@@ -243,3 +243,28 @@ def test_delivery_assign_effort_billing_basis(con):
                                       fte_pct=20, fte_billing=0)
     con.commit()
     assert sfa_db.delivery_total_assign_effort(con, dvid, use_billing=True) == 100.0
+
+
+def test_delivery_grid_ignores_blank_week_rows(con):
+    """開始/終了週が空のアサイン行（役割追加直後など）があっても delivery_grid が落ちない（#502回避）。"""
+    acc = con.execute("INSERT INTO accounts(name) VALUES('浜松')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="X", stage="受注", status="open")
+    con.commit()
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    con.commit()
+    # 空週の行を直挿し（from_week NOT NULL のため空文字）
+    con.execute("INSERT INTO delivery_assignments(delivery_id,role,member_kind,owner,from_week,to_week,fte_pct) "
+                "VALUES(?,?,?,?,?,?,?)", (dvid, "リード", "内部", "", "", "", 0))
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="杉山",
+                                   from_week="2026-05-18", to_week="2026-07-27", fte_pct=80)
+    con.commit()
+    g = sfa_db.delivery_grid(con, dvid)          # 例外を投げないこと
+    assert g["owners"] == ["杉山"] and len(g["weeks"]) == 11
+    # 空週の行しかない場合は空グリッド（例外なし）
+    dvid2 = sfa_db.create_delivery(con, deal_id=did, title="Y")
+    con.commit()
+    con.execute("INSERT INTO delivery_assignments(delivery_id,role,member_kind,owner,from_week,to_week,fte_pct) "
+                "VALUES(?,?,?,?,?,?,?)", (dvid2, "リード", "内部", "", "", "", 0))
+    con.commit()
+    assert sfa_db.delivery_grid(con, dvid2) == {"weeks": [], "owners": [], "cells": {}}

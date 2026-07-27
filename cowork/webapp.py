@@ -10040,7 +10040,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(base_workload_page(con)))
                 elif (path.startswith("/delivery/") and len(path.split("/")) == 3
                       and path.split("/")[2].isdigit()):
-                    self._send(render(delivery_form(con, int(path.split("/")[2]))))
+                    try:
+                        self._send(render(delivery_form(con, int(path.split("/")[2]))))
+                    except Exception as _dfe:  # noqa: BLE001 データ不整合で500/502にせず画面で知らせる
+                        import traceback as _tb; _tb.print_exc()
+                        self._send(render(
+                            '<div class="card"><h2>Delivery表示エラー</h2>'
+                            f'<p class="muted">この案件の表示中にエラーが発生しました: {_esc(str(_dfe))}</p>'
+                            '<p><a class="btn sec" href="/deliveries">← Delivery一覧へ戻る</a></p></div>'), 500)
                 elif path == "/reports":
                     self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":
