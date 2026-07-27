@@ -1132,7 +1132,8 @@ def build_deliveries_xlsx(con) -> bytes:
         months = sfa_db.delivery_month_count(dv.get("start_week"), dv.get("end_week"))
         effort = sfa_db.delivery_total_assign_effort(con, dv["id"])                    # 実想定
         effort_bill = sfa_db.delivery_total_assign_effort(con, dv["id"], use_billing=True)  # 純粋請求
-        _fmon = dv.get("fee_monthly")
+        # 報酬は入力値＋現在の月数で都度再計算（個別ページ・一覧と一致させる）
+        _fmon, _ftot = sfa_db.delivery_display_fees(dv)
         # 平均単価(月額) = 月額報酬(円)÷(工数÷100)。工数は請求ベース優先・請求0%は実想定。万円・10万円未満四捨五入
         _eff_price = effort_bill if effort_bill > 0 else effort
         unit_price = (round(_fmon * 10000 * 100 / _eff_price / 100000) * 10
@@ -1141,7 +1142,7 @@ def build_deliveries_xlsx(con) -> bytes:
                 dv.get("title") or "", dv.get("deal_stage") or "", dv.get("status") or "",
                 dv.get("start_week") or "", dv.get("end_week") or "", months,
                 _fee_label.get(dv.get("fee_mode") or "monthly", ""),
-                dv.get("fee_monthly"), dv.get("fee_total"), effort, effort_bill, unit_price, n_asg,
+                _fmon, _ftot, effort, effort_bill, unit_price, n_asg,
                 dv.get("overview") or "", dv.get("created_at") or "", dv.get("updated_at") or ""]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
@@ -1202,7 +1203,8 @@ def deliveries_page(con) -> str:
             f'<option value="{_esc(s)}"{" selected" if (dv.get("status") or "進行中") == s else ""}>{_esc(s)}</option>'
             for s in _statuses)
         # 報酬（総額/月額）と平均単価(月額)。工数は請求ベース優先・請求0%(成果物ベース)は実想定で試算。
-        _ftot, _fmon = dv.get("fee_total"), dv.get("fee_monthly")
+        # 報酬は入力値＋現在の月数で都度再計算（個別ページのライブ換算と一致させる）。
+        _fmon, _ftot = sfa_db.delivery_display_fees(dv)
         _eff_a = sfa_db.delivery_total_assign_effort(con, _id)                    # 実想定
         _eff_b = sfa_db.delivery_total_assign_effort(con, _id, use_billing=True)  # 純粋請求
         _eff = _eff_b if _eff_b > 0 else _eff_a

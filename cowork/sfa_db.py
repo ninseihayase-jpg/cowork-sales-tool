@@ -2758,6 +2758,16 @@ def delivery_month_count(start_week: str | None, end_week: str | None) -> float:
     return round(weeks / 4.0, 4)
 
 
+def delivery_display_fees(dv: dict) -> tuple:
+    """一覧・出力の表示用 (fee_monthly, fee_total)。fee_modeの入力値を正とし、現在の月数
+    （合計週数÷4）でもう一方を都度再計算する。個別編集画面のライブ換算と一致させ、
+    保存済み派生値（旧ロジックや週変更で古くなった値）とのズレを防ぐ。"""
+    months = delivery_month_count(dv.get("start_week"), dv.get("end_week"))
+    if (dv.get("fee_mode") or "monthly") == "total":
+        return compute_delivery_fee("total", None, dv.get("fee_total"), months)
+    return compute_delivery_fee("monthly", dv.get("fee_monthly"), None, months)
+
+
 def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
     """(fee_monthly, fee_total) を返す。mode='monthly'なら月額を正とし総額=月額×月数、
     mode='total'なら総額を正とし月額=総額÷月数。月数は合計週数÷4（小数可）。空/不正は None。"""
