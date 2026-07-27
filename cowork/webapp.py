@@ -7104,8 +7104,9 @@ def find_past_closed_deals(con, company_name: str) -> list[dict]:
 
 
 def revive_deal_from_lead(con, lead: dict, deal_id: int) -> int:
-    """過去にクローズした商談を復活させ、リードをそこに紐づける。"""
-    con.execute("UPDATE deals SET status='open', updated_at=datetime('now') WHERE id=?", (deal_id,))
+    """過去にクローズした商談を復活させ、リードをそこに紐づける。
+    再開(reopen_deal)と挙動を揃え、close_reasonもクリアする（open商談に終了理由が残らないように）。"""
+    con.execute("UPDATE deals SET status='open', close_reason=NULL, updated_at=datetime('now') WHERE id=?", (deal_id,))
     con.execute(
         "UPDATE leads SET deal_id=?, lead_status='converted', updated_at=datetime('now') WHERE id=?",
         (deal_id, lead["id"]),
@@ -12376,8 +12377,6 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 # ── 商談に戻す（再開）── リード戻しの逆操作。クローズ済みを open に戻し、リードを再紐付け。
                 elif path.endswith("/reopen") and "/deal/" in path:
                     _rid_s = path.split("/deal/")[1].split("/")[0]
-                    _rt = f.get("return_to") or "/deals"
-                    _rt = _rt if _rt.startswith("/") else "/deals"
                     if _rid_s.isdigit():
                         _rid = int(_rid_s)
                         _rd = sfa_db.get_deal(con, _rid)
@@ -12388,7 +12387,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     theme_link.sync_deal(theme_client, con, _rid)
                                 except Exception as _exc:  # noqa: BLE001
                                     print(f"[theme_link] sync_deal failed (reopen): {_exc}", flush=True)
-                    self._redirect(_rt)
+                        # 再開後はその個別商談画面へ戻す（一覧ではなく）
+                        self._redirect(f"/deal/{_rid}")
+                    else:
+                        self._redirect("/deals")
 
                 # ── 商談 → リード戻し ──
                 elif path.endswith("/revert_to_lead") and "/deal/" in path:
