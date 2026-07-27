@@ -205,5 +205,13 @@ def test_delivery_total_assign_effort(con):
                                    from_week="2026-05-18", to_week="2026-07-27",
                                    fte_pct=80, fte_billing=80, role="コンサル")
     con.commit()
-    # (11*20 + 11*80) / 4 = 1100/4 = 275.0（%/月）
-    assert sfa_db.delivery_total_assign_effort(con, dvid) == 275.0
+    # 期間平均の合計稼働率: (11*20 + 11*80) / 11週 = 1100/11 = 100.0（%/月）
+    assert sfa_db.delivery_total_assign_effort(con, dvid) == 100.0
+    # 一部期間のみのアサインは期間割りで薄まる（杉山を後半6週=6/22〜7/27だけ80%に変更）
+    sugi = [a for a in sfa_db.list_delivery_assignments(con, dvid) if a["owner"] == "杉山"][0]
+    sfa_db.update_delivery_assignment(con, sugi["id"], owner="杉山",
+                                      from_week="2026-06-22", to_week="2026-07-27",
+                                      fte_pct=80, fte_billing=80)
+    con.commit()
+    # 高橋20%×11週=220, 杉山80%×6週=480 → 700/11 ≈ 63.6
+    assert sfa_db.delivery_total_assign_effort(con, dvid) == 63.6

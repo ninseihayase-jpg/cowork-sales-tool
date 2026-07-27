@@ -2794,13 +2794,27 @@ def _assignment_weeks(from_week: str | None, to_week: str | None) -> int:
 
 
 def delivery_total_assign_effort(con, delivery_id: int) -> float:
-    """Deliveryの『総アサイン工数(%/月)』。各アサインの 週数×実想定稼働率(fte_pct) を総和し、
-    4週≒1ヶ月として ÷4 する（例: 10週×80% = 800%週 → 200%/月相当）。"""
-    total = 0.0
-    for a in list_delivery_assignments(con, delivery_id):
-        wk = _assignment_weeks(a.get("from_week"), a.get("to_week"))
-        total += wk * float(a.get("fte_pct") or 0)
-    return round(total / 4.0, 1)
+    """Deliveryの『総アサイン工数(%/月)』＝期間を通じた平均の合計稼働率(実想定)。
+    Σ(各アサインの 週数×実想定稼働率) ÷ 総期間週数。
+    例: 高橋20%×11週 + 杉山80%×11週 = 1100 を 11週で割り 100（＝毎週合計100%）。
+    総期間週数はデリバリー期間(start_week〜end_week)。未設定ならアサインの最小from〜最大to。"""
+    asgs = list_delivery_assignments(con, delivery_id)
+    if not asgs:
+        return 0.0
+    dv = get_delivery(con, delivery_id)
+    total_weeks = 0
+    if dv and dv.get("start_week") and dv.get("end_week"):
+        total_weeks = _assignment_weeks(dv["start_week"], dv["end_week"])
+    if total_weeks <= 0:
+        froms = [a["from_week"] for a in asgs if a.get("from_week")]
+        tos = [a["to_week"] for a in asgs if a.get("to_week")]
+        if froms and tos:
+            total_weeks = _assignment_weeks(min(froms), max(tos))
+    if total_weeks <= 0:
+        return 0.0
+    total = sum(_assignment_weeks(a.get("from_week"), a.get("to_week")) * float(a.get("fte_pct") or 0)
+                for a in asgs)
+    return round(total / total_weeks, 1)
 
 
 def _billing_of(b: dict) -> float:
