@@ -41,11 +41,12 @@ def _owner_slack_map() -> dict:
         return {}
 
 
-def owner_from_slack_user(user_id: str) -> str | None:
-    """SlackユーザーID → SFA担当名。users.infoのemailを owner_slack_map で逆引き。"""
+def owner_from_slack_user(user_id: str, token: str | None = None) -> str | None:
+    """SlackユーザーID → SFA担当名。users.infoのemailを owner_slack_map で逆引き。
+    token指定で別Bot（事務Bot）のトークンでusers.infoを叩く。"""
     if not user_id:
         return None
-    r = _slack_get("users.info", {"user": user_id})
+    r = _slack_get("users.info", {"user": user_id}, token=token)
     email = (((r.get("user") or {}).get("profile") or {}).get("email") or "").lower()
     if not email:
         return None
@@ -220,15 +221,16 @@ def handle_slash(con, form: dict) -> None:
 
 # ── リアクション🎯 ────────────────────────────────────────────────────────
 
-def _fetch_message(channel: str, ts: str) -> dict:
+def _fetch_message(channel: str, ts: str, token: str | None = None) -> dict:
     """channel の ts に厳密一致するメッセージ辞書だけを返す（無ければ{}）。
-    トップレベルは conversations.history(oldest=latest=ts)、スレッド返信は conversations.replies で拾う。"""
+    トップレベルは conversations.history(oldest=latest=ts)、スレッド返信は conversations.replies で拾う。
+    token指定で別Bot（事務Bot）のトークンで取得。"""
     r = _slack_get("conversations.history", {"channel": channel, "latest": ts, "oldest": ts,
-                                             "inclusive": "true", "limit": 1})
+                                             "inclusive": "true", "limit": 1}, token=token)
     for m in (r.get("messages") or []):
         if m.get("ts") == ts:
             return m
-    r2 = _slack_get("conversations.replies", {"channel": channel, "ts": ts, "limit": 50})
+    r2 = _slack_get("conversations.replies", {"channel": channel, "ts": ts, "limit": 50}, token=token)
     for m in (r2.get("messages") or []):
         if m.get("ts") == ts:
             return m
@@ -240,8 +242,9 @@ def _fetch_message_text(channel: str, ts: str) -> str:
     return (_fetch_message(channel, ts) or {}).get("text") or ""
 
 
-def handle_reaction(con, event: dict) -> None:
-    """リアクションでメッセージをタスク化。🎯(dart)=通常タスク、📋(clipboard)=事務タスク に振り分け。"""
+def handle_reaction(con, event: dict, token: str | None = None) -> None:
+    """リアクションでメッセージをタスク化。🎯(dart)=通常タスク、📋(clipboard)=事務タスク に振り分け。
+    token指定で別Bot（事務Bot）のトークンで本文取得・ユーザー解決・返信を行う。"""
     reaction = event.get("reaction")
     is_admin = reaction in ADMIN_TASK_REACTIONS
     if reaction not in TASK_REACTIONS and not is_admin:
@@ -253,27 +256,27 @@ def handle_reaction(con, event: dict) -> None:
     if not channel or not ts:
         return
     # 元メッセージを「その ts のメッセージだけ」正確に取得（別メッセージ誤取得を防止）
-    msg = _fetch_message(channel, ts)
+    msg = _fetch_message(channel, ts, token=token)
     text = (msg or {}).get("text") or ""
     if not text:
         # 本文が取れない場合（権限不足・特殊メッセージ）は誤起票を避けて通知だけ
-        _slack_post("chat.postEphemeral", channel=channel, user=user_id,
+        _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
                     text="⚠ このメッセージ本文を取得できませんでした（Botの参加/権限をご確認ください）。タスクは作成していません。")
         return
     if is_admin:
         # 事務タスク: 依頼者=メッセージ投稿者、担当=事務員。カテゴリは事務用分類から。
         author_id = (msg or {}).get("user") or ""
-        requester = owner_from_slack_user(author_id) if author_id else None
+        requester = owner_from_slack_user(author_id, token=token) if author_id else None
         prefill = ai_extract_task(text, categories=sfa_db.ADMIN_TASK_CATEGORIES)
         tid = create_task_from_fields(
             con, title=prefill["title"], next_action=prefill["next_action"] or None,
             assignee=(DESK_ASSIGNEE or None), due_date=prefill["due_date"] or None,
             category=prefill["category"] or None, slack_channel=channel, slack_ts=ts,
-            created_by=owner_from_slack_user(user_id) or user_id,
+            created_by=owner_from_slack_user(user_id, token=token) or user_id,
             is_admin=1, requester=requester)
         link = f"{SFA_TOOL_URL}/desk-tasks#dc-{tid}"
         _req = f"（依頼者: {requester}）" if requester else ""
-        _slack_post("chat.postEphemeral", channel=channel, user=user_id,
+        _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
                     text=f"📋 事務タスク化しました: {prefill['title']}",
                     blocks=[
                         {"type": "section", "text": {"type": "mrkdwn",
@@ -283,13 +286,13 @@ def handle_reaction(con, event: dict) -> None:
                     ])
         return
     prefill = ai_extract_task(text)
-    owner = owner_from_slack_user(user_id)
+    owner = owner_from_slack_user(user_id, token=token)
     tid = create_task_from_fields(
         con, title=prefill["title"], next_action=prefill["next_action"] or None,
         assignee=owner, due_date=prefill["due_date"] or None, category=prefill["category"] or None,
         slack_channel=channel, slack_ts=ts, created_by=owner or user_id)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
-    _slack_post("chat.postEphemeral", channel=channel, user=user_id,
+    _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
                 text=f"🎯 タスク化しました: {prefill['title']}",
                 blocks=[
                     {"type": "section", "text": {"type": "mrkdwn",
@@ -317,10 +320,19 @@ def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: s
     return tid
 
 
-def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user_id: str) -> int:
-    """@事務Botメンションを事務タスク化。依頼者=メンションした人、担当=事務員、is_admin=1。"""
+def handle_admin_reaction(con, event: dict, token: str | None = None) -> None:
+    """事務Bot専用エンドポイント用: 📋(clipboard)のみを事務タスク化。🎯等は無視（別Botの担当）。"""
+    if event.get("reaction") not in ADMIN_TASK_REACTIONS:
+        return
+    handle_reaction(con, event, token=token)
+
+
+def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user_id: str,
+                              token: str | None = None) -> int:
+    """@事務Botメンションを事務タスク化。依頼者=メンションした人、担当=事務員、is_admin=1。
+    token指定で事務Botとして返信・ユーザー解決を行う。"""
     prefill = ai_extract_task(text, categories=sfa_db.ADMIN_TASK_CATEGORIES)
-    requester = owner_from_slack_user(user_id)  # 依頼＝メンションした本人
+    requester = owner_from_slack_user(user_id, token=token)  # 依頼＝メンションした本人
     tid = create_task_from_fields(
         con, title=prefill["title"], next_action=prefill["next_action"] or None,
         assignee=(DESK_ASSIGNEE or None), due_date=prefill["due_date"] or None,
@@ -328,7 +340,7 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
         created_by=requester or user_id, is_admin=1, requester=requester)
     link = f"{SFA_TOOL_URL}/desk-tasks#dc-{tid}"
     _req = f"（依頼者: {requester}）" if requester else ""
-    _slack_post("chat.postMessage", channel=channel, thread_ts=thread_ts,
+    _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
                 text=f"事務タスク化しました: {prefill['title']}",
                 blocks=[{"type": "section", "text": {"type": "mrkdwn",
                         "text": f"📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}},

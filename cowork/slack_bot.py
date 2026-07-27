@@ -32,6 +32,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
+# 事務Bot（別Slackアプリ）用。/slack/desk-events で使用（未設定なら事務Botエンドポイントは無効）。
+SLACK_DESK_TOKEN = os.environ.get("SLACK_DESK_BOT_TOKEN", "")
+SLACK_DESK_SIGNING_SECRET = os.environ.get("SLACK_DESK_SIGNING_SECRET", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "http://localhost:8787")
 
@@ -40,11 +43,11 @@ _bot_user_id: str | None = None
 
 # ── Slack API ──────────────────────────────────────────────────────────────
 
-def _slack_post(method: str, **kwargs) -> dict:
+def _slack_post(method: str, token: str | None = None, **kwargs) -> dict:
     url = f"https://slack.com/api/{method}"
     data = json.dumps(kwargs).encode()
     req = urllib.request.Request(url, data=data, headers={
-        "Authorization": f"Bearer {SLACK_TOKEN}",
+        "Authorization": f"Bearer {token or SLACK_TOKEN}",  # token指定で別Bot(事務Bot等)として送信
         "Content-Type": "application/json",
     })
     try:
@@ -55,10 +58,10 @@ def _slack_post(method: str, **kwargs) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def _slack_get(method: str, params: dict) -> dict:
+def _slack_get(method: str, params: dict, token: str | None = None) -> dict:
     qs = urllib.parse.urlencode(params)
     url = f"https://slack.com/api/{method}?{qs}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {SLACK_TOKEN}"})
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token or SLACK_TOKEN}"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
@@ -92,10 +95,12 @@ def post_message(channel: str, thread_ts: str, text: str) -> str | None:
     return None
 
 
-def verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
-    """Slack署名検証。秘密未設定・ヘッダー不正時はFalse（fail-closed）。"""
-    if not SLACK_SIGNING_SECRET:
-        print("[SlackBot] SLACK_SIGNING_SECRET未設定のためリクエストを拒否（fail-closed）", flush=True)
+def verify_signature(body: bytes, timestamp: str, signature: str, secret: str | None = None) -> bool:
+    """Slack署名検証。秘密未設定・ヘッダー不正時はFalse（fail-closed）。
+    secret指定で別アプリ（事務Bot等）のSigning Secretで検証する。"""
+    sec = secret if secret is not None else SLACK_SIGNING_SECRET
+    if not sec:
+        print("[SlackBot] Signing Secret未設定のためリクエストを拒否（fail-closed）", flush=True)
         return False
     try:
         if abs(time.time() - float(timestamp)) > 300:
@@ -104,7 +109,7 @@ def verify_signature(body: bytes, timestamp: str, signature: str) -> bool:
     except (ValueError, TypeError, UnicodeDecodeError):
         return False
     expected = "v0=" + hmac.new(
-        SLACK_SIGNING_SECRET.encode(), base.encode(), hashlib.sha256
+        sec.encode(), base.encode(), hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(expected, signature)
 

@@ -603,3 +603,9 @@ def test_deal_reopen_from_edit(server, db_path):
     assert lead["lead_status"] == "converted" and lead["deal_id"] == did
     con2.close()
     con.close()
+
+
+def test_slack_desk_events_not_configured(server):
+    """事務Bot未設定(環境変数なし)なら /slack/desk-events は503（500/例外にならない）。"""
+    code, _ = _post(server + "/slack/desk-events", {"dummy": "1"}, headers=_auth_header())
+    assert code == 503
