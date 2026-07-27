@@ -1110,6 +1110,74 @@ def _heat_style(pct: float) -> str:
     return "background:#dc2626;color:#fff;font-weight:700"
 
 
+def build_deliveries_xlsx(con) -> bytes:
+    """Delivery全テーブル情報のxlsx（一覧＋アサイン明細＋体制）。一覧画面の一括抽出用（#75）。"""
+    import openpyxl
+    from openpyxl.styles import Font
+    from io import BytesIO
+    _fee_label = {"monthly": "月額報酬", "total": "総額報酬"}
+    wb = openpyxl.Workbook()
+
+    ws = wb.active
+    ws.title = "Delivery一覧"
+    hdr = ["ID", "アカウント", "商談", "納品案件名", "商談ステージ", "状態", "開始週", "終了週",
+           "月数", "報酬形態", "月額報酬(万)", "総額報酬(万)", "総アサイン工数(%/月)", "平均単価(円/%)",
+           "アサイン数", "概要", "作成", "更新"]
+    for c, h in enumerate(hdr, 1):
+        ws.cell(row=1, column=c, value=h).font = Font(bold=True)
+    dvs = sfa_db.list_deliveries(con)
+    r = 2
+    for dv in dvs:
+        n_asg = len(sfa_db.list_delivery_assignments(con, dv["id"]))
+        months = sfa_db.delivery_month_count(dv.get("start_week"), dv.get("end_week"))
+        effort = sfa_db.delivery_total_assign_effort(con, dv["id"])
+        _ftot = dv.get("fee_total")
+        unit_price = round(_ftot * 10000 / effort) if (_ftot and effort > 0) else None
+        vals = [dv["id"], dv.get("account_name") or "", dv.get("deal_name") or "",
+                dv.get("title") or "", dv.get("deal_stage") or "", dv.get("status") or "",
+                dv.get("start_week") or "", dv.get("end_week") or "", months,
+                _fee_label.get(dv.get("fee_mode") or "monthly", ""),
+                dv.get("fee_monthly"), dv.get("fee_total"), effort, unit_price, n_asg,
+                dv.get("overview") or "", dv.get("created_at") or "", dv.get("updated_at") or ""]
+        for c, v in enumerate(vals, 1):
+            ws.cell(row=r, column=c, value=v)
+        r += 1
+
+    ws2 = wb.create_sheet("アサイン明細")
+    hdr2 = ["Delivery ID", "納品案件", "アカウント", "商談", "役割", "区分", "メンバー",
+            "開始週", "終了週", "稼働率(実想定)%", "稼働率(請求)%", "メモ"]
+    for c, h in enumerate(hdr2, 1):
+        ws2.cell(row=1, column=c, value=h).font = Font(bold=True)
+    r2 = 2
+    for dv in dvs:
+        for a in sfa_db.list_delivery_assignments(con, dv["id"]):
+            _bill = a.get("fte_billing")
+            vals = [dv["id"], dv.get("title") or "", dv.get("account_name") or "", dv.get("deal_name") or "",
+                    a.get("role") or "", a.get("member_kind") or "内部", a.get("owner") or "",
+                    a.get("from_week") or "", a.get("to_week") or "", a.get("fte_pct"),
+                    _bill if _bill is not None else a.get("fte_pct"), a.get("note") or ""]
+            for c, v in enumerate(vals, 1):
+                ws2.cell(row=r2, column=c, value=v)
+            r2 += 1
+
+    ws3 = wb.create_sheet("体制(役割別目標)")
+    hdr3 = ["Delivery ID", "納品案件", "役割", "目標(請求)%", "目標(実想定)%"]
+    for c, h in enumerate(hdr3, 1):
+        ws3.cell(row=1, column=c, value=h).font = Font(bold=True)
+    r3 = 2
+    for dv in dvs:
+        for role in sfa_db.list_delivery_roles(con, dv["id"]):
+            vals = [dv["id"], dv.get("title") or "", role.get("role") or "",
+                    role.get("fte_billing"), role.get("fte_pct")]
+            for c, v in enumerate(vals, 1):
+                ws3.cell(row=r3, column=c, value=v)
+            r3 += 1
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def deliveries_page(con) -> str:
     """Delivery案件一覧（検索/フィルタ・インライン編集・一括削除・平均FTE）。#75。"""
     _statuses = sfa_db.DELIVERY_STATUSES
@@ -1175,6 +1243,7 @@ def deliveries_page(con) -> str:
         <select id="dvConfF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全確度</option>
           <option value="確定">確定</option><option value="見込み">見込み</option><option value="無効(終了)">無効(終了)</option></select>
         <span id="dvCount" class="muted" style="font-size:12px"></span>
+        <a class="btn sec" href="/deliveries/export.xlsx" style="font-size:12px;margin-left:auto">📥 xlsx出力（全件・全テーブル）</a>
       </div>
       <form id="dv_bulk" method="post" action="/deliveries/bulk_delete"
             onsubmit="return confirm('選択したDeliveryを削除します。アサインも消えます。よろしいですか？')">
@@ -1257,6 +1326,8 @@ def delivery_form(con, delivery_id: int) -> str:
         return '<div class="card"><p>Deliveryが見つかりません。<a href="/deliveries">← 一覧</a></p></div>'
     lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
     status_opts = _opt(sfa_db.DELIVERY_STATUSES, dv.get("status") or "進行中")
+    # 総アサイン工数(%/月)＝Σ(アサイン週数×実想定稼働率)÷4。平均単価はJS側でfee_totalから算出。
+    _assign_effort = sfa_db.delivery_total_assign_effort(con, delivery_id)
     _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # マスタ優先（後追加メンバーも反映）
     # 現在の週数（開始/終了が両方あれば算出）
     _weeks_val = ""
@@ -1359,11 +1430,30 @@ def delivery_form(con, delivery_id: int) -> str:
           <form method="post" action="/delivery/{delivery_id}/save" style="display:flex;flex-direction:column;flex:1">
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
               <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:200px"></label>
-              <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:60px" oninput="hdrCalcEnd()"></label>
-              <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd()"></label>
-              <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}"></label>
+              <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:60px" oninput="hdrCalcEnd();dvFeeRecalc()"></label>
+              <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd();dvFeeRecalc()"></label>
+              <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
               <button class="btn" style="font-size:12px">保存</button>
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+              <label style="font-size:12px">報酬形態<br>
+                <select id="dvFeeMode" name="fee_mode" onchange="dvFeeRecalc()">
+                  <option value="monthly"{" selected" if (dv.get("fee_mode") or "monthly") != "total" else ""}>月額報酬</option>
+                  <option value="total"{" selected" if (dv.get("fee_mode") or "monthly") == "total" else ""}>総額報酬</option>
+                </select></label>
+              <label style="font-size:12px">報酬額/月額(万)<br>
+                <input type="number" step="0.1" id="dvFeeMonthly" name="fee_monthly" style="width:110px"
+                       value="{"" if dv.get("fee_monthly") is None else dv.get("fee_monthly")}" oninput="dvFeeRecalc()"></label>
+              <label style="font-size:12px">報酬額/総額(万)<br>
+                <input type="number" step="0.1" id="dvFeeTotal" name="fee_total" style="width:110px"
+                       value="{"" if dv.get("fee_total") is None else dv.get("fee_total")}" oninput="dvFeeRecalc()"></label>
+              <span class="muted" style="font-size:11px;align-self:center" id="dvFeeMonths"></span>
+            </div>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:8px">
+              <div style="font-size:12px">総アサイン工数<br><b id="dvEffort" style="font-size:15px">{_assign_effort:g}</b> <span class="muted">%/月</span></div>
+              <div style="font-size:12px">平均単価<br><b id="dvUnitPrice" style="font-size:15px">—</b> <span class="muted">円/%</span></div>
+              <div class="muted" style="font-size:10px;align-self:center;max-width:280px">※総アサイン工数＝Σ(アサイン週数×実想定稼働率)÷4（4週≒1ヶ月）。平均単価＝総報酬額÷総アサイン工数。アサイン編集後は保存して再読込で更新。</div>
             </div>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
@@ -1408,6 +1498,32 @@ def delivery_form(con, delivery_id: int) -> str:
       if(!(w>0)||!s) return; var mo=_mondayOf(s); var p=mo.split('-');
       var d=new Date(+p[0], +p[1]-1, +p[2]); d.setDate(d.getDate()+(w-1)*7);
       e.value=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
+    function _dvFeeMonths(){{ var s=document.getElementById('hdrStart').value,
+      e=document.getElementById('hdrEnd').value; if(!s||!e) return 0;
+      var sp=s.split('-'), ep=e.split('-'); if(sp.length<2||ep.length<2) return 0;
+      var m=(+ep[0]*12 + +ep[1])-(+sp[0]*12 + +sp[1])+1; return m<1?1:m; }}
+    function dvFeeRecalc(){{
+      var modeEl=document.getElementById('dvFeeMode'); if(!modeEl) return;
+      var mode=modeEl.value, m=_dvFeeMonths();
+      var mo=document.getElementById('dvFeeMonthly'), to=document.getElementById('dvFeeTotal');
+      var note=document.getElementById('dvFeeMonths');
+      if(note) note.textContent = m ? ('期間 '+m+'ヶ月で換算') : '開始/終了週を入れると換算';
+      var ro='#f1f5f9';
+      if(mode==='total'){{
+        to.readOnly=false; to.style.background=''; mo.readOnly=true; mo.style.background=ro;
+        if(m && to.value!=='') mo.value=Math.round((parseFloat(to.value)/m)*100)/100;
+      }} else {{
+        mo.readOnly=false; mo.style.background=''; to.readOnly=true; to.style.background=ro;
+        if(m && mo.value!=='') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
+      }}
+      // 平均単価(円/%)＝総報酬額(円)÷総アサイン工数(%/月)。総報酬=fee_total万円×10000。
+      var effEl=document.getElementById('dvEffort'), upEl=document.getElementById('dvUnitPrice');
+      if(effEl && upEl){{
+        var eff=parseFloat(effEl.textContent)||0, tot=parseFloat(to.value)||0;
+        upEl.textContent = (eff>0 && tot>0) ? Math.round(tot*10000/eff).toLocaleString() : '—';
+      }}
+    }}
+    dvFeeRecalc();
     function tglMember(sel){{ var f=sel.closest('form'); if(!f) return;
       var mi=f.querySelector('.mint'), me=f.querySelector('.mext');
       if(sel.value==='外部'){{ if(mi)mi.style.display='none'; if(me)me.style.display=''; }}
@@ -9875,6 +9991,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(slack_memo_backfill_page(con, offset=_off)))
                 elif path == "/data-tagging":
                     self._send(render(data_tagging_page(con)))
+                elif path == "/deliveries/export.xlsx":
+                    try:
+                        _xls = build_deliveries_xlsx(con)
+                        _name = f"delivery_export_{_today_jst().isoformat()}.xlsx"
+                        self.send_response(200)
+                        self.send_header("Content-Type",
+                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                        self.send_header("Content-Disposition", _content_disposition(_name))
+                        self.send_header("Content-Length", str(len(_xls)))
+                        self.end_headers()
+                        self.wfile.write(_xls)
+                    except Exception as _e:  # noqa: BLE001
+                        import traceback as _tb; _tb.print_exc()
+                        self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
                 elif path == "/deliveries":
                     self._send(render(deliveries_page(con)))
                 elif path == "/base-workload":
@@ -10485,13 +10615,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif (path.startswith("/delivery/") and path.endswith("/save")
                       and path.split("/")[2].isdigit()):
                     _dvid = int(path.split("/")[2])
+                    _sw = _snap_monday(f.get("start_week", ""))
+                    _ew = _snap_monday(f.get("end_week", ""))
+                    # 報酬額: 月数（期間を含む暦月）でサーバ側でも月額↔総額を換算し両方保持
+                    _fee_mode = (f.get("fee_mode", "") or "monthly").strip()
+                    _months = sfa_db.delivery_month_count(_sw, _ew)
+                    _fee_monthly, _fee_total = sfa_db.compute_delivery_fee(
+                        _fee_mode, f.get("fee_monthly", ""), f.get("fee_total", ""), _months)
                     sfa_db.update_delivery(
                         con, _dvid,
                         title=(f.get("title", "") or "").strip(),
-                        start_week=_snap_monday(f.get("start_week", "")),
-                        end_week=_snap_monday(f.get("end_week", "")),
+                        start_week=_sw,
+                        end_week=_ew,
                         status=(f.get("status", "") or "進行中").strip(),
-                        overview=(f.get("overview", "") or "").strip())
+                        overview=(f.get("overview", "") or "").strip(),
+                        fee_mode=_fee_mode,
+                        fee_monthly=_fee_monthly,
+                        fee_total=_fee_total)
                     self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and path.endswith("/assignment/add")
                       and path.split("/")[2].isdigit()):

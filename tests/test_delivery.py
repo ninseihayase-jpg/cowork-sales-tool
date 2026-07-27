@@ -132,3 +132,78 @@ def test_delivery_cascade_delete(con, acc_id):
     sfa_db.delete_delivery(con, dvid)
     assert sfa_db.list_deliveries(con, deal_id=did) == []
     assert sfa_db.list_delivery_assignments(con, dvid) == []
+
+
+# ---- 報酬額（月額↔総額 換算）＋ xlsx出力（#75 追加） ----
+
+def test_delivery_month_count():
+    # 7/10〜9/19 → 7,8,9月 = 3ヶ月（暦月の単純カウント）
+    assert sfa_db.delivery_month_count("2026-07-10", "2026-09-19") == 3
+    assert sfa_db.delivery_month_count("2026-07-06", "2026-07-27") == 1
+    assert sfa_db.delivery_month_count("2026-01-01", "2026-12-31") == 12
+    assert sfa_db.delivery_month_count(None, None) == 1  # 未設定は1
+
+
+def test_delivery_fee_monthly_to_total():
+    mo, to = sfa_db.compute_delivery_fee("monthly", 100, None, 3)
+    assert (mo, to) == (100, 300.0)
+
+
+def test_delivery_fee_total_to_monthly():
+    mo, to = sfa_db.compute_delivery_fee("total", None, 300, 3)
+    assert (mo, to) == (100.0, 300)
+    # 空入力は None
+    assert sfa_db.compute_delivery_fee("monthly", "", "", 3) == (None, None)
+
+
+def test_delivery_fee_persist_and_xlsx(con):
+    import io
+    import openpyxl
+    from cowork import webapp
+    acc = con.execute("INSERT INTO accounts(name) VALUES('A社')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="受注", status="open")
+    con.commit()
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="納品X",
+                                  start_week="2026-07-06", end_week="2026-09-14")
+    con.commit()
+    months = sfa_db.delivery_month_count("2026-07-06", "2026-09-14")
+    mo, to = sfa_db.compute_delivery_fee("total", None, 300, months)
+    sfa_db.update_delivery(con, dvid, fee_mode="total", fee_monthly=mo, fee_total=to)
+    con.commit()
+    r = sfa_db.get_delivery(con, dvid)
+    assert r["fee_mode"] == "total" and r["fee_total"] == 300 and r["fee_monthly"] == 100.0
+    # xlsx出力（全テーブル情報が3シートで出る）
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬",
+                                   from_week="2026-07-06", to_week="2026-09-14",
+                                   fte_pct=80, fte_billing=100, role="PM", member_kind="内部")
+    con.commit()
+    xls = webapp.build_deliveries_xlsx(con)
+    assert xls[:2] == b"PK"
+    wb = openpyxl.load_workbook(io.BytesIO(xls))
+    assert wb.sheetnames == ["Delivery一覧", "アサイン明細", "体制(役割別目標)"]
+    ws = wb["Delivery一覧"]
+    assert ws.cell(2, 9).value == 3            # 月数
+    assert ws.cell(2, 10).value == "総額報酬"   # 報酬形態
+    assert wb["アサイン明細"].cell(2, 7).value == "早瀬"
+
+
+def test_delivery_total_assign_effort(con):
+    acc = con.execute("INSERT INTO accounts(name) VALUES('A社')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="X", stage="受注", status="open")
+    con.commit()
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X",
+                                  start_week="2026-05-18", end_week="2026-07-27")
+    con.commit()
+    # 5/18〜7/27 = 11週
+    assert sfa_db._assignment_weeks("2026-05-18", "2026-07-27") == 11
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="高橋",
+                                   from_week="2026-05-18", to_week="2026-07-27",
+                                   fte_pct=20, fte_billing=40, role="リード")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="杉山",
+                                   from_week="2026-05-18", to_week="2026-07-27",
+                                   fte_pct=80, fte_billing=80, role="コンサル")
+    con.commit()
+    # (11*20 + 11*80) / 4 = 1100/4 = 275.0（%/月）
+    assert sfa_db.delivery_total_assign_effort(con, dvid) == 275.0

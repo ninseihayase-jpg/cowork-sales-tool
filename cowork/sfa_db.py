@@ -720,6 +720,9 @@ CREATE TABLE IF NOT EXISTS deliveries (
     end_week    TEXT,                      -- 終了週の月曜(YYYY-MM-DD)
     status      TEXT DEFAULT '進行中',      -- 進行中/完了/保留
     overview    TEXT,                      -- 概要・納品方針（自由記述）
+    fee_mode    TEXT DEFAULT 'monthly',    -- 報酬形態: monthly=月額報酬 / total=総額報酬（どちらを入力するか）
+    fee_monthly REAL,                      -- 報酬額/月額（万円）
+    fee_total   REAL,                      -- 報酬額/総額（万円）。期間の月数で月額と相互換算
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE
@@ -999,6 +1002,14 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         if _da_cols and "member_kind" not in _da_cols:
             con.execute("ALTER TABLE delivery_assignments ADD COLUMN member_kind TEXT DEFAULT '内部'")
             con.execute("UPDATE delivery_assignments SET member_kind='内部' WHERE member_kind IS NULL")
+        # Delivery 報酬額（#75）: 月額 or 総額を入力し、期間の月数で相互換算して両方保持。
+        _dv_cols = {r[1] for r in con.execute("PRAGMA table_info(deliveries)")}
+        if _dv_cols and "fee_mode" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN fee_mode TEXT DEFAULT 'monthly'")
+        if _dv_cols and "fee_monthly" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN fee_monthly REAL")
+        if _dv_cols and "fee_total" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN fee_total REAL")
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -2703,8 +2714,36 @@ def list_deliveries(con, *, deal_id: int | None = None) -> list[dict]:
     return [dict(r) for r in con.execute(sql, args)]
 
 
+def delivery_month_count(start_week: str | None, end_week: str | None) -> int:
+    """報酬の月額↔総額換算に使う『期間を含む月数』。
+    開始〜終了が跨る暦月を単純カウント（例: 7/10〜9/19 → 7,8,9月 = 3）。不正/未設定は1。"""
+    try:
+        s = date.fromisoformat(str(start_week)[:10])
+        e = date.fromisoformat(str(end_week)[:10])
+    except (TypeError, ValueError):
+        return 1
+    n = (e.year * 12 + e.month) - (s.year * 12 + s.month) + 1
+    return n if n >= 1 else 1
+
+
+def compute_delivery_fee(mode: str | None, monthly, total, months: int) -> tuple:
+    """(fee_monthly, fee_total) を返す。mode='monthly'なら月額を正とし総額=月額×月数、
+    mode='total'なら総額を正とし月額=総額÷月数（単純割り）。空/不正は None。"""
+    def _f(v):
+        try:
+            return float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+    m = max(1, int(months or 1))
+    mo, to = _f(monthly), _f(total)
+    if (mode or "monthly") == "total":
+        return (round(to / m, 2) if to is not None else None, to)
+    return (mo, round(mo * m, 2) if mo is not None else None)
+
+
 def update_delivery(con, delivery_id: int, **fields) -> None:
-    allowed = {"title", "start_week", "end_week", "status", "overview"}
+    allowed = {"title", "start_week", "end_week", "status", "overview",
+               "fee_mode", "fee_monthly", "fee_total"}
     sets, args = [], []
     for k, v in fields.items():
         if k in allowed:
@@ -2741,6 +2780,27 @@ def list_delivery_assignments(con, delivery_id: int) -> list[dict]:
     return [dict(r) for r in con.execute(
         "SELECT * FROM delivery_assignments WHERE delivery_id=? ORDER BY owner, from_week",
         (int(delivery_id),))]
+
+
+def _assignment_weeks(from_week: str | None, to_week: str | None) -> int:
+    """アサインの週数（from〜to の週数・両端含む）。月曜スナップ前提だが日付差で算出。"""
+    try:
+        s = date.fromisoformat(str(from_week)[:10])
+        e = date.fromisoformat(str(to_week)[:10])
+    except (TypeError, ValueError):
+        return 0
+    d = (e - s).days
+    return (d // 7) + 1 if d >= 0 else 0
+
+
+def delivery_total_assign_effort(con, delivery_id: int) -> float:
+    """Deliveryの『総アサイン工数(%/月)』。各アサインの 週数×実想定稼働率(fte_pct) を総和し、
+    4週≒1ヶ月として ÷4 する（例: 10週×80% = 800%週 → 200%/月相当）。"""
+    total = 0.0
+    for a in list_delivery_assignments(con, delivery_id):
+        wk = _assignment_weeks(a.get("from_week"), a.get("to_week"))
+        total += wk * float(a.get("fte_pct") or 0)
+    return round(total / 4.0, 1)
 
 
 def _billing_of(b: dict) -> float:
