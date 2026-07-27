@@ -1192,11 +1192,12 @@ def deliveries_page(con) -> str:
         lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
         blocks = sfa_db.list_delivery_assignments(con, _id)
         who = "、".join(sorted({b["owner"] for b in blocks})) or "—"
-        # 平均FTE（実想定＝算出基準・請求も併記）: 各アサインブロックの平均
+        # 総アサイン工数と同じロジック（期間平均の合計稼働率）: 実想定＋純粋請求（請求0%は「-」）。
+        _eff_a = sfa_db.delivery_total_assign_effort(con, _id)                    # 実想定
+        _eff_b = sfa_db.delivery_total_assign_effort(con, _id, use_billing=True)  # 純粋請求
         if blocks:
-            _avg_a = sum((b.get("fte_pct") or 0) for b in blocks) / len(blocks)
-            _avg_b = sum(sfa_db._billing_of(b) for b in blocks) / len(blocks)
-            avg_html = f'実{_num_pct(_avg_a)}% <span class="muted" style="font-size:10px">/ 請{_num_pct(_avg_b)}%</span>'
+            _bill_disp = f'{_num_pct(_eff_b)}%' if _eff_b > 0 else '-%'
+            avg_html = f'実{_num_pct(_eff_a)}% <span class="muted" style="font-size:10px">/ 請{_bill_disp}</span>'
         else:
             avg_html = '<span class="muted">—</span>'
         _st_opts = "".join(
@@ -1205,8 +1206,6 @@ def deliveries_page(con) -> str:
         # 報酬（総額/月額）と平均単価(月額)。工数は請求ベース優先・請求0%(成果物ベース)は実想定で試算。
         # 報酬は入力値＋現在の月数で都度再計算（個別ページのライブ換算と一致させる）。
         _fmon, _ftot = sfa_db.delivery_display_fees(dv)
-        _eff_a = sfa_db.delivery_total_assign_effort(con, _id)                    # 実想定
-        _eff_b = sfa_db.delivery_total_assign_effort(con, _id, use_billing=True)  # 純粋請求
         _eff = _eff_b if _eff_b > 0 else _eff_a
         _tot_html = f'{_ftot:,.0f}' if _ftot is not None else '<span class="muted">—</span>'
         _mon_html = f'{_fmon:,.0f}' if _fmon is not None else '<span class="muted">—</span>'
