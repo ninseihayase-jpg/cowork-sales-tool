@@ -1121,8 +1121,8 @@ def build_deliveries_xlsx(con) -> bytes:
     ws = wb.active
     ws.title = "Delivery一覧"
     hdr = ["ID", "アカウント", "商談", "納品案件名", "商談ステージ", "状態", "開始週", "終了週",
-           "月数", "報酬形態", "月額報酬(万)", "総額報酬(万)", "総アサイン工数(%/月)", "平均単価(万円/100%)",
-           "アサイン数", "概要", "作成", "更新"]
+           "月数", "報酬形態", "月額報酬(万)", "総額報酬(万)", "総アサイン工数(実想定%/月)",
+           "総アサイン工数(請求%/月)", "平均単価(万円/100%)", "アサイン数", "概要", "作成", "更新"]
     for c, h in enumerate(hdr, 1):
         ws.cell(row=1, column=c, value=h).font = Font(bold=True)
     dvs = sfa_db.list_deliveries(con)
@@ -1131,15 +1131,16 @@ def build_deliveries_xlsx(con) -> bytes:
         n_asg = len(sfa_db.list_delivery_assignments(con, dv["id"]))
         months = sfa_db.delivery_month_count(dv.get("start_week"), dv.get("end_week"))
         effort = sfa_db.delivery_total_assign_effort(con, dv["id"])
+        effort_bill = sfa_db.delivery_total_assign_effort(con, dv["id"], use_billing=True)
         _ftot = dv.get("fee_total")
-        # 平均単価(万円/100%) = 総報酬額(円)÷(総アサイン工数÷100) を万円・10万円未満四捨五入
-        unit_price = (round(_ftot * 10000 * 100 / effort / 100000) * 10
-                      if (_ftot and effort > 0) else None)
+        # 平均単価(万円/100%) = 総報酬額(円)÷(請求ベース総工数÷100) を万円・10万円未満四捨五入
+        unit_price = (round(_ftot * 10000 * 100 / effort_bill / 100000) * 10
+                      if (_ftot and effort_bill > 0) else None)
         vals = [dv["id"], dv.get("account_name") or "", dv.get("deal_name") or "",
                 dv.get("title") or "", dv.get("deal_stage") or "", dv.get("status") or "",
                 dv.get("start_week") or "", dv.get("end_week") or "", months,
                 _fee_label.get(dv.get("fee_mode") or "monthly", ""),
-                dv.get("fee_monthly"), dv.get("fee_total"), effort, unit_price, n_asg,
+                dv.get("fee_monthly"), dv.get("fee_total"), effort, effort_bill, unit_price, n_asg,
                 dv.get("overview") or "", dv.get("created_at") or "", dv.get("updated_at") or ""]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
@@ -1199,9 +1200,9 @@ def deliveries_page(con) -> str:
         _st_opts = "".join(
             f'<option value="{_esc(s)}"{" selected" if (dv.get("status") or "進行中") == s else ""}>{_esc(s)}</option>'
             for s in _statuses)
-        # 報酬（総額/月額）と平均単価（万円/100%・10万円未満四捨五入）
+        # 報酬（総額/月額）と平均単価（万円/100%・10万円未満四捨五入）。単価は請求ベース工数で試算。
         _ftot, _fmon = dv.get("fee_total"), dv.get("fee_monthly")
-        _eff = sfa_db.delivery_total_assign_effort(con, _id)
+        _eff = sfa_db.delivery_total_assign_effort(con, _id, use_billing=True)
         _tot_html = f'{_ftot:,.0f}' if _ftot is not None else '<span class="muted">—</span>'
         _mon_html = f'{_fmon:,.0f}' if _fmon is not None else '<span class="muted">—</span>'
         _up_html = (f'{round(_ftot * 10000 * 100 / _eff / 100000) * 10:,}'
@@ -1341,8 +1342,9 @@ def delivery_form(con, delivery_id: int) -> str:
         return '<div class="card"><p>Deliveryが見つかりません。<a href="/deliveries">← 一覧</a></p></div>'
     lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
     status_opts = _opt(sfa_db.DELIVERY_STATUSES, dv.get("status") or "進行中")
-    # 総アサイン工数(%/月)＝Σ(アサイン週数×実想定稼働率)÷4。平均単価はJS側でfee_totalから算出。
+    # 総アサイン工数(%/月)。実想定=稼働負荷表示用。請求ベース(請求未入力行は実想定)=平均単価の分母。
     _assign_effort = sfa_db.delivery_total_assign_effort(con, delivery_id)
+    _assign_effort_bill = sfa_db.delivery_total_assign_effort(con, delivery_id, use_billing=True)
     _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # マスタ優先（後追加メンバーも反映）
     # 現在の週数（開始/終了が両方あれば算出）
     _weeks_val = ""
@@ -1466,9 +1468,10 @@ def delivery_form(con, delivery_id: int) -> str:
               <span class="muted" style="font-size:11px;align-self:center" id="dvFeeMonths"></span>
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:8px">
-              <div style="font-size:12px">総アサイン工数<br><b id="dvEffort" style="font-size:15px">{_assign_effort:g}</b> <span class="muted">%/月</span></div>
+              <div style="font-size:12px">総アサイン工数<br><b id="dvEffort" style="font-size:15px">{_assign_effort:g}</b> <span class="muted">%/月</span>
+                <span class="muted" style="font-size:10px">（請求 <b id="dvEffortBill">{_assign_effort_bill:g}</b>%/月）</span></div>
               <div style="font-size:12px">平均単価<br><b id="dvUnitPrice" style="font-size:15px">—</b> <span class="muted">万円/100%</span></div>
-              <div class="muted" style="font-size:10px;align-self:center;max-width:300px">※総アサイン工数＝Σ(アサイン週数×実想定稼働率)÷総期間週数（＝期間平均の合計稼働率）。平均単価＝総報酬額÷総アサイン工数×100（100%換算）を万円単位・10万円未満四捨五入で表示。アサイン編集後は保存して再読込で更新。</div>
+              <div class="muted" style="font-size:10px;align-self:center;max-width:320px">※総アサイン工数＝Σ(アサイン週数×稼働率)÷総期間週数（＝期間平均の合計稼働率）。平均単価＝総報酬額÷<b>請求ベース</b>総工数×100（請求未入力の行は実想定で工数算出）を万円単位・10万円未満四捨五入で表示。アサイン編集後は保存して再読込で更新。</div>
             </div>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
@@ -1531,9 +1534,9 @@ def delivery_form(con, delivery_id: int) -> str:
         mo.readOnly=false; mo.style.background=''; to.readOnly=true; to.style.background=ro;
         if(m && mo.value!=='') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
       }}
-      // 平均単価＝総報酬額(円)÷(総アサイン工数÷100)。総報酬=fee_total万円×10000。
-      // 表示は万円単位・10万円未満を四捨五入（例: 7,080,000円→710万円）。
-      var effEl=document.getElementById('dvEffort'), upEl=document.getElementById('dvUnitPrice');
+      // 平均単価＝総報酬額(円)÷(請求ベース総工数÷100)。総報酬=fee_total万円×10000。
+      // 表示は万円単位・10万円未満を四捨五入（例: 総報酬732万・請求工数120%/月→610万円）。
+      var effEl=document.getElementById('dvEffortBill'), upEl=document.getElementById('dvUnitPrice');
       if(effEl && upEl){{
         var eff=parseFloat(effEl.textContent)||0, tot=parseFloat(to.value)||0;
         upEl.textContent = (eff>0 && tot>0)

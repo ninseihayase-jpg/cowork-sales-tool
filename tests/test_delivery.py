@@ -215,3 +215,31 @@ def test_delivery_total_assign_effort(con):
     con.commit()
     # 高橋20%×11週=220, 杉山80%×6週=480 → 700/11 ≈ 63.6
     assert sfa_db.delivery_total_assign_effort(con, dvid) == 63.6
+
+
+def test_delivery_assign_effort_billing_basis(con):
+    """平均単価用: 請求ベース工数（請求>0は請求、請求0/未入力は実想定にフォールバック）。"""
+    acc = con.execute("INSERT INTO accounts(name) VALUES('X社')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注", status="open")
+    con.commit()
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="D",
+                                  start_week="2026-05-18", end_week="2026-07-27")
+    con.commit()
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="高橋",
+                                   from_week="2026-05-18", to_week="2026-07-27",
+                                   fte_pct=20, fte_billing=40)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="杉山",
+                                   from_week="2026-05-18", to_week="2026-07-27",
+                                   fte_pct=80, fte_billing=80)
+    con.commit()
+    # 実想定: (20+80)=100 / 請求: (40+80)=120
+    assert sfa_db.delivery_total_assign_effort(con, dvid) == 100.0
+    assert sfa_db.delivery_total_assign_effort(con, dvid, use_billing=True) == 120.0
+    # 高橋の請求を0にすると実想定20にフォールバック → 請求ベースも (20+80)=100
+    taka = [a for a in sfa_db.list_delivery_assignments(con, dvid) if a["owner"] == "高橋"][0]
+    sfa_db.update_delivery_assignment(con, taka["id"], owner="高橋",
+                                      from_week="2026-05-18", to_week="2026-07-27",
+                                      fte_pct=20, fte_billing=0)
+    con.commit()
+    assert sfa_db.delivery_total_assign_effort(con, dvid, use_billing=True) == 100.0
