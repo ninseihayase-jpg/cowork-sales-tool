@@ -1395,6 +1395,36 @@ def list_activities(con, deal_id: int) -> list[dict]:
     )]
 
 
+def reopen_deal(con, deal_id: int) -> dict:
+    """クローズ済み商談を『商談に戻す（再開）』。status='open'・close_reasonを解除。
+    リードに戻していた場合は、同一会社の未紐付フォロー中リードを商談へ再紐付け(converted)する。
+    revert_to_lead（商談→リード）の逆操作。"""
+    deal = get_deal(con, deal_id)
+    if not deal:
+        return {"reopened": False}
+    con.execute(
+        "UPDATE deals SET status='open', close_reason=NULL, updated_at=datetime('now') WHERE id=?",
+        (int(deal_id),))
+    relinked = None
+    accname = deal.get("account_name")
+    if accname:
+        row = con.execute(
+            "SELECT id, name FROM leads WHERE company=? AND deal_id IS NULL "
+            "AND lead_status NOT IN ('converted') ORDER BY updated_at DESC LIMIT 1",
+            (accname,)).fetchone()
+        if row:
+            con.execute(
+                "UPDATE leads SET deal_id=?, lead_status='converted', updated_at=datetime('now') WHERE id=?",
+                (int(deal_id), row["id"]))
+            relinked = row["id"]
+    _note = (f"リード「{row['name'] or ''}」から商談に戻す（再開）。" if relinked
+             else "商談に戻す（再開）。")
+    con.execute("INSERT INTO activities (deal_id, type, occurred_on, body) VALUES (?,?,date('now'),?)",
+                (int(deal_id), "メモ", _note))
+    con.commit()
+    return {"reopened": True, "relinked_lead_id": relinked}
+
+
 # ---- 更新系 ----
 def upsert_account(con, *, id=None, name, industry=None, company_size=None, note=None, commit: bool = True) -> int:
     if id is not None:

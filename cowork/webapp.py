@@ -5967,9 +5967,17 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
                 f'<option value="{_esc(v)}"{" selected" if v == _cr_cur else ""}>{_esc(v)}</option>'
                 for v in sfa_db.CLOSE_REASONS)
             _did_js = deal["id"]
+            _reopen_ret = urllib.parse.quote(return_to or f"/deal/{_did_js}", safe="")
+            _reopen_btn = (
+                f'<form method="post" action="/deal/{_did_js}/reopen" style="display:inline;margin-left:8px" '
+                f'onsubmit="return confirm(\'この商談を再開（進行中に戻す）します。リードに戻していた場合は、そのリードを商談へ再紐付けします。よろしいですか？\');">'
+                f'<input type="hidden" name="return_to" value="{_reopen_ret}">'
+                f'<button class="btn" style="font-size:11px;padding:4px 10px;background:#047857;color:#fff;border-color:#047857">↩ 商談に戻す（再開）</button>'
+                f'</form>')
             _cr_ctl = (f'<span class="muted" style="font-size:11px">終了理由</span>'
                        f"<select onchange=\"updateDealField({_did_js}, 'close_reason', this.value)\" "
-                       f'style="font-size:12px;padding:1px 4px"><option value=""></option>{_cr_opts}</select>')
+                       f'style="font-size:12px;padding:1px 4px"><option value=""></option>{_cr_opts}</select>'
+                       + _reopen_btn)
         else:
             _cr_ctl = '<span class="muted" style="font-size:11px">クローズは画面下部の「クローズ」ボタンから</span>'
         _sb_extra = (f'<span class="muted" style="font-size:11px">ステータス</span>'
@@ -12363,6 +12371,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     theme_link.sync_deal(theme_client, con, _wid)
                                 except Exception as _exc:  # noqa: BLE001
                                     print(f"[theme_link] sync_deal failed (close-won): {_exc}", flush=True)
+                    self._redirect(_rt)
+
+                # ── 商談に戻す（再開）── リード戻しの逆操作。クローズ済みを open に戻し、リードを再紐付け。
+                elif path.endswith("/reopen") and "/deal/" in path:
+                    _rid_s = path.split("/deal/")[1].split("/")[0]
+                    _rt = f.get("return_to") or "/deals"
+                    _rt = _rt if _rt.startswith("/") else "/deals"
+                    if _rid_s.isdigit():
+                        _rid = int(_rid_s)
+                        _rd = sfa_db.get_deal(con, _rid)
+                        if _rd and (_rd.get("status") or "open") == "closed":
+                            sfa_db.reopen_deal(con, _rid)
+                            if theme_client is not None:
+                                try:
+                                    theme_link.sync_deal(theme_client, con, _rid)
+                                except Exception as _exc:  # noqa: BLE001
+                                    print(f"[theme_link] sync_deal failed (reopen): {_exc}", flush=True)
                     self._redirect(_rt)
 
                 # ── 商談 → リード戻し ──

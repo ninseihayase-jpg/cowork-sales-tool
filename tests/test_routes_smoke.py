@@ -582,3 +582,24 @@ def test_activity_add_requires_date_and_type(server, db_path):
           {"deal_id": str(did), "type": "面談", "occurred_on": "2026-07-15", "body": "面談実施"},
           headers=_auth_header())
     assert _act_count() == 1
+
+
+def test_deal_reopen_from_edit(server, db_path):
+    """クローズ済み商談を『商談に戻す（再開）』でopen化＋同社フォロー中リードを再紐付け。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('奥村組')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="環境", stage="初回アポ実施",
+                             status="closed", close_reason="キャンセル")
+    con.execute("INSERT INTO leads(name,company,lead_status,deal_id) VALUES('山下','奥村組','following',NULL)")
+    con.commit()
+
+    code, _ = _post(server + f"/deal/{did}/reopen", {"return_to": f"/deal/{did}"}, headers=_auth_header())
+    assert code in (200, 303)
+    con2 = sfa_db.connect(db_path)
+    d = sfa_db.get_deal(con2, did)
+    assert d["status"] == "open" and not d.get("close_reason")
+    lead = con2.execute("SELECT lead_status, deal_id FROM leads WHERE company='奥村組'").fetchone()
+    assert lead["lead_status"] == "converted" and lead["deal_id"] == did
+    con2.close()
+    con.close()
