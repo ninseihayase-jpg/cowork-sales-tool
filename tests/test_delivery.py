@@ -238,13 +238,13 @@ def test_delivery_assign_effort_billing_basis(con):
     # 実想定: (20+80)=100 / 請求: (40+80)=120
     assert sfa_db.delivery_total_assign_effort(con, dvid) == 100.0
     assert sfa_db.delivery_total_assign_effort(con, dvid, use_billing=True) == 120.0
-    # 高橋の請求を0にすると実想定20にフォールバック → 請求ベースも (20+80)=100
+    # 高橋の請求を0にすると純粋請求は0扱い（フォールバックなし）→ 請求ベースは杉山80のみ = 80
     taka = [a for a in sfa_db.list_delivery_assignments(con, dvid) if a["owner"] == "高橋"][0]
     sfa_db.update_delivery_assignment(con, taka["id"], owner="高橋",
                                       from_week="2026-05-18", to_week="2026-07-27",
                                       fte_pct=20, fte_billing=0)
     con.commit()
-    assert sfa_db.delivery_total_assign_effort(con, dvid, use_billing=True) == 100.0
+    assert sfa_db.delivery_total_assign_effort(con, dvid, use_billing=True) == 80.0
 
 
 def test_delivery_grid_ignores_blank_week_rows(con):
@@ -295,10 +295,10 @@ def test_delivery_unit_price_8weeks_case(con):
                                        from_week="2026-09-28", to_week="2026-11-16",
                                        fte_pct=pct, fte_billing=0)
     con.commit()
-    # 期間平均の合計稼働率＝100%/月（実想定・請求とも）
+    # 実想定は100%/月。請求は全行0%＝純粋請求は0（成果物ベース＝稼働コミットなし）
     assert sfa_db.delivery_total_assign_effort(con, dvid) == 100.0
-    assert sfa_db.delivery_total_assign_effort(con, dvid, use_billing=True) == 100.0
-    # 平均単価(月額) = 月額150 ÷ (100/100) = 150万 → xlsxの平均単価列で確認
+    assert sfa_db.delivery_total_assign_effort(con, dvid, use_billing=True) == 0.0
+    # 平均単価(月額)=月額150÷(工数/100)。請求0%なので実想定100で試算→150万 → xlsxの平均単価列で確認
     wb = openpyxl.load_workbook(io.BytesIO(webapp.build_deliveries_xlsx(con)))
     ws = wb["Delivery一覧"]
     assert ws.cell(2, 15).value == 150   # 平均単価(月額・万円/100%)

@@ -2834,7 +2834,8 @@ def delivery_total_assign_effort(con, delivery_id: int, use_billing: bool = Fals
     """Deliveryの『総アサイン工数(%/月)』＝期間を通じた平均の合計稼働率。
     Σ(各アサインの 週数×稼働率) ÷ 総期間週数。
     use_billing=False: 実想定(fte_pct)ベース（稼働負荷用）。
-    use_billing=True : 請求(fte_billing)ベース。ただし請求未入力(None/0)の行は実想定にフォールバック（平均単価用）。
+    use_billing=True : 請求(fte_billing)ベース＝純粋な請求のみ（未入力0/Noneは0＝稼働コミットなし）。
+      ※フォールバックはしない。全行請求0なら0（＝成果物ベース）。平均単価側でどちらを使うか判断する。
     例: 高橋20%×11週+杉山80%×11週=1100÷11週=100（実想定）／請求40%+80%なら1320÷11=120。
     総期間週数はデリバリー期間(start_week〜end_week)。未設定ならアサインの最小from〜最大to。"""
     asgs = list_delivery_assignments(con, delivery_id)
@@ -2854,9 +2855,7 @@ def delivery_total_assign_effort(con, delivery_id: int, use_billing: bool = Fals
 
     def _rate(a) -> float:
         if use_billing:
-            b = a.get("fte_billing")
-            if b is not None and float(b) > 0:  # 請求が入力(>0)なら請求、未入力(0/None)は実想定
-                return float(b)
+            return float(a.get("fte_billing") or 0)  # 純粋な請求（0/None=稼働コミットなし）。フォールバックなし
         return float(a.get("fte_pct") or 0)
 
     total = sum(_assignment_weeks(a.get("from_week"), a.get("to_week")) * _rate(a) for a in asgs)

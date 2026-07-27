@@ -1130,12 +1130,13 @@ def build_deliveries_xlsx(con) -> bytes:
     for dv in dvs:
         n_asg = len(sfa_db.list_delivery_assignments(con, dv["id"]))
         months = sfa_db.delivery_month_count(dv.get("start_week"), dv.get("end_week"))
-        effort = sfa_db.delivery_total_assign_effort(con, dv["id"])
-        effort_bill = sfa_db.delivery_total_assign_effort(con, dv["id"], use_billing=True)
+        effort = sfa_db.delivery_total_assign_effort(con, dv["id"])                    # 実想定
+        effort_bill = sfa_db.delivery_total_assign_effort(con, dv["id"], use_billing=True)  # 純粋請求
         _fmon = dv.get("fee_monthly")
-        # 平均単価(月額・万円/100%) = 月額報酬(円)÷(請求ベース総工数÷100) を万円・10万円未満四捨五入
-        unit_price = (round(_fmon * 10000 * 100 / effort_bill / 100000) * 10
-                      if (_fmon and effort_bill > 0) else None)
+        # 平均単価(月額) = 月額報酬(円)÷(工数÷100)。工数は請求ベース優先・請求0%は実想定。万円・10万円未満四捨五入
+        _eff_price = effort_bill if effort_bill > 0 else effort
+        unit_price = (round(_fmon * 10000 * 100 / _eff_price / 100000) * 10
+                      if (_fmon and _eff_price > 0) else None)
         vals = [dv["id"], dv.get("account_name") or "", dv.get("deal_name") or "",
                 dv.get("title") or "", dv.get("deal_stage") or "", dv.get("status") or "",
                 dv.get("start_week") or "", dv.get("end_week") or "", months,
@@ -1200,9 +1201,11 @@ def deliveries_page(con) -> str:
         _st_opts = "".join(
             f'<option value="{_esc(s)}"{" selected" if (dv.get("status") or "進行中") == s else ""}>{_esc(s)}</option>'
             for s in _statuses)
-        # 報酬（総額/月額）と平均単価（万円/100%・10万円未満四捨五入）。単価は請求ベース工数で試算。
+        # 報酬（総額/月額）と平均単価(月額)。工数は請求ベース優先・請求0%(成果物ベース)は実想定で試算。
         _ftot, _fmon = dv.get("fee_total"), dv.get("fee_monthly")
-        _eff = sfa_db.delivery_total_assign_effort(con, _id, use_billing=True)
+        _eff_a = sfa_db.delivery_total_assign_effort(con, _id)                    # 実想定
+        _eff_b = sfa_db.delivery_total_assign_effort(con, _id, use_billing=True)  # 純粋請求
+        _eff = _eff_b if _eff_b > 0 else _eff_a
         _tot_html = f'{_ftot:,.0f}' if _ftot is not None else '<span class="muted">—</span>'
         _mon_html = f'{_fmon:,.0f}' if _fmon is not None else '<span class="muted">—</span>'
         _up_html = (f'{round(_fmon * 10000 * 100 / _eff / 100000) * 10:,}'
@@ -1215,7 +1218,7 @@ def deliveries_page(con) -> str:
           <td>{_esc(dv.get('account_name') or '—')}</td>
           <td><input type="text" value="{_esc(dv.get('title') or '')}" style="width:180px;font-size:12px"
                  onchange="dvField({_id},'title',this.value)"></td>
-          <td><span style="background:{col};color:#fff;border-radius:5px;padding:1px 7px;font-size:11px">{lbl}</span></td>
+          <td style="white-space:nowrap"><span style="background:{col};color:#fff;border-radius:5px;padding:1px 7px;font-size:11px;white-space:nowrap;display:inline-block">{lbl}</span></td>
           <td><select style="font-size:12px" onchange="dvField({_id},'status',this.value)">{_st_opts}</select></td>
           <td><input type="date" value="{_esc(dv.get('start_week') or '')}" style="font-size:11px"
                  onchange="dvField({_id},'start_week',this.value)"></td>
@@ -1469,9 +1472,9 @@ def delivery_form(con, delivery_id: int) -> str:
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:8px">
               <div style="font-size:12px">総アサイン工数<br><b id="dvEffort" style="font-size:15px">{_assign_effort:g}</b> <span class="muted">%/月</span>
-                <span class="muted" style="font-size:10px">（請求 <b id="dvEffortBill">{_assign_effort_bill:g}</b>%/月）</span></div>
+                <span class="muted" style="font-size:10px">（請求 <b id="dvEffortBill">{f'{_assign_effort_bill:g}' if _assign_effort_bill > 0 else '-'}</b>%/月）</span></div>
               <div style="font-size:12px">平均単価(月額)<br><b id="dvUnitPrice" style="font-size:15px">—</b> <span class="muted">万円/100%</span></div>
-              <div class="muted" style="font-size:10px;align-self:center;max-width:320px">※総アサイン工数＝Σ(アサイン週数×稼働率)÷総期間週数（＝期間平均の合計稼働率）。平均単価(月額)＝<b>月額報酬</b>÷<b>請求ベース</b>総工数×100（請求未入力の行は実想定で工数算出）を万円単位・10万円未満四捨五入で表示。アサイン編集後は保存して再読込で更新。</div>
+              <div class="muted" style="font-size:10px;align-self:center;max-width:320px">※総アサイン工数＝Σ(アサイン週数×稼働率)÷総期間週数（＝期間平均の合計稼働率）。請求は純粋な請求稼働（0%＝成果物ベースで稼働コミットなし＝「-」）。平均単価(月額)＝<b>月額報酬</b>÷総工数×100（請求ベース優先・請求0%は実想定で試算）を万円単位・10万円未満四捨五入で表示。アサイン編集後は保存して再読込で更新。</div>
             </div>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
@@ -1535,13 +1538,15 @@ def delivery_form(con, delivery_id: int) -> str:
         mo.readOnly=false; mo.style.background=''; to.readOnly=true; to.style.background=ro;
         if(m && mo.value!=='') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
       }}
-      // 平均単価(月額)＝月額報酬(円)÷(請求ベース総工数÷100)。月額報酬=fee_monthly万円×10000。
-      // 表示は万円単位・10万円未満を四捨五入（例: 月額244万・請求工数120%/月→200万円）。
-      var effEl=document.getElementById('dvEffortBill'), upEl=document.getElementById('dvUnitPrice');
-      if(effEl && upEl){{
-        var eff=parseFloat(effEl.textContent)||0, mon=parseFloat(mo.value)||0;
-        upEl.textContent = (eff>0 && mon>0)
-          ? (Math.round(mon*10000*100/eff/100000)*10).toLocaleString() : '—';
+      // 平均単価(月額)＝月額報酬(円)÷(工数÷100)。工数は請求ベース優先、請求0%(成果物ベース)なら実想定。
+      // 表示は万円単位・10万円未満を四捨五入（例: 月額244万・請求120%/月→200万／請求0%は実想定80で試算）。
+      var effAEl=document.getElementById('dvEffort'), effBEl=document.getElementById('dvEffortBill'),
+          upEl=document.getElementById('dvUnitPrice');
+      if(upEl){{
+        var effA=parseFloat(effAEl&&effAEl.textContent)||0, effB=parseFloat(effBEl&&effBEl.textContent)||0;
+        var effP=effB>0?effB:effA, mon=parseFloat(mo.value)||0;
+        upEl.textContent = (effP>0 && mon>0)
+          ? (Math.round(mon*10000*100/effP/100000)*10).toLocaleString() : '—';
       }}
     }}
     dvFeeRecalc();
