@@ -2744,27 +2744,34 @@ def list_deliveries(con, *, deal_id: int | None = None) -> list[dict]:
     return [dict(r) for r in con.execute(sql, args)]
 
 
-def delivery_month_count(start_week: str | None, end_week: str | None) -> int:
-    """報酬の月額↔総額換算に使う『期間を含む月数』。
-    開始〜終了が跨る暦月を単純カウント（例: 7/10〜9/19 → 7,8,9月 = 3）。不正/未設定は1。"""
+def delivery_month_count(start_week: str | None, end_week: str | None) -> float:
+    """月額↔総額換算・月額換算に使う『月数』。全て『合計週数 ÷ 4週(≒1ヶ月)』で統一。
+    例: 8週 → 2.0ヶ月 / 11週 → 2.75ヶ月。不正/未設定は1。"""
     try:
         s = date.fromisoformat(str(start_week)[:10])
         e = date.fromisoformat(str(end_week)[:10])
     except (TypeError, ValueError):
-        return 1
-    n = (e.year * 12 + e.month) - (s.year * 12 + s.month) + 1
-    return n if n >= 1 else 1
+        return 1.0
+    weeks = (e - s).days // 7 + 1
+    if weeks < 1:
+        return 1.0
+    return round(weeks / 4.0, 4)
 
 
-def compute_delivery_fee(mode: str | None, monthly, total, months: int) -> tuple:
+def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
     """(fee_monthly, fee_total) を返す。mode='monthly'なら月額を正とし総額=月額×月数、
-    mode='total'なら総額を正とし月額=総額÷月数（単純割り）。空/不正は None。"""
+    mode='total'なら総額を正とし月額=総額÷月数。月数は合計週数÷4（小数可）。空/不正は None。"""
     def _f(v):
         try:
             return float(v) if v not in (None, "") else None
         except (TypeError, ValueError):
             return None
-    m = max(1, int(months or 1))
+    try:
+        m = float(months)
+    except (TypeError, ValueError):
+        m = 0.0
+    if m <= 0:
+        m = 1.0
     mo, to = _f(monthly), _f(total)
     if (mode or "monthly") == "total":
         return (round(to / m, 2) if to is not None else None, to)

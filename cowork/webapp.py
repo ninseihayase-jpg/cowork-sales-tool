@@ -1518,14 +1518,15 @@ def delivery_form(con, delivery_id: int) -> str:
       e.value=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
     function _dvFeeMonths(){{ var s=document.getElementById('hdrStart').value,
       e=document.getElementById('hdrEnd').value; if(!s||!e) return 0;
-      var sp=s.split('-'), ep=e.split('-'); if(sp.length<2||ep.length<2) return 0;
-      var m=(+ep[0]*12 + +ep[1])-(+sp[0]*12 + +sp[1])+1; return m<1?1:m; }}
+      var sd=new Date(s), ed=new Date(e); var days=Math.round((ed-sd)/86400000);
+      if(isNaN(days)||days<0) return 0;
+      var weeks=Math.floor(days/7)+1; return weeks/4; }}  /* 月数=合計週数÷4(≒1ヶ月)で統一 */
     function dvFeeRecalc(){{
       var modeEl=document.getElementById('dvFeeMode'); if(!modeEl) return;
       var mode=modeEl.value, m=_dvFeeMonths();
       var mo=document.getElementById('dvFeeMonthly'), to=document.getElementById('dvFeeTotal');
       var note=document.getElementById('dvFeeMonths');
-      if(note) note.textContent = m ? ('期間 '+m+'ヶ月で換算') : '開始/終了週を入れると換算';
+      if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（合計週数÷4）') : '開始/終了週を入れると換算';
       var ro='#f1f5f9';
       if(mode==='total'){{
         to.readOnly=false; to.style.background=''; mo.readOnly=true; mo.style.background=ro;

@@ -137,11 +137,12 @@ def test_delivery_cascade_delete(con, acc_id):
 # ---- 報酬額（月額↔総額 換算）＋ xlsx出力（#75 追加） ----
 
 def test_delivery_month_count():
-    # 7/10〜9/19 → 7,8,9月 = 3ヶ月（暦月の単純カウント）
-    assert sfa_db.delivery_month_count("2026-07-10", "2026-09-19") == 3
-    assert sfa_db.delivery_month_count("2026-07-06", "2026-07-27") == 1
-    assert sfa_db.delivery_month_count("2026-01-01", "2026-12-31") == 12
-    assert sfa_db.delivery_month_count(None, None) == 1  # 未設定は1
+    # 月数＝合計週数÷4（4週≒1ヶ月）で統一
+    assert sfa_db.delivery_month_count("2026-07-10", "2026-09-19") == 2.75   # 11週
+    assert sfa_db.delivery_month_count("2026-07-06", "2026-07-27") == 1.0    # 4週
+    assert sfa_db.delivery_month_count("2026-01-01", "2026-12-31") == 13.25  # 53週
+    assert sfa_db.delivery_month_count("2026-09-28", "2026-11-16") == 2.0    # 8週
+    assert sfa_db.delivery_month_count(None, None) == 1.0  # 未設定は1
 
 
 def test_delivery_fee_monthly_to_total():
@@ -167,12 +168,13 @@ def test_delivery_fee_persist_and_xlsx(con):
     dvid = sfa_db.create_delivery(con, deal_id=did, title="納品X",
                                   start_week="2026-07-06", end_week="2026-09-14")
     con.commit()
-    months = sfa_db.delivery_month_count("2026-07-06", "2026-09-14")
+    months = sfa_db.delivery_month_count("2026-07-06", "2026-09-14")  # 11週÷4 = 2.75
+    assert months == 2.75
     mo, to = sfa_db.compute_delivery_fee("total", None, 300, months)
     sfa_db.update_delivery(con, dvid, fee_mode="total", fee_monthly=mo, fee_total=to)
     con.commit()
     r = sfa_db.get_delivery(con, dvid)
-    assert r["fee_mode"] == "total" and r["fee_total"] == 300 and r["fee_monthly"] == 100.0
+    assert r["fee_mode"] == "total" and r["fee_total"] == 300 and r["fee_monthly"] == 109.09
     # xlsx出力（全テーブル情報が3シートで出る）
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬",
                                    from_week="2026-07-06", to_week="2026-09-14",
@@ -183,7 +185,7 @@ def test_delivery_fee_persist_and_xlsx(con):
     wb = openpyxl.load_workbook(io.BytesIO(xls))
     assert wb.sheetnames == ["Delivery一覧", "アサイン明細", "体制(役割別目標)"]
     ws = wb["Delivery一覧"]
-    assert ws.cell(2, 9).value == 3            # 月数
+    assert ws.cell(2, 9).value == 2.75         # 月数（11週÷4）
     assert ws.cell(2, 10).value == "総額報酬"   # 報酬形態
     assert wb["アサイン明細"].cell(2, 7).value == "早瀬"
 
@@ -268,3 +270,35 @@ def test_delivery_grid_ignores_blank_week_rows(con):
                 "VALUES(?,?,?,?,?,?,?)", (dvid2, "リード", "内部", "", "", "", 0))
     con.commit()
     assert sfa_db.delivery_grid(con, dvid2) == {"weeks": [], "owners": [], "cells": {}}
+
+
+def test_delivery_unit_price_8weeks_case(con):
+    """8週・チーム合計100%・総額300万 → 月数=2(=8週/4)・月額150万・平均単価(月額)150万。"""
+    import io
+    import openpyxl
+    from cowork import webapp
+    acc = con.execute("INSERT INTO accounts(name) VALUES('マルハン')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="AI受託", stage="クロージング", status="open")
+    con.commit()
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="AI受託",
+                                  start_week="2026-09-28", end_week="2026-11-16")  # 8週
+    con.commit()
+    months = sfa_db.delivery_month_count("2026-09-28", "2026-11-16")
+    assert months == 2.0
+    mo, to = sfa_db.compute_delivery_fee("total", None, 300, months)
+    assert (mo, to) == (150.0, 300.0)   # 総額300 ÷ 2ヶ月 = 月額150
+    sfa_db.update_delivery(con, dvid, fee_mode="total", fee_monthly=mo, fee_total=to)
+    # チーム合計100%（実想定30+50+20、請求は0＝実想定にフォールバック）
+    for ow, pct in (("早瀬", 30), ("杉山", 50), ("戸野", 20)):
+        sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner=ow,
+                                       from_week="2026-09-28", to_week="2026-11-16",
+                                       fte_pct=pct, fte_billing=0)
+    con.commit()
+    # 期間平均の合計稼働率＝100%/月（実想定・請求とも）
+    assert sfa_db.delivery_total_assign_effort(con, dvid) == 100.0
+    assert sfa_db.delivery_total_assign_effort(con, dvid, use_billing=True) == 100.0
+    # 平均単価(月額) = 月額150 ÷ (100/100) = 150万 → xlsxの平均単価列で確認
+    wb = openpyxl.load_workbook(io.BytesIO(webapp.build_deliveries_xlsx(con)))
+    ws = wb["Delivery一覧"]
+    assert ws.cell(2, 15).value == 150   # 平均単価(月額・万円/100%)
