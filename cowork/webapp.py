@@ -1121,7 +1121,7 @@ def build_deliveries_xlsx(con) -> bytes:
     ws = wb.active
     ws.title = "Delivery一覧"
     hdr = ["ID", "アカウント", "商談", "納品案件名", "商談ステージ", "状態", "開始週", "終了週",
-           "月数", "報酬形態", "月額報酬(万)", "総額報酬(万)", "総アサイン工数(%/月)", "平均単価(円/100%)",
+           "月数", "報酬形態", "月額報酬(万)", "総額報酬(万)", "総アサイン工数(%/月)", "平均単価(百万円/100%)",
            "アサイン数", "概要", "作成", "更新"]
     for c, h in enumerate(hdr, 1):
         ws.cell(row=1, column=c, value=h).font = Font(bold=True)
@@ -1132,8 +1132,9 @@ def build_deliveries_xlsx(con) -> bytes:
         months = sfa_db.delivery_month_count(dv.get("start_week"), dv.get("end_week"))
         effort = sfa_db.delivery_total_assign_effort(con, dv["id"])
         _ftot = dv.get("fee_total")
-        # 平均単価(円/100%) = 総報酬額(円) ÷ (総アサイン工数 ÷ 100)
-        unit_price = round(_ftot * 10000 * 100 / effort) if (_ftot and effort > 0) else None
+        # 平均単価(百万円/100%) = 総報酬額(円)÷(総アサイン工数÷100) を百万円・10万円未満四捨五入
+        unit_price = (round(_ftot * 10000 * 100 / effort / 100000) / 10
+                      if (_ftot and effort > 0) else None)
         vals = [dv["id"], dv.get("account_name") or "", dv.get("deal_name") or "",
                 dv.get("title") or "", dv.get("deal_stage") or "", dv.get("status") or "",
                 dv.get("start_week") or "", dv.get("end_week") or "", months,
@@ -1453,8 +1454,8 @@ def delivery_form(con, delivery_id: int) -> str:
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:8px">
               <div style="font-size:12px">総アサイン工数<br><b id="dvEffort" style="font-size:15px">{_assign_effort:g}</b> <span class="muted">%/月</span></div>
-              <div style="font-size:12px">平均単価<br><b id="dvUnitPrice" style="font-size:15px">—</b> <span class="muted">円/100%</span></div>
-              <div class="muted" style="font-size:10px;align-self:center;max-width:300px">※総アサイン工数＝Σ(アサイン週数×実想定稼働率)÷総期間週数（＝期間平均の合計稼働率）。平均単価＝総報酬額÷総アサイン工数×100（100%換算・円/100%）。アサイン編集後は保存して再読込で更新。</div>
+              <div style="font-size:12px">平均単価<br><b id="dvUnitPrice" style="font-size:15px">—</b> <span class="muted">百万円/100%</span></div>
+              <div class="muted" style="font-size:10px;align-self:center;max-width:300px">※総アサイン工数＝Σ(アサイン週数×実想定稼働率)÷総期間週数（＝期間平均の合計稼働率）。平均単価＝総報酬額÷総アサイン工数×100（100%換算）を百万円単位・10万円未満四捨五入で表示。アサイン編集後は保存して再読込で更新。</div>
             </div>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
@@ -1517,11 +1518,13 @@ def delivery_form(con, delivery_id: int) -> str:
         mo.readOnly=false; mo.style.background=''; to.readOnly=true; to.style.background=ro;
         if(m && mo.value!=='') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
       }}
-      // 平均単価(円/100%)＝総報酬額(円)÷(総アサイン工数(%/月)÷100)。総報酬=fee_total万円×10000。
+      // 平均単価(百万円/100%)＝総報酬額(円)÷(総アサイン工数÷100)。総報酬=fee_total万円×10000。
+      // 表示は百万円単位・10万円未満を四捨五入（＝小数1桁の百万円）。
       var effEl=document.getElementById('dvEffort'), upEl=document.getElementById('dvUnitPrice');
       if(effEl && upEl){{
         var eff=parseFloat(effEl.textContent)||0, tot=parseFloat(to.value)||0;
-        upEl.textContent = (eff>0 && tot>0) ? Math.round(tot*10000*100/eff).toLocaleString() : '—';
+        upEl.textContent = (eff>0 && tot>0)
+          ? (Math.round(tot*10000*100/eff/100000)/10).toLocaleString() : '—';
       }}
     }}
     dvFeeRecalc();
