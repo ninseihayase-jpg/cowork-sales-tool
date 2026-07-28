@@ -74,13 +74,14 @@ def test_rich_note_preview_strips_tags():
     assert webapp._rich_note_preview(long, limit=10).endswith("…")
 
 
-def test_chip_and_button_reflect_has_note():
-    filled = webapp._rich_note_chip(5, "<h3>方針</h3>")
+def test_chip_is_constant_and_hides_content():
+    # 保存バーのチップは常に一定表示（内容・プレビューを出さない）
+    filled = webapp._rich_note_chip(5, "<h3>社外秘の方針</h3>")
     empty = webapp._rich_note_chip(6, "")
-    # 記入あり＝rn-sbchip on＋プレビュー、未記入＝onなし
-    assert 'id="rnChip-5"' in filled and "rn-sbchip on" in filled and "方針" in filled
-    assert "rn-sbchip on" not in empty and 'class="rn-sbchip"' in empty
-    assert 'rnOpen(5)' in filled and 'rnOpen(6)' in empty
+    assert "社外秘の方針" not in filled            # 内容は表示しない
+    assert filled.replace("5", "N") == empty.replace("6", "N")  # id以外は同一表示
+    assert 'rnOpen(5)' in filled and "📝 商談ノート" in filled
+    # 一覧の📝ボタンは記入有無で状態が変わる
     assert 'class="rn-trg on"' in webapp._rich_note_btn(7, True)
     assert 'class="rn-trg"' in webapp._rich_note_btn(8, False)
 

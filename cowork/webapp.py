@@ -5738,14 +5738,11 @@ def _rich_note_preview(content: str, limit: int = 70) -> str:
 
 
 def _rich_note_chip(deal_id: int, content: str) -> str:
-    """保存バー（固定エリア）のステータス左に置く小さなノート起動チップ。
+    """保存バー（固定エリア）のステータス左に置くノート起動ボタン。表示は常に一定（内容は出さない）。
     クリックで全ページ共通のフローティングエディタ(rnOpen)を大画面で開く。"""
-    safe = _sanitize_rich_html(content or "")
-    prev = _rich_note_preview(safe, 22)
-    return (f'<button type="button" class="rn-sbchip{" on" if safe else ""}" id="rnChip-{deal_id}" '
+    return (f'<button type="button" class="rn-sbchip" id="rnChip-{deal_id}" '
             f'data-deal="{deal_id}" onclick="rnOpen({deal_id})" '
-            f'title="商談ノートを開く（クリックで大きく編集）">'
-            f'📝 ノート<span class="rn-sbprev">{prev}</span></button>')
+            f'title="商談ノートを開く（クリックで大きく編集）">📝 商談ノート</button>')
 
 
 def _rich_note_btn(deal_id: int, has_note: bool) -> str:
@@ -5760,13 +5757,11 @@ def _rich_note_btn(deal_id: int, has_note: bool) -> str:
 # rnOpen(id)でGET /deal/{id}/rich-note を読み、編集内容は /deal/{id}/field(field=rich_note) へ自動保存。
 _RICH_NOTE_ASSETS = """
 <style>
-/* 保存バー内の小さなノートチップ（ステータス左） */
-.rn-sbchip{display:inline-flex;align-items:center;gap:6px;max-width:260px;border:1px solid #e2e8f0;
-  background:#fff;border-radius:6px;cursor:pointer;font-size:11px;padding:3px 8px;color:#475569;vertical-align:middle}
-.rn-sbchip:hover{background:#f1f5f9}
-.rn-sbchip.on{border-color:#bfdbfe;background:#eff6ff;color:#1e40af}
-.rn-sbprev{color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
-.rn-sbchip.on .rn-sbprev{color:#3b82f6}
+/* 保存バー内のノート起動ボタン（ステータス左）。表示は常に一定・目立つアクセント。 */
+.rn-sbchip{display:inline-flex;align-items:center;gap:5px;border:1px solid #c7d2fe;
+  background:#eef2ff;border-radius:7px;cursor:pointer;font-size:12px;font-weight:600;
+  padding:5px 12px;color:#4338ca;vertical-align:middle;box-shadow:0 1px 2px rgba(67,56,202,.12)}
+.rn-sbchip:hover{background:#e0e7ff;border-color:#a5b4fc}
 .rn-trg{border:1px solid #e2e8f0;background:#fff;border-radius:6px;cursor:pointer;font-size:12px;
   padding:1px 5px;line-height:1.4;color:#cbd5e1}
 .rn-trg.on{color:#2563eb;border-color:#bfdbfe;background:#eff6ff}
@@ -5796,9 +5791,9 @@ _RICH_NOTE_ASSETS = """
 .rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:0;top:-1px;font-size:17px;cursor:pointer;color:#64748b}
 .rn-edit ul.cl>li[data-checked="1"]::before{content:"\\2611";color:#059669}
 .rn-edit ul.cl>li[data-checked="1"]{color:#94a3b8;text-decoration:line-through}
-/* 折りたたみ（子リストを持つ項目に▾/▸トグルを表示。左端に絶対配置で必ず見えるように） */
-.rn-edit li:has(> ul),.rn-edit li:has(> ol){list-style:none;position:relative}
-.rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";position:absolute;left:-15px;top:0;cursor:pointer;color:#64748b;font-size:12px;width:14px;text-align:center}
+/* 折りたたみ（子リストを持つ項目に▾/▸トグルを表示。li内に収めてクリックを確実に拾う） */
+.rn-edit li:has(> ul),.rn-edit li:has(> ol){list-style:none;position:relative;padding-left:16px}
+.rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";position:absolute;left:-2px;top:0;cursor:pointer;color:#64748b;font-size:12px;width:15px;text-align:center}
 .rn-edit li[data-collapsed="1"]:has(> ul)::before,.rn-edit li[data-collapsed="1"]:has(> ol)::before{content:"\\25B8";color:#2563eb}
 .rn-edit li[data-collapsed="1"] > ul,.rn-edit li[data-collapsed="1"] > ol{display:none}
 </style>
@@ -5849,26 +5844,41 @@ function rnChecklist(ev){ ev.preventDefault(); var e=_rnEl(); e.focus();
       Array.prototype.forEach.call(n.children,function(li){ if(!li.hasAttribute('data-checked'))li.setAttribute('data-checked','0'); }); break; } n=n.parentNode; } }
   rnDirty(); return false; }
 function rnIndent(ev,out){ ev.preventDefault(); var e=_rnEl(); e.focus();
-  document.execCommand(out?'outdent':'indent',false,null); rnNorm(); rnDirty(); return false; }
+  if(out){ rnDoOutdent(); } else { rnDoIndent(); } rnDirty(); return false; }
 function rnLink(ev){ ev.preventDefault(); var url=prompt('リンクURL'); if(url){ _rnEl().focus();
   document.execCommand('createLink',false,url); rnDirty(); } return false; }
-// ネストした ul/ol が li の兄弟になる（Chromeのindent挙動）ケースを、直前のliの子へ入れ込んで正規化。
-// これで li:has(>ul) による折りたたみトグルが確実に効く。
-function rnNorm(){ var e=_rnEl(); if(!e)return;
-  e.querySelectorAll('ul>ul, ul>ol, ol>ul, ol>ol').forEach(function(sub){
-    var prev=sub.previousElementSibling;
-    if(prev&&prev.nodeName==='LI'){ prev.appendChild(sub); }
-    else { var li=document.createElement('li'); sub.parentNode.insertBefore(li,sub); li.appendChild(sub); }
-  }); }
-function rnInList(){ var s=window.getSelection(),n=s&&s.anchorNode,e=_rnEl();
-  while(n&&n!==e){ if(n.nodeName==='LI')return true; n=n.parentNode; } return false; }
-function rnParentLiWithChildren(){ var s=window.getSelection(),n=s&&s.anchorNode,e=_rnEl();
-  while(n&&n!==e){ if(n.nodeName==='LI'&&n.querySelector(':scope>ul, :scope>ol'))return n; n=n.parentNode; } return null; }
+function rnNorm(){ /* 互換用: 現在は独自indent/outdentで構造を保つため何もしない */ }
+function rnCurrentLi(){ var s=window.getSelection(); if(!s.rangeCount)return null;
+  var n=s.anchorNode,e=_rnEl(); while(n&&n!==e){ if(n.nodeName==='LI')return n; n=n.parentNode; } return null; }
+// liの「自分のテキスト末尾」（子リストの手前）へキャレットを戻す
+function rnCaretInLi(li){ var r=document.createRange(),sel=window.getSelection(),node=null,i;
+  for(i=0;i<li.childNodes.length;i++){ var c=li.childNodes[i]; if(c.nodeName==='UL'||c.nodeName==='OL')break; node=c; }
+  if(node&&node.nodeType===3){ r.setStart(node,node.length); }
+  else if(node){ r.setStartAfter(node); } else { r.setStart(li,0); }
+  r.collapse(true); sel.removeAllRanges(); sel.addRange(r); }
+// 独自インデント: 直前のli配下（同型サブリスト）へ移動。ブラウザ差異でブレットが消える問題を回避。
+function rnDoIndent(){ var li=rnCurrentLi(); if(!li)return;
+  var prev=li.previousElementSibling; if(!prev||prev.nodeName!=='LI')return; // 先頭は下げられない
+  var sub=null,k=prev.children,i; for(i=0;i<k.length;i++){ if(k[i].nodeName==='UL'||k[i].nodeName==='OL'){sub=k[i];break;} }
+  if(!sub){ sub=document.createElement(li.parentNode.nodeName||'ul'); if(li.parentNode.classList&&li.parentNode.classList.contains('cl'))sub.className='cl'; prev.appendChild(sub); }
+  prev.removeAttribute('data-collapsed'); sub.appendChild(li); rnCaretInLi(li); }
+// 独自アウトデント: 親liの直後へ上げる（後続の兄弟は自分の子にぶら下げる）。常にliのまま＝ブレット維持。
+function rnDoOutdent(){ var li=rnCurrentLi(); if(!li)return;
+  var ul=li.parentNode; if(!ul||(ul.nodeName!=='UL'&&ul.nodeName!=='OL'))return;
+  var parentLi=ul.parentNode; if(!parentLi||parentLi.nodeName!=='LI')return; // 既に最上位
+  var grand=parentLi.parentNode;
+  var following=[],sib=li.nextElementSibling; while(sib){ following.push(sib); sib=sib.nextElementSibling; }
+  if(following.length){ var ns=document.createElement(ul.nodeName); if(ul.classList&&ul.classList.contains('cl'))ns.className='cl';
+    following.forEach(function(f){ns.appendChild(f);}); li.appendChild(ns); }
+  grand.insertBefore(li, parentLi.nextSibling);
+  if(!ul.children.length)ul.remove(); rnCaretInLi(li); }
+function rnParentLiWithChildren(){ var li=rnCurrentLi();
+  while(li){ if(li.nodeName==='LI'&&li.querySelector(':scope>ul, :scope>ol'))return li; li=li.parentNode; } return null; }
 function rnCollapse(expand){ var li=rnParentLiWithChildren(); if(!li)return;
   li.setAttribute('data-collapsed', expand?'0':'1'); rnDirty(); rnSave(); }
 function rnKey(ev){
   if(ev.key==='Tab'){ ev.preventDefault();
-    if(rnInList()){ document.execCommand(ev.shiftKey?'outdent':'indent',false,null); rnNorm(); }
+    if(rnCurrentLi()){ if(ev.shiftKey)rnDoOutdent(); else rnDoIndent(); }
     else if(!ev.shiftKey){ document.execCommand('insertHTML',false,'&nbsp;&nbsp;&nbsp;&nbsp;'); }
     rnDirty(); return; }
   // 折りたたみショートカット: Shift+Alt+- でたたむ / Shift+Alt++ で開く（JIS/US両対応）
@@ -5884,7 +5894,7 @@ function rnEditClick(ev){ var li=ev.target.closest('li'); if(!li)return;
   var pul=li.parentNode;
   if(pul&&pul.classList&&pul.classList.contains('cl')){ if(off<0||off>22)return; // チェックボックス領域
     li.setAttribute('data-checked', li.getAttribute('data-checked')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
-  if(li.querySelector(':scope > ul, :scope > ol')){ if(off>2)return;  // 左の▾/▸マーカー領域のみ
+  if(li.querySelector(':scope > ul, :scope > ol')){ if(off>16)return;  // 左の▾/▸マーカー領域のみ
     li.setAttribute('data-collapsed', li.getAttribute('data-collapsed')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
 }
 function rnDirty(){ _rnDirty=true; var s=document.getElementById('rnStatus'); if(s)s.textContent='編集中…';
@@ -5897,12 +5907,9 @@ function rnSave(){ if(!_rnDirty||_rnId==null)return; _rnDirty=false; clearTimeou
      if(d.ok)rnSync(id,e);
      if(s&&d.ok)setTimeout(function(){if(!_rnDirty)s.textContent='';},1800); })
    .catch(function(){ if(s)s.textContent='通信エラー'; _rnDirty=true; }); }
-function rnSync(id,e){ // ページ上のトリガー/チップを最新状態に
-  var txt=(e.textContent||'').replace(/\\s+/g,' ').trim(), has=txt.length>0;
+function rnSync(id,e){ // 一覧の📝ボタンの記入状態のみ同期（保存バーのチップは常に一定表示）
+  var has=(e.textContent||'').trim().length>0;
   document.querySelectorAll('.rn-trg[data-deal="'+id+'"]').forEach(function(b){ b.classList.toggle('on',has); });
-  var chip=document.getElementById('rnChip-'+id);
-  if(chip){ chip.classList.toggle('on',has); var p=chip.querySelector('.rn-sbprev');
-    if(p)p.textContent=has?(txt.slice(0,22)+(txt.length>22?'…':'')):''; }
 }
 document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ var m=document.getElementById('rnModal');
   if(m&&m.classList.contains('open')){ ev.preventDefault(); rnClose(); } } });
