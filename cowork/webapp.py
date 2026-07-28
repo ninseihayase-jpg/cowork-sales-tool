@@ -3719,7 +3719,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         slack_html = (f'<a class="tc-edit" href="{_esc(_plink)}" target="_blank" rel="noopener" '
                       f'title="起票元のSlackメッセージを開く" style="color:#2563eb">🔗 Slack</a>' if _plink else "")
         note = latest_notes.get(tid)
-        note_snip = _esc((note.get("body") or "")[:40]) if note else "進捗を追記…"
+        note_snip = _esc((note.get("body") or "")[:40]) if note else "進捗ログ"
         summary_html = (f'<div class="tc-sum" title="進捗メモのAIサマリ" '
                         f'onclick="openNotes({tid},&#39;discussion&#39;,&#39;進捗メモ&#39;)">🧠 '
                         f'{_esc((t.get("summary") or "").strip()[:130])}</div>'
