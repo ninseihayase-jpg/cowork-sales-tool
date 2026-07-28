@@ -12,6 +12,7 @@ import base64
 import hashlib
 import hmac
 import html
+import html.parser
 import json
 import os
 import re
@@ -5644,6 +5645,164 @@ def account_detail(con, acc: dict) -> str:
     </div>"""
 
 
+# ── OneNote風リッチメモ(#70) ─────────────────────────────────────────────
+# contenteditableで書いたHTMLをそのまま保存すると任意スクリプトが混入しうるため、
+# 保存時に必ずホワイトリストでサニタイズする（public repo・本番相当データ・XSS対策）。
+_RN_ALLOWED_TAGS = {"p", "div", "br", "b", "strong", "i", "em", "u", "s", "strike",
+                    "del", "h3", "ul", "ol", "li", "span", "a"}
+_RN_VOID_TAGS = {"br"}
+_RN_DROP_CONTENT_TAGS = {"script", "style", "head", "title", "meta", "link",
+                         "iframe", "object", "embed", "noscript"}
+_RN_MAX_LEN = 200_000  # 1商談のノート上限（暴走・巨大貼付の抑止）
+
+
+class _RichNoteSanitizer(html.parser.HTMLParser):
+    """contenteditable由来のHTMLを許可タグ/属性のみに整形する簡易サニタイザ。
+    許可外タグはアンラップ（中身のテキストは残す）、script/style等は中身ごと破棄。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+        self._drop_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if self._drop_depth:
+            if tag in _RN_DROP_CONTENT_TAGS:
+                self._drop_depth += 1
+            return
+        if tag in _RN_DROP_CONTENT_TAGS:
+            self._drop_depth = 1
+            return
+        if tag not in _RN_ALLOWED_TAGS:
+            return  # アンラップ（子は処理継続）
+        self.out.append(f"<{tag}{self._safe_attrs(tag, attrs)}>")
+
+    def handle_startendtag(self, tag, attrs):
+        if self._drop_depth or tag not in _RN_ALLOWED_TAGS:
+            return
+        self.out.append(f"<{tag}{self._safe_attrs(tag, attrs)}>")
+
+    def handle_endtag(self, tag):
+        if self._drop_depth:
+            if tag in _RN_DROP_CONTENT_TAGS:
+                self._drop_depth -= 1
+            return
+        if tag in _RN_ALLOWED_TAGS and tag not in _RN_VOID_TAGS:
+            self.out.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        if self._drop_depth:
+            return
+        self.out.append(html.escape(data, quote=False))
+
+    @staticmethod
+    def _safe_attrs(tag, attrs):
+        keep = ""
+        for k, v in attrs:
+            v = v or ""
+            if tag == "a" and k == "href" and v.startswith(("http://", "https://", "mailto:", "/")):
+                keep += f' href="{html.escape(v, quote=True)}" rel="noopener" target="_blank"'
+            elif tag == "li" and k == "data-checked":
+                keep += f' data-checked="{"1" if v == "1" else "0"}"'
+            elif tag in ("ul", "li", "span") and k == "class":
+                cls = " ".join(c for c in v.split() if c in ("cl",))
+                if cls:
+                    keep += f' class="{html.escape(cls, quote=True)}"'
+        return keep
+
+
+def _sanitize_rich_html(raw: str) -> str:
+    """リッチメモHTMLを許可タグ/属性のみに整形して返す。空相当なら空文字。"""
+    raw = (raw or "")[:_RN_MAX_LEN]
+    p = _RichNoteSanitizer()
+    p.feed(raw)
+    p.close()
+    out = "".join(p.out).strip()
+    # 中身がタグだけ（<br>や空div）なら空扱いにしてプレースホルダを出せるように
+    if not re.sub(r"<[^>]+>|&nbsp;|\s", "", out):
+        return ""
+    return out
+
+
+def _rich_note_editor(deal_id: int, content: str) -> str:
+    """個別商談の固定表示部に置くOneNote風メモ（WYSIWYG）。/deal/{id}/field で自動保存。"""
+    safe = _sanitize_rich_html(content or "")
+    return f"""
+    <div class="card rn-card">
+      <div class="rn-bar">
+        <b style="font-size:13px">📝 商談ノート</b>
+        <span class="rn-tools">
+          <button type="button" class="rn-b" title="見出し" onmousedown="return rnCmd(event,'formatBlock','&lt;h3&gt;')">🅷</button>
+          <button type="button" class="rn-b" title="箇条書き" onmousedown="return rnCmd(event,'insertUnorderedList')">•</button>
+          <button type="button" class="rn-b" title="チェックリスト" onmousedown="return rnChecklist(event)">☑</button>
+          <button type="button" class="rn-b" title="太字" onmousedown="return rnCmd(event,'bold')"><b>B</b></button>
+          <button type="button" class="rn-b" title="取り消し線" onmousedown="return rnCmd(event,'strikeThrough')"><s>S</s></button>
+          <button type="button" class="rn-b" title="リンク" onmousedown="return rnLink(event)">🔗</button>
+        </span>
+        <span class="rn-status" id="rnStatus"></span>
+      </div>
+      <div class="rn-edit" id="rnEdit" contenteditable="true"
+           data-ph="ここにメモ…（🅷見出し・• 箇条書き・☑ チェック・B 太字・S 取消）"
+           data-deal="{deal_id}" oninput="rnDirty()" onblur="rnSave()"
+           onclick="rnToggleCheck(event)">{safe}</div>
+    </div>
+    {_RICH_NOTE_JS}"""
+
+
+_RICH_NOTE_JS = """
+<style>
+.rn-card{padding:10px 12px}
+.rn-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.rn-tools{display:flex;gap:3px}
+.rn-b{border:1px solid #e2e8f0;background:#fff;border-radius:5px;min-width:26px;height:26px;
+  cursor:pointer;font-size:13px;line-height:1;padding:0 6px}
+.rn-b:hover{background:#f1f5f9}
+.rn-status{font-size:11px;color:#94a3b8;margin-left:auto}
+.rn-edit{border:1px solid #e6e9f0;border-radius:8px;padding:10px 12px;min-height:120px;
+  font-size:14px;line-height:1.7;background:#fffdfa;outline:none}
+.rn-edit:focus{border-color:#93c5fd;background:#fff}
+.rn-edit h3{font-size:15px;margin:10px 0 4px;color:#1e3a8a;border-bottom:1px solid #eef2f7}
+.rn-edit ul,.rn-edit ol{margin:4px 0;padding-left:24px}
+.rn-edit li{margin:2px 0}
+.rn-edit ul.cl{list-style:none;padding-left:2px}
+.rn-edit ul.cl>li{position:relative;padding-left:26px}
+.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:2px;top:-1px;font-size:17px;cursor:pointer;color:#64748b}
+.rn-edit ul.cl>li[data-checked="1"]::before{content:"\\2611";color:#059669}
+.rn-edit ul.cl>li[data-checked="1"]{color:#94a3b8;text-decoration:line-through}
+.rn-edit a{color:#2563eb}
+.rn-edit:empty::before{content:attr(data-ph);color:#cbd5e1;pointer-events:none}
+</style>
+<script>
+var _rnT=null,_rnDirty=false;
+function _rnEl(){return document.getElementById('rnEdit');}
+function rnCmd(ev,cmd,val){ ev.preventDefault(); var e=_rnEl(); if(!e)return false; e.focus();
+  document.execCommand(cmd,false,val||null); rnDirty(); return false; }
+function rnChecklist(ev){ ev.preventDefault(); var e=_rnEl(); if(!e)return false; e.focus();
+  document.execCommand('insertUnorderedList',false,null);
+  // 直近の選択位置のulをチェックリスト化
+  var sel=window.getSelection(); if(sel&&sel.anchorNode){ var n=sel.anchorNode;
+    while(n&&n!==e){ if(n.nodeName==='UL'){ n.classList.toggle('cl');
+      Array.prototype.forEach.call(n.children,function(li){ if(!li.hasAttribute('data-checked'))li.setAttribute('data-checked','0'); }); break; } n=n.parentNode; } }
+  rnDirty(); return false; }
+function rnLink(ev){ ev.preventDefault(); var url=prompt('リンクURL'); if(url){ _rnEl().focus();
+  document.execCommand('createLink',false,url); rnDirty(); } return false; }
+function rnToggleCheck(ev){ var li=ev.target.closest('ul.cl>li'); if(!li)return;
+  // マーカー(左端26px)クリックのみ判定＝テキスト編集を邪魔しない
+  var r=li.getBoundingClientRect(); if(ev.clientX-r.left>26)return;
+  li.setAttribute('data-checked', li.getAttribute('data-checked')==='1'?'0':'1'); rnSave(); }
+function rnDirty(){ _rnDirty=true; var s=document.getElementById('rnStatus'); if(s)s.textContent='編集中…';
+  clearTimeout(_rnT); _rnT=setTimeout(rnSave,900); }
+function rnSave(){ if(!_rnDirty)return; _rnDirty=false; clearTimeout(_rnT);
+  var e=_rnEl(); if(!e)return; var id=e.getAttribute('data-deal'); var s=document.getElementById('rnStatus');
+  fetch('/deal/'+id+'/field',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'field=rich_note&value='+encodeURIComponent(e.innerHTML)})
+   .then(function(r){return r.json();}).then(function(d){ if(s)s.textContent=d.ok?'✓ 保存済み':'保存エラー';
+     if(s&&d.ok)setTimeout(function(){if(!_rnDirty)s.textContent='';},2000); })
+   .catch(function(){ if(s)s.textContent='通信エラー'; _rnDirty=true; }); }
+window.addEventListener('beforeunload',function(){ if(_rnDirty)rnSave(); });
+</script>"""
+
+
 def deal_form(con, deal=None, return_to: str | None = None) -> str:
     deal = deal or {}
     # 特定日/MS超過等から遷移した場合の戻り先。保存後・キャンセル時にここへ戻す（未指定は一覧/詳細）。
@@ -6080,6 +6239,8 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             f'<button class="btn" style="background:#7f1d1d;color:#fff;border-color:#7f1d1d;'
             f'font-size:12px;padding:8px 14px;margin-top:8px">🗑 商談を完全に削除</button>'
             f'</form>')
+    # OneNote風ノート（#70）は既存商談のみ（自動保存に商談IDが要るため）
+    rich_note_html = _rich_note_editor(deal["id"], deal.get("rich_note") or "") if deal.get("id") else ""
     return f"""
     <div class="card">
     <h2 style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
@@ -6088,6 +6249,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     </h2>
     {_save_bar('dealForm', title=_sb_title, extra=_sb_extra, cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
     {top_action_buttons}
+    {rich_note_html}
     {lead_picker_html}
     <form id="dealForm" method="post" action="/deal/save">
       <input type="hidden" name="id" value="{_esc(deal.get('id'))}">
@@ -11670,7 +11832,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _DEAL_ALLOWED_FIELDS = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
                                              "client_budget", "value_lumpsum", "deal_name", "importance",
                                              "next_milestone_date", "next_milestone_label", "next_milestone_type",
-                                             "close_reason", "exhibition_name"}
+                                             "close_reason", "exhibition_name", "rich_note"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -11706,6 +11868,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                    "next_milestone_type": "type"}[field]
                             sfa_db.set_earliest_milestone_field(con, deal_id, _mf, value)
                             _ok = True
+                        elif field == "rich_note":
+                            # OneNote風ノート(#70): 保存時に必ずサニタイズ（HTMLホワイトリスト）。
+                            _clean = _sanitize_rich_html(value)
+                            con.execute(
+                                "UPDATE deals SET rich_note=?, updated_at=datetime('now') WHERE id=?",
+                                (_clean or None, deal_id),
+                            )
+                            con.commit()
+                            _ok = True
                         else:
                             con.execute(
                                 f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
@@ -11713,7 +11884,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             )
                             con.commit()
                             _ok = True
-                        if _ok and theme_client is not None:
+                        # ノートはHisho同期対象外（THEME_COLUMNS外）＝毎回の自動保存で同期を走らせない
+                        if _ok and field != "rich_note" and theme_client is not None:
                             try:
                                 theme_link.sync_deal(theme_client, con, deal_id)
                             except Exception as _exc:

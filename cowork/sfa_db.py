@@ -348,6 +348,7 @@ CREATE TABLE IF NOT EXISTS deals (
     next_milestone_label TEXT,
     next_milestone_type TEXT,         -- 次回MSの種別: アポ / タスク。Slack日次通知は「アポ」(および未設定)のみ対象
     note TEXT,
+    rich_note TEXT,                   -- OneNote風リッチメモ(#70)。サニタイズ済みHTML。noteとは別枠(自動追記で汚れないノート)
     goal TEXT,
     importance TEXT,                  -- 重要度: 高/中/低
     status TEXT DEFAULT 'open',       -- open / closed
@@ -919,6 +920,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             ("client_contact", "TEXT"),
             ("client_dept", "TEXT"),
             ("exhibition_name", "TEXT"),
+            ("rich_note", "TEXT"),
         ]:
             if col not in deal_cols:
                 con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")
