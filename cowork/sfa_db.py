@@ -587,6 +587,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source        TEXT DEFAULT 'web',      -- web/slack/ai
     slack_channel TEXT,
     slack_ts      TEXT,
+    slack_permalink TEXT,                  -- 起票元Slackメッセージへのpermalink（事務タスク等）
     created_by    TEXT,
     created_at    TEXT DEFAULT (datetime('now')),
     updated_at    TEXT DEFAULT (datetime('now')),
@@ -967,6 +968,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN is_admin INTEGER DEFAULT 0")
         if _task_cols and "requester" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN requester TEXT")
+        if _task_cols and "slack_permalink" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN slack_permalink TEXT")
         # project列が存在する状態でインデックスを作る（SCHEMAではなくここで＝既存DBでも安全）
         if _task_cols:
             con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")
@@ -2394,7 +2397,7 @@ def delete_deal_issue_memo(con, memo_id: int) -> None:
 TASK_FIELDS = [
     "title", "detail", "project", "next_action", "assignee", "due_date", "status",
     "priority", "category", "is_admin", "requester", "link_type", "link_id", "source",
-    "slack_channel", "slack_ts", "created_by",
+    "slack_channel", "slack_ts", "slack_permalink", "created_by",
 ]
 
 

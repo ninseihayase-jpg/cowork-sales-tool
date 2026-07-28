@@ -3710,6 +3710,9 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         cat_html = f'<span class="dc-cat">{_esc(cat)}</span>' if cat else ""
         due_html = (f'<span style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
                     if due else '<span style="color:#cbd5e1">📅期限なし</span>')
+        _plink = (t.get("slack_permalink") or "").strip()
+        slack_html = (f'<a href="{_esc(_plink)}" target="_blank" rel="noopener" title="起票元のSlackメッセージを開く" '
+                      f'style="font-size:11px;color:#2563eb;text-decoration:none">🔗 Slack</a>' if _plink else "")
         na_html = f'<div class="dc-na">▶ {_esc(na)}</div>' if na else ""
         return (
             f'<div class="desk-card{" pinned" if pinned else ""}" id="dc-{tid}" data-search="{search}" '
@@ -3718,7 +3721,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'<button type="button" class="dc-pin{" on" if pinned else ""}" title="★最優先ピン" '
             f'onclick="deskPin({tid},this)">★</button></span>'
             f'{na_html}'
-            f'<div class="dc-row">{req_html}{cat_html}{due_html}</div>'
+            f'<div class="dc-row">{req_html}{cat_html}{due_html}{slack_html}</div>'
             f'<div class="dc-row">'
             f'<input type="date" value="{_esc(due)}" title="期限" onchange="deskDue({tid},this.value)" '
             f'style="font-size:11px;color:{ucolor}">'
@@ -10391,20 +10394,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect("/tasks")
 
                 elif path == "/desk-tasks/save":
-                    # 事務タスク(is_admin=1)の手入力起票。既定担当は DESK_ASSIGNEE（無ければ空＝受信箱）。
+                    # 事務タスク(is_admin=1)の手入力起票。既定担当は DESK_ASSIGNEE（先頭=アミ）。
+                    # 期限未指定なら既定で3営業日後。受付＝受信箱に留める（自動整理しない）。
                     _cat = f.get("category") or None  # 事務はカテゴリ手選択（AI判定はしない）
-                    _saved_id = sfa_db.upsert_task(
+                    _due = (f.get("due_date") or "").strip() or \
+                        sfa_db.add_business_days(_today_jst(), 3).isoformat()
+                    sfa_db.upsert_task(
                         con,
                         title=f.get("title") or "(無題)",
                         detail=f.get("detail") or None,
                         requester=(f.get("requester") or "").strip() or None,
                         assignee=sfa_db.DESK_ASSIGNEE_DEFAULT or None,
-                        due_date=f.get("due_date") or None,
+                        due_date=_due,
                         priority=f.get("priority") or "中",
                         category=_cat,
                         status="受信箱", is_admin=1, source="web",
                     )
-                    _task_auto_triage(con, _saved_id)
                     self._redirect("/desk-tasks")
 
                 elif path == "/task-projects/save":

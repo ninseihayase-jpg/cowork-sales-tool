@@ -178,25 +178,30 @@ def _view_val(state: dict, block_id: str):
 
 def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_date=None,
                             project=None, category=None, slack_channel=None, slack_ts=None,
-                            created_by=None, ai_category=True, is_admin=0, requester=None) -> int:
+                            slack_permalink=None, created_by=None, ai_category=True,
+                            is_admin=0, requester=None) -> int:
     """モーダル/AI抽出の値からタスク作成。種類が空かつai_category=Trueならその場でAI判定
-    （モーダル送信＝3秒制約のある文脈では ai_category=False にして背景で後追い判定）。担当＋期限で自動整理。
-    is_admin=1 で事務タスク（requester=依頼者）。事務タスクは分類体系が異なるためAI後追い判定はしない。"""
+    （モーダル送信＝3秒制約のある文脈では ai_category=False にして背景で後追い判定）。
+    is_admin=1 で事務タスク（requester=依頼者）。事務タスクは分類体系が異なるためAI後追い判定はしない。
+    事務タスクは期限未指定なら既定で3営業日後にし、受信箱に留める（受付=受信箱の運用のため自動整理しない）。"""
     if not category and ai_category and not is_admin:
         try:
             from .webapp import _ai_guess_task_category  # 遅延import（循環回避）
             category = _ai_guess_task_category(title or "", next_action or "")
         except Exception:
             category = None
+    if is_admin and not (due_date or "").strip():
+        due_date = _admin_default_due()   # 事務タスクの既定期限＝3営業日後
     tid = sfa_db.upsert_task(
         con, title=title or "(無題)", next_action=next_action or None,
         assignee=assignee or None, due_date=due_date or None,
         project=project or None, category=category or None,
         status="受信箱", source="slack", is_admin=1 if is_admin else 0,
         requester=requester or None,
-        slack_channel=slack_channel, slack_ts=slack_ts, created_by=created_by)
-    # 担当＋期限が揃えば受信箱→未着手へ
-    if (assignee or "").strip() and (due_date or "").strip():
+        slack_channel=slack_channel, slack_ts=slack_ts, slack_permalink=slack_permalink,
+        created_by=created_by)
+    # 通常タスクは担当＋期限が揃えば受信箱→未着手へ。事務タスクは受付＝受信箱に留める。
+    if not is_admin and (assignee or "").strip() and (due_date or "").strip():
         sfa_db.set_task_status(con, tid, "未着手")
     return tid
 
@@ -220,6 +225,21 @@ def handle_slash(con, form: dict) -> None:
 
 
 # ── リアクション🎯 ────────────────────────────────────────────────────────
+
+def _admin_default_due() -> str:
+    """事務タスクの既定期限＝今日(JST)から3営業日後（YYYY-MM-DD）。"""
+    from datetime import datetime, timezone, timedelta
+    today = datetime.now(timezone(timedelta(hours=9))).date()
+    return sfa_db.add_business_days(today, 3).isoformat()
+
+
+def _message_permalink(channel: str, ts: str, token: str | None = None) -> str | None:
+    """起票元Slackメッセージへのpermalink URL（chat.getPermalink）。取得失敗時はNone。"""
+    if not channel or not ts:
+        return None
+    r = _slack_get("chat.getPermalink", {"channel": channel, "message_ts": ts}, token=token)
+    return r.get("permalink") if r.get("ok") else None
+
 
 def _fetch_message(channel: str, ts: str, token: str | None = None) -> dict:
     """channel の ts に厳密一致するメッセージ辞書だけを返す（無ければ{}）。
@@ -263,6 +283,7 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
         _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
                     text="⚠ このメッセージ本文を取得できませんでした（Botの参加/権限をご確認ください）。タスクは作成していません。")
         return
+    permalink = _message_permalink(channel, ts, token=token)  # 起票元メッセージのURL
     if is_admin:
         # 事務タスク: 依頼者=メッセージ投稿者、担当=事務員。カテゴリは事務用分類から。
         author_id = (msg or {}).get("user") or ""
@@ -272,6 +293,7 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
             con, title=prefill["title"], next_action=prefill["next_action"] or None,
             assignee=(DESK_ASSIGNEE or None), due_date=prefill["due_date"] or None,
             category=prefill["category"] or None, slack_channel=channel, slack_ts=ts,
+            slack_permalink=permalink,
             created_by=owner_from_slack_user(user_id, token=token) or user_id,
             is_admin=1, requester=requester)
         link = f"{SFA_TOOL_URL}/desk-tasks#dc-{tid}"
@@ -290,7 +312,7 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
     tid = create_task_from_fields(
         con, title=prefill["title"], next_action=prefill["next_action"] or None,
         assignee=owner, due_date=prefill["due_date"] or None, category=prefill["category"] or None,
-        slack_channel=channel, slack_ts=ts, created_by=owner or user_id)
+        slack_channel=channel, slack_ts=ts, slack_permalink=permalink, created_by=owner or user_id)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
     _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
                 text=f"🎯 タスク化しました: {prefill['title']}",
@@ -333,11 +355,12 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
     token指定で事務Botとして返信・ユーザー解決を行う。"""
     prefill = ai_extract_task(text, categories=sfa_db.ADMIN_TASK_CATEGORIES)
     requester = owner_from_slack_user(user_id, token=token)  # 依頼＝メンションした本人
+    permalink = _message_permalink(channel, thread_ts, token=token)
     tid = create_task_from_fields(
         con, title=prefill["title"], next_action=prefill["next_action"] or None,
         assignee=(DESK_ASSIGNEE or None), due_date=prefill["due_date"] or None,
         category=prefill["category"] or None, slack_channel=channel, slack_ts=thread_ts,
-        created_by=requester or user_id, is_admin=1, requester=requester)
+        slack_permalink=permalink, created_by=requester or user_id, is_admin=1, requester=requester)
     link = f"{SFA_TOOL_URL}/desk-tasks#dc-{tid}"
     _req = f"（依頼者: {requester}）" if requester else ""
     _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
