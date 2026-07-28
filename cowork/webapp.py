@@ -5785,15 +5785,14 @@ _RICH_NOTE_ASSETS = """
 .rn-edit ul,.rn-edit ol{margin:1px 0;padding-left:24px}
 .rn-edit li{margin:1px 0}
 .rn-edit a{color:#2563eb}
-/* チェックリスト */
-.rn-edit ul.cl{list-style:none;padding-left:4px}
-.rn-edit ul.cl>li{position:relative;padding-left:24px}
-.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:0;top:-1px;font-size:17px;cursor:pointer;color:#64748b}
-.rn-edit ul.cl>li[data-checked="1"]::before{content:"\\2611";color:#059669}
-.rn-edit ul.cl>li[data-checked="1"]{color:#94a3b8;text-decoration:line-through}
-/* 折りたたみ（子リストを持つ項目に▾/▸トグルを表示。li内に収めてクリックを確実に拾う） */
-.rn-edit li:has(> ul),.rn-edit li:has(> ol){list-style:none;position:relative;padding-left:16px}
-.rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";position:absolute;left:-2px;top:0;cursor:pointer;color:#64748b;font-size:12px;width:15px;text-align:center}
+/* チェックリスト（行ごと li.cl。旧データ互換で ul.cl>li も同じ見た目に） */
+.rn-edit li.cl,.rn-edit ul.cl>li{list-style:none;position:relative;padding-left:24px}
+.rn-edit li.cl::before,.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:0;top:-1px;font-size:17px;cursor:pointer;color:#64748b}
+.rn-edit li.cl[data-checked="1"]::before,.rn-edit ul.cl>li[data-checked="1"]::before{content:"\\2611";color:#059669}
+.rn-edit li.cl[data-checked="1"],.rn-edit ul.cl>li[data-checked="1"]{color:#94a3b8;text-decoration:line-through}
+/* 折りたたみ（子を持つ項目の▾/▸トグルを、通常のブレットと同じ位置に置いて縦を揃える） */
+.rn-edit li:has(> ul),.rn-edit li:has(> ol){list-style:none;position:relative}
+.rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";position:absolute;left:-16px;top:0;cursor:pointer;color:#64748b;font-size:12px;width:14px;text-align:center}
 .rn-edit li[data-collapsed="1"]:has(> ul)::before,.rn-edit li[data-collapsed="1"]:has(> ol)::before{content:"\\25B8";color:#2563eb}
 .rn-edit li[data-collapsed="1"] > ul,.rn-edit li[data-collapsed="1"] > ol{display:none}
 </style>
@@ -5837,11 +5836,13 @@ function rnClose(){ if(_rnDirty)rnSave(); document.getElementById('rnModal').cla
   document.getElementById('rnBackdrop').style.display='none'; }
 function rnCmd(ev,cmd,val){ ev.preventDefault(); var e=_rnEl(); e.focus();
   document.execCommand(cmd,false,val||null); rnNorm(); rnDirty(); return false; }
+// チェックリストは「行ごと」に切替（liに .cl を付ける）。リスト全体ではなく現在行だけを対象にする。
 function rnChecklist(ev){ ev.preventDefault(); var e=_rnEl(); e.focus();
-  document.execCommand('insertUnorderedList',false,null);
-  var sel=window.getSelection(); if(sel&&sel.anchorNode){ var n=sel.anchorNode;
-    while(n&&n!==e){ if(n.nodeName==='UL'){ n.classList.add('cl');
-      Array.prototype.forEach.call(n.children,function(li){ if(!li.hasAttribute('data-checked'))li.setAttribute('data-checked','0'); }); break; } n=n.parentNode; } }
+  var li=rnCurrentLi();
+  if(!li){ document.execCommand('insertUnorderedList',false,null); li=rnCurrentLi(); }
+  if(!li)return false;
+  if(li.classList.contains('cl')){ li.classList.remove('cl'); li.removeAttribute('data-checked'); }
+  else { li.classList.add('cl'); if(!li.hasAttribute('data-checked'))li.setAttribute('data-checked','0'); }
   rnDirty(); return false; }
 function rnIndent(ev,out){ ev.preventDefault(); var e=_rnEl(); e.focus();
   if(out){ rnDoOutdent(); } else { rnDoIndent(); } rnDirty(); return false; }
@@ -5860,7 +5861,7 @@ function rnCaretInLi(li){ var r=document.createRange(),sel=window.getSelection()
 function rnDoIndent(){ var li=rnCurrentLi(); if(!li)return;
   var prev=li.previousElementSibling; if(!prev||prev.nodeName!=='LI')return; // 先頭は下げられない
   var sub=null,k=prev.children,i; for(i=0;i<k.length;i++){ if(k[i].nodeName==='UL'||k[i].nodeName==='OL'){sub=k[i];break;} }
-  if(!sub){ sub=document.createElement(li.parentNode.nodeName||'ul'); if(li.parentNode.classList&&li.parentNode.classList.contains('cl'))sub.className='cl'; prev.appendChild(sub); }
+  if(!sub){ sub=document.createElement(li.parentNode.nodeName||'ul'); prev.appendChild(sub); }
   prev.removeAttribute('data-collapsed'); sub.appendChild(li); rnCaretInLi(li); }
 // 独自アウトデント: 親liの直後へ上げる（後続の兄弟は自分の子にぶら下げる）。常にliのまま＝ブレット維持。
 function rnDoOutdent(){ var li=rnCurrentLi(); if(!li)return;
@@ -5868,7 +5869,7 @@ function rnDoOutdent(){ var li=rnCurrentLi(); if(!li)return;
   var parentLi=ul.parentNode; if(!parentLi||parentLi.nodeName!=='LI')return; // 既に最上位
   var grand=parentLi.parentNode;
   var following=[],sib=li.nextElementSibling; while(sib){ following.push(sib); sib=sib.nextElementSibling; }
-  if(following.length){ var ns=document.createElement(ul.nodeName); if(ul.classList&&ul.classList.contains('cl'))ns.className='cl';
+  if(following.length){ var ns=document.createElement(ul.nodeName);
     following.forEach(function(f){ns.appendChild(f);}); li.appendChild(ns); }
   grand.insertBefore(li, parentLi.nextSibling);
   if(!ul.children.length)ul.remove(); rnCaretInLi(li); }
@@ -5889,12 +5890,20 @@ function rnKey(ev){
     if(plus){ ev.preventDefault(); rnCollapse(true); return; }
   }
 }
-function rnEditClick(ev){ var li=ev.target.closest('li'); if(!li)return;
+function rnEditClick(ev){
+  var t=ev.target, li=t.closest('li');
+  // ▾/•/☐ マーカーはliの左外側にあり、クリックがul/ol上に落ちることがある→Y座標で該当liを拾う
+  if(!li && (t.nodeName==='UL'||t.nodeName==='OL')){
+    for(var i=0;i<t.children.length;i++){ var c=t.children[i]; if(c.nodeName!=='LI')continue;
+      var cr=c.getBoundingClientRect(); if(ev.clientY>=cr.top&&ev.clientY<=cr.bottom){ li=c; break; } } }
+  if(!li)return;
   var r=li.getBoundingClientRect(), off=ev.clientX-r.left;
-  var pul=li.parentNode;
-  if(pul&&pul.classList&&pul.classList.contains('cl')){ if(off<0||off>22)return; // チェックボックス領域
+  // チェックボックス（行ごと li.cl、旧データは ul.cl>li）
+  var isCheck=li.classList.contains('cl')||(li.parentNode&&li.parentNode.classList&&li.parentNode.classList.contains('cl'));
+  if(isCheck){ if(off<0||off>22)return;
     li.setAttribute('data-checked', li.getAttribute('data-checked')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
-  if(li.querySelector(':scope > ul, :scope > ol')){ if(off>16)return;  // 左の▾/▸マーカー領域のみ
+  // 折りたたみ（子リストを持つ項目の▾/▸。マーカーはliの左＝off<=4程度）
+  if(li.querySelector(':scope > ul, :scope > ol')){ if(off>4)return;
     li.setAttribute('data-collapsed', li.getAttribute('data-collapsed')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
 }
 function rnDirty(){ _rnDirty=true; var s=document.getElementById('rnStatus'); if(s)s.textContent='編集中…';

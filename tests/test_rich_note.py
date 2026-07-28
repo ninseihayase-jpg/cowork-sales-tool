@@ -67,6 +67,14 @@ def test_sanitizer_keeps_collapse_and_checklist_attrs():
     assert 'class="cl"' in out and 'data-checked="1"' in out
 
 
+def test_sanitizer_per_line_checklist_mixed_with_bullets():
+    # 行ごと（li.cl）のチェックボックスと通常ブレットが1つのリストに混在できる
+    src = '<ul><li class="cl" data-checked="1">done</li><li>bullet</li><li class="cl" data-checked="0">todo</li></ul>'
+    out = webapp._sanitize_rich_html(src)
+    assert 'class="cl"' in out and 'data-checked="1"' in out and 'data-checked="0"' in out
+    assert "<li>bullet</li>" in out  # 通常ブレット行はそのまま残る
+
+
 def test_rich_note_preview_strips_tags():
     assert webapp._rich_note_preview("<h3>方針</h3><ul><li>予算</li></ul>") == "方針 予算"
     assert webapp._rich_note_preview("") == ""
