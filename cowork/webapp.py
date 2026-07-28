@@ -5779,6 +5779,10 @@ _RICH_NOTE_ASSETS = """
 .rn-status{font-size:11px;color:#94a3b8}
 .rn-x{margin-left:auto;cursor:pointer;color:#94a3b8;font-size:22px;border:none;background:none;line-height:1}
 .rn-edit{flex:1;overflow:auto;padding:14px 22px;font-size:14px;line-height:1.45;outline:none}
+.rn-hint{flex:none;padding:5px 14px;border-top:1px solid #f1f5f9;background:#fbfcfe;
+  font-size:10.5px;color:#aab4c2;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rn-hint kbd{font-family:inherit;background:#eef2f7;border:1px solid #e2e8f0;border-radius:3px;
+  padding:0 4px;color:#64748b;font-size:10px}
 .rn-edit:empty::before{content:attr(data-ph);color:#cbd5e1}
 .rn-edit h3{font-size:16px;margin:9px 0 3px;color:#1e3a8a;border-bottom:1px solid #eef2f7;padding-bottom:2px}
 .rn-edit p,.rn-edit div{margin:1px 0}
@@ -5818,6 +5822,11 @@ _RICH_NOTE_ASSETS = """
   <div class="rn-edit" id="rnEdit" contenteditable="true"
        data-ph="ここにメモ…（🅷見出し / • 箇条書き / ☑ チェック / Tabで階層 / 子項目は▾で折りたたみ）"
        oninput="rnDirty()" onclick="rnEditClick(event)" onkeydown="rnKey(event)"></div>
+  <div class="rn-hint">
+    <kbd>Tab</kbd> 字下げ ／ <kbd>Shift</kbd>+<kbd>Tab</kbd> 戻す
+    　<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>-</kbd> たたむ ／ <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>+</kbd> 開く
+    　<kbd>Esc</kbd> 閉じる　・自動保存
+  </div>
 </div>
 <script>
 var _rnT=null,_rnDirty=false,_rnId=null;
