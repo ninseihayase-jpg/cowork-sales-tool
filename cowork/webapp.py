@@ -3610,15 +3610,26 @@ function deskDelete(id){ if(!confirm('このタスクを削除しますか？（
 function deskSearch(){ var q=(document.getElementById('deskSearch').value||'').toLowerCase();
   document.querySelectorAll('.desk-card').forEach(function(c){
     c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
+function deskCardClick(ev,card){ if(ev.target.closest('button,a,select,input,textarea,label'))return;
+  card.classList.toggle('open'); }
+function deskExpandAll(open){ document.querySelectorAll('.desk-card').forEach(function(c){
+  c.classList.toggle('open',open); }); }
 </script>
 <style>
 .desk-cols{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
 .desk-col{flex:1 0 210px;min-width:210px;background:#f8fafc;border-radius:8px;padding:6px}
 .desk-col h3{margin:2px 0 6px;font-size:13px;color:#334155}
 .desk-card{background:#fff;border:1px solid #e2e8f0;border-left:4px solid #cbd5e1;border-radius:6px;
-  padding:7px 8px;margin-bottom:7px;font-size:12px}
+  padding:6px 8px;margin-bottom:6px;font-size:12px}
 .desk-card.pinned{border-left-color:#f59e0b;background:#fffdf5}
-.desk-card .dc-ttl{font-weight:600;font-size:13px;display:block;margin-bottom:3px}
+/* コンパクト折りたたみ（旧タスク看板と同じUX）: ヘッダだけ常時表示、本文は開いた時のみ */
+.desk-card .dc-head{display:flex;align-items:center;gap:6px;cursor:pointer}
+.desk-card .dc-dot{width:9px;height:9px;border-radius:50%;flex:none}
+.desk-card .dc-headttl{flex:1;font-weight:600;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.desk-card .dc-car{font-size:10px;color:#94a3b8;transition:transform .15s}
+.desk-card.open .dc-car{transform:rotate(90deg)}
+.desk-card .dc-body{display:none;margin-top:5px}
+.desk-card.open .dc-body{display:block}
 .desk-card .dc-na{color:#475569;margin:2px 0}
 .desk-card .dc-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:4px}
 .dc-req{background:#eef2ff;color:#3730a3;border-radius:10px;padding:1px 7px;font-size:11px}
@@ -3714,28 +3725,38 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         slack_html = (f'<a href="{_esc(_plink)}" target="_blank" rel="noopener" title="起票元のSlackメッセージを開く" '
                       f'style="font-size:11px;color:#2563eb;text-decoration:none">🔗 Slack</a>' if _plink else "")
         na_html = f'<div class="dc-na">▶ {_esc(na)}</div>' if na else ""
+        _cat_opts = "".join(
+            f'<option value="{html.escape(c)}"{" selected" if c == cat else ""}>{html.escape(c)}</option>'
+            for c in cats)
+        # 基本コンパクト（旧タスク看板と同じ）: ヘッダ＝緊急度ドット+件名+依頼者+期限+ピン。
+        # クリックで本文（次アクション/各操作）を展開。
         return (
             f'<div class="desk-card{" pinned" if pinned else ""}" id="dc-{tid}" data-search="{search}" '
-            f'style="border-left-color:{ucolor if not pinned else "#f59e0b"}">'
-            f'<span class="dc-ttl">{_esc(t.get("title"))}'
+            f'onclick="deskCardClick(event,this)" style="border-left-color:{ucolor if not pinned else "#f59e0b"}">'
+            f'<div class="dc-head">'
+            f'<span class="dc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
+            f'<span class="dc-headttl">{_esc(t.get("title"))}</span>'
+            f'{req_html}{due_html}'
+            f'<span class="dc-car">▸</span>'
             f'<button type="button" class="dc-pin{" on" if pinned else ""}" title="★最優先ピン" '
-            f'onclick="deskPin({tid},this)">★</button></span>'
+            f'onclick="deskPin({tid},this)">★</button>'
+            f'</div>'
+            f'<div class="dc-body">'
             f'{na_html}'
-            f'<div class="dc-row">{req_html}{cat_html}{due_html}{slack_html}</div>'
+            f'<div class="dc-row">{cat_html}{slack_html}</div>'
             f'<div class="dc-row">'
             f'<input type="date" value="{_esc(due)}" title="期限" onchange="deskDue({tid},this.value)" '
             f'style="font-size:11px;color:{ucolor}">'
             f'<select title="種類" onchange="deskCat({tid},this.value)" style="font-size:11px">'
-            f'<option value="">種類</option>'
-            + "".join(f'<option value="{html.escape(c)}"{" selected" if c == cat else ""}>{html.escape(c)}</option>' for c in cats)
-            + '</select></div>'
+            f'<option value="">種類</option>{_cat_opts}</select>'
+            f'</div>'
             f'<div class="dc-row">'
             f'<select title="担当（受信箱＝未割当。磯部へパス可）" onchange="deskAssign({tid},this.value)" style="font-size:11px">{_asg_opts((t.get("assignee") or "").strip())}</select>'
             f'<select title="状態を変更" onchange="deskStatus({tid},this)" style="font-size:11px">{_status_opts(t.get("status") or "受信箱")}</select>'
             f'<a class="btn sec" href="/tasks/{tid}/edit" style="font-size:11px;padding:2px 8px">編集</a>'
             f'<button type="button" class="btn sec" onclick="deskDelete({tid})" '
             f'style="font-size:11px;padding:2px 8px;color:#c53030">🗑</button>'
-            f'</div></div>')
+            f'</div></div></div>')
 
     columns = ""
     for s in sfa_db.TASK_STATUSES:
@@ -3774,6 +3795,8 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
       <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
       <input type="text" id="deskSearch" placeholder="🔍 件名・依頼者・内容で検索…" oninput="deskSearch()" style="max-width:240px">
       <a class="btn sec" href="/desk-tasks">リセット</a>
+      <button type="button" class="btn sec" onclick="deskExpandAll(true)" style="font-size:12px">▼ 全部開く</button>
+      <button type="button" class="btn sec" onclick="deskExpandAll(false)" style="font-size:12px">▶ 折りたたむ</button>
     </form>"""
 
     # 起票フォーム（手入力）

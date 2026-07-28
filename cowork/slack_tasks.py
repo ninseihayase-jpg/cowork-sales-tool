@@ -183,7 +183,15 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
     """モーダル/AI抽出の値からタスク作成。種類が空かつai_category=Trueならその場でAI判定
     （モーダル送信＝3秒制約のある文脈では ai_category=False にして背景で後追い判定）。
     is_admin=1 で事務タスク（requester=依頼者）。事務タスクは分類体系が異なるためAI後追い判定はしない。
-    事務タスクは期限未指定なら既定で3営業日後にし、受信箱に留める（受付=受信箱の運用のため自動整理しない）。"""
+    事務タスクは期限未指定なら既定で3営業日後にし、受信箱に留める（受付=受信箱の運用のため自動整理しない）。
+    同一Slackメッセージ(slack_channel+slack_ts+is_admin)から既にタスクがあれば新規作成せず既存idを返す
+    （Slackの再送・別event_id二重配信・再操作による重複起票を防ぐ）。"""
+    if slack_channel and slack_ts:
+        _dup = con.execute(
+            "SELECT id FROM tasks WHERE slack_channel=? AND slack_ts=? AND COALESCE(is_admin,0)=? LIMIT 1",
+            (slack_channel, slack_ts, 1 if is_admin else 0)).fetchone()
+        if _dup:
+            return _dup[0]  # 同一メッセージからの重複起票を防止（既存タスクを返す）
     if not category and ai_category and not is_admin:
         try:
             from .webapp import _ai_guess_task_category  # 遅延import（循環回避）
