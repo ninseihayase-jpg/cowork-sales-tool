@@ -2673,6 +2673,39 @@ def delete_deal_attachment(con, attachment_id: int) -> None:
     con.commit()
 
 
+def deal_delete_impact(con, deal_id: int) -> dict:
+    """商談を完全削除したときに連鎖削除される子データ件数と、Hisho連携ID群を返す。
+    削除前の確認メッセージ・完了フラッシュ・Hisho側クリーンアップに使う。
+    子テーブルはFKの ON DELETE CASCADE で自動削除される（connect()で foreign_keys=ON）。"""
+    did = int(deal_id)
+    c = lambda sql: con.execute(sql, (did,)).fetchone()[0]
+    d = get_deal(con, did)
+    dev_hisho_ids = [r[0] for r in con.execute(
+        "SELECT hisho_id FROM dev_projects WHERE deal_id=? AND hisho_id IS NOT NULL", (did,))]
+    return {
+        "activities": c("SELECT COUNT(*) FROM activities WHERE deal_id=?"),
+        "issues": c("SELECT COUNT(*) FROM deal_issues WHERE deal_id=?"),
+        "milestones": c("SELECT COUNT(*) FROM deal_milestones WHERE deal_id=?"),
+        "dev_projects": c("SELECT COUNT(*) FROM dev_projects WHERE deal_id=?"),
+        "deliveries": c("SELECT COUNT(*) FROM deliveries WHERE deal_id=?"),
+        "attachments": c("SELECT COUNT(*) FROM deal_attachments WHERE deal_id=?"),
+        "leads_detached": c("SELECT COUNT(*) FROM leads WHERE deal_id=?"),
+        "theme_id": (d or {}).get("theme_id"),
+        "dev_hisho_ids": dev_hisho_ids,
+    }
+
+
+def delete_deal(con, deal_id: int) -> None:
+    """商談を完全削除（物理削除）。クローズ（リード化）ではなく行そのものを消す。
+    子データ（deal_milestones/activities/hearing_results/dev_projects(+tools)/deal_issues(+memos)/
+    deal_attachments/deliveries(+assignments)）は ON DELETE CASCADE で連鎖削除、leads.deal_id は
+    SET NULL（＝そのリードは「未商談化」に戻る）。foreign_keys=ON 前提（connect()で常時ON）。
+    slack_threads.deal_id はFK未設定のため孤児として残るが害はない（Botのスレッド状態のみ）。
+    Hisho側（todos/dev_projects）のクリーンアップは呼び出し側でtheme_client経由の best-effort。"""
+    con.execute("DELETE FROM deals WHERE id=?", (int(deal_id),))
+    con.commit()
+
+
 # ---- 開発案件の追加ツールリンク（dev_project_tools） ----
 
 def list_dev_project_tools(con, dev_project_id: int) -> list[dict]:

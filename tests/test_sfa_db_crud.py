@@ -470,3 +470,32 @@ def test_exhibition_name_column_and_list(con):
     con.commit()
     assert sfa_db.get_deal(con, d1)["exhibition_name"] == "製造DX展2026"
     assert sfa_db.list_exhibition_names(con) == ["物流展2026", "製造DX展2026"]  # distinct・ソート
+
+
+def test_delete_deal_cascades_children_and_detaches_lead(con):
+    """商談の完全削除で子データ(活動/論点/次回MS/Delivery)が連鎖削除され、
+    紐づくリードの deal_id は SET NULL（未商談化に戻る）ことを検証する。
+    connect()で foreign_keys=ON のため row DELETE でも CASCADE が発火する。"""
+    acc = sfa_db.upsert_account(con, name="削除検証社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="削除対象", stage="提案", status="open")
+    con.execute("INSERT INTO activities(deal_id) VALUES(?)", (did,))
+    con.execute("INSERT INTO deal_issues(deal_id, issue) VALUES(?, ?)", (did, "論点X"))
+    con.execute("INSERT INTO deal_milestones(deal_id) VALUES(?)", (did,))
+    con.execute("INSERT INTO deliveries(deal_id, title) VALUES(?, ?)", (did, "納品X"))
+    # この商談から作られたリード（deal_id を持つ）を1件用意
+    con.execute("INSERT INTO leads(name, company, deal_id) VALUES(?, ?, ?)", ("担当", "元リード社", did))
+    con.commit()
+
+    imp = sfa_db.deal_delete_impact(con, did)
+    assert (imp["activities"], imp["issues"], imp["milestones"], imp["deliveries"]) == (1, 1, 1, 1)
+    assert imp["leads_detached"] == 1
+
+    sfa_db.delete_deal(con, did)
+
+    assert sfa_db.get_deal(con, did) is None
+    for tbl in ("activities", "deal_issues", "deal_milestones", "deliveries"):
+        n = con.execute(f"SELECT COUNT(*) FROM {tbl} WHERE deal_id=?", (did,)).fetchone()[0]
+        assert n == 0, f"{tbl} が連鎖削除されていない"
+    # リードは残るが deal_id は NULL（＝未商談化に戻る）
+    lead = con.execute("SELECT deal_id FROM leads WHERE company=?", ("元リード社",)).fetchone()
+    assert lead is not None and lead[0] is None

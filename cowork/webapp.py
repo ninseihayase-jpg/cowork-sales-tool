@@ -4737,8 +4737,8 @@ def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, labe
 
 def home_page(con, owner: str | None = None, status_filter: str | None = None,
               stage_filter: str | None = None, ms_type: str | None = None, stages_sel=None) -> str:
-    # デフォルトでclosedを除外（NULLもopenとして扱う）。"all"は全件表示
-    effective_status = None if status_filter == "all" else (status_filter or "open")
+    # デフォルト＝全件表示（クローズ含む）。"open"=進行中のみ / "closed"=クローズ済のみ。
+    effective_status = None if status_filter in (None, "", "all") else status_filter
     # ステージ絞り込みはクライアント側の複数選択(_stage_multi_filter)に統一したためサーバ側では絞らない。
     deals = sfa_db.list_deals(con, status=effective_status, owner=owner)
     deals = _filter_deals_by_ms_type(deals, ms_type)  # 次回MS種別で後段フィルタ
@@ -4751,8 +4751,8 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         for o in owners
     )
     status_opts = (
-        f'<option value="all"{"  selected" if status_filter=="all" else ""}>全て（クローズ含む）</option>'
-        + f'<option value="open"{"  selected" if status_filter is None or status_filter=="open" else ""}>進行中のみ</option>'
+        f'<option value="all"{"  selected" if status_filter in (None, "", "all") else ""}>全て（クローズ含む）</option>'
+        + f'<option value="open"{"  selected" if status_filter=="open" else ""}>進行中のみ</option>'
         + f'<option value="closed"{" selected" if status_filter=="closed" else ""}>クローズ済のみ</option>'
     )
     # 選択するだけで自動絞り込み（onchangeで即送信・「絞り込み」ボタンは廃止）
@@ -6055,6 +6055,31 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             f' onclick="openCloseModal({deal["id"]}, \'/deal/{deal["id"]}\')">'
             '商談をクローズ（リードに戻す）</button>'
         )
+    # 完全削除（物理削除）: クローズと違い行そのものを消す。連鎖削除される子データ件数を確認文に明示。
+    delete_btn = ""
+    if deal.get("id"):
+        _imp = sfa_db.deal_delete_impact(con, deal["id"])
+        _did = deal["id"]
+        _parts = []
+        for _k, _lbl in (("activities", "活動履歴"), ("issues", "論点"), ("milestones", "次回MS"),
+                         ("dev_projects", "開発案件"), ("deliveries", "Delivery"), ("attachments", "添付")):
+            if _imp[_k]:
+                _parts.append(f"{_lbl}{_imp[_k]}件")
+        _child = "／".join(_parts) if _parts else "子データなし"
+        _lead_note = "紐づくリードは「未商談化」に戻ります。" if _imp["leads_detached"] else ""
+        _heavy = "⚠ 開発案件・Deliveryも消えます。" if (_imp["dev_projects"] or _imp["deliveries"]) else ""
+        _warn = (f"商談「{deal.get('deal_name') or ('#'+str(_did))}」を完全に削除します。"
+                 f"クローズ（リード化）ではなく物理削除で、元に戻せません。\\n\\n"
+                 f"連鎖削除: {_child}。\\n{_heavy}{_lead_note}\\n\\n本当に削除しますか？")
+        _warn = _warn.replace("'", "\\'")
+        _del_ret = _esc(urllib.parse.quote(return_to or "/deals", safe=""))
+        delete_btn = (
+            f'<form method="post" action="/deal/{_did}/delete" style="display:inline;margin-left:8px" '
+            f'onsubmit="return confirm(\'{_warn}\');">'
+            f'<input type="hidden" name="return_to" value="{_del_ret}">'
+            f'<button class="btn" style="background:#7f1d1d;color:#fff;border-color:#7f1d1d;'
+            f'font-size:12px;padding:8px 14px;margin-top:8px">🗑 商談を完全に削除</button>'
+            f'</form>')
     return f"""
     <div class="card">
     <h2 style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
@@ -6127,7 +6152,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
       </div>
       <p><button class="btn">保存</button> <a class="btn sec" href="/">一覧へ</a> {sync_btn}</p>
     </form>
-    {revert_btn}{close_btn}
+    {revert_btn}{close_btn}{delete_btn}
     <script>
     {new_acc_js}
     const L2_MAP = {json.dumps(sfa_db.BUSINESS_TYPE_L2_BY_L1, ensure_ascii=False)};
@@ -12457,6 +12482,49 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._redirect(f"/deal/{_rid}")
                     else:
                         self._redirect("/deals")
+
+                # ── 商談の完全削除（物理削除。クローズとは別） ──
+                elif path.endswith("/delete") and "/deal/" in path:
+                    _dl_s = path.split("/deal/")[1].split("/")[0]
+                    _rt = f.get("return_to") or "/deals"
+                    _rt = _rt if _rt.startswith("/") else "/deals"
+                    if not _dl_s.isdigit():
+                        self._redirect("/deals")
+                        return
+                    _dlid = int(_dl_s)
+                    _dl = sfa_db.get_deal(con, _dlid)
+                    if not _dl:
+                        self._send(render(deals_page(con), flash="対象の商談が見つかりませんでした。"))
+                        return
+                    _imp = sfa_db.deal_delete_impact(con, _dlid)
+                    _hisho_note = ""
+                    # Hisho側のクリーンアップ（best-effort。失敗しても本体の削除は続行）
+                    if theme_client is not None:
+                        for _hid in _imp["dev_hisho_ids"]:
+                            try:
+                                dev_project_link.delete_dev_project_remote(theme_client, _hid)
+                            except Exception as _exc:  # noqa: BLE001
+                                print(f"[delete_deal] Hisho dev_project {_hid} 削除失敗: {_exc}", flush=True)
+                                _hisho_note = "（Hisho側の一部連携データは手動確認が必要）"
+                        if _imp["theme_id"]:
+                            try:
+                                theme_client.execute("DELETE FROM todos WHERE id=?", [_imp["theme_id"]])
+                            except Exception as _exc:  # noqa: BLE001
+                                print(f"[delete_deal] Hisho todo {_imp['theme_id']} 削除失敗: {_exc}", flush=True)
+                                _hisho_note = "（Hisho側の一部連携データは手動確認が必要）"
+                    elif _imp["theme_id"] or _imp["dev_hisho_ids"]:
+                        _hisho_note = "（テーマDB未接続のためHisho側は未削除。手動確認を）"
+                    _nm = _dl.get("deal_name") or f"#{_dlid}"
+                    sfa_db.delete_deal(con, _dlid)
+                    _parts = [f"{_lbl}{_imp[_k]}件" for _k, _lbl in (
+                        ("activities", "活動"), ("issues", "論点"), ("milestones", "次回MS"),
+                        ("dev_projects", "開発案件"), ("deliveries", "Delivery"), ("attachments", "添付"))
+                        if _imp[_k]]
+                    _child = "・".join(_parts) if _parts else "子データなし"
+                    _lead_msg = "／リードは未商談化に戻しました" if _imp["leads_detached"] else ""
+                    self._send(render(
+                        deals_page(con),
+                        flash=f"🗑 商談「{_nm}」を完全に削除しました（連鎖削除: {_child}{_lead_msg}）{_hisho_note}"))
 
                 # ── 商談 → リード戻し ──
                 elif path.endswith("/revert_to_lead") and "/deal/" in path:

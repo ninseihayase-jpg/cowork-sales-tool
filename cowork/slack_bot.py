@@ -645,7 +645,7 @@ def handle_mention(event: dict, con: sqlite3.Connection):
             "⚠️ 既存の商談が見つかりませんでした。\n\n"
             f"• 商談番号が分かる場合 → 数字のみで返信（例: `8`）\n"
             f"• 新規商談として追加する場合 → `new` と返信\n"
-            f"商談一覧: {SFA_TOOL_URL}/deals\n\n"
+            f"商談一覧: {SFA_TOOL_URL}/deals?tab=active\n\n"
             "「キャンセル」でやり直し"
         )
         bot_ts = post_message(channel, thread_ts, msg)
@@ -668,7 +668,7 @@ def handle_mention(event: dict, con: sqlite3.Connection):
         f"*SFA#{deal_id_str}* | *{acct}* / {deal_name}\n"
         f"ステージ: {stage}　　次回MS: {ms_date} / {ms_label}\n\n"
         f"「はい」(yes / ok)で続行 / 「いいえ」(no)の場合は正しいSFA番号（数字のみ）を返信してください\n"
-        f"商談一覧: {SFA_TOOL_URL}/deals"
+        f"商談一覧: {SFA_TOOL_URL}/deals?tab=active"
     )
     bot_ts = post_message(channel, thread_ts, confirm_text)
 
@@ -740,7 +740,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
             if not row:
                 post_message(channel, thread_ts,
                     f"❌ SFA#{specified_id} が見つかりません（open商談のみ指定可）。\n"
-                    f"商談一覧: {SFA_TOOL_URL}/deals")
+                    f"商談一覧: {SFA_TOOL_URL}/deals?tab=active")
             else:
                 d = dict(row)
                 acct = d.get("account_name") or d.get("deal_name") or "不明"
@@ -753,7 +753,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                     f"*SFA#{specified_id}* | *{acct}* / {dn}\n"
                     f"ステージ: {st}　　次回MS: {ms} / {msl}\n\n"
                     f"「はい」(yes / ok)で続行 / 「いいえ」(no)で別の番号を指定 / 「new」で新規商談追加\n"
-                    f"商談一覧: {SFA_TOOL_URL}/deals"
+                    f"商談一覧: {SFA_TOOL_URL}/deals?tab=active"
                 )
                 new_bot_ts = post_message(channel, thread_ts, confirm_text)
                 if new_bot_ts:
@@ -767,7 +767,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
             return
 
         post_message(channel, thread_ts,
-            f"商談番号（数字）または「new」で返信してください。\n商談一覧: {SFA_TOOL_URL}/deals")
+            f"商談番号（数字）または「new」で返信してください。\n商談一覧: {SFA_TOOL_URL}/deals?tab=active")
         return
 
     # ── State: new_deal_select — 新規商談パターン選択待ち ──────────────────
@@ -1050,7 +1050,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
             # キャンセルせずにSFA番号指定 or new を促す
             post_message(channel, thread_ts,
                 f"🔄 商談番号（数字のみ、例: `8`）で返信するか、新規商談の場合は `new` と返信してください。\n"
-                f"商談一覧: {SFA_TOOL_URL}/deals")
+                f"商談一覧: {SFA_TOOL_URL}/deals?tab=active")
 
         elif text_l in ("new", "新規", "新規商談"):
             new_bot_ts = post_message(channel, thread_ts,
@@ -1079,7 +1079,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
             if not row:
                 post_message(channel, thread_ts,
                     f"❌ SFA#{specified_id} が見つかりません（open商談のみ指定可）。\n"
-                    f"商談一覧: {SFA_TOOL_URL}/deals")
+                    f"商談一覧: {SFA_TOOL_URL}/deals?tab=active")
             else:
                 deal = dict(row)
                 acct = deal.get("account_name") or deal.get("deal_name") or "不明"
@@ -1093,7 +1093,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                     f"*SFA#{specified_id}* | *{acct}* / {deal_name}\n"
                     f"ステージ: {stage}　　次回MS: {ms_date} / {ms_label}\n\n"
                     f"「はい」(yes / ok)で続行 / 「いいえ」(no)で別の番号を指定 / 「new」で新規商談追加\n"
-                    f"商談一覧: {SFA_TOOL_URL}/deals"
+                    f"商談一覧: {SFA_TOOL_URL}/deals?tab=active"
                 )
                 new_bot_ts = post_message(channel, thread_ts, confirm_text)
                 if new_bot_ts:
