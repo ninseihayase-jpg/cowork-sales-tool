@@ -208,8 +208,10 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
         requester=requester or None,
         slack_channel=slack_channel, slack_ts=slack_ts, slack_permalink=slack_permalink,
         created_by=created_by)
-    # 通常タスクは担当＋期限が揃えば受信箱→未着手へ。事務タスクは受付＝受信箱に留める。
-    if not is_admin and (assignee or "").strip() and (due_date or "").strip():
+    # 担当＋期限が揃えば受信箱→未着手へ自動整理（通常/事務とも）。事務タスクはSlack起票時に
+    # 既定担当あみ＋期限3営業日後が入るため、実質すぐ未着手に上がる。担当未割当（担当空欄）の
+    # 受付だけが受信箱に留まる。
+    if (assignee or "").strip() and (due_date or "").strip():
         sfa_db.set_task_status(con, tid, "未着手")
     return tid
 

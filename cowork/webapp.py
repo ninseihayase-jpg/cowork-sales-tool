@@ -10425,21 +10425,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 elif path == "/desk-tasks/save":
                     # 事務タスク(is_admin=1)の手入力起票。既定担当は DESK_ASSIGNEE（先頭=アミ）。
-                    # 期限未指定なら既定で3営業日後。受付＝受信箱に留める（自動整理しない）。
+                    # 期限未指定なら既定で3営業日後。担当＋期限が揃うので受信箱→未着手へ自動整理。
                     _cat = f.get("category") or None  # 事務はカテゴリ手選択（AI判定はしない）
                     _due = (f.get("due_date") or "").strip() or \
                         sfa_db.add_business_days(_today_jst(), 3).isoformat()
-                    sfa_db.upsert_task(
+                    _asg = sfa_db.DESK_ASSIGNEE_DEFAULT or None
+                    _desk_tid = sfa_db.upsert_task(
                         con,
                         title=f.get("title") or "(無題)",
                         detail=f.get("detail") or None,
                         requester=(f.get("requester") or "").strip() or None,
-                        assignee=sfa_db.DESK_ASSIGNEE_DEFAULT or None,
+                        assignee=_asg,
                         due_date=_due,
                         priority=f.get("priority") or "中",
                         category=_cat,
                         status="受信箱", is_admin=1, source="web",
                     )
+                    # 担当＋期限が揃えば未着手へ（Slack起票と挙動を揃える。担当空欄なら受信箱に残す）
+                    if _asg and _due:
+                        sfa_db.set_task_status(con, _desk_tid, "未着手")
                     self._redirect("/desk-tasks")
 
                 elif path == "/task-projects/save":

@@ -61,3 +61,22 @@ def test_admin_task_categories_defined():
     assert "その他" in sfa_db.ADMIN_TASK_CATEGORIES
     # 開発系の分類とは別体系
     assert sfa_db.ADMIN_TASK_CATEGORIES != sfa_db.TASK_CATEGORIES
+
+
+def test_admin_intake_with_assignee_auto_triages_to_未着手(con):
+    """Slack起票は既定担当あみ＋期限3営業日後が入るため、受信箱を経ず未着手へ上がる。"""
+    from cowork.slack_tasks import create_task_from_fields
+    tid = create_task_from_fields(con, title="請求書送付", requester="早瀬",
+                                  assignee="あみ", is_admin=1, ai_category=False)
+    row = sfa_db.get_task(con, tid)
+    assert row["status"] == "未着手"          # 担当＋（既定）期限が揃う→自動整理
+    assert (row["due_date"] or "").strip()     # 期限は既定3営業日後で埋まる
+
+
+def test_admin_intake_without_assignee_stays_受信箱(con):
+    """担当未割当の受付は受信箱に留まる（誰がやるか未定のものを溜める）。"""
+    from cowork.slack_tasks import create_task_from_fields
+    tid = create_task_from_fields(con, title="要トリアージ", requester="早瀬",
+                                  assignee=None, is_admin=1, ai_category=False)
+    row = sfa_db.get_task(con, tid)
+    assert row["status"] == "受信箱"
