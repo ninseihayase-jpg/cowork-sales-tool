@@ -2637,6 +2637,17 @@ def delete_test_tasks(con) -> int:
     return len(ids)
 
 
+def delete_admin_tasks(con) -> int:
+    """事務タスク(is_admin=1)と紐づく進捗/議論メモを全削除。件数を返す。
+    立ち上げ直後の受付テスト分を一括で片付ける用途（受付=事務タスクのみを消し、通常タスクは残す）。"""
+    ids = [r[0] for r in con.execute("SELECT id FROM tasks WHERE COALESCE(is_admin,0)=1")]
+    for tid in ids:
+        con.execute("DELETE FROM task_notes WHERE task_id=?", (tid,))
+    con.execute("DELETE FROM tasks WHERE COALESCE(is_admin,0)=1")
+    con.commit()
+    return len(ids)
+
+
 def list_deal_attachments(con, deal_id: int) -> list[dict]:
     return [dict(r) for r in con.execute(
         "SELECT * FROM deal_attachments WHERE deal_id=? ORDER BY created_at DESC", (deal_id,)

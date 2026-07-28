@@ -3091,12 +3091,13 @@ function taskDelete(id){ if(!confirm('このタスクを削除しますか？'))
   fetch('/task/'+id+'/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})
    .then(function(r){return r.json();}).then(function(d){ if(d.ok){ var c=document.getElementById('tc-'+id); if(c)c.remove(); tcCounts(); } });
 }
-function openNotes(id,kind){
+function openNotes(id,kind,label){
   kind=kind||'progress'; var isD=(kind==='discussion');
+  var dlabel=label||'議論メモ';  // 呼び出し側でラベル差し替え可（事務ボードは「進捗メモ」）
   var pop=document.getElementById('notesPop'), bd=document.getElementById('notesBackdrop');
   pop.setAttribute('data-tid',id); pop.setAttribute('data-kind',kind);
-  var title=isD?'💬 議論メモ':'📝 進捗ログ';
-  var ph=isD?'議論・検討メモを追記（たっぷり書けます）':'進捗を追記';
+  var title=isD?('💬 '+dlabel):'📝 進捗ログ';
+  var ph=isD?(dlabel+'を追記（たっぷり書けます）'):'進捗を追記';
   var inp=isD
     ? '<textarea id="noteInput" rows="12" placeholder="'+ph+'" style="width:100%;min-height:240px;font-size:13px;padding:8px;box-sizing:border-box;line-height:1.6" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key===&#39;Enter&#39;){event.preventDefault();addNote();}"></textarea><div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span class="muted" style="font-size:10px">Enter=改行 ／ Ctrl+Enter=確定 ／ Esc=閉じる</span><button class="btn np-add" style="font-size:11px;padding:3px 10px" onclick="addNote()">追記＋サマリ更新</button></div>'
     : '<div style="display:flex;gap:6px"><input id="noteInput" placeholder="'+ph+'" style="flex:1;font-size:12px;padding:4px 6px" onkeydown="if(event.key===&#39;Enter&#39;)addNote()"><button class="btn np-add" style="font-size:11px;padding:3px 8px" onclick="addNote()">追記</button></div>';
@@ -3719,8 +3720,8 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
                       f'title="起票元のSlackメッセージを開く" style="color:#2563eb">🔗 Slack</a>' if _plink else "")
         note = latest_notes.get(tid)
         note_snip = _esc((note.get("body") or "")[:40]) if note else "進捗を追記…"
-        summary_html = (f'<div class="tc-sum" title="議論メモのAIサマリ" '
-                        f'onclick="openNotes({tid},&#39;discussion&#39;)">🧠 '
+        summary_html = (f'<div class="tc-sum" title="進捗メモのAIサマリ" '
+                        f'onclick="openNotes({tid},&#39;discussion&#39;,&#39;進捗メモ&#39;)">🧠 '
                         f'{_esc((t.get("summary") or "").strip()[:130])}</div>'
                         if (t.get("summary") or "").strip() else "")
         pin_btn = (f'<button type="button" class="tc-pin{" on" if pinned else ""}" '
@@ -3750,7 +3751,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'<div class="tc-notes" onclick="openNotes({tid},&#39;progress&#39;)" title="進捗ログを見る・追記">📝 {note_snip}</div>'
             f'{summary_html}'
             f'<div class="tc-foot">'
-            f'<button type="button" class="tc-disc" onclick="openNotes({tid},&#39;discussion&#39;)" title="議論メモ＋AIサマリ">💬 議論メモ</button>'
+            f'<button type="button" class="tc-disc" onclick="openNotes({tid},&#39;discussion&#39;,&#39;進捗メモ&#39;)" title="進捗メモ＋AIサマリ">💬 進捗メモ</button>'
             f'<a class="tc-edit" href="/tasks/{tid}/edit">編集</a>'
             f'<button type="button" class="del" onclick="taskDelete({tid})">🗑 削除</button></div>'
             f'</div></div>')
@@ -3844,7 +3845,13 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>🗂 事務タスク（{len(tasks)}）</span>
-        <a class="btn sec" href="/tasks" style="font-size:12px">✅ 通常タスクへ</a>
+        <span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <form method="post" action="/desk-tasks/delete-all" style="margin:0"
+            onsubmit="return confirm('事務タスクを全件削除します（進捗メモも消えます・元に戻せません）。よろしいですか？')">
+            <button class="btn sec" type="submit" style="font-size:12px;color:#c53030">🗑 全件削除</button>
+          </form>
+          <a class="btn sec" href="/tasks" style="font-size:12px">✅ 通常タスクへ</a>
+        </span>
       </h2>
       {agg}
       {new_form}
@@ -10445,6 +10452,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if _asg and _due:
                         sfa_db.set_task_status(con, _desk_tid, "未着手")
                     self._redirect("/desk-tasks")
+
+                elif path == "/desk-tasks/delete-all":
+                    # 事務タスク(is_admin=1)を全削除（立ち上げ直後の受付テスト分の一括片付け）。
+                    _n = sfa_db.delete_admin_tasks(con)
+                    self._send(render(desk_tasks_page(con), flash=f"🗑 事務タスクを {_n} 件削除しました。"))
 
                 elif path == "/task-projects/save":
                     _pid = None
