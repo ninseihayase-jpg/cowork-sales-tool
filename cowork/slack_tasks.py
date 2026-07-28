@@ -243,6 +243,17 @@ def _admin_default_due() -> str:
     return sfa_db.add_business_days(today, 3).isoformat()
 
 
+def _admin_due_context(con, tid: int) -> dict:
+    """事務タスク起票コメントに添える期限の注記ブロック。既定＝起票から3営業日後である旨と、
+    締め切りが決まっている場合はカードで直接編集する案内を出す。"""
+    t = sfa_db.get_task(con, tid)
+    due = ((t or {}).get("due_date") or "").strip()
+    due_txt = f"*{due}*" if due else "未設定"
+    return {"type": "context", "elements": [{"type": "mrkdwn",
+            "text": f"📅 期限は {due_txt}（既定＝起票から3営業日後）。"
+                    "締め切り日が決まっている場合は、カードで直接編集してください。"}]}
+
+
 def _message_permalink(channel: str, ts: str, token: str | None = None) -> str | None:
     """起票元Slackメッセージへのpermalink URL（chat.getPermalink）。取得失敗時はNone。"""
     if not channel or not ts:
@@ -314,6 +325,7 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
                         {"type": "section", "text": {"type": "mrkdwn",
                          "text": f"📋 事務タスク化しました{_req}\n*<{link}|{prefill['title']}>*"
                                  + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
+                        _admin_due_context(con, tid),
                         _task_action_block(tid),
                     ])
         return
@@ -377,6 +389,7 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
                 text=f"事務タスク化しました: {prefill['title']}",
                 blocks=[{"type": "section", "text": {"type": "mrkdwn",
                         "text": f"📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}},
+                        _admin_due_context(con, tid),
                         _task_action_block(tid)])
     return tid
 
