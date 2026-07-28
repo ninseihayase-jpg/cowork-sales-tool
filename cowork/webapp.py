@@ -3591,60 +3591,20 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     </div>{quick_js}{_TASKS_JS}"""
 
 
-_DESK_JS = """<script>
-function deskField(id,field,value){
-  return fetch('/task/'+id+'/field',{method:'POST',
-    headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'field='+field+'&value='+encodeURIComponent(value)}).then(function(r){return r.json();});
-}
-function deskStatus(id,sel){ deskField(id,'status',sel.value).then(function(){location.reload();}); }
-function deskDue(id,v){ deskField(id,'due_date',v).then(function(){location.reload();}); }
-function deskCat(id,v){ deskField(id,'category',v); }
-function deskAssign(id,v){ deskField(id,'assignee',v).then(function(){location.reload();}); }
-function deskPin(id,el){ var nv=el.classList.contains('on')?0:1;
-  deskField(id,'pinned',nv).then(function(){location.reload();}); }
-function deskDelete(id){ if(!confirm('このタスクを削除しますか？（元に戻せません）'))return;
-  fetch('/task/'+id+'/delete',{method:'POST',
-    headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})
-    .then(function(){location.reload();}); }
-function deskSearch(){ var q=(document.getElementById('deskSearch').value||'').toLowerCase();
-  document.querySelectorAll('.desk-card').forEach(function(c){
-    c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
-function deskCardClick(ev,card){ if(ev.target.closest('button,a,select,input,textarea,label'))return;
-  card.classList.toggle('open'); }
-function deskExpandAll(open){ document.querySelectorAll('.desk-card').forEach(function(c){
-  c.classList.toggle('open',open); }); }
-</script>
-<style>
-.desk-cols{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
-.desk-col{flex:1 0 210px;min-width:210px;background:#f8fafc;border-radius:8px;padding:6px}
-.desk-col h3{margin:2px 0 6px;font-size:13px;color:#334155}
-.desk-card{background:#fff;border:1px solid #e2e8f0;border-left:4px solid #cbd5e1;border-radius:6px;
-  padding:6px 8px;margin-bottom:6px;font-size:12px}
-.desk-card.pinned{border-left-color:#f59e0b;background:#fffdf5}
-/* コンパクト折りたたみ（旧タスク看板と同じUX）: ヘッダだけ常時表示、本文は開いた時のみ */
-.desk-card .dc-head{display:flex;align-items:center;gap:6px;cursor:pointer}
-.desk-card .dc-dot{width:9px;height:9px;border-radius:50%;flex:none}
-.desk-card .dc-headttl{flex:1;font-weight:600;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.desk-card .dc-car{font-size:10px;color:#94a3b8;transition:transform .15s}
-.desk-card.open .dc-car{transform:rotate(90deg)}
-.desk-card .dc-body{display:none;margin-top:5px}
-.desk-card.open .dc-body{display:block}
-.desk-card .dc-na{color:#475569;margin:2px 0}
-.desk-card .dc-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:4px}
-.dc-req{background:#eef2ff;color:#3730a3;border-radius:10px;padding:1px 7px;font-size:11px}
-.dc-cat{background:#f1f5f9;color:#475569;border-radius:10px;padding:1px 7px;font-size:11px}
-.dc-pin{cursor:pointer;border:none;background:none;color:#cbd5e1;font-size:14px}
-.dc-pin.on{color:#f59e0b}
+# 事務ボードは通常タスク看板(.task-card + _TASKS_JS)をそのまま再利用する。
+# ここでは事務専用の「集計ボックス/依頼者バッジ」CSSだけを持つ。
+_DESK_CSS = """<style>
 .desk-agg{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
-.desk-agg .box{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;font-size:12px}
+.desk-agg .box{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;font-size:12px;text-decoration:none;color:inherit}
 .desk-agg .box b{font-size:16px}
 .desk-alert-over b{color:#dc2626}.desk-alert-today b{color:#f59e0b}.desk-alert-tmr b{color:#eab308}
+.m-req{font-size:9px;background:#eef2ff;color:#3730a3;border-radius:4px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>"""
 
 
 def desk_tasks_page(con, *, requester: str | None = None, status: str | None = None,
-                    category: str | None = None, urgency: str | None = None) -> str:
+                    category: str | None = None, urgency: str | None = None,
+                    assignee: str | None = None) -> str:
     """事務員向けタスク管理ビュー（is_admin=1のみ）。各メンバーから降ってくる依頼を
     受付・可視化する。受信箱→未着手→対応中→保留→完了のカンバン。依頼者・期限・緊急度・
     カテゴリを表示。上部に依頼者別未完了件数と期限アラート集計（#事務タスク）。"""
@@ -3676,6 +3636,12 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         tasks = [t for t in tasks if (t.get("status") or "") == status]
     if requester:
         tasks = [t for t in tasks if (t.get("requester") or "") == requester]
+    if assignee:
+        # 「受信箱」を明示指定＝担当未割当のみに絞る
+        if assignee == "__none__":
+            tasks = [t for t in tasks if not (t.get("assignee") or "").strip()]
+        else:
+            tasks = [t for t in tasks if (t.get("assignee") or "") == assignee]
     if urgency:
         def _uok(t):
             due = (t.get("due_date") or "").strip()
@@ -3694,75 +3660,107 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
     for t in tasks:
         cols.setdefault(t.get("status") or "受信箱", []).append(t)
 
-    _status_opts = lambda cur: "".join(
-        f'<option value="{html.escape(s)}"{" selected" if s == cur else ""}>{html.escape(s)}</option>'
-        for s in sfa_db.TASK_STATUSES)
+    # 期限クイック候補（今日＋N営業日）
+    qdates = {n: sfa_db.add_business_days(_td, n).isoformat() for n in (1, 3, 5, 8)}
+    # 各タスクの最新進捗ログ（コンパクト表示のスニペット用）
+    latest_notes = {}
+    for r in con.execute(
+        "SELECT n.task_id, n.body, n.created_at FROM task_notes n WHERE n.kind='progress' AND n.id=("
+        "SELECT id FROM task_notes WHERE task_id=n.task_id AND kind='progress' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1)"):
+        latest_notes[r["task_id"]] = dict(r)
 
-    def _asg_opts(cur):
+    def _clerk_asg_sel(tid, cur):
         # 担当候補＝事務員（DESK_ASSIGNEES：先頭=既定担当アミ、以降=パス先）。空=受信箱。
+        cur_s = (cur or "").strip()
         opts = list(sfa_db.DESK_ASSIGNEES)
-        if cur and cur not in opts:
-            opts = [cur] + opts
-        return '<option value="">受信箱</option>' + "".join(
-            f'<option value="{html.escape(a)}"{" selected" if a == cur else ""}>{html.escape(a)}</option>'
+        if cur_s and cur_s not in opts:
+            opts = [cur_s] + opts
+        body = '<option value="">受信箱</option>' + "".join(
+            f'<option value="{html.escape(a)}"{" selected" if a == cur_s else ""}>{html.escape(a)}</option>'
             for a in opts)
+        return (f'<select class="tc-sel" data-field="assignee" title="担当（受信箱＝未割当・パス可）" '
+                f'onchange="taskField({tid},&#39;assignee&#39;,this.value)">{body}</select>')
+
+    def _cat_sel(tid, cur):
+        cur_s = (cur or "").strip()
+        vals = list(cats)
+        if cur_s and cur_s not in vals:
+            vals = [cur_s] + vals
+        body = '<option value="">種類</option>' + "".join(
+            f'<option value="{html.escape(c)}"{" selected" if c == cur_s else ""}>{html.escape(c)}</option>'
+            for c in vals)
+        return (f'<select class="tc-sel" data-field="category" title="種類" '
+                f'onchange="taskField({tid},&#39;category&#39;,this.value)">{body}</select>')
 
     def card(t):
+        # 通常タスク看板と同一の .task-card を描画（＝コンパクト折りたたみ・状態遷移ボタン・
+        # メモ+AIサマリ・カード外/放置で自動折りたたみ、すべて _TASKS_JS が担う）。
+        # 事務向けの差分＝依頼者バッジ・🔗Slack・担当候補が事務員・種類が事務カテゴリ。
         tid = t["id"]
+        status = t.get("status") or "受信箱"
         due = (t.get("due_date") or "").strip()
         ucolor, ulabel = _task_urgency(due, today, d3, weekend)
         pinned = bool(t.get("pinned"))
         na = (t.get("next_action") or "").strip()
         req = (t.get("requester") or "").strip()
-        cat = (t.get("category") or "").strip()
-        search = html.escape(" ".join(str(t.get(k) or "") for k in
-                             ("title", "detail", "requester", "category", "next_action")).lower())
-        req_html = f'<span class="dc-req" title="依頼者">👤{_esc(req)}</span>' if req else ""
-        cat_html = f'<span class="dc-cat">{_esc(cat)}</span>' if cat else ""
-        due_html = (f'<span style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
-                    if due else '<span style="color:#cbd5e1">📅期限なし</span>')
+        asg = (t.get("assignee") or "").strip()
+        search = _esc(" ".join(str(t.get(k) or "") for k in
+                               ("title", "detail", "requester", "category", "next_action")).lower())
+        asg_sel = _clerk_asg_sel(tid, asg)
+        cat_sel = _cat_sel(tid, t.get("category"))
+        due_input = (f'<input type="date" class="tc-due" style="color:{ucolor}" value="{_esc(due)}" '
+                     f'title="期限" onchange="tcDue({tid},this.value)">')
+        quick = "".join(
+            f'<button type="button" class="tc-q" onclick="tcDue({tid},&#39;{qdates[n]}&#39;)">+{n}営</button>'
+            for n in (1, 3, 5, 8))
         _plink = (t.get("slack_permalink") or "").strip()
-        slack_html = (f'<a href="{_esc(_plink)}" target="_blank" rel="noopener" title="起票元のSlackメッセージを開く" '
-                      f'style="font-size:11px;color:#2563eb;text-decoration:none">🔗 Slack</a>' if _plink else "")
-        na_html = f'<div class="dc-na">▶ {_esc(na)}</div>' if na else ""
-        _cat_opts = "".join(
-            f'<option value="{html.escape(c)}"{" selected" if c == cat else ""}>{html.escape(c)}</option>'
-            for c in cats)
-        # 基本コンパクト（旧タスク看板と同じ）: ヘッダ＝緊急度ドット+件名+依頼者+期限+ピン。
-        # クリックで本文（次アクション/各操作）を展開。
+        slack_html = (f'<a class="tc-edit" href="{_esc(_plink)}" target="_blank" rel="noopener" '
+                      f'title="起票元のSlackメッセージを開く" style="color:#2563eb">🔗 Slack</a>' if _plink else "")
+        note = latest_notes.get(tid)
+        note_snip = _esc((note.get("body") or "")[:40]) if note else "進捗を追記…"
+        summary_html = (f'<div class="tc-sum" title="議論メモのAIサマリ" '
+                        f'onclick="openNotes({tid},&#39;discussion&#39;)">🧠 '
+                        f'{_esc((t.get("summary") or "").strip()[:130])}</div>'
+                        if (t.get("summary") or "").strip() else "")
+        pin_btn = (f'<button type="button" class="tc-pin{" on" if pinned else ""}" '
+                   f'onclick="tcPin({tid})" title="★最優先ピン">★</button>')
+        m_req = f'<span class="m-req" title="依頼者">👤{_esc(req)}</span>' if req else ""
+        m_asg = f'<span class="m-asg">🧑‍💼{_esc(asg)}</span>' if asg else ""
+        m_due = (f'<span class="m-due" style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
+                 if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
         return (
-            f'<div class="desk-card{" pinned" if pinned else ""}" id="dc-{tid}" data-search="{search}" '
-            f'onclick="deskCardClick(event,this)" style="border-left-color:{ucolor if not pinned else "#f59e0b"}">'
-            f'<div class="dc-head">'
-            f'<span class="dc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
-            f'<span class="dc-headttl">{_esc(t.get("title"))}</span>'
-            f'{req_html}{due_html}'
-            f'<span class="dc-car">▸</span>'
-            f'<button type="button" class="dc-pin{" on" if pinned else ""}" title="★最優先ピン" '
-            f'onclick="deskPin({tid},this)">★</button>'
-            f'</div>'
-            f'<div class="dc-body">'
-            f'{na_html}'
-            f'<div class="dc-row">{cat_html}{slack_html}</div>'
-            f'<div class="dc-row">'
-            f'<input type="date" value="{_esc(due)}" title="期限" onchange="deskDue({tid},this.value)" '
-            f'style="font-size:11px;color:{ucolor}">'
-            f'<select title="種類" onchange="deskCat({tid},this.value)" style="font-size:11px">'
-            f'<option value="">種類</option>{_cat_opts}</select>'
-            f'</div>'
-            f'<div class="dc-row">'
-            f'<select title="担当（受信箱＝未割当。磯部へパス可）" onchange="deskAssign({tid},this.value)" style="font-size:11px">{_asg_opts((t.get("assignee") or "").strip())}</select>'
-            f'<select title="状態を変更" onchange="deskStatus({tid},this)" style="font-size:11px">{_status_opts(t.get("status") or "受信箱")}</select>'
-            f'<a class="btn sec" href="/tasks/{tid}/edit" style="font-size:11px;padding:2px 8px">編集</a>'
-            f'<button type="button" class="btn sec" onclick="deskDelete({tid})" '
-            f'style="font-size:11px;padding:2px 8px;color:#c53030">🗑</button>'
-            f'</div></div></div>')
+            f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
+            f'data-status="{_esc(status)}" data-pinned="{1 if pinned else 0}" data-search="{search}" '
+            f'onclick="tcCardClick(event,this)">'
+            f'<div class="tc-head">'
+            f'<span class="tc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
+            f'<span class="tc-ttl">{_esc(t.get("title"))}</span>'
+            f'{pin_btn}<span class="tc-car">▸</span></div>'
+            f'<div class="tc-mini">{m_req}{m_asg}{m_due}</div>'
+            f'<div class="tc-actions"></div>'
+            f'<div class="tc-body">'
+            f'<input class="tc-title" value="{_esc(t.get("title"))}" title="件名" '
+            f'onchange="taskField({tid},&#39;title&#39;,this.value);tcSyncTitle({tid},this.value)">'
+            f'<div class="tc-na{" empty" if not na else ""}"><span>▶</span>'
+            f'<input value="{_esc(na)}" placeholder="次アクション未設定" title="次アクション" '
+            f'onchange="taskField({tid},&#39;next_action&#39;,this.value)"></div>'
+            f'<div class="tc-meta">{asg_sel}{cat_sel}{slack_html}</div>'
+            f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}</div>'
+            f'<div class="tc-notes" onclick="openNotes({tid},&#39;progress&#39;)" title="進捗ログを見る・追記">📝 {note_snip}</div>'
+            f'{summary_html}'
+            f'<div class="tc-foot">'
+            f'<button type="button" class="tc-disc" onclick="openNotes({tid},&#39;discussion&#39;)" title="議論メモ＋AIサマリ">💬 議論メモ</button>'
+            f'<a class="tc-edit" href="/tasks/{tid}/edit">編集</a>'
+            f'<button type="button" class="del" onclick="taskDelete({tid})">🗑 削除</button></div>'
+            f'</div></div>')
 
     columns = ""
     for s in sfa_db.TASK_STATUSES:
         ts = cols.get(s, [])
         inner = "".join(card(t) for t in ts)
-        columns += (f'<div class="desk-col"><h3>{s}（{len(ts)}）</h3>{inner}</div>')
+        columns += (f'<div class="task-col"><h3>{s}（<span class="tc-count" data-count="{s}">{len(ts)}</span>）</h3>'
+                    f'<div class="tc-col-body" data-col="{s}">{inner}</div></div>')
 
     # 集計ブロック
     req_boxes = "".join(
@@ -3788,15 +3786,22 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         f'<option value="{v}"{" selected" if urgency == v else ""}>{lbl}</option>'
         for v, lbl in (("", "期限:全て"), ("overdue", "🔴 超過"), ("today", "🟠 今日まで"),
                        ("tomorrow", "🟡 明日まで"), ("nodue", "⚪ 期限なし")))
+    # 担当フィルタ＝事務員（DESK_ASSIGNEES）＋「受信箱＝未割当」。現値がマスタ外でも表示。
+    _asg_vals = list(sfa_db.DESK_ASSIGNEES)
+    if assignee and assignee not in ("__none__", "") and assignee not in _asg_vals:
+        _asg_vals = [assignee] + _asg_vals
+    _asg_fopt = (
+        f'<option value="">担当:全て</option>'
+        f'<option value="__none__"{" selected" if assignee == "__none__" else ""}>📥 受信箱（未割当）</option>'
+        + "".join(f'<option value="{html.escape(a)}"{" selected" if a == assignee else ""}>👤{html.escape(a)}</option>'
+                  for a in _asg_vals))
     filter_row = f"""<form method="get" action="/desk-tasks" class="filter-row">
       <select name="requester" onchange="this.form.submit()">{_fopt(requesters_all, requester, '依頼者:全て')}</select>
-      <select name="status" onchange="this.form.submit()">{_fopt(sfa_db.TASK_STATUSES, status, '状態:全て')}</select>
+      <select name="assignee" onchange="this.form.submit()">{_asg_fopt}</select>
       <select name="category" onchange="this.form.submit()">{_fopt(cats, category, '種類:全て')}</select>
       <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
-      <input type="text" id="deskSearch" placeholder="🔍 件名・依頼者・内容で検索…" oninput="deskSearch()" style="max-width:240px">
+      <input type="text" id="taskSearch" placeholder="🔍 件名・依頼者・内容で検索…" oninput="taskFilter()" style="max-width:240px">
       <a class="btn sec" href="/desk-tasks">リセット</a>
-      <button type="button" class="btn sec" onclick="deskExpandAll(true)" style="font-size:12px">▼ 全部開く</button>
-      <button type="button" class="btn sec" onclick="deskExpandAll(false)" style="font-size:12px">▶ 折りたたむ</button>
     </form>"""
 
     # 起票フォーム（手入力）
@@ -3834,6 +3839,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
                       f'ℹ 既定担当は <b>{_esc(sfa_db.DESK_ASSIGNEE_DEFAULT)}</b>（受付は原則この人に割当）。'
                       f'各カードの担当欄で <b>{_pass}</b> にパス（再割当）できます。</div>')
 
+    quick_js = (f'<script>window._TC={{today:"{today}",d3:"{d3}",weekend:"{weekend}"}};</script>')
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -3844,8 +3850,8 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
       {new_form}
       {filter_row}
       {_desk_note}
-      <div class="desk-cols">{columns}</div>
-    </div>{_DESK_JS}"""
+      <div id="taskBoard">{columns}</div>
+    </div>{quick_js}{_TASKS_JS}{_DESK_CSS}"""
 
 
 def task_projects_page(con) -> str:
@@ -10002,7 +10008,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con, requester=(_dq.get("requester", [""])[0] or None),
                         status=(_dq.get("status", [""])[0] or None),
                         category=(_dq.get("category", [""])[0] or None),
-                        urgency=(_dq.get("urgency", [""])[0] or None))))
+                        urgency=(_dq.get("urgency", [""])[0] or None),
+                        assignee=(_dq.get("assignee", [""])[0] or None))))
                 elif path == "/tasks/digest":
                     self._send(render(tasks_digest_page(con)))
                 elif path == "/task-projects":
