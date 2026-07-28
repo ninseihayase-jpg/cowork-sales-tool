@@ -75,10 +75,12 @@ def test_rich_note_preview_strips_tags():
 
 
 def test_chip_and_button_reflect_has_note():
-    filled = webapp._rich_note_chip(5, "<h3>x</h3>")
+    filled = webapp._rich_note_chip(5, "<h3>方針</h3>")
     empty = webapp._rich_note_chip(6, "")
-    assert 'id="rnChip-5"' in filled and "rn-chip on" in filled and "rn-chip-prev" in filled
-    assert "rn-chip-empty" in empty and "rn-chip on" not in empty
+    # 記入あり＝rn-sbchip on＋プレビュー、未記入＝onなし
+    assert 'id="rnChip-5"' in filled and "rn-sbchip on" in filled and "方針" in filled
+    assert "rn-sbchip on" not in empty and 'class="rn-sbchip"' in empty
+    assert 'rnOpen(5)' in filled and 'rnOpen(6)' in empty
     assert 'class="rn-trg on"' in webapp._rich_note_btn(7, True)
     assert 'class="rn-trg"' in webapp._rich_note_btn(8, False)
 

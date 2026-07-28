@@ -5738,15 +5738,14 @@ def _rich_note_preview(content: str, limit: int = 70) -> str:
 
 
 def _rich_note_chip(deal_id: int, content: str) -> str:
-    """個別商談の固定表示部に置く小さなノート表示。クリックでフローティング大画面編集。"""
+    """保存バー（固定エリア）のステータス左に置く小さなノート起動チップ。
+    クリックで全ページ共通のフローティングエディタ(rnOpen)を大画面で開く。"""
     safe = _sanitize_rich_html(content or "")
-    prev = _rich_note_preview(safe)
-    body = (f'<span class="rn-chip-prev">{prev}</span>' if prev
-            else '<span class="rn-chip-empty">未記入 — クリックしてノートを書く</span>')
-    return (f'<div class="card rn-chip{" on" if safe else ""}" id="rnChip-{deal_id}" '
-            f'onclick="rnOpen({deal_id})" title="クリックで大きく開いて編集">'
-            f'<span class="rn-chip-h">📝 商談ノート</span>{body}'
-            f'<span class="rn-chip-go">開く ⤢</span></div>')
+    prev = _rich_note_preview(safe, 22)
+    return (f'<button type="button" class="rn-sbchip{" on" if safe else ""}" id="rnChip-{deal_id}" '
+            f'data-deal="{deal_id}" onclick="rnOpen({deal_id})" '
+            f'title="商談ノートを開く（クリックで大きく編集）">'
+            f'📝 ノート<span class="rn-sbprev">{prev}</span></button>')
 
 
 def _rich_note_btn(deal_id: int, has_note: bool) -> str:
@@ -5761,13 +5760,13 @@ def _rich_note_btn(deal_id: int, has_note: bool) -> str:
 # rnOpen(id)でGET /deal/{id}/rich-note を読み、編集内容は /deal/{id}/field(field=rich_note) へ自動保存。
 _RICH_NOTE_ASSETS = """
 <style>
-.rn-chip{display:flex;align-items:center;gap:10px;cursor:pointer;padding:9px 12px}
-.rn-chip:hover{background:#f8fafc}
-.rn-chip-h{font-weight:700;font-size:13px;white-space:nowrap}
-.rn-chip-prev{color:#475569;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-.rn-chip-empty{color:#94a3b8;font-size:12px;flex:1}
-.rn-chip-go{color:#2563eb;font-size:12px;white-space:nowrap}
-.rn-chip.on{border-left:3px solid #2563eb}
+/* 保存バー内の小さなノートチップ（ステータス左） */
+.rn-sbchip{display:inline-flex;align-items:center;gap:6px;max-width:260px;border:1px solid #e2e8f0;
+  background:#fff;border-radius:6px;cursor:pointer;font-size:11px;padding:3px 8px;color:#475569;vertical-align:middle}
+.rn-sbchip:hover{background:#f1f5f9}
+.rn-sbchip.on{border-color:#bfdbfe;background:#eff6ff;color:#1e40af}
+.rn-sbprev{color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
+.rn-sbchip.on .rn-sbprev{color:#3b82f6}
 .rn-trg{border:1px solid #e2e8f0;background:#fff;border-radius:6px;cursor:pointer;font-size:12px;
   padding:1px 5px;line-height:1.4;color:#cbd5e1}
 .rn-trg.on{color:#2563eb;border-color:#bfdbfe;background:#eff6ff}
@@ -5784,22 +5783,23 @@ _RICH_NOTE_ASSETS = """
 .rn-b:hover{background:#f1f5f9}
 .rn-status{font-size:11px;color:#94a3b8}
 .rn-x{margin-left:auto;cursor:pointer;color:#94a3b8;font-size:22px;border:none;background:none;line-height:1}
-.rn-edit{flex:1;overflow:auto;padding:16px 22px;font-size:15px;line-height:1.75;outline:none}
+.rn-edit{flex:1;overflow:auto;padding:14px 22px;font-size:14px;line-height:1.45;outline:none}
 .rn-edit:empty::before{content:attr(data-ph);color:#cbd5e1}
-.rn-edit h3{font-size:17px;margin:12px 0 4px;color:#1e3a8a;border-bottom:1px solid #eef2f7;padding-bottom:2px}
-.rn-edit ul,.rn-edit ol{margin:4px 0;padding-left:26px}
-.rn-edit li{margin:3px 0}
+.rn-edit h3{font-size:16px;margin:9px 0 3px;color:#1e3a8a;border-bottom:1px solid #eef2f7;padding-bottom:2px}
+.rn-edit p,.rn-edit div{margin:1px 0}
+.rn-edit ul,.rn-edit ol{margin:1px 0;padding-left:24px}
+.rn-edit li{margin:1px 0}
 .rn-edit a{color:#2563eb}
 /* チェックリスト */
 .rn-edit ul.cl{list-style:none;padding-left:4px}
-.rn-edit ul.cl>li{position:relative;padding-left:26px}
-.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:0;top:-1px;font-size:18px;cursor:pointer;color:#64748b}
+.rn-edit ul.cl>li{position:relative;padding-left:24px}
+.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:0;top:-1px;font-size:17px;cursor:pointer;color:#64748b}
 .rn-edit ul.cl>li[data-checked="1"]::before{content:"\\2611";color:#059669}
 .rn-edit ul.cl>li[data-checked="1"]{color:#94a3b8;text-decoration:line-through}
-/* 折りたたみ（子リストを持つ項目にトグル▾/▸を表示） */
-.rn-edit li:has(> ul),.rn-edit li:has(> ol){list-style:none}
-.rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";cursor:pointer;color:#94a3b8;font-size:11px;margin-left:-16px;margin-right:4px;display:inline-block;width:12px}
-.rn-edit li[data-collapsed="1"]:has(> ul)::before,.rn-edit li[data-collapsed="1"]:has(> ol)::before{content:"\\25B8"}
+/* 折りたたみ（子リストを持つ項目に▾/▸トグルを表示。左端に絶対配置で必ず見えるように） */
+.rn-edit li:has(> ul),.rn-edit li:has(> ol){list-style:none;position:relative}
+.rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";position:absolute;left:-15px;top:0;cursor:pointer;color:#64748b;font-size:12px;width:14px;text-align:center}
+.rn-edit li[data-collapsed="1"]:has(> ul)::before,.rn-edit li[data-collapsed="1"]:has(> ol)::before{content:"\\25B8";color:#2563eb}
 .rn-edit li[data-collapsed="1"] > ul,.rn-edit li[data-collapsed="1"] > ol{display:none}
 </style>
 <div id="rnBackdrop" onclick="rnClose()"></div>
@@ -5841,7 +5841,7 @@ function rnOpen(id){
 function rnClose(){ if(_rnDirty)rnSave(); document.getElementById('rnModal').classList.remove('open');
   document.getElementById('rnBackdrop').style.display='none'; }
 function rnCmd(ev,cmd,val){ ev.preventDefault(); var e=_rnEl(); e.focus();
-  document.execCommand(cmd,false,val||null); rnDirty(); return false; }
+  document.execCommand(cmd,false,val||null); rnNorm(); rnDirty(); return false; }
 function rnChecklist(ev){ ev.preventDefault(); var e=_rnEl(); e.focus();
   document.execCommand('insertUnorderedList',false,null);
   var sel=window.getSelection(); if(sel&&sel.anchorNode){ var n=sel.anchorNode;
@@ -5849,29 +5849,48 @@ function rnChecklist(ev){ ev.preventDefault(); var e=_rnEl(); e.focus();
       Array.prototype.forEach.call(n.children,function(li){ if(!li.hasAttribute('data-checked'))li.setAttribute('data-checked','0'); }); break; } n=n.parentNode; } }
   rnDirty(); return false; }
 function rnIndent(ev,out){ ev.preventDefault(); var e=_rnEl(); e.focus();
-  document.execCommand(out?'outdent':'indent',false,null); rnDirty(); return false; }
+  document.execCommand(out?'outdent':'indent',false,null); rnNorm(); rnDirty(); return false; }
 function rnLink(ev){ ev.preventDefault(); var url=prompt('リンクURL'); if(url){ _rnEl().focus();
   document.execCommand('createLink',false,url); rnDirty(); } return false; }
+// ネストした ul/ol が li の兄弟になる（Chromeのindent挙動）ケースを、直前のliの子へ入れ込んで正規化。
+// これで li:has(>ul) による折りたたみトグルが確実に効く。
+function rnNorm(){ var e=_rnEl(); if(!e)return;
+  e.querySelectorAll('ul>ul, ul>ol, ol>ul, ol>ol').forEach(function(sub){
+    var prev=sub.previousElementSibling;
+    if(prev&&prev.nodeName==='LI'){ prev.appendChild(sub); }
+    else { var li=document.createElement('li'); sub.parentNode.insertBefore(li,sub); li.appendChild(sub); }
+  }); }
 function rnInList(){ var s=window.getSelection(),n=s&&s.anchorNode,e=_rnEl();
   while(n&&n!==e){ if(n.nodeName==='LI')return true; n=n.parentNode; } return false; }
+function rnParentLiWithChildren(){ var s=window.getSelection(),n=s&&s.anchorNode,e=_rnEl();
+  while(n&&n!==e){ if(n.nodeName==='LI'&&n.querySelector(':scope>ul, :scope>ol'))return n; n=n.parentNode; } return null; }
+function rnCollapse(expand){ var li=rnParentLiWithChildren(); if(!li)return;
+  li.setAttribute('data-collapsed', expand?'0':'1'); rnDirty(); rnSave(); }
 function rnKey(ev){
   if(ev.key==='Tab'){ ev.preventDefault();
-    if(rnInList()){ document.execCommand(ev.shiftKey?'outdent':'indent',false,null); }
+    if(rnInList()){ document.execCommand(ev.shiftKey?'outdent':'indent',false,null); rnNorm(); }
     else if(!ev.shiftKey){ document.execCommand('insertHTML',false,'&nbsp;&nbsp;&nbsp;&nbsp;'); }
-    rnDirty(); }
+    rnDirty(); return; }
+  // 折りたたみショートカット: Shift+Alt+- でたたむ / Shift+Alt++ で開く（JIS/US両対応）
+  if(ev.altKey&&ev.shiftKey){
+    var minus=(ev.key==='-'||ev.key==='_'||ev.code==='Minus');
+    var plus=(ev.key==='+'||ev.key===';'||ev.key===':'||ev.code==='Semicolon'||ev.code==='Equal');
+    if(minus){ ev.preventDefault(); rnCollapse(false); return; }
+    if(plus){ ev.preventDefault(); rnCollapse(true); return; }
+  }
 }
 function rnEditClick(ev){ var li=ev.target.closest('li'); if(!li)return;
-  var r=li.getBoundingClientRect(); if(ev.clientX-r.left>24)return;  // 左マーカー領域のみ
+  var r=li.getBoundingClientRect(), off=ev.clientX-r.left;
   var pul=li.parentNode;
-  if(pul&&pul.classList&&pul.classList.contains('cl')){
+  if(pul&&pul.classList&&pul.classList.contains('cl')){ if(off<0||off>22)return; // チェックボックス領域
     li.setAttribute('data-checked', li.getAttribute('data-checked')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
-  if(li.querySelector(':scope > ul, :scope > ol')){
+  if(li.querySelector(':scope > ul, :scope > ol')){ if(off>2)return;  // 左の▾/▸マーカー領域のみ
     li.setAttribute('data-collapsed', li.getAttribute('data-collapsed')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
 }
 function rnDirty(){ _rnDirty=true; var s=document.getElementById('rnStatus'); if(s)s.textContent='編集中…';
   clearTimeout(_rnT); _rnT=setTimeout(rnSave,900); }
 function rnSave(){ if(!_rnDirty||_rnId==null)return; _rnDirty=false; clearTimeout(_rnT);
-  var e=_rnEl(),id=_rnId,s=document.getElementById('rnStatus');
+  var e=_rnEl(),id=_rnId,s=document.getElementById('rnStatus'); rnNorm();
   fetch('/deal/'+id+'/field',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'field=rich_note&value='+encodeURIComponent(e.innerHTML)})
    .then(function(r){return r.json();}).then(function(d){ if(s)s.textContent=d.ok?'✓ 保存しました':'保存エラー';
@@ -5882,9 +5901,8 @@ function rnSync(id,e){ // ページ上のトリガー/チップを最新状態�
   var txt=(e.textContent||'').replace(/\\s+/g,' ').trim(), has=txt.length>0;
   document.querySelectorAll('.rn-trg[data-deal="'+id+'"]').forEach(function(b){ b.classList.toggle('on',has); });
   var chip=document.getElementById('rnChip-'+id);
-  if(chip){ chip.classList.toggle('on',has); var p=chip.querySelector('.rn-chip-prev,.rn-chip-empty');
-    if(p){ if(has){ p.className='rn-chip-prev'; p.textContent=txt.slice(0,70)+(txt.length>70?'…':''); }
-      else { p.className='rn-chip-empty'; p.textContent='未記入 — クリックしてノートを書く'; } } }
+  if(chip){ chip.classList.toggle('on',has); var p=chip.querySelector('.rn-sbprev');
+    if(p)p.textContent=has?(txt.slice(0,22)+(txt.length>22?'…':'')):''; }
 }
 document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ var m=document.getElementById('rnModal');
   if(m&&m.classList.contains('open')){ ev.preventDefault(); rnClose(); } } });
@@ -6275,7 +6293,9 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
                        + _reopen_btn)
         else:
             _cr_ctl = '<span class="muted" style="font-size:11px">クローズは画面下部の「クローズ」ボタンから</span>'
-        _sb_extra = (f'<span class="muted" style="font-size:11px">ステータス</span>'
+        # 📝ノートはステータスの左に小さく（固定エリア）。クリックで大画面フローティング編集。
+        _sb_extra = (f'{_rich_note_chip(deal["id"], deal.get("rich_note") or "")}'
+                     f'<span class="muted" style="font-size:11px">ステータス</span>'
                      f'<span class="stage">{_st_label}</span>{_cr_ctl}')
     if not deal.get("id"):
         new_acc_html = (
@@ -6328,9 +6348,6 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             f'<button class="btn" style="background:#7f1d1d;color:#fff;border-color:#7f1d1d;'
             f'font-size:12px;padding:8px 14px;margin-top:8px">🗑 商談を完全に削除</button>'
             f'</form>')
-    # OneNote風ノート（#70）は既存商談のみ（自動保存に商談IDが要るため）。上部に小さく表示し、
-    # クリックで全ページ共通のフローティングエディタ(rnOpen)を開いて大画面で編集する。
-    rich_note_html = _rich_note_chip(deal["id"], deal.get("rich_note") or "") if deal.get("id") else ""
     return f"""
     <div class="card">
     <h2 style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
@@ -6339,7 +6356,6 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     </h2>
     {_save_bar('dealForm', title=_sb_title, extra=_sb_extra, cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
     {top_action_buttons}
-    {rich_note_html}
     {lead_picker_html}
     <form id="dealForm" method="post" action="/deal/save">
       <input type="hidden" name="id" value="{_esc(deal.get('id'))}">
