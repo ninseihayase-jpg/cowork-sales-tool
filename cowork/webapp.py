@@ -5785,9 +5785,10 @@ _RICH_NOTE_ASSETS = """
 .rn-edit ul,.rn-edit ol{margin:1px 0;padding-left:24px}
 .rn-edit li{margin:1px 0}
 .rn-edit a{color:#2563eb}
-/* チェックリスト（行ごと li.cl。旧データ互換で ul.cl>li も同じ見た目に） */
-.rn-edit li.cl,.rn-edit ul.cl>li{list-style:none;position:relative;padding-left:24px}
-.rn-edit li.cl::before,.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:0;top:-1px;font-size:17px;cursor:pointer;color:#64748b}
+/* チェックリスト（行ごと li.cl。旧データ互換で ul.cl>li も同じ見た目に）。
+   ☐は通常のブレット(•)/番号(1.)と同じ左ガター(-16px)に置いて横位置を揃える。 */
+.rn-edit li.cl,.rn-edit ul.cl>li{list-style:none;position:relative}
+.rn-edit li.cl::before,.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:-16px;top:-1px;font-size:16px;line-height:1.45;cursor:pointer;color:#64748b}
 .rn-edit li.cl[data-checked="1"]::before,.rn-edit ul.cl>li[data-checked="1"]::before{content:"\\2611";color:#059669}
 .rn-edit li.cl[data-checked="1"],.rn-edit ul.cl>li[data-checked="1"]{color:#94a3b8;text-decoration:line-through}
 /* 折りたたみ（元のブレット記号は残し、その左に▾/▸トグルを追加表示） */
@@ -5900,7 +5901,7 @@ function rnEditClick(ev){
   var r=li.getBoundingClientRect(), off=ev.clientX-r.left;
   // チェックボックス（行ごと li.cl、旧データは ul.cl>li）
   var isCheck=li.classList.contains('cl')||(li.parentNode&&li.parentNode.classList&&li.parentNode.classList.contains('cl'));
-  if(isCheck){ if(off<0||off>22)return;
+  if(isCheck){ if(off>2)return;  // ☐は左ガター（offが負）＝そこをクリックしたときだけトグル
     li.setAttribute('data-checked', li.getAttribute('data-checked')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
   // 折りたたみ（子リストを持つ項目の▾/▸。ブレットの左の余白＝offが負のときトグル）
   if(li.querySelector(':scope > ul, :scope > ol')){ if(off>-6)return;
