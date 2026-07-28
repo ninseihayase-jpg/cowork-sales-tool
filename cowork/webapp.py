@@ -3110,6 +3110,18 @@ function openNotes(id,kind,label){
   pop.style.top=Math.max(8,(window.innerHeight-pop.offsetHeight)/2)+'px';
   fetch('/task/'+id+'/notes?kind='+kind).then(function(r){return r.json();}).then(function(d){ _tcRenderNotes(d.notes||[]); if(isD)_npSummary(d.summary); });
 }
+// 進捗ログ＝進捗メモ(discussion)のAIサマリを読むだけの枠（記入機能なし）。開くと全文サマリを表示。
+function openSummary(id){
+  var pop=document.getElementById('notesPop'), bd=document.getElementById('notesBackdrop');
+  pop.setAttribute('data-tid',id); pop.setAttribute('data-kind','discussion');
+  pop.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:13px">📝 進捗ログ（AIサマリ）</b><span onclick="closeNotes()" style="cursor:pointer;color:#94a3b8">✕</span></div>'
+    +'<div id="notesSummary" class="np-sum" style="max-height:60vh">読み込み中…</div>'
+    +'<div style="margin-top:10px;text-align:right"><button type="button" class="btn np-add" style="font-size:11px;padding:3px 10px" onclick="closeNotes();openNotes('+id+',&#39;discussion&#39;,&#39;進捗メモ&#39;)">✍ 進捗メモを書く</button></div>';
+  bd.style.display='block'; pop.style.display='block'; pop.style.width='min(600px,94vw)';
+  pop.style.left=Math.max(8,(window.innerWidth-pop.offsetWidth)/2)+'px';
+  pop.style.top=Math.max(8,(window.innerHeight-pop.offsetHeight)/2)+'px';
+  fetch('/task/'+id+'/notes?kind=discussion').then(function(r){return r.json();}).then(function(d){ _npSummary(d.summary); });
+}
 function _npSummary(s){ var el=document.getElementById('notesSummary'); if(!el)return;
   el.innerHTML=s?('<div class="np-sum-h">🧠 AIサマリ</div>'+_tcEsc(s).replace(/\\n/g,'<br>')):'<span class="muted" style="font-size:11px">メモを追記するとAIサマリが自動生成されます。</span>'; }
 function _tcRenderNotes(notes){
@@ -3663,13 +3675,6 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
 
     # 期限クイック候補（今日＋N営業日）
     qdates = {n: sfa_db.add_business_days(_td, n).isoformat() for n in (1, 3, 5, 8)}
-    # 各タスクの最新進捗ログ（コンパクト表示のスニペット用）
-    latest_notes = {}
-    for r in con.execute(
-        "SELECT n.task_id, n.body, n.created_at FROM task_notes n WHERE n.kind='progress' AND n.id=("
-        "SELECT id FROM task_notes WHERE task_id=n.task_id AND kind='progress' "
-        "ORDER BY created_at DESC, id DESC LIMIT 1)"):
-        latest_notes[r["task_id"]] = dict(r)
 
     def _clerk_asg_sel(tid, cur):
         # 担当候補＝事務員（DESK_ASSIGNEES：先頭=既定担当アミ、以降=パス先）。空=受信箱。
@@ -3718,12 +3723,9 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         _plink = (t.get("slack_permalink") or "").strip()
         slack_html = (f'<a class="tc-edit" href="{_esc(_plink)}" target="_blank" rel="noopener" '
                       f'title="起票元のSlackメッセージを開く" style="color:#2563eb">🔗 Slack</a>' if _plink else "")
-        note = latest_notes.get(tid)
-        note_snip = _esc((note.get("body") or "")[:40]) if note else "進捗ログ"
-        summary_html = (f'<div class="tc-sum" title="進捗メモのAIサマリ" '
-                        f'onclick="openNotes({tid},&#39;discussion&#39;,&#39;進捗メモ&#39;)">🧠 '
-                        f'{_esc((t.get("summary") or "").strip()[:130])}</div>'
-                        if (t.get("summary") or "").strip() else "")
+        # 進捗ログ＝進捗メモ(discussion)のAIサマリの表示枠（記入機能なし）。1行コンパクト→開くと全文。
+        _sum = (t.get("summary") or "").strip()
+        log_snip = _esc(_sum[:40]) if _sum else "進捗ログ"
         pin_btn = (f'<button type="button" class="tc-pin{" on" if pinned else ""}" '
                    f'onclick="tcPin({tid})" title="★最優先ピン">★</button>')
         m_req = f'<span class="m-req" title="依頼者">👤{_esc(req)}</span>' if req else ""
@@ -3748,8 +3750,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'onchange="taskField({tid},&#39;next_action&#39;,this.value)"></div>'
             f'<div class="tc-meta">{asg_sel}{cat_sel}{slack_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}</div>'
-            f'<div class="tc-notes" onclick="openNotes({tid},&#39;progress&#39;)" title="進捗ログを見る・追記">📝 {note_snip}</div>'
-            f'{summary_html}'
+            f'<div class="tc-notes" onclick="openSummary({tid})" title="進捗メモのAIサマリを見る">📝 {log_snip}</div>'
             f'<div class="tc-foot">'
             f'<button type="button" class="tc-disc" onclick="openNotes({tid},&#39;discussion&#39;,&#39;進捗メモ&#39;)" title="進捗メモ＋AIサマリ">💬 進捗メモ</button>'
             f'<a class="tc-edit" href="/tasks/{tid}/edit">編集</a>'
