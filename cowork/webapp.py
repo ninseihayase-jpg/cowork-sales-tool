@@ -595,7 +595,7 @@ def render(body: str, flash: str = "") -> bytes:
     _sid = os.environ.get("SALES_SHEET_ID", "")
     delivery_url = f"https://docs.google.com/spreadsheets/d/{_sid}/edit" if _sid else "#"
     return PAGE.format(
-        body=body + _CLOSE_MODAL_HTML + _TOOL_MODAL_HTML,
+        body=body + _CLOSE_MODAL_HTML + _TOOL_MODAL_HTML + _RICH_NOTE_ASSETS,
         flash=flash_html,
         delivery_url=delivery_url,
     ).encode("utf-8")
@@ -4361,8 +4361,11 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}">'
             f'{cb_td}'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
-            f'<td><a href="/deal/{did}?return_to={urllib.parse.quote(return_to_url, safe="")}" title="{_esc(d.get("account_name"))}" '
-            f'style="display:inline-block;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle">{_esc(d.get("account_name"))}</a></td>'
+            f'<td><div style="display:flex;align-items:center;gap:5px">'
+            f'{_rich_note_btn(did, bool((d.get("rich_note") or "").strip()))}'
+            f'<a href="/deal/{did}?return_to={urllib.parse.quote(return_to_url, safe="")}" title="{_esc(d.get("account_name"))}" '
+            f'style="display:inline-block;max-width:135px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle">{_esc(d.get("account_name"))}</a>'
+            f'</div></td>'
             f'<td>{_name_input}</td>'
             f'<td>{_udeal_sel(did, "stage", stages, d.get("stage") or "", disabled=_ro)}</td>'
             f'<td>{_udeal_sel(did, "importance", sfa_db.IMPORTANCE_OPTIONS, d.get("importance") or "", disabled=_ro)}</td>'
@@ -5704,6 +5707,8 @@ class _RichNoteSanitizer(html.parser.HTMLParser):
                 keep += f' href="{html.escape(v, quote=True)}" rel="noopener" target="_blank"'
             elif tag == "li" and k == "data-checked":
                 keep += f' data-checked="{"1" if v == "1" else "0"}"'
+            elif tag == "li" and k == "data-collapsed":
+                keep += f' data-collapsed="{"1" if v == "1" else "0"}"'
             elif tag in ("ul", "li", "span") and k == "class":
                 cls = " ".join(c for c in v.split() if c in ("cl",))
                 if cls:
@@ -5724,81 +5729,165 @@ def _sanitize_rich_html(raw: str) -> str:
     return out
 
 
-def _rich_note_editor(deal_id: int, content: str) -> str:
-    """個別商談の固定表示部に置くOneNote風メモ（WYSIWYG）。/deal/{id}/field で自動保存。"""
+def _rich_note_preview(content: str, limit: int = 70) -> str:
+    """リッチメモHTMLからタグを除いた1行プレビュー（エスケープ済み）。"""
+    txt = re.sub(r"<[^>]+>", " ", content or "")
+    txt = html.unescape(txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return _esc(txt[:limit] + ("…" if len(txt) > limit else "")) if txt else ""
+
+
+def _rich_note_chip(deal_id: int, content: str) -> str:
+    """個別商談の固定表示部に置く小さなノート表示。クリックでフローティング大画面編集。"""
     safe = _sanitize_rich_html(content or "")
-    return f"""
-    <div class="card rn-card">
-      <div class="rn-bar">
-        <b style="font-size:13px">📝 商談ノート</b>
-        <span class="rn-tools">
-          <button type="button" class="rn-b" title="見出し" onmousedown="return rnCmd(event,'formatBlock','&lt;h3&gt;')">🅷</button>
-          <button type="button" class="rn-b" title="箇条書き" onmousedown="return rnCmd(event,'insertUnorderedList')">•</button>
-          <button type="button" class="rn-b" title="チェックリスト" onmousedown="return rnChecklist(event)">☑</button>
-          <button type="button" class="rn-b" title="太字" onmousedown="return rnCmd(event,'bold')"><b>B</b></button>
-          <button type="button" class="rn-b" title="取り消し線" onmousedown="return rnCmd(event,'strikeThrough')"><s>S</s></button>
-          <button type="button" class="rn-b" title="リンク" onmousedown="return rnLink(event)">🔗</button>
-        </span>
-        <span class="rn-status" id="rnStatus"></span>
-      </div>
-      <div class="rn-edit" id="rnEdit" contenteditable="true"
-           data-ph="ここにメモ…（🅷見出し・• 箇条書き・☑ チェック・B 太字・S 取消）"
-           data-deal="{deal_id}" oninput="rnDirty()" onblur="rnSave()"
-           onclick="rnToggleCheck(event)">{safe}</div>
-    </div>
-    {_RICH_NOTE_JS}"""
+    prev = _rich_note_preview(safe)
+    body = (f'<span class="rn-chip-prev">{prev}</span>' if prev
+            else '<span class="rn-chip-empty">未記入 — クリックしてノートを書く</span>')
+    return (f'<div class="card rn-chip{" on" if safe else ""}" id="rnChip-{deal_id}" '
+            f'onclick="rnOpen({deal_id})" title="クリックで大きく開いて編集">'
+            f'<span class="rn-chip-h">📝 商談ノート</span>{body}'
+            f'<span class="rn-chip-go">開く ⤢</span></div>')
 
 
-_RICH_NOTE_JS = """
+def _rich_note_btn(deal_id: int, has_note: bool) -> str:
+    """商談一覧の各行に置く小さなノート起動ボタン（記入あり＝色付き）。"""
+    cls = "rn-trg on" if has_note else "rn-trg"
+    ttl = "商談ノートを開く（記入あり）" if has_note else "商談ノートを開く（未記入）"
+    return (f'<button type="button" class="{cls}" data-deal="{deal_id}" '
+            f'title="{ttl}" onclick="rnOpen({deal_id})">📝</button>')
+
+
+# 全ページ共通のOneNote風ノート フローティングエディタ（#70）。render()で全ページに1回だけ差し込む。
+# rnOpen(id)でGET /deal/{id}/rich-note を読み、編集内容は /deal/{id}/field(field=rich_note) へ自動保存。
+_RICH_NOTE_ASSETS = """
 <style>
-.rn-card{padding:10px 12px}
-.rn-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
-.rn-tools{display:flex;gap:3px}
-.rn-b{border:1px solid #e2e8f0;background:#fff;border-radius:5px;min-width:26px;height:26px;
-  cursor:pointer;font-size:13px;line-height:1;padding:0 6px}
+.rn-chip{display:flex;align-items:center;gap:10px;cursor:pointer;padding:9px 12px}
+.rn-chip:hover{background:#f8fafc}
+.rn-chip-h{font-weight:700;font-size:13px;white-space:nowrap}
+.rn-chip-prev{color:#475569;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.rn-chip-empty{color:#94a3b8;font-size:12px;flex:1}
+.rn-chip-go{color:#2563eb;font-size:12px;white-space:nowrap}
+.rn-chip.on{border-left:3px solid #2563eb}
+.rn-trg{border:1px solid #e2e8f0;background:#fff;border-radius:6px;cursor:pointer;font-size:12px;
+  padding:1px 5px;line-height:1.4;color:#cbd5e1}
+.rn-trg.on{color:#2563eb;border-color:#bfdbfe;background:#eff6ff}
+.rn-trg:hover{background:#f1f5f9}
+#rnBackdrop{position:fixed;inset:0;z-index:10000;display:none;background:rgba(15,23,42,.4)}
+#rnModal{position:fixed;z-index:10001;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:min(880px,95vw);height:min(82vh,760px);background:#fff;border-radius:12px;
+  box-shadow:0 24px 70px rgba(0,0,0,.35);display:none;flex-direction:column;overflow:hidden}
+#rnModal.open{display:flex}
+.rn-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #eef1f5;flex-wrap:wrap}
+.rn-title{font-weight:700;font-size:14px;max-width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rn-tools{display:flex;gap:3px;flex-wrap:wrap}
+.rn-b{border:1px solid #e2e8f0;background:#fff;border-radius:5px;min-width:28px;height:28px;cursor:pointer;font-size:13px;line-height:1;padding:0 7px}
 .rn-b:hover{background:#f1f5f9}
-.rn-status{font-size:11px;color:#94a3b8;margin-left:auto}
-.rn-edit{border:1px solid #e6e9f0;border-radius:8px;padding:10px 12px;min-height:120px;
-  font-size:14px;line-height:1.7;background:#fffdfa;outline:none}
-.rn-edit:focus{border-color:#93c5fd;background:#fff}
-.rn-edit h3{font-size:15px;margin:10px 0 4px;color:#1e3a8a;border-bottom:1px solid #eef2f7}
-.rn-edit ul,.rn-edit ol{margin:4px 0;padding-left:24px}
-.rn-edit li{margin:2px 0}
-.rn-edit ul.cl{list-style:none;padding-left:2px}
+.rn-status{font-size:11px;color:#94a3b8}
+.rn-x{margin-left:auto;cursor:pointer;color:#94a3b8;font-size:22px;border:none;background:none;line-height:1}
+.rn-edit{flex:1;overflow:auto;padding:16px 22px;font-size:15px;line-height:1.75;outline:none}
+.rn-edit:empty::before{content:attr(data-ph);color:#cbd5e1}
+.rn-edit h3{font-size:17px;margin:12px 0 4px;color:#1e3a8a;border-bottom:1px solid #eef2f7;padding-bottom:2px}
+.rn-edit ul,.rn-edit ol{margin:4px 0;padding-left:26px}
+.rn-edit li{margin:3px 0}
+.rn-edit a{color:#2563eb}
+/* チェックリスト */
+.rn-edit ul.cl{list-style:none;padding-left:4px}
 .rn-edit ul.cl>li{position:relative;padding-left:26px}
-.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:2px;top:-1px;font-size:17px;cursor:pointer;color:#64748b}
+.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:0;top:-1px;font-size:18px;cursor:pointer;color:#64748b}
 .rn-edit ul.cl>li[data-checked="1"]::before{content:"\\2611";color:#059669}
 .rn-edit ul.cl>li[data-checked="1"]{color:#94a3b8;text-decoration:line-through}
-.rn-edit a{color:#2563eb}
-.rn-edit:empty::before{content:attr(data-ph);color:#cbd5e1;pointer-events:none}
+/* 折りたたみ（子リストを持つ項目にトグル▾/▸を表示） */
+.rn-edit li:has(> ul),.rn-edit li:has(> ol){list-style:none}
+.rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";cursor:pointer;color:#94a3b8;font-size:11px;margin-left:-16px;margin-right:4px;display:inline-block;width:12px}
+.rn-edit li[data-collapsed="1"]:has(> ul)::before,.rn-edit li[data-collapsed="1"]:has(> ol)::before{content:"\\25B8"}
+.rn-edit li[data-collapsed="1"] > ul,.rn-edit li[data-collapsed="1"] > ol{display:none}
 </style>
+<div id="rnBackdrop" onclick="rnClose()"></div>
+<div id="rnModal" role="dialog" aria-modal="true">
+  <div class="rn-head">
+    <span class="rn-title" id="rnTitle">📝 商談ノート</span>
+    <span class="rn-tools">
+      <button type="button" class="rn-b" title="見出し" onmousedown="return rnCmd(event,'formatBlock','&lt;h3&gt;')">🅷</button>
+      <button type="button" class="rn-b" title="箇条書き" onmousedown="return rnCmd(event,'insertUnorderedList')">•</button>
+      <button type="button" class="rn-b" title="番号付き" onmousedown="return rnCmd(event,'insertOrderedList')">1.</button>
+      <button type="button" class="rn-b" title="チェックリスト" onmousedown="return rnChecklist(event)">☑</button>
+      <button type="button" class="rn-b" title="階層を深く (Tab)" onmousedown="return rnIndent(event,false)">⇥</button>
+      <button type="button" class="rn-b" title="階層を浅く (Shift+Tab)" onmousedown="return rnIndent(event,true)">⇤</button>
+      <button type="button" class="rn-b" title="太字" onmousedown="return rnCmd(event,'bold')"><b>B</b></button>
+      <button type="button" class="rn-b" title="取り消し線" onmousedown="return rnCmd(event,'strikeThrough')"><s>S</s></button>
+      <button type="button" class="rn-b" title="リンク" onmousedown="return rnLink(event)">🔗</button>
+    </span>
+    <span class="rn-status" id="rnStatus"></span>
+    <button type="button" class="rn-x" title="閉じる (Esc)" onclick="rnClose()">×</button>
+  </div>
+  <div class="rn-edit" id="rnEdit" contenteditable="true"
+       data-ph="ここにメモ…（🅷見出し / • 箇条書き / ☑ チェック / Tabで階層 / 子項目は▾で折りたたみ）"
+       oninput="rnDirty()" onclick="rnEditClick(event)" onkeydown="rnKey(event)"></div>
+</div>
 <script>
-var _rnT=null,_rnDirty=false;
+var _rnT=null,_rnDirty=false,_rnId=null;
 function _rnEl(){return document.getElementById('rnEdit');}
-function rnCmd(ev,cmd,val){ ev.preventDefault(); var e=_rnEl(); if(!e)return false; e.focus();
+function rnOpen(id){
+  _rnId=id; var m=document.getElementById('rnModal'),b=document.getElementById('rnBackdrop');
+  var e=_rnEl(); e.innerHTML='<span style="color:#94a3b8">読み込み中…</span>'; e.setAttribute('contenteditable','false');
+  var st=document.getElementById('rnStatus'); if(st)st.textContent='';
+  b.style.display='block'; m.classList.add('open');
+  fetch('/deal/'+id+'/rich-note').then(function(r){return r.json();}).then(function(d){
+    e.innerHTML=d.ok?(d.html||''):''; e.setAttribute('contenteditable','true');
+    var t=document.getElementById('rnTitle'); if(t)t.textContent='📝 '+(d.title||('商談 #'+id));
+    _rnDirty=false; e.focus();
+  }).catch(function(){ e.innerHTML=''; e.setAttribute('contenteditable','true'); });
+}
+function rnClose(){ if(_rnDirty)rnSave(); document.getElementById('rnModal').classList.remove('open');
+  document.getElementById('rnBackdrop').style.display='none'; }
+function rnCmd(ev,cmd,val){ ev.preventDefault(); var e=_rnEl(); e.focus();
   document.execCommand(cmd,false,val||null); rnDirty(); return false; }
-function rnChecklist(ev){ ev.preventDefault(); var e=_rnEl(); if(!e)return false; e.focus();
+function rnChecklist(ev){ ev.preventDefault(); var e=_rnEl(); e.focus();
   document.execCommand('insertUnorderedList',false,null);
-  // 直近の選択位置のulをチェックリスト化
   var sel=window.getSelection(); if(sel&&sel.anchorNode){ var n=sel.anchorNode;
-    while(n&&n!==e){ if(n.nodeName==='UL'){ n.classList.toggle('cl');
+    while(n&&n!==e){ if(n.nodeName==='UL'){ n.classList.add('cl');
       Array.prototype.forEach.call(n.children,function(li){ if(!li.hasAttribute('data-checked'))li.setAttribute('data-checked','0'); }); break; } n=n.parentNode; } }
   rnDirty(); return false; }
+function rnIndent(ev,out){ ev.preventDefault(); var e=_rnEl(); e.focus();
+  document.execCommand(out?'outdent':'indent',false,null); rnDirty(); return false; }
 function rnLink(ev){ ev.preventDefault(); var url=prompt('リンクURL'); if(url){ _rnEl().focus();
   document.execCommand('createLink',false,url); rnDirty(); } return false; }
-function rnToggleCheck(ev){ var li=ev.target.closest('ul.cl>li'); if(!li)return;
-  // マーカー(左端26px)クリックのみ判定＝テキスト編集を邪魔しない
-  var r=li.getBoundingClientRect(); if(ev.clientX-r.left>26)return;
-  li.setAttribute('data-checked', li.getAttribute('data-checked')==='1'?'0':'1'); rnSave(); }
+function rnInList(){ var s=window.getSelection(),n=s&&s.anchorNode,e=_rnEl();
+  while(n&&n!==e){ if(n.nodeName==='LI')return true; n=n.parentNode; } return false; }
+function rnKey(ev){
+  if(ev.key==='Tab'){ ev.preventDefault();
+    if(rnInList()){ document.execCommand(ev.shiftKey?'outdent':'indent',false,null); }
+    else if(!ev.shiftKey){ document.execCommand('insertHTML',false,'&nbsp;&nbsp;&nbsp;&nbsp;'); }
+    rnDirty(); }
+}
+function rnEditClick(ev){ var li=ev.target.closest('li'); if(!li)return;
+  var r=li.getBoundingClientRect(); if(ev.clientX-r.left>24)return;  // 左マーカー領域のみ
+  var pul=li.parentNode;
+  if(pul&&pul.classList&&pul.classList.contains('cl')){
+    li.setAttribute('data-checked', li.getAttribute('data-checked')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
+  if(li.querySelector(':scope > ul, :scope > ol')){
+    li.setAttribute('data-collapsed', li.getAttribute('data-collapsed')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
+}
 function rnDirty(){ _rnDirty=true; var s=document.getElementById('rnStatus'); if(s)s.textContent='編集中…';
   clearTimeout(_rnT); _rnT=setTimeout(rnSave,900); }
-function rnSave(){ if(!_rnDirty)return; _rnDirty=false; clearTimeout(_rnT);
-  var e=_rnEl(); if(!e)return; var id=e.getAttribute('data-deal'); var s=document.getElementById('rnStatus');
+function rnSave(){ if(!_rnDirty||_rnId==null)return; _rnDirty=false; clearTimeout(_rnT);
+  var e=_rnEl(),id=_rnId,s=document.getElementById('rnStatus');
   fetch('/deal/'+id+'/field',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'field=rich_note&value='+encodeURIComponent(e.innerHTML)})
-   .then(function(r){return r.json();}).then(function(d){ if(s)s.textContent=d.ok?'✓ 保存済み':'保存エラー';
-     if(s&&d.ok)setTimeout(function(){if(!_rnDirty)s.textContent='';},2000); })
+   .then(function(r){return r.json();}).then(function(d){ if(s)s.textContent=d.ok?'✓ 保存しました':'保存エラー';
+     if(d.ok)rnSync(id,e);
+     if(s&&d.ok)setTimeout(function(){if(!_rnDirty)s.textContent='';},1800); })
    .catch(function(){ if(s)s.textContent='通信エラー'; _rnDirty=true; }); }
+function rnSync(id,e){ // ページ上のトリガー/チップを最新状態に
+  var txt=(e.textContent||'').replace(/\\s+/g,' ').trim(), has=txt.length>0;
+  document.querySelectorAll('.rn-trg[data-deal="'+id+'"]').forEach(function(b){ b.classList.toggle('on',has); });
+  var chip=document.getElementById('rnChip-'+id);
+  if(chip){ chip.classList.toggle('on',has); var p=chip.querySelector('.rn-chip-prev,.rn-chip-empty');
+    if(p){ if(has){ p.className='rn-chip-prev'; p.textContent=txt.slice(0,70)+(txt.length>70?'…':''); }
+      else { p.className='rn-chip-empty'; p.textContent='未記入 — クリックしてノートを書く'; } } }
+}
+document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ var m=document.getElementById('rnModal');
+  if(m&&m.classList.contains('open')){ ev.preventDefault(); rnClose(); } } });
 window.addEventListener('beforeunload',function(){ if(_rnDirty)rnSave(); });
 </script>"""
 
@@ -6239,8 +6328,9 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             f'<button class="btn" style="background:#7f1d1d;color:#fff;border-color:#7f1d1d;'
             f'font-size:12px;padding:8px 14px;margin-top:8px">🗑 商談を完全に削除</button>'
             f'</form>')
-    # OneNote風ノート（#70）は既存商談のみ（自動保存に商談IDが要るため）
-    rich_note_html = _rich_note_editor(deal["id"], deal.get("rich_note") or "") if deal.get("id") else ""
+    # OneNote風ノート（#70）は既存商談のみ（自動保存に商談IDが要るため）。上部に小さく表示し、
+    # クリックで全ページ共通のフローティングエディタ(rnOpen)を開いて大画面で編集する。
+    rich_note_html = _rich_note_chip(deal["id"], deal.get("rich_note") or "") if deal.get("id") else ""
     return f"""
     <div class="card">
     <h2 style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
@@ -9787,6 +9877,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                      f"{_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
                     self.send_header("Content-Length", "0")
                     self.end_headers()
+                elif (path.startswith("/deal/") and path.endswith("/rich-note")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # OneNote風ノート(#70)フローティングエディタの読み込み用。サニタイズ済みHTMLを返す。
+                    _did = int(path.split("/")[2])
+                    _d = sfa_db.get_deal(con, _did)
+                    if not _d:
+                        self._send(json.dumps({"ok": False}).encode(), ctype="application/json")
+                    else:
+                        _acc = con.execute("SELECT name FROM accounts WHERE id=?",
+                                           (_d.get("account_id"),)).fetchone()
+                        _title = f"SFA#{_did} {(_acc[0] if _acc else '')}／{_d.get('deal_name') or ''}".strip("／ ")
+                        self._send(json.dumps({
+                            "ok": True,
+                            "html": _sanitize_rich_html(_d.get("rich_note") or ""),
+                            "title": _title,
+                        }, ensure_ascii=False).encode(), ctype="application/json")
                 elif (path.startswith("/deal/") and path.endswith("/milestones")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     # 一覧のMS管理パネル用: 商談の全MSをJSONで返す（レガシーは初回に実体化）

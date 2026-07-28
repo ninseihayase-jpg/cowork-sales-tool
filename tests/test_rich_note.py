@@ -60,6 +60,29 @@ def test_sanitizer_empty_like_becomes_blank():
     assert webapp._sanitize_rich_html("") == ""
 
 
+def test_sanitizer_keeps_collapse_and_checklist_attrs():
+    src = '<ul><li data-collapsed="1"><ul class="cl"><li data-checked="1">x</li></ul></li></ul>'
+    out = webapp._sanitize_rich_html(src)
+    assert 'data-collapsed="1"' in out
+    assert 'class="cl"' in out and 'data-checked="1"' in out
+
+
+def test_rich_note_preview_strips_tags():
+    assert webapp._rich_note_preview("<h3>方針</h3><ul><li>予算</li></ul>") == "方針 予算"
+    assert webapp._rich_note_preview("") == ""
+    long = "<p>" + ("あ" * 100) + "</p>"
+    assert webapp._rich_note_preview(long, limit=10).endswith("…")
+
+
+def test_chip_and_button_reflect_has_note():
+    filled = webapp._rich_note_chip(5, "<h3>x</h3>")
+    empty = webapp._rich_note_chip(6, "")
+    assert 'id="rnChip-5"' in filled and "rn-chip on" in filled and "rn-chip-prev" in filled
+    assert "rn-chip-empty" in empty and "rn-chip on" not in empty
+    assert 'class="rn-trg on"' in webapp._rich_note_btn(7, True)
+    assert 'class="rn-trg"' in webapp._rich_note_btn(8, False)
+
+
 def test_rich_note_roundtrip_via_column():
     d = tempfile.mkdtemp(prefix="sfa_rn_")
     try:
