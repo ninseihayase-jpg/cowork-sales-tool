@@ -5790,9 +5790,9 @@ _RICH_NOTE_ASSETS = """
 .rn-edit li.cl::before,.rn-edit ul.cl>li::before{content:"\\2610";position:absolute;left:0;top:-1px;font-size:17px;cursor:pointer;color:#64748b}
 .rn-edit li.cl[data-checked="1"]::before,.rn-edit ul.cl>li[data-checked="1"]::before{content:"\\2611";color:#059669}
 .rn-edit li.cl[data-checked="1"],.rn-edit ul.cl>li[data-checked="1"]{color:#94a3b8;text-decoration:line-through}
-/* 折りたたみ（子を持つ項目の▾/▸トグルを、通常のブレットと同じ位置に置いて縦を揃える） */
-.rn-edit li:has(> ul),.rn-edit li:has(> ol){list-style:none;position:relative}
-.rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";position:absolute;left:-16px;top:0;cursor:pointer;color:#64748b;font-size:12px;width:14px;text-align:center}
+/* 折りたたみ（元のブレット記号は残し、その左に▾/▸トグルを追加表示） */
+.rn-edit li:has(> ul),.rn-edit li:has(> ol){position:relative}
+.rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";position:absolute;left:-30px;top:0;cursor:pointer;color:#64748b;font-size:11px;width:14px;text-align:center}
 .rn-edit li[data-collapsed="1"]:has(> ul)::before,.rn-edit li[data-collapsed="1"]:has(> ol)::before{content:"\\25B8";color:#2563eb}
 .rn-edit li[data-collapsed="1"] > ul,.rn-edit li[data-collapsed="1"] > ol{display:none}
 </style>
@@ -5902,8 +5902,8 @@ function rnEditClick(ev){
   var isCheck=li.classList.contains('cl')||(li.parentNode&&li.parentNode.classList&&li.parentNode.classList.contains('cl'));
   if(isCheck){ if(off<0||off>22)return;
     li.setAttribute('data-checked', li.getAttribute('data-checked')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
-  // 折りたたみ（子リストを持つ項目の▾/▸。マーカーはliの左＝off<=4程度）
-  if(li.querySelector(':scope > ul, :scope > ol')){ if(off>4)return;
+  // 折りたたみ（子リストを持つ項目の▾/▸。ブレットの左の余白＝offが負のときトグル）
+  if(li.querySelector(':scope > ul, :scope > ol')){ if(off>-6)return;
     li.setAttribute('data-collapsed', li.getAttribute('data-collapsed')==='1'?'0':'1'); rnDirty(); rnSave(); return; }
 }
 function rnDirty(){ _rnDirty=true; var s=document.getElementById('rnStatus'); if(s)s.textContent='編集中…';
