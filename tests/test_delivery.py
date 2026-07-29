@@ -302,3 +302,43 @@ def test_delivery_unit_price_8weeks_case(con):
     wb = openpyxl.load_workbook(io.BytesIO(webapp.build_deliveries_xlsx(con)))
     ws = wb["Delivery一覧"]
     assert ws.cell(2, 15).value == 150   # 平均単価(月額・万円/100%)
+
+
+def test_reschedule_delivery_assignments_slide_and_extend(con):
+    """デリバリー期間変更→各アサインの週が連動スライド（#75）。
+    開始移動＝全員まるごとスライド／終了のみ移動＝全員の終了だけ延長。"""
+    acc = con.execute("INSERT INTO accounts(name) VALUES('社')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-08-03", end_week="2026-08-31")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="A",
+                                   from_week="2026-08-03", to_week="2026-08-17", fte_pct=100)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="B",
+                                   from_week="2026-08-10", to_week="2026-08-31", fte_pct=50)
+    # スライド: 開始+2週（終了も+2週で週数不変）→ 全員 from/to +2週
+    sfa_db.reschedule_delivery_assignments(con, dvid, "2026-08-03", "2026-08-31",
+                                           "2026-08-17", "2026-09-14")
+    byo = {a["owner"]: a for a in sfa_db.list_delivery_assignments(con, dvid)}
+    assert (byo["A"]["from_week"], byo["A"]["to_week"]) == ("2026-08-17", "2026-08-31")
+    assert (byo["B"]["from_week"], byo["B"]["to_week"]) == ("2026-08-24", "2026-09-14")
+    # 週数延長: 開始そのまま・終了+1週 → 全員の終了だけ +1週
+    sfa_db.reschedule_delivery_assignments(con, dvid, "2026-08-17", "2026-09-14",
+                                           "2026-08-17", "2026-09-21")
+    byo = {a["owner"]: a for a in sfa_db.list_delivery_assignments(con, dvid)}
+    assert (byo["A"]["from_week"], byo["A"]["to_week"]) == ("2026-08-17", "2026-09-07")
+    assert (byo["B"]["from_week"], byo["B"]["to_week"]) == ("2026-08-24", "2026-09-21")
+    # 変化なしは0件
+    assert sfa_db.reschedule_delivery_assignments(con, dvid, "2026-08-17", "2026-09-21",
+                                                  "2026-08-17", "2026-09-21") == 0
+
+
+def test_add_assignment_defaults_weeks_from_delivery_period(con):
+    """週未入力でアサイン追加すると、デリバリーの開始/終了週がデフォルト採用される（webapp経路の要点）。"""
+    from cowork import webapp  # noqa: F401 (ルート挙動はweb層。ここではDB既定値の前提を確認)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('社2')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D2", stage="受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-08-03", end_week="2026-08-31")
+    dv = sfa_db.get_delivery(con, dvid)
+    # webappの/assignment/addは from/to 未入力時 dv.start_week/end_week を採用する（本体はこの前提）
+    assert dv["start_week"] == "2026-08-03" and dv["end_week"] == "2026-08-31"

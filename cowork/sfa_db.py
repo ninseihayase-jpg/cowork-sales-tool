@@ -2945,6 +2945,48 @@ def list_delivery_assignments(con, delivery_id: int) -> list[dict]:
         (int(delivery_id),))]
 
 
+def _week_delta(old_w: str | None, new_w: str | None) -> int:
+    """old→new の週差（週数・整数）。どちらか欠け/不正なら0。"""
+    try:
+        o = date.fromisoformat(str(old_w)[:10])
+        n = date.fromisoformat(str(new_w)[:10])
+        return (n - o).days // 7
+    except (TypeError, ValueError):
+        return 0
+
+
+def _shift_week(w: str | None, delta_weeks: int) -> str | None:
+    try:
+        return (date.fromisoformat(str(w)[:10]) + timedelta(weeks=delta_weeks)).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def reschedule_delivery_assignments(con, delivery_id: int, old_start, old_end,
+                                    new_start, new_end) -> int:
+    """デリバリー期間の変更に、各アサインの週を連動スライドさせる（#75）。
+    from_week は「開始週の移動量(Δstart)」だけ、to_week は「終了週の移動量(Δend)」だけずらす。
+    ＝スライド(開始=終了が同量移動)なら全員まるごと移動／週数延長(終了のみ移動)なら全員の終了だけ延びる。
+    変更した行数を返す。両Δが0なら何もしない。"""
+    ds = _week_delta(old_start, new_start) if (old_start and new_start) else 0
+    de = _week_delta(old_end, new_end) if (old_end and new_end) else 0
+    if not ds and not de:
+        return 0
+    n = 0
+    for a in list_delivery_assignments(con, delivery_id):
+        nf = _shift_week(a.get("from_week"), ds)
+        nt = _shift_week(a.get("to_week"), de)
+        if not nf or not nt:
+            continue
+        if nt < nf:
+            nt = nf  # 逆転防止
+        con.execute("UPDATE delivery_assignments SET from_week=?, to_week=? WHERE id=?",
+                    (nf, nt, a["id"]))
+        n += 1
+    con.commit()
+    return n
+
+
 def _assignment_weeks(from_week: str | None, to_week: str | None) -> int:
     """アサインの週数（from〜to の週数・両端含む）。月曜スナップ前提だが日付差で算出。"""
     try:

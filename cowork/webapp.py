@@ -11140,14 +11140,21 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._redirect("/deliveries")
                 elif (path.startswith("/delivery/") and path.endswith("/field")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
-                    # 一覧のインライン編集（ajax）。期間編集は既存アサインの週を変えない（ガイドのみ）。
+                    # 一覧のインライン編集（ajax）。期間編集は既存アサインの週も連動スライドさせる。
                     _dvid = int(path.split("/")[2])
                     _fld = (f.get("field", "") or "").strip()
                     _val = f.get("value", "")
                     if _fld in ("title", "status", "start_week", "end_week", "overview"):
                         if _fld in ("start_week", "end_week"):
                             _val = _snap_monday(_val)
-                        sfa_db.update_delivery(con, _dvid, **{_fld: _val})
+                            _old_dv = sfa_db.get_delivery(con, _dvid) or {}
+                            sfa_db.update_delivery(con, _dvid, **{_fld: _val})
+                            _new_dv = sfa_db.get_delivery(con, _dvid) or {}
+                            sfa_db.reschedule_delivery_assignments(
+                                con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"),
+                                _new_dv.get("start_week"), _new_dv.get("end_week"))
+                        else:
+                            sfa_db.update_delivery(con, _dvid, **{_fld: _val})
                         self._send(json.dumps({"ok": True, "value": _val}).encode(), ctype="application/json")
                     else:
                         self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(),
@@ -11177,6 +11184,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif (path.startswith("/delivery/") and path.endswith("/save")
                       and path.split("/")[2].isdigit()):
                     _dvid = int(path.split("/")[2])
+                    _old_dv = sfa_db.get_delivery(con, _dvid) or {}
                     _sw = _snap_monday(f.get("start_week", ""))
                     _ew = _snap_monday(f.get("end_week", ""))
                     # 報酬額: 月数（期間を含む暦月）でサーバ側でも月額↔総額を換算し両方保持
@@ -11194,13 +11202,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         fee_mode=_fee_mode,
                         fee_monthly=_fee_monthly,
                         fee_total=_fee_total)
+                    # 期間の変更に合わせて各アサインの週も連動スライド（開始移動＝全員スライド／週数延長＝全員の終了延長）
+                    sfa_db.reschedule_delivery_assignments(
+                        con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"), _sw, _ew)
                     self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and path.endswith("/assignment/add")
                       and path.split("/")[2].isdigit()):
                     _dvid = int(path.split("/")[2])
                     _kind, _ow = _delivery_owner_from_form(f)
-                    _fw = _snap_monday(f.get("from_week", ""))
-                    _tw = _snap_monday(f.get("to_week", ""))
+                    _adv = sfa_db.get_delivery(con, _dvid) or {}
+                    # 週が未入力なら、デリバリー全体の開始週/終了週をデフォルト採用（メンバー追加を楽に）
+                    _fw = _snap_monday(f.get("from_week", "")) or _snap_monday(_adv.get("start_week") or "")
+                    _tw = _snap_monday(f.get("to_week", "")) or _snap_monday(_adv.get("end_week") or "")
                     if _fw and _tw:  # ownerは未定(空)でも可（体制生成行など）
                         if _tw < _fw:
                             _fw, _tw = _tw, _fw   # 逆順は入れ替え
