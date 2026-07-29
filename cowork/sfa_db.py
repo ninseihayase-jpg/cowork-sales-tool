@@ -566,6 +566,20 @@ CREATE TABLE IF NOT EXISTS deal_issue_memos (
 );
 CREATE INDEX IF NOT EXISTS idx_deal_issue_memos_issue ON deal_issue_memos(issue_id);
 
+-- OneNote風リッチメモ(#70)。任意のエンティティ(kind, entity_id)に複数枚のノートをぶら下げる。
+-- kind='deal'|'issue'|'htmpl' 等。title 空=無題。body=サニタイズ済みHTML。
+CREATE TABLE IF NOT EXISTS rich_notes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,
+    entity_id  INTEGER NOT NULL,
+    title      TEXT,
+    body       TEXT,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rich_notes_entity ON rich_notes(kind, entity_id);
+
 -- タスク管理（#30）。開発案件/商談/論点等にひも付け可能。受信箱=未整理(Triage)。
 CREATE TABLE IF NOT EXISTS tasks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -924,6 +938,13 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         ]:
             if col not in deal_cols:
                 con.execute(f"ALTER TABLE deals ADD COLUMN {col} {typedef}")
+        # 旧: deals.rich_note（単一メモ）→ rich_notes（タイトル付き複数メモ）へ一度だけ移行（冪等）。
+        if "rich_note" in deal_cols or True:  # 列は上のALTERで必ず存在
+            con.execute(
+                "INSERT INTO rich_notes (kind, entity_id, title, body, sort_order, created_at, updated_at) "
+                "SELECT 'deal', d.id, NULL, d.rich_note, 0, datetime('now'), datetime('now') FROM deals d "
+                "WHERE d.rich_note IS NOT NULL AND trim(d.rich_note) <> '' "
+                "AND NOT EXISTS (SELECT 1 FROM rich_notes r WHERE r.kind='deal' AND r.entity_id=d.id)")
         thread_cols = {r[1] for r in con.execute("PRAGMA table_info(slack_threads)")}
         if "meta" not in thread_cols:
             con.execute("ALTER TABLE slack_threads ADD COLUMN meta TEXT")
@@ -2706,6 +2727,52 @@ def delete_deal(con, deal_id: int) -> None:
     Hisho側（todos/dev_projects）のクリーンアップは呼び出し側でtheme_client経由の best-effort。"""
     con.execute("DELETE FROM deals WHERE id=?", (int(deal_id),))
     con.commit()
+
+
+# ---- OneNote風リッチメモ（rich_notes・#70）: (kind, entity_id)に複数ノート ----
+
+RICH_NOTE_KINDS = ("deal", "issue", "htmpl")  # 商談 / 論点 / ヒアリングテンプレ
+
+
+def list_rich_notes(con, kind: str, entity_id: int) -> list[dict]:
+    """指定エンティティのノート一覧（sort_order→id昇順）。"""
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM rich_notes WHERE kind=? AND entity_id=? ORDER BY sort_order ASC, id ASC",
+        (kind, int(entity_id)))]
+
+
+def get_rich_note(con, note_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM rich_notes WHERE id=?", (int(note_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def create_rich_note(con, *, kind: str, entity_id: int, title: str | None = None,
+                     body: str | None = None) -> int:
+    """新規ノートを作成し idを返す。sort_orderは末尾。"""
+    nx = con.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM rich_notes WHERE kind=? AND entity_id=?",
+                     (kind, int(entity_id))).fetchone()[0]
+    cur = con.execute(
+        "INSERT INTO rich_notes (kind, entity_id, title, body, sort_order) VALUES (?,?,?,?,?)",
+        (kind, int(entity_id), (title or None), (body or None), nx))
+    con.commit()
+    return cur.lastrowid
+
+
+def update_rich_note(con, note_id: int, *, title: str | None, body: str | None) -> None:
+    con.execute("UPDATE rich_notes SET title=?, body=?, updated_at=datetime('now') WHERE id=?",
+                ((title or None), (body or None), int(note_id)))
+    con.commit()
+
+
+def delete_rich_note(con, note_id: int) -> None:
+    con.execute("DELETE FROM rich_notes WHERE id=?", (int(note_id),))
+    con.commit()
+
+
+def rich_note_entity_ids(con, kind: str) -> set:
+    """そのkindでノートが1件以上あるentity_idの集合（一覧の📝バッジ点灯用）。"""
+    return {r[0] for r in con.execute(
+        "SELECT DISTINCT entity_id FROM rich_notes WHERE kind=?", (kind,))}
 
 
 # ---- 開発案件の追加ツールリンク（dev_project_tools） ----

@@ -14,14 +14,14 @@ import pytest
 from cowork import sfa_db, webapp
 
 
-def test_deals_has_rich_note_column():
+def test_rich_notes_table_exists():
     d = tempfile.mkdtemp(prefix="sfa_rn_")
     try:
         path = str(Path(d) / "rn.db")
         sfa_db.init_db(path)
         con = sfa_db.connect(path)
-        cols = {r[1] for r in con.execute("PRAGMA table_info(deals)")}
-        assert "rich_note" in cols
+        cols = {r[1] for r in con.execute("PRAGMA table_info(rich_notes)")}
+        assert {"kind", "entity_id", "title", "body"} <= cols
         con.close()
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -82,16 +82,65 @@ def test_rich_note_preview_strips_tags():
     assert webapp._rich_note_preview(long, limit=10).endswith("…")
 
 
-def test_chip_is_constant_and_hides_content():
-    # 保存バーのチップは常に一定表示（内容・プレビューを出さない）
-    filled = webapp._rich_note_chip(5, "<h3>社外秘の方針</h3>")
-    empty = webapp._rich_note_chip(6, "")
-    assert "社外秘の方針" not in filled            # 内容は表示しない
-    assert filled.replace("5", "N") == empty.replace("6", "N")  # id以外は同一表示
-    assert 'rnOpen(5)' in filled and "📝 商談ノート" in filled
-    # 一覧の📝ボタンは記入有無で状態が変わる
-    assert 'class="rn-trg on"' in webapp._rich_note_btn(7, True)
-    assert 'class="rn-trg"' in webapp._rich_note_btn(8, False)
+def test_chip_and_button_are_kind_scoped():
+    # チップは kind+id で rnOpen を呼ぶ（内容は出さない・常に一定表示）
+    dchip = webapp._rich_note_chip("deal", 5)
+    assert "rnOpen(&#39;deal&#39;,5)" in dchip and "📝 商談ノート" in dchip
+    ichip = webapp._rich_note_chip("issue", 9)
+    assert "rnOpen(&#39;issue&#39;,9)" in ichip and "論点メモ" in ichip
+    # 一覧ボタンは kind/id を data 属性に持ち、記入有無で on が付く
+    on = webapp._rich_note_btn("issue", 7, True)
+    off = webapp._rich_note_btn("htmpl", 8, False)
+    assert 'data-kind="issue"' in on and 'data-id="7"' in on and "rn-trg on" in on
+    assert 'data-kind="htmpl"' in off and "rn-trg on" not in off
+
+
+def test_rich_notes_crud_multi_and_entity_ids():
+    d = tempfile.mkdtemp(prefix="sfa_rn_")
+    try:
+        path = str(Path(d) / "rn.db")
+        sfa_db.init_db(path)
+        con = sfa_db.connect(path)
+        acc = sfa_db.upsert_account(con, name="社")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案")
+        a = sfa_db.create_rich_note(con, kind="deal", entity_id=did, title="要件", body="<h3>x</h3>")
+        b = sfa_db.create_rich_note(con, kind="deal", entity_id=did, title="", body="<ul><li>y</li></ul>")
+        notes = sfa_db.list_rich_notes(con, "deal", did)
+        assert [n["id"] for n in notes] == [a, b]           # sort_order順
+        assert notes[0]["title"] == "要件" and (notes[1]["title"] in (None, ""))  # 無題
+        assert sfa_db.rich_note_entity_ids(con, "deal") == {did}
+        assert sfa_db.rich_note_entity_ids(con, "issue") == set()  # kindで分離
+        sfa_db.update_rich_note(con, b, title="議事", body="<p>z</p>")
+        assert sfa_db.get_rich_note(con, b)["title"] == "議事"
+        sfa_db.delete_rich_note(con, a)
+        assert [n["id"] for n in sfa_db.list_rich_notes(con, "deal", did)] == [b]
+        con.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_legacy_deal_rich_note_migrated_to_rich_notes():
+    # 旧 deals.rich_note（単一メモ）は init_db 実行時に rich_notes へ移行される（冪等）
+    d = tempfile.mkdtemp(prefix="sfa_rn_")
+    try:
+        path = str(Path(d) / "rn.db")
+        sfa_db.init_db(path)
+        con = sfa_db.connect(path)
+        acc = sfa_db.upsert_account(con, name="旧社")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="旧D", stage="提案")
+        con.execute("UPDATE deals SET rich_note=? WHERE id=?", ("<h3>旧メモ</h3>", did))
+        con.commit()
+        con.close()
+        sfa_db.init_db(path)  # 2回目のinitで移行が走る
+        con = sfa_db.connect(path)
+        notes = sfa_db.list_rich_notes(con, "deal", did)
+        assert len(notes) == 1 and "旧メモ" in (notes[0]["body"] or "")
+        sfa_db.init_db(path)  # 冪等: 3回目でも重複しない
+        con2 = sfa_db.connect(path)
+        assert len(sfa_db.list_rich_notes(con2, "deal", did)) == 1
+        con.close(); con2.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_rich_note_roundtrip_via_column():

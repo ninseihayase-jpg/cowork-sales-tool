@@ -4269,6 +4269,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         dev_by_deal.setdefault(dp.get("deal_id"), []).append(dp)
     # 次回MSの本数（#48）: 一覧の「ほかN件」バッジ用（未完了MSが2件以上のとき表示）
     ms_counts = sfa_db.count_open_milestones(con, [d["id"] for d in deals])
+    rn_deal_ids = sfa_db.rich_note_entity_ids(con, "deal")  # ノートありの商談（📝点灯用）
 
     cb_th = ('<th class="sticky" style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択（表示中のみ）"'
              ' onchange="var v=this.checked;document.querySelectorAll(\'#deal_bulk_form tr.deal-row\').forEach('
@@ -4364,7 +4365,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'{cb_td}'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
             f'<td><div style="display:flex;align-items:center;gap:5px">'
-            f'{_rich_note_btn(did, bool((d.get("rich_note") or "").strip()))}'
+            f'{_rich_note_btn("deal", did, did in rn_deal_ids)}'
             f'<a href="/deal/{did}?return_to={urllib.parse.quote(return_to_url, safe="")}" title="{_esc(d.get("account_name"))}" '
             f'style="display:inline-block;max-width:135px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle">{_esc(d.get("account_name"))}</a>'
             f'</div></td>'
@@ -5739,20 +5740,43 @@ def _rich_note_preview(content: str, limit: int = 70) -> str:
     return _esc(txt[:limit] + ("…" if len(txt) > limit else "")) if txt else ""
 
 
-def _rich_note_chip(deal_id: int, content: str) -> str:
-    """保存バー（固定エリア）のステータス左に置くノート起動ボタン。表示は常に一定（内容は出さない）。
-    クリックで全ページ共通のフローティングエディタ(rnOpen)を大画面で開く。"""
-    return (f'<button type="button" class="rn-sbchip" id="rnChip-{deal_id}" '
-            f'data-deal="{deal_id}" onclick="rnOpen({deal_id})" '
-            f'title="商談ノートを開く（クリックで大きく編集）">📝 商談ノート</button>')
+# kind → 起動ボタンのラベル
+_RICH_NOTE_LABELS = {"deal": "商談ノート", "issue": "論点メモ", "htmpl": "テンプレメモ"}
 
 
-def _rich_note_btn(deal_id: int, has_note: bool) -> str:
-    """商談一覧の各行に置く小さなノート起動ボタン（記入あり＝色付き）。"""
+def _rich_note_entity_title(con, kind: str, entity_id: int) -> str:
+    """フローティングエディタのヘッダに出すエンティティ名（kind別）。"""
+    if kind == "deal":
+        d = sfa_db.get_deal(con, entity_id)
+        if not d:
+            return f"商談 #{entity_id}"
+        acc = con.execute("SELECT name FROM accounts WHERE id=?", (d.get("account_id"),)).fetchone()
+        return f"SFA#{entity_id} {(acc[0] if acc else '')}／{d.get('deal_name') or ''}".strip("／ ")
+    if kind == "issue":
+        r = con.execute("SELECT issue FROM deal_issues WHERE id=?", (entity_id,)).fetchone()
+        return f"論点: {r[0]}" if r and r[0] else f"論点 #{entity_id}"
+    if kind == "htmpl":
+        r = con.execute("SELECT name FROM hearing_templates WHERE id=?", (entity_id,)).fetchone()
+        return f"ヒアリングテンプレ: {r[0]}" if r and r[0] else f"テンプレ #{entity_id}"
+    return "メモ"
+
+
+def _rich_note_chip(kind: str, entity_id: int, label: str | None = None) -> str:
+    """固定エリアに置くノート起動ボタン。表示は常に一定（内容は出さない）。複数ノート対応。
+    クリックで全ページ共通のフローティングエディタ(rnOpen(kind,id))を大画面で開く。"""
+    lbl = label or _RICH_NOTE_LABELS.get(kind, "メモ")
+    return (f'<button type="button" class="rn-sbchip" id="rnChip-{kind}-{entity_id}" '
+            f'data-kind="{kind}" data-id="{entity_id}" onclick="rnOpen(&#39;{kind}&#39;,{entity_id})" '
+            f'title="{_esc(lbl)}を開く（クリックで大きく編集）">📝 {_esc(lbl)}</button>')
+
+
+def _rich_note_btn(kind: str, entity_id: int, has_note: bool) -> str:
+    """一覧の各行に置く小さなノート起動ボタン（記入あり＝色付き）。複数ノート対応。"""
     cls = "rn-trg on" if has_note else "rn-trg"
-    ttl = "商談ノートを開く（記入あり）" if has_note else "商談ノートを開く（未記入）"
-    return (f'<button type="button" class="{cls}" data-deal="{deal_id}" '
-            f'title="{ttl}" onclick="rnOpen({deal_id})">📝</button>')
+    lbl = _RICH_NOTE_LABELS.get(kind, "メモ")
+    ttl = f"{lbl}を開く（記入あり）" if has_note else f"{lbl}を開く（未記入）"
+    return (f'<button type="button" class="{cls}" data-kind="{kind}" data-id="{entity_id}" '
+            f'title="{_esc(ttl)}" onclick="rnOpen(&#39;{kind}&#39;,{entity_id})">📝</button>')
 
 
 # 全ページ共通のOneNote風ノート フローティングエディタ（#70）。render()で全ページに1回だけ差し込む。
@@ -5770,16 +5794,34 @@ _RICH_NOTE_ASSETS = """
 .rn-trg:hover{background:#f1f5f9}
 #rnBackdrop{position:fixed;inset:0;z-index:10000;display:none;background:rgba(15,23,42,.4)}
 #rnModal{position:fixed;z-index:10001;left:50%;top:50%;transform:translate(-50%,-50%);
-  width:min(880px,95vw);height:min(82vh,760px);background:#fff;border-radius:12px;
+  width:min(960px,96vw);height:min(84vh,780px);background:#fff;border-radius:12px;
   box-shadow:0 24px 70px rgba(0,0,0,.35);display:none;flex-direction:column;overflow:hidden}
 #rnModal.open{display:flex}
 .rn-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #eef1f5;flex-wrap:wrap}
-.rn-title{font-weight:700;font-size:14px;max-width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rn-title{font-weight:700;font-size:14px;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rn-tools{display:flex;gap:3px;flex-wrap:wrap}
 .rn-b{border:1px solid #e2e8f0;background:#fff;border-radius:5px;min-width:28px;height:28px;cursor:pointer;font-size:13px;line-height:1;padding:0 7px}
 .rn-b:hover{background:#f1f5f9}
 .rn-status{font-size:11px;color:#94a3b8}
 .rn-x{margin-left:auto;cursor:pointer;color:#94a3b8;font-size:22px;border:none;background:none;line-height:1}
+/* 本体: 左レール(メモ一覧)＋メイン(タイトル＋エディタ) */
+.rn-body{flex:1;display:flex;min-height:0}
+.rn-rail{flex:none;width:180px;border-right:1px solid #eef1f5;background:#fbfcfe;overflow:auto;
+  padding:8px;display:flex;flex-direction:column;gap:3px}
+.rn-rail-item{display:flex;align-items:center;gap:4px;padding:6px 8px;border-radius:6px;cursor:pointer;
+  font-size:12px;color:#475569;border:1px solid transparent}
+.rn-rail-item:hover{background:#eef2f7}
+.rn-rail-item.active{background:#e0e7ff;border-color:#c7d2fe;color:#3730a3;font-weight:600}
+.rn-rail-ttl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rn-del{color:#cbd5e1;font-size:11px;flex:none}
+.rn-rail-item:hover .rn-del{color:#c53030}
+.rn-new{margin-top:4px;border:1px dashed #c7d2fe;background:#fff;color:#4338ca;border-radius:6px;
+  cursor:pointer;font-size:12px;padding:6px 8px}
+.rn-new:hover{background:#eef2ff}
+.rn-main{flex:1;display:flex;flex-direction:column;min-width:0}
+.rn-ntitle{border:none;border-bottom:1px solid #eef1f5;padding:10px 22px;font-size:17px;font-weight:700;
+  color:#1e293b;outline:none;flex:none}
+.rn-ntitle::placeholder{color:#cbd5e1;font-weight:400}
 .rn-edit{flex:1;overflow:auto;padding:14px 22px;font-size:14px;line-height:1.45;outline:none}
 .rn-hint{flex:none;padding:5px 14px;border-top:1px solid #f1f5f9;background:#fbfcfe;
   font-size:10.5px;color:#aab4c2;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -5821,29 +5863,67 @@ _RICH_NOTE_ASSETS = """
     <span class="rn-status" id="rnStatus"></span>
     <button type="button" class="rn-x" title="閉じる (Esc)" onclick="rnClose()">×</button>
   </div>
-  <div class="rn-edit" id="rnEdit" contenteditable="true"
-       data-ph="ここにメモ…（🅷見出し / • 箇条書き / ☑ チェック / Tabで階層 / 子項目は▾で折りたたみ）"
-       oninput="rnDirty()" onclick="rnEditClick(event)" onkeydown="rnKey(event)"></div>
-  <div class="rn-hint">
-    <kbd>Tab</kbd> 字下げ ／ <kbd>Shift</kbd>+<kbd>Tab</kbd> 戻す
-    　<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>-</kbd> たたむ ／ <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>+</kbd> 開く
-    　<kbd>Esc</kbd> 閉じる　・自動保存
+  <div class="rn-body">
+    <div class="rn-rail" id="rnRail"></div>
+    <div class="rn-main">
+      <input id="rnNoteTitle" class="rn-ntitle" placeholder="無題（タイトルを付けられます）" oninput="rnTitleInput()">
+      <div class="rn-edit" id="rnEdit" contenteditable="true"
+           data-ph="ここにメモ…（🅷見出し / • 箇条書き / ☑ チェック / Tabで階層 / 子項目は▾で折りたたみ）"
+           oninput="rnDirty()" onclick="rnEditClick(event)" onkeydown="rnKey(event)"></div>
+      <div class="rn-hint">
+        <kbd>Tab</kbd> 字下げ ／ <kbd>Shift</kbd>+<kbd>Tab</kbd> 戻す
+        　<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>-</kbd> たたむ ／ <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>+</kbd> 開く
+        　<kbd>Esc</kbd> 閉じる　・自動保存
+      </div>
+    </div>
   </div>
 </div>
 <script>
-var _rnT=null,_rnDirty=false,_rnId=null;
+var _rnT=null,_rnDirty=false,_rnKind=null,_rnId=null,_rnNotes=[],_rnCur=0;
 function _rnEl(){return document.getElementById('rnEdit');}
-function rnOpen(id){
-  _rnId=id; var m=document.getElementById('rnModal'),b=document.getElementById('rnBackdrop');
-  var e=_rnEl(); e.innerHTML='<span style="color:#94a3b8">読み込み中…</span>'; e.setAttribute('contenteditable','false');
+function _rnTitleEl(){return document.getElementById('rnNoteTitle');}
+function _rnEsc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function rnOpen(kind,id){
+  _rnKind=kind; _rnId=id; _rnDirty=false; _rnNotes=[]; _rnCur=0;
+  var m=document.getElementById('rnModal'),b=document.getElementById('rnBackdrop');
+  document.getElementById('rnRail').innerHTML=''; _rnEl().innerHTML=''; _rnTitleEl().value='';
   var st=document.getElementById('rnStatus'); if(st)st.textContent='';
   b.style.display='block'; m.classList.add('open');
-  fetch('/deal/'+id+'/rich-note').then(function(r){return r.json();}).then(function(d){
-    e.innerHTML=d.ok?(d.html||''):''; e.setAttribute('contenteditable','true');
-    var t=document.getElementById('rnTitle'); if(t)t.textContent='📝 '+(d.title||('商談 #'+id));
-    _rnDirty=false; e.focus();
-  }).catch(function(){ e.innerHTML=''; e.setAttribute('contenteditable','true'); });
+  fetch('/rich-notes?kind='+encodeURIComponent(kind)+'&id='+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){
+    var t=document.getElementById('rnTitle'); if(t)t.textContent='📝 '+((d&&d.title)||'メモ');
+    _rnNotes=(d&&d.notes)?d.notes.slice():[];
+    if(!_rnNotes.length)_rnNotes.push({id:null,title:'',body:''});
+    _rnCur=0; rnRenderRail(); rnLoadCur(); _rnTitleEl().focus();
+  }).catch(function(){ _rnNotes=[{id:null,title:'',body:''}]; _rnCur=0; rnRenderRail(); rnLoadCur(); });
 }
+function _rnLabel(n){ var tt=(n.title||'').trim(); if(tt)return tt;
+  var b=(n.body||'').replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').replace(/\\s+/g,' ').trim();
+  return b?('無題: '+b.slice(0,18)):'無題'; }
+function rnRenderRail(){ var rail=document.getElementById('rnRail'); if(!rail)return; var h='';
+  for(var i=0;i<_rnNotes.length;i++){ var n=_rnNotes[i];
+    h+='<div class="rn-rail-item'+(i===_rnCur?' active':'')+'" onclick="rnSelect('+i+')">'
+      +'<span class="rn-rail-ttl">'+_rnEsc(_rnLabel(n))+'</span>'
+      +'<span class="rn-del" title="このメモを削除" onclick="event.stopPropagation();rnDel('+i+')">🗑</span></div>'; }
+  h+='<button type="button" class="rn-new" onclick="rnNew()">＋ 新規メモ</button>';
+  rail.innerHTML=h; }
+function rnStash(){ if(_rnCur<0||_rnCur>=_rnNotes.length)return;
+  _rnNotes[_rnCur].title=_rnTitleEl().value; _rnNotes[_rnCur].body=_rnEl().innerHTML; }
+function rnLoadCur(){ var n=_rnNotes[_rnCur]||{title:'',body:''};
+  _rnTitleEl().value=n.title||''; _rnEl().innerHTML=n.body||''; }
+function rnSelect(i){ if(i===_rnCur)return; if(_rnDirty){rnStash();rnSave();} _rnCur=i; rnRenderRail(); rnLoadCur(); }
+function rnNew(){ if(_rnDirty){rnStash();rnSave();} _rnNotes.push({id:null,title:'',body:''}); _rnCur=_rnNotes.length-1; rnRenderRail(); rnLoadCur(); _rnTitleEl().focus(); }
+function rnDel(i){ var n=_rnNotes[i]; if(!n)return; if(!confirm('このメモを削除しますか？（元に戻せません）'))return;
+  function after(){ _rnNotes.splice(i,1); if(!_rnNotes.length)_rnNotes.push({id:null,title:'',body:''});
+    if(_rnCur>=_rnNotes.length)_rnCur=_rnNotes.length-1; _rnDirty=false; rnRenderRail(); rnLoadCur(); rnSyncTriggers(); }
+  if(n.id){ fetch('/rich-note/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'note_id='+n.id}).then(after).catch(after); }
+  else after(); }
+function rnTitleInput(){ if(_rnNotes[_rnCur])_rnNotes[_rnCur].title=_rnTitleEl().value;
+  var items=document.querySelectorAll('#rnRail .rn-rail-item'); if(items[_rnCur]){ var s=items[_rnCur].querySelector('.rn-rail-ttl'); if(s)s.textContent=_rnLabel(_rnNotes[_rnCur]); }
+  rnDirty(); }
+function rnSyncTriggers(){ var has=false;
+  for(var i=0;i<_rnNotes.length;i++){ var n=_rnNotes[i];
+    if((n.title||'').trim()||((n.body||'').replace(/<[^>]+>/g,'').replace(/&nbsp;/g,'').trim())){has=true;break;} }
+  document.querySelectorAll('.rn-trg[data-kind="'+_rnKind+'"][data-id="'+_rnId+'"]').forEach(function(b){ b.classList.toggle('on',has); }); }
 function rnClose(){ if(_rnDirty)rnSave(); document.getElementById('rnModal').classList.remove('open');
   document.getElementById('rnBackdrop').style.display='none'; }
 function rnCmd(ev,cmd,val){ ev.preventDefault(); var e=_rnEl(); e.focus();
@@ -5930,18 +6010,17 @@ function rnEditClick(ev){
 }
 function rnDirty(){ _rnDirty=true; var s=document.getElementById('rnStatus'); if(s)s.textContent='編集中…';
   clearTimeout(_rnT); _rnT=setTimeout(rnSave,900); }
-function rnSave(){ if(!_rnDirty||_rnId==null)return; _rnDirty=false; clearTimeout(_rnT);
-  var e=_rnEl(),id=_rnId,s=document.getElementById('rnStatus'); rnNorm();
-  fetch('/deal/'+id+'/field',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'field=rich_note&value='+encodeURIComponent(e.innerHTML)})
-   .then(function(r){return r.json();}).then(function(d){ if(s)s.textContent=d.ok?'✓ 保存しました':'保存エラー';
-     if(d.ok)rnSync(id,e);
-     if(s&&d.ok)setTimeout(function(){if(!_rnDirty)s.textContent='';},1800); })
+function rnSave(){ if(!_rnDirty||_rnKind==null)return; _rnDirty=false; clearTimeout(_rnT); rnStash();
+  var n=_rnNotes[_rnCur]; if(!n)return; var s=document.getElementById('rnStatus');
+  var body='kind='+encodeURIComponent(_rnKind)+'&id='+encodeURIComponent(_rnId)
+    +'&title='+encodeURIComponent(n.title||'')+'&body='+encodeURIComponent(n.body||'')
+    +(n.id?('&note_id='+n.id):'');
+  fetch('/rich-note/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+   .then(function(r){return r.json();}).then(function(d){
+     if(d&&d.ok){ if(!n.id&&d.id)n.id=d.id; if(s)s.textContent='✓ 保存しました'; rnSyncTriggers();
+       if(s)setTimeout(function(){if(!_rnDirty)s.textContent='';},1600); }
+     else if(s)s.textContent='保存エラー'; })
    .catch(function(){ if(s)s.textContent='通信エラー'; _rnDirty=true; }); }
-function rnSync(id,e){ // 一覧の📝ボタンの記入状態のみ同期（保存バーのチップは常に一定表示）
-  var has=(e.textContent||'').trim().length>0;
-  document.querySelectorAll('.rn-trg[data-deal="'+id+'"]').forEach(function(b){ b.classList.toggle('on',has); });
-}
 document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ var m=document.getElementById('rnModal');
   if(m&&m.classList.contains('open')){ ev.preventDefault(); rnClose(); } } });
 window.addEventListener('beforeunload',function(){ if(_rnDirty)rnSave(); });
@@ -6332,7 +6411,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         else:
             _cr_ctl = '<span class="muted" style="font-size:11px">クローズは画面下部の「クローズ」ボタンから</span>'
         # 📝ノートはステータスの左に小さく（固定エリア）。クリックで大画面フローティング編集。
-        _sb_extra = (f'{_rich_note_chip(deal["id"], deal.get("rich_note") or "")}'
+        _sb_extra = (f'{_rich_note_chip("deal", deal["id"])}'
                      f'<span class="muted" style="font-size:11px">ステータス</span>'
                      f'<span class="stage">{_st_label}</span>{_cr_ctl}')
     if not deal.get("id"):
@@ -7252,6 +7331,7 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
                            open_issue: str | None = None) -> str:
     sort = sort or "due_date"
     issues = sfa_db.list_deal_issues(con, status=status, member=member, q=q, sort=sort)
+    rn_issue_ids = sfa_db.rich_note_entity_ids(con, "issue")  # メモありの論点（📝点灯用）
 
     def _fopt(values, current):
         return '<option value="">全て</option>' + "".join(
@@ -7289,7 +7369,9 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
         rows += f"""
         <tr>
           <td>{deal_cell}</td>
-          <td>{_esc(it.get('issue'))}</td>
+          <td><div style="display:flex;align-items:flex-start;gap:5px">
+            {_rich_note_btn("issue", it['id'], it['id'] in rn_issue_ids)}
+            <span>{_esc(it.get('issue'))}</span></div></td>
           <td>{_issue_status_select_html(it['id'], it.get('status'))}</td>
           <td>{_issue_members_inline_html(it['id'], it.get('members'))}</td>
           <td>{_issue_due_date_input_html(it['id'], it.get('due_date'))}</td>
@@ -7531,6 +7613,7 @@ def lead_convert_choice_page(con, lead: dict, past_deals: list[dict]) -> str:
 def hearing_templates_page(con) -> str:
     tmpls = sfa_db.list_hearing_templates(con)
     counts = sfa_db.count_hearing_results_by_template(con)
+    rn_htmpl_ids = sfa_db.rich_note_entity_ids(con, "htmpl")  # メモありテンプレ（📝点灯用）
     rows = ""
     for t in tmpls:
         n_items = len(t.get("items") or [])
@@ -7541,7 +7624,9 @@ def hearing_templates_page(con) -> str:
         )
         rows += (
             f'<tr>'
-            f'<td><a href="/hearing-templates/{t["id"]}/edit"><strong>{_esc(t["name"])}</strong></a></td>'
+            f'<td><div style="display:flex;align-items:center;gap:6px">'
+            f'{_rich_note_btn("htmpl", t["id"], t["id"] in rn_htmpl_ids)}'
+            f'<a href="/hearing-templates/{t["id"]}/edit"><strong>{_esc(t["name"])}</strong></a></div></td>'
             f'<td class="muted">{_esc(t.get("description") or "—")}</td>'
             f'<td style="text-align:center">{n_items}</td>'
             f'<td style="text-align:center">{count_cell}</td>'
@@ -7573,9 +7658,12 @@ def hearing_template_form(con, tmpl=None) -> str:
     title = "テンプレート編集" if tmpl else "テンプレート追加"
     items = (tmpl.get("items") if tmpl else None) or []
     items_data = json.dumps(items, ensure_ascii=False)
+    # 既存テンプレのみメモ起票可（新規は保存でidが付くため）
+    _note_chip = f'{_rich_note_chip("htmpl", tid)}' if tid else ""
     return f"""
     <div class="card" style="max-width:1000px">
-      <h2>{title}</h2>
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>{title}</span>{_note_chip}</h2>
       <form method="post" action="{action}" onsubmit="return serializeItems()">
         <label>テンプレート名</label>
         <input name="name" required value="{_esc(tmpl.get('name') if tmpl else '')}">
@@ -9931,22 +10019,21 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                      f"{_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
                     self.send_header("Content-Length", "0")
                     self.end_headers()
-                elif (path.startswith("/deal/") and path.endswith("/rich-note")
-                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
-                    # OneNote風ノート(#70)フローティングエディタの読み込み用。サニタイズ済みHTMLを返す。
-                    _did = int(path.split("/")[2])
-                    _d = sfa_db.get_deal(con, _did)
-                    if not _d:
-                        self._send(json.dumps({"ok": False}).encode(), ctype="application/json")
+                elif path == "/rich-notes":
+                    # OneNote風メモ(#70)一覧の読み込み。kind＋idのエンティティにぶら下がる全ノートを返す。
+                    _q = self._qs()
+                    _kind = (_q.get("kind", [""])[0] or "")
+                    _eids = (_q.get("id", [""])[0] or "")
+                    if _kind in sfa_db.RICH_NOTE_KINDS and _eids.isdigit():
+                        _eid = int(_eids)
+                        _notes = [{"id": r["id"], "title": r.get("title") or "",
+                                   "body": _sanitize_rich_html(r.get("body") or "")}
+                                  for r in sfa_db.list_rich_notes(con, _kind, _eid)]
+                        self._send(json.dumps({"ok": True, "title": _rich_note_entity_title(con, _kind, _eid),
+                                               "notes": _notes}, ensure_ascii=False).encode(),
+                                   ctype="application/json")
                     else:
-                        _acc = con.execute("SELECT name FROM accounts WHERE id=?",
-                                           (_d.get("account_id"),)).fetchone()
-                        _title = f"SFA#{_did} {(_acc[0] if _acc else '')}／{_d.get('deal_name') or ''}".strip("／ ")
-                        self._send(json.dumps({
-                            "ok": True,
-                            "html": _sanitize_rich_html(_d.get("rich_note") or ""),
-                            "title": _title,
-                        }, ensure_ascii=False).encode(), ctype="application/json")
+                        self._send(json.dumps({"ok": False}).encode(), ctype="application/json")
                 elif (path.startswith("/deal/") and path.endswith("/milestones")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     # 一覧のMS管理パネル用: 商談の全MSをJSONで返す（レガシーは初回に実体化）
@@ -10805,6 +10892,39 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 事務タスク(is_admin=1)を全削除（立ち上げ直後の受付テスト分の一括片付け）。
                     _n = sfa_db.delete_admin_tasks(con)
                     self._send(render(desk_tasks_page(con), flash=f"🗑 事務タスクを {_n} 件削除しました。"))
+
+                elif path == "/rich-note/save":
+                    # OneNote風メモ(#70)の1ノートを保存（新規/更新）。body は必ずサニタイズ。
+                    _kind = f.get("kind", "")
+                    _eids = f.get("id", "")
+                    if _kind not in sfa_db.RICH_NOTE_KINDS or not _eids.isdigit():
+                        self._send(json.dumps({"ok": False, "error": "不正な対象"}).encode(), ctype="application/json")
+                    else:
+                        _eid = int(_eids)
+                        _title = (f.get("title") or "").strip()[:200] or None
+                        _clean = _sanitize_rich_html(f.get("body") or "")
+                        _nid_s = f.get("note_id", "")
+                        if _nid_s.isdigit():
+                            _nid = int(_nid_s)
+                            _row = sfa_db.get_rich_note(con, _nid)
+                            # 対象取り違え防止（kind/entityが一致する行のみ更新）
+                            if _row and _row.get("kind") == _kind and _row.get("entity_id") == _eid:
+                                sfa_db.update_rich_note(con, _nid, title=_title, body=_clean)
+                                self._send(json.dumps({"ok": True, "id": _nid}).encode(), ctype="application/json")
+                            else:
+                                self._send(json.dumps({"ok": False, "error": "対象なし"}).encode(), ctype="application/json")
+                        else:
+                            _nid = sfa_db.create_rich_note(con, kind=_kind, entity_id=_eid,
+                                                           title=_title, body=_clean)
+                            self._send(json.dumps({"ok": True, "id": _nid}).encode(), ctype="application/json")
+
+                elif path == "/rich-note/delete":
+                    _nid_s = f.get("note_id", "")
+                    if _nid_s.isdigit():
+                        sfa_db.delete_rich_note(con, int(_nid_s))
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                    else:
+                        self._send(json.dumps({"ok": False}).encode(), ctype="application/json")
 
                 elif path == "/task-projects/save":
                     _pid = None
@@ -11992,7 +12112,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _DEAL_ALLOWED_FIELDS = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
                                              "client_budget", "value_lumpsum", "deal_name", "importance",
                                              "next_milestone_date", "next_milestone_label", "next_milestone_type",
-                                             "close_reason", "exhibition_name", "rich_note"}
+                                             "close_reason", "exhibition_name"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -12027,15 +12147,6 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _mf = {"next_milestone_date": "date", "next_milestone_label": "label",
                                    "next_milestone_type": "type"}[field]
                             sfa_db.set_earliest_milestone_field(con, deal_id, _mf, value)
-                            _ok = True
-                        elif field == "rich_note":
-                            # OneNote風ノート(#70): 保存時に必ずサニタイズ（HTMLホワイトリスト）。
-                            _clean = _sanitize_rich_html(value)
-                            con.execute(
-                                "UPDATE deals SET rich_note=?, updated_at=datetime('now') WHERE id=?",
-                                (_clean or None, deal_id),
-                            )
-                            con.commit()
                             _ok = True
                         else:
                             con.execute(
