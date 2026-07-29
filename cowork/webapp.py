@@ -5794,7 +5794,7 @@ _RICH_NOTE_ASSETS = """
 .rn-trg:hover{background:#f1f5f9}
 #rnBackdrop{position:fixed;inset:0;z-index:10000;display:none;background:rgba(15,23,42,.4)}
 #rnModal{position:fixed;z-index:10001;left:50%;top:50%;transform:translate(-50%,-50%);
-  width:min(960px,96vw);height:min(84vh,780px);background:#fff;border-radius:12px;
+  width:96vw;max-width:1680px;height:92vh;background:#fff;border-radius:12px;
   box-shadow:0 24px 70px rgba(0,0,0,.35);display:none;flex-direction:column;overflow:hidden}
 #rnModal.open{display:flex}
 .rn-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #eef1f5;flex-wrap:wrap}
