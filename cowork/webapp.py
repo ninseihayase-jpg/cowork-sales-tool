@@ -426,8 +426,6 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
   <!-- 日常: 商談(ホーム)・開発案件・Delivery(受注後アサイン計画・#75) -->
   <a href="/deals">商談</a>
   <a href="/dev-projects">開発</a>
-  <a href="/tasks">✅ タスク</a>
-  <a href="/desk-tasks" style="opacity:.85;font-size:13px">🗂 事務タスク</a>
   <a href="/deliveries" style="opacity:.85;font-size:13px">🚚 Delivery</a>
   <span class="nav-sep"></span>
   <!-- 次: ヒアリング・論点 -->
@@ -437,6 +435,10 @@ function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
   <!-- クライアント管理: リード・アカウント -->
   <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
   <a href="/accounts" style="opacity:.85;font-size:13px">アカウント</a>
+  <span class="nav-sep"></span>
+  <!-- タスク群（メールの左にセクションとして配置） -->
+  <a href="/tasks">✅ タスク</a>
+  <a href="/desk-tasks" style="opacity:.85;font-size:13px">🗂 事務タスク</a>
   <span class="nav-sep"></span>
   <!-- 発信 -->
   <a href="/email-draft" style="opacity:.85;font-size:13px">メール</a>
