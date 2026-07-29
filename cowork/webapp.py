@@ -3165,6 +3165,16 @@ function tcAiCat(id){ var c=document.getElementById('tc-'+id);
   fetch('/task/'+id+'/ai-category',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'x=1'})
    .then(function(r){return r.json();}).then(function(d){ if(!d.ok||!d.category){ if(d&&!d.category)alert('AIが種類を判定できませんでした'); return; }
      var sel=c.querySelector('select[data-field="category"]'); if(sel){ sel.value=d.category; } _tcFlash(id); }); }
+function tcSlack(id){
+  var box=document.getElementById('tcslk-'+id);
+  var cur=''; var a=box&&box.querySelector('a'); if(a)cur=a.getAttribute('href')||'';
+  var url=prompt('Slack（等）のリンクURL。空にすると削除します。', cur);
+  if(url===null)return;  // キャンセル
+  url=url.trim();
+  if(url&&!/^https?:\\/\\//.test(url)){ alert('http(s):// で始まるURLを入力してください'); return; }
+  taskField(id,'slack_permalink',url).then(function(){ if(!box)return;
+    if(url){ box.outerHTML='<span id="tcslk-'+id+'"><a class="tc-edit" href="'+_tcEsc(url)+'" target="_blank" rel="noopener" title="Slackメッセージを開く" style="color:#2563eb">🔗 Slack</a><button type="button" class="tc-edit" style="border:none;background:none;cursor:pointer" title="リンクを編集" onclick="tcSlack('+id+')">✎</button></span>'; }
+    else { box.outerHTML='<button type="button" id="tcslk-'+id+'" class="tc-edit" style="border:none;background:none;cursor:pointer;color:#94a3b8" title="Slackリンクを追加" onclick="tcSlack('+id+')">🔗 リンク追加</button>'; } }); }
 document.addEventListener('DOMContentLoaded',function(){ document.querySelectorAll('.task-card').forEach(tcRenderActions);
   var bd=document.getElementById('notesBackdrop'); if(bd)bd.addEventListener('click',closeNotes);
   // 「当該カードの外」をクリックしたら、そのカードを閉じる（他カードをクリックした時も閉じる）
@@ -3724,8 +3734,17 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'<button type="button" class="tc-q" onclick="tcDue({tid},&#39;{qdates[n]}&#39;)">+{n}営</button>'
             for n in (1, 3, 5, 8))
         _plink = (t.get("slack_permalink") or "").strip()
-        slack_html = (f'<a class="tc-edit" href="{_esc(_plink)}" target="_blank" rel="noopener" '
-                      f'title="起票元のSlackメッセージを開く" style="color:#2563eb">🔗 Slack</a>' if _plink else "")
+        # Slackリンク: あれば「🔗 Slack」で開く＋✎で編集、なければ「🔗 リンク追加」。どちらもtcSlackで設定。
+        if _plink:
+            slack_html = (
+                f'<span id="tcslk-{tid}"><a class="tc-edit" href="{_esc(_plink)}" target="_blank" '
+                f'rel="noopener" title="Slackメッセージを開く" style="color:#2563eb">🔗 Slack</a>'
+                f'<button type="button" class="tc-edit" style="border:none;background:none;cursor:pointer" '
+                f'title="リンクを編集" onclick="tcSlack({tid})">✎</button></span>')
+        else:
+            slack_html = (f'<button type="button" id="tcslk-{tid}" class="tc-edit" '
+                          f'style="border:none;background:none;cursor:pointer;color:#94a3b8" '
+                          f'title="Slackリンクを追加" onclick="tcSlack({tid})">🔗 リンク追加</button>')
         # 進捗ログ＝進捗メモ(discussion)のAIサマリの表示枠（記入機能なし）。1行コンパクト→開くと全文。
         _sum = (t.get("summary") or "").strip()
         log_snip = _esc(_sum[:40]) if _sum else "進捗ログ"
@@ -11015,9 +11034,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _field = f.get("field", "")
                     _value = f.get("value", "")
                     _allowed = {"status", "assignee", "due_date", "category", "priority",
-                                "title", "project", "next_action", "pinned"}
+                                "title", "project", "next_action", "pinned", "slack_permalink"}
                     if _field not in _allowed:
                         self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(), ctype="application/json")
+                    elif _field == "slack_permalink" and _value and not _value.startswith(("http://", "https://")):
+                        self._send(json.dumps({"ok": False, "error": "http(s)のURLを入力してください"}).encode(), ctype="application/json")
                     elif _field == "status" and _value not in sfa_db.TASK_STATUSES:
                         self._send(json.dumps({"ok": False, "error": "不正な状態"}).encode(), ctype="application/json")
                     elif _field == "priority" and _value and _value not in sfa_db.TASK_PRIORITIES:
