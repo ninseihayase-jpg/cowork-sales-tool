@@ -3826,6 +3826,8 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
           <div><label>種類</label><select name="category">{_cat_opts}</select></div>
           <div><label>期限</label><input type="date" name="due_date"></div>
           <div><label>優先度</label><select name="priority">{_opt(sfa_db.TASK_PRIORITIES, '中')}</select></div>
+          <div class="full"><label>Slackリンク（任意）</label>
+            <input type="url" name="slack_permalink" placeholder="https://slack.com/archives/... 関連メッセージのURLを貼付"></div>
           <div class="full"><label>内容・補足</label>
             <textarea name="detail" rows="2" placeholder="依頼の詳細・添付・注意点など"></textarea></div>
         </div>
@@ -10872,6 +10874,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _due = (f.get("due_date") or "").strip() or \
                         sfa_db.add_business_days(_today_jst(), 3).isoformat()
                     _asg = sfa_db.DESK_ASSIGNEE_DEFAULT or None
+                    # 手入力でも関連リンク（Slack等）を自分で設定可。http(s)のみ採用。
+                    _plink = (f.get("slack_permalink") or "").strip()
+                    _plink = _plink if _plink.startswith(("http://", "https://")) else None
                     _desk_tid = sfa_db.upsert_task(
                         con,
                         title=f.get("title") or "(無題)",
@@ -10881,6 +10886,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         due_date=_due,
                         priority=f.get("priority") or "中",
                         category=_cat,
+                        slack_permalink=_plink,
                         status="受信箱", is_admin=1, source="web",
                     )
                     # 担当＋期限が揃えば未着手へ（Slack起票と挙動を揃える。担当空欄なら受信箱に残す）
