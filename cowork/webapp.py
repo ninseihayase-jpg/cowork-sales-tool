@@ -5806,15 +5806,15 @@ _RICH_NOTE_ASSETS = """
   <div class="rn-head">
     <span class="rn-title" id="rnTitle">📝 商談ノート</span>
     <span class="rn-tools">
-      <button type="button" class="rn-b" title="見出し" onmousedown="return rnCmd(event,'formatBlock','&lt;h3&gt;')">🅷</button>
-      <button type="button" class="rn-b" title="箇条書き" onmousedown="return rnCmd(event,'insertUnorderedList')">•</button>
-      <button type="button" class="rn-b" title="番号付き" onmousedown="return rnCmd(event,'insertOrderedList')">1.</button>
-      <button type="button" class="rn-b" title="チェックリスト" onmousedown="return rnChecklist(event)">☑</button>
+      <button type="button" class="rn-b" title="見出し (Ctrl+Alt+1)" onmousedown="return rnCmd(event,'formatBlock','&lt;h3&gt;')">🅷</button>
+      <button type="button" class="rn-b" title="箇条書き (Ctrl+Shift+8)" onmousedown="return rnCmd(event,'insertUnorderedList')">•</button>
+      <button type="button" class="rn-b" title="番号付き (Ctrl+Shift+7)" onmousedown="return rnCmd(event,'insertOrderedList')">1.</button>
+      <button type="button" class="rn-b" title="チェックリスト (Ctrl+Shift+9)" onmousedown="return rnChecklist(event)">☑</button>
       <button type="button" class="rn-b" title="階層を深く (Tab)" onmousedown="return rnIndent(event,false)">⇥</button>
       <button type="button" class="rn-b" title="階層を浅く (Shift+Tab)" onmousedown="return rnIndent(event,true)">⇤</button>
-      <button type="button" class="rn-b" title="太字" onmousedown="return rnCmd(event,'bold')"><b>B</b></button>
-      <button type="button" class="rn-b" title="取り消し線" onmousedown="return rnCmd(event,'strikeThrough')"><s>S</s></button>
-      <button type="button" class="rn-b" title="リンク" onmousedown="return rnLink(event)">🔗</button>
+      <button type="button" class="rn-b" title="太字 (Ctrl+B)" onmousedown="return rnCmd(event,'bold')"><b>B</b></button>
+      <button type="button" class="rn-b" title="取り消し線 (Ctrl+Shift+X)" onmousedown="return rnCmd(event,'strikeThrough')"><s>S</s></button>
+      <button type="button" class="rn-b" title="リンク (Ctrl+K)" onmousedown="return rnLink(event)">🔗</button>
     </span>
     <span class="rn-status" id="rnStatus"></span>
     <button type="button" class="rn-x" title="閉じる (Esc)" onclick="rnClose()">×</button>
@@ -5847,13 +5847,14 @@ function rnClose(){ if(_rnDirty)rnSave(); document.getElementById('rnModal').cla
 function rnCmd(ev,cmd,val){ ev.preventDefault(); var e=_rnEl(); e.focus();
   document.execCommand(cmd,false,val||null); rnNorm(); rnDirty(); return false; }
 // チェックリストは「行ごと」に切替（liに .cl を付ける）。リスト全体ではなく現在行だけを対象にする。
-function rnChecklist(ev){ ev.preventDefault(); var e=_rnEl(); e.focus();
+function rnToggleChecklist(){ var e=_rnEl(); e.focus();
   var li=rnCurrentLi();
   if(!li){ document.execCommand('insertUnorderedList',false,null); li=rnCurrentLi(); }
-  if(!li)return false;
+  if(!li)return;
   if(li.classList.contains('cl')){ li.classList.remove('cl'); li.removeAttribute('data-checked'); }
   else { li.classList.add('cl'); if(!li.hasAttribute('data-checked'))li.setAttribute('data-checked','0'); }
-  rnDirty(); return false; }
+  rnDirty(); }
+function rnChecklist(ev){ ev.preventDefault(); rnToggleChecklist(); return false; }
 function rnIndent(ev,out){ ev.preventDefault(); var e=_rnEl(); e.focus();
   if(out){ rnDoOutdent(); } else { rnDoIndent(); } rnDirty(); return false; }
 function rnLink(ev){ ev.preventDefault(); var url=prompt('リンクURL'); if(url){ _rnEl().focus();
@@ -5898,6 +5899,15 @@ function rnKey(ev){
     var plus=(ev.key==='+'||ev.key===';'||ev.key===':'||ev.code==='Semicolon'||ev.code==='Equal');
     if(minus){ ev.preventDefault(); rnCollapse(false); return; }
     if(plus){ ev.preventDefault(); rnCollapse(true); return; }
+  }
+  // 書式ショートカット（ev.codeで配列非依存。太字Ctrl+Bはブラウザ標準に任せる）
+  if((ev.ctrlKey||ev.metaKey)&&!ev.repeat){
+    if(ev.altKey&&ev.code==='Digit1'){ ev.preventDefault(); document.execCommand('formatBlock',false,'<h3>'); rnDirty(); return; }
+    if(ev.shiftKey&&ev.code==='Digit8'){ ev.preventDefault(); document.execCommand('insertUnorderedList'); rnDirty(); return; }
+    if(ev.shiftKey&&ev.code==='Digit7'){ ev.preventDefault(); document.execCommand('insertOrderedList'); rnDirty(); return; }
+    if(ev.shiftKey&&ev.code==='Digit9'){ ev.preventDefault(); rnToggleChecklist(); return; }
+    if(ev.shiftKey&&ev.code==='KeyX'){ ev.preventDefault(); document.execCommand('strikeThrough'); rnDirty(); return; }
+    if(!ev.shiftKey&&!ev.altKey&&ev.code==='KeyK'){ ev.preventDefault(); var u=prompt('リンクURL'); if(u){document.execCommand('createLink',false,u);rnDirty();} return; }
   }
 }
 function rnEditClick(ev){
