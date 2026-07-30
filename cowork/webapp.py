@@ -3157,7 +3157,14 @@ function tcCardClick(ev,card){ if(ev.target.closest('button,a,select,input,texta
   if(!card.classList.contains('open')){ card.classList.add('open'); _tcTouch(card); } }
 function tcSyncTitle(id,v){ var c=document.getElementById('tc-'+id); if(c){ var t=c.querySelector('.tc-ttl'); if(t)t.textContent=v; } }
 function _tcUrg(due){ var D=window._TC||{}; if(!due)return '#cbd5e1'; if(due<D.today)return '#dc2626'; if(due<=D.d3)return '#f59e0b'; if(due<=D.weekend)return '#eab308'; return '#94a3b8'; }
-function tcDue(id,ds){ var c=document.getElementById('tc-'+id); if(c){ var col=_tcUrg(ds); var inp=c.querySelector('.tc-due'); if(inp){inp.value=ds;inp.style.color=col;} var m=c.querySelector('.tc-duem'); if(m){m.textContent=ds||'期限なし';m.style.color=col;} var d=c.querySelector('.tc-dot'); if(d)d.style.background=col; } taskField(id,'due_date',ds); }
+var _tcWD=['日','月','火','水','木','金','土'];
+function _tcDueCompact(ds){ if(!ds)return '📅—'; var p=String(ds).split('-'); if(p.length<3)return '📅'+ds;
+  var d=new Date(+p[0],+p[1]-1,+p[2]); return '📅'+(+p[1])+'/'+(+p[2])+_tcWD[d.getDay()]; }
+function tcDue(id,ds){ var c=document.getElementById('tc-'+id); if(c){ var col=_tcUrg(ds);
+  var inp=c.querySelector('.tc-due'); if(inp){inp.value=ds;inp.style.color=col;}
+  var m=c.querySelector('.m-due'); if(m){m.textContent=_tcDueCompact(ds); m.style.color=(ds?col:'#cbd5e1');}
+  var d=c.querySelector('.tc-dot'); if(d)d.style.background=col; }
+  taskField(id,'due_date',ds); }
 function tcPin(id){ var c=document.getElementById('tc-'+id); var cur=c.getAttribute('data-pinned')==='1'; var nv=cur?'0':'1';
   fetch('/task/'+id+'/field',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'field=pinned&value='+nv})
    .then(function(r){return r.json();}).then(function(d){ if(!d.ok)return; c.setAttribute('data-pinned',nv); c.classList.toggle('pinned',nv==='1'); var b=c.querySelector('.tc-pin'); if(b)b.classList.toggle('on',nv==='1'); _tcFlash(id); }); }
