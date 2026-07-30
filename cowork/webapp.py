@@ -419,6 +419,13 @@ function escH(s) {{
 /* 全ページ共通: 自由記述textareaの挙動。フォーカスで広げ(8行)、離れたら入力ありは4行・空は2行に戻す(#55) */
 function taExpand(el) {{ el.rows = 8; }}
 function taShrink(el) {{ el.rows = el.value.trim() ? 4 : 2; }}
+/* 全ページ共通: 検索入力のデバウンス。入力が落ち着いてから(既定250ms)グローバル関数fnを1回だけ実行。
+   大量行の一覧で毎キーストローク絞り込みが重くなる問題への対処（oninput="_deb('filterX')"の形で使う）。*/
+var _debTimers = {{}};
+function _deb(fn, ms) {{
+  ms = ms || 250; clearTimeout(_debTimers[fn]);
+  _debTimers[fn] = setTimeout(function() {{ var f = window[fn]; if (typeof f === 'function') f(); }}, ms);
+}}
 </script>
 </head><body>
 <header>
@@ -1258,7 +1265,7 @@ def deliveries_page(con) -> str:
       <p class="muted" style="margin:0 0 10px">商談が「提案」に至ると自動でDelivery案件が起票されます。案件名・状態・期間はこの一覧で直接編集できます（期間は初期入力のガイド用。既存アサインの週は変わりません）。
         <a href="/base-workload">▶ ベース工数を設定</a></p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-        <input type="text" id="dvSearch" placeholder="🔍 案件名・クライアントで検索" style="font-size:12px;padding:4px 8px;width:260px" oninput="filterDeliveries()">
+        <input type="text" id="dvSearch" placeholder="🔍 案件名・クライアントで検索" style="font-size:12px;padding:4px 8px;width:260px" oninput="_deb('filterDeliveries')">
         <select id="dvStatusF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全状態</option>{_st_filter}</select>
         <select id="dvConfF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全確度</option>
           <option value="確定">確定</option><option value="見込み">見込み</option><option value="無効(終了)">無効(終了)</option></select>
@@ -3594,7 +3601,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
       <select name="assignee" onchange="this.form.submit()">{_fopt(owners, assignee, '担当:全て')}</select>
       <select name="category" onchange="this.form.submit()"><option value="">種類:全て</option>{_task_cat_optgroups(cats, category)}</select>
       <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
-      <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細・次アクションで検索…" oninput="taskFilter()" style="max-width:260px">
+      <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細・次アクションで検索…" oninput="_deb('taskFilter')" style="max-width:260px">
       <a class="btn sec" href="/tasks">リセット</a>
     </form>"""
     has_test = any((t.get("source") == "test") for t in tasks)
@@ -3848,7 +3855,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
       <select name="assignee" onchange="this.form.submit()">{_asg_fopt}</select>
       <select name="category" onchange="this.form.submit()">{_fopt(cats, category, '種類:全て')}</select>
       <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
-      <input type="text" id="taskSearch" placeholder="🔍 件名・依頼者・内容で検索…" oninput="taskFilter()" style="max-width:240px">
+      <input type="text" id="taskSearch" placeholder="🔍 件名・依頼者・内容で検索…" oninput="_deb('taskFilter')" style="max-width:240px">
       <a class="btn sec" href="/desk-tasks">リセット</a>
     </form>"""
 
@@ -4811,7 +4818,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
-        oninput="filterDealsByAccount()" style="max-width:220px">
+        oninput="_deb('filterDealsByAccount')" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=active">リセット</a>
     </form>"""
     # バルク編集用JSオブジェクト構築（選択肢を持つフィールド）。フリー入力系はJS側でinput化。
@@ -5047,7 +5054,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       {_stage_multi_filter(stages, selected=stages_sel)}
       <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
-        oninput="filterDealsByAccount()" style="max-width:220px">
+        oninput="_deb('filterDealsByAccount')" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=byDate">リセット</a>
     </form>"""
 
@@ -5107,7 +5114,7 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
-        oninput="filterDealsByAccount()" style="max-width:220px">
+        oninput="_deb('filterDealsByAccount')" style="max-width:220px">
       {_toggle_btn}
       <a class="btn sec" href="/deals?tab=overdue">リセット</a>
     </form>"""
@@ -5576,7 +5583,7 @@ def accounts_page(con) -> str:
     _size_options = "".join(f'<option value="{_esc(v)}">{_esc(v)}</option>' for v in sfa_db.COMPANY_SIZES)
     filter_row = f"""<div class="filter-row" style="margin-bottom:12px">
       <input type="text" id="accSearch" placeholder="🔍 企業名で検索..."
-        oninput="filterAccounts()" style="max-width:220px">
+        oninput="_deb('filterAccounts')" style="max-width:220px">
       <select id="accIndFilter" onchange="filterAccounts()">
         <option value="">業界:全て</option>{_ind_options}</select>
       <select id="accSizeFilter" onchange="filterAccounts()">
@@ -6779,7 +6786,7 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
       {filter_row}
       <div style="margin:4px 0 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <input type="text" id="dpSearch" placeholder="🔍 アカウント・商談・開発テーマ・担当で検索…"
-          oninput="filterDevProjects()" style="flex:1;min-width:240px;max-width:420px;padding:7px 10px">
+          oninput="_deb('filterDevProjects')" style="flex:1;min-width:240px;max-width:420px;padding:7px 10px">
         {_seed_filter_dropdown}
         <span class="muted" id="dpSearchCount" style="font-size:12px"></span>
       </div>
@@ -7004,7 +7011,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
             for d in deals
         )
         deal_field_html = f"""
-          <input type="text" id="dpDealFilter" placeholder="会社名・商談名で絞り込み" oninput="dpFilterDeals()">
+          <input type="text" id="dpDealFilter" placeholder="会社名・商談名で絞り込み" oninput="_deb('dpFilterDeals')">
           <select name="deal_id" id="dpDealSelect" required size="8" style="height:170px" onchange="dpShowSalesOwner()">
             <option value=""></option>
             {opts}
@@ -7487,7 +7494,7 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
             for d in deals
         )
         deal_field_html = f"""
-          <input type="text" id="diDealFilter" placeholder="会社名・商談名で絞り込み" oninput="diFilterDeals()">
+          <input type="text" id="diDealFilter" placeholder="会社名・商談名で絞り込み" oninput="_deb('diFilterDeals')">
           <select name="deal_id" id="diDealSelect" size="8" style="height:170px">
             <option value="">（商談に紐づけない・商談共通）</option>
             {opts}
@@ -9474,7 +9481,7 @@ def leads_page(con, *, status=None, source=None, q=None) -> str:
     </form>
     <div style="margin:8px 0 10px">
       <input type="text" id="leadSearch" placeholder="🔍 氏名・会社で絞り込み（入力すると即座に絞られます）"
-        oninput="filterLeads()" style="max-width:320px">
+        oninput="_deb('filterLeads')" style="max-width:320px">
     </div>"""
 
     # マスタデータ取得（インライン編集・バルク編集用）
