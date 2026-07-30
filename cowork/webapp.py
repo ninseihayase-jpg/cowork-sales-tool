@@ -3633,7 +3633,7 @@ _DESK_CSS = """<style>
 .desk-agg{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
 .desk-agg .box{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;font-size:12px;text-decoration:none;color:inherit}
 .desk-agg .box b{font-size:16px}
-.desk-alert-over b{color:#dc2626}.desk-alert-today b{color:#f59e0b}.desk-alert-tmr b{color:#eab308}
+.desk-alert-over b{color:#dc2626}.desk-alert-today b{color:#f59e0b}.desk-alert-tmr b{color:#eab308}.desk-alert-hold b{color:#64748b}
 .m-req{font-size:9px;background:#eef2ff;color:#3730a3;border-radius:4px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>"""
 
@@ -3659,9 +3659,12 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
     for t in open_admin:
         r = (t.get("requester") or "").strip() or "（依頼者未設定）"
         req_counts[r] = req_counts.get(r, 0) + 1
-    overdue_n = sum(1 for t in open_admin if (t.get("due_date") or "") and (t.get("due_date") or "") < today)
-    today_n = sum(1 for t in open_admin if (t.get("due_date") or "") == today)
-    tmr_n = sum(1 for t in open_admin if (t.get("due_date") or "") == tomorrow)
+    # 保留中は期限管理の対象外（アラートに出さない）。別枠で件数だけ表示する。
+    _due_pool = [t for t in open_admin if (t.get("status") or "") != "保留"]
+    overdue_n = sum(1 for t in _due_pool if (t.get("due_date") or "") and (t.get("due_date") or "") < today)
+    today_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == today)
+    tmr_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == tomorrow)
+    hold_n = sum(1 for t in open_admin if (t.get("status") or "") == "保留")
     requesters_all = sorted({(t.get("requester") or "").strip() for t in all_admin if (t.get("requester") or "").strip()})
 
     # 表示対象（フィルタ適用）
@@ -3681,6 +3684,11 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
     if urgency:
         def _uok(t):
             due = (t.get("due_date") or "").strip()
+            hold = (t.get("status") or "") == "保留"
+            if urgency == "hold":
+                return hold
+            if hold:
+                return False  # 保留中は期限アラート系の対象外
             if urgency == "overdue":
                 return bool(due) and due < today
             if urgency == "today":
@@ -3812,6 +3820,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         <a class="box desk-alert-over" href="/desk-tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b>{overdue_n}</b></a>
         <a class="box desk-alert-today" href="/desk-tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
         <a class="box desk-alert-tmr" href="/desk-tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
+        <a class="box desk-alert-hold" href="/desk-tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b>{hold_n}</b></a>
       </div>
       <div style="font-size:12px;color:#475569;margin:2px 0 4px">依頼者別 未完了：</div>
       <div class="desk-agg">{req_boxes}</div>"""
@@ -3824,7 +3833,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
     _urg_opts = "".join(
         f'<option value="{v}"{" selected" if urgency == v else ""}>{lbl}</option>'
         for v, lbl in (("", "期限:全て"), ("overdue", "🔴 超過"), ("today", "🟠 今日まで"),
-                       ("tomorrow", "🟡 明日まで"), ("nodue", "⚪ 期限なし")))
+                       ("tomorrow", "🟡 明日まで"), ("nodue", "⚪ 期限なし"), ("hold", "⏸ 保留中")))
     # 担当フィルタ＝事務員（DESK_ASSIGNEES）＋「受信箱＝未割当」。現値がマスタ外でも表示。
     _asg_vals = list(sfa_db.DESK_ASSIGNEES)
     if assignee and assignee not in ("__none__", "") and assignee not in _asg_vals:
@@ -3885,13 +3894,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>🗂 事務タスク（{len(tasks)}）</span>
-        <span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <form method="post" action="/desk-tasks/delete-all" style="margin:0"
-            onsubmit="return confirm('事務タスクを全件削除します（進捗メモも消えます・元に戻せません）。よろしいですか？')">
-            <button class="btn sec" type="submit" style="font-size:12px;color:#c53030">🗑 全件削除</button>
-          </form>
-          <a class="btn sec" href="/tasks" style="font-size:12px">✅ 通常タスクへ</a>
-        </span>
+        <a class="btn sec" href="/tasks" style="font-size:12px">✅ 通常タスクへ</a>
       </h2>
       {agg}
       {new_form}
