@@ -3172,6 +3172,9 @@ function tcAiCat(id){ var c=document.getElementById('tc-'+id);
   fetch('/task/'+id+'/ai-category',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'x=1'})
    .then(function(r){return r.json();}).then(function(d){ if(!d.ok||!d.category){ if(d&&!d.category)alert('AIが種類を判定できませんでした'); return; }
      var sel=c.querySelector('select[data-field="category"]'); if(sel){ sel.value=d.category; } _tcFlash(id); }); }
+function tcReq(id,val){ val=(val||'').trim();
+  taskField(id,'requester',val).then(function(){ var c=document.getElementById('tc-'+id); if(!c)return;
+    var m=c.querySelector('.m-req'); if(m){ if(val){ m.textContent='👤'+val; m.style.display=''; } else { m.style.display='none'; } } }); }
 function tcSlack(id){
   var box=document.getElementById('tcslk-'+id);
   var cur=''; var a=box&&box.querySelector('a'); if(a)cur=a.getAttribute('href')||'';
@@ -3757,7 +3760,9 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         log_snip = _esc(_sum[:40]) if _sum else "進捗ログ"
         pin_btn = (f'<button type="button" class="tc-pin{" on" if pinned else ""}" '
                    f'onclick="tcPin({tid})" title="★最優先ピン">★</button>')
-        m_req = f'<span class="m-req" title="依頼者">👤{_esc(req)}</span>' if req else ""
+        # m-req はコンパクト表示のバッジ。空でも要素は残し（display:none）、編集で即時反映できるように。
+        m_req = (f'<span class="m-req" title="依頼者">👤{_esc(req)}</span>' if req
+                 else '<span class="m-req" title="依頼者" style="display:none"></span>')
         m_asg = f'<span class="m-asg">🧑‍💼{_esc(asg)}</span>' if asg else ""
         m_due = (f'<span class="m-due" style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
                  if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
@@ -3777,7 +3782,10 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'<div class="tc-na{" empty" if not na else ""}"><span>▶</span>'
             f'<input value="{_esc(na)}" placeholder="次アクション未設定" title="次アクション" '
             f'onchange="taskField({tid},&#39;next_action&#39;,this.value)"></div>'
-            f'<div class="tc-meta">{asg_sel}{cat_sel}{slack_html}</div>'
+            f'<div class="tc-meta">'
+            f'<input type="text" class="tc-sel" value="{_esc(req)}" placeholder="👤依頼者" title="依頼者" '
+            f'list="deskReqList" onchange="tcReq({tid},this.value)" style="min-width:88px">'
+            f'{asg_sel}{cat_sel}{slack_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}</div>'
             f'<div class="tc-notes" onclick="openSummary({tid})" title="進捗メモのAIサマリを見る">📝 {log_snip}</div>'
             f'<div class="tc-foot">'
@@ -11041,7 +11049,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _field = f.get("field", "")
                     _value = f.get("value", "")
                     _allowed = {"status", "assignee", "due_date", "category", "priority",
-                                "title", "project", "next_action", "pinned", "slack_permalink"}
+                                "title", "project", "next_action", "pinned", "slack_permalink",
+                                "requester"}
                     if _field not in _allowed:
                         self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(), ctype="application/json")
                     elif _field == "slack_permalink" and _value and not _value.startswith(("http://", "https://")):
