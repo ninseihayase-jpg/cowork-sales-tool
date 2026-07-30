@@ -3208,6 +3208,13 @@ def compute_delivery_load(con, *, start_week: str | None = None,
         return {"actual": {"committed": 0.0, "forecast": 0.0},
                 "billing": {"committed": 0.0, "forecast": 0.0}}
 
+    # 案件ごとの体制(役割)並び順（delivery_form と同じ id 昇順）。クリック内訳をこの順で並べる用。
+    _role_order: dict = {}
+    for rr in con.execute("SELECT delivery_id, role FROM delivery_roles ORDER BY delivery_id, id"):
+        _m = _role_order.setdefault(rr["delivery_id"], {})
+        if rr["role"] not in _m:
+            _m[rr["role"]] = len(_m)
+
     for r in con.execute(
         "SELECT da.owner, da.role, da.member_kind, da.from_week, da.to_week, da.fte_pct, da.fte_billing, "
         "d.stage, d.status, d.deal_name, dv.id AS delivery_id, dv.title AS delivery_title, "
@@ -3239,6 +3246,7 @@ def compute_delivery_load(con, *, start_week: str | None = None,
                 "deal_name": r["deal_name"] or "", "delivery_title": r["delivery_title"] or "",
                 "account_name": r["account_name"] or "",
                 "delivery_id": r["delivery_id"], "delivery_start": r["delivery_start"] or "",
+                "role_order": _role_order.get(r["delivery_id"], {}).get(r["role"] or "", 9999),
             })
     base = base_workload_by_owner(con)
     owners = sorted(set(list(base.keys()) + list(cells.keys())),
