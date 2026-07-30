@@ -3210,7 +3210,8 @@ def compute_delivery_load(con, *, start_week: str | None = None,
 
     for r in con.execute(
         "SELECT da.owner, da.role, da.member_kind, da.from_week, da.to_week, da.fte_pct, da.fte_billing, "
-        "d.stage, d.status, d.deal_name, dv.title AS delivery_title, acc.name AS account_name "
+        "d.stage, d.status, d.deal_name, dv.id AS delivery_id, dv.title AS delivery_title, "
+        "dv.start_week AS delivery_start, acc.name AS account_name "
         "FROM delivery_assignments da "
         "JOIN deliveries dv ON dv.id=da.delivery_id "
         "JOIN deals d ON d.id=dv.deal_id "
@@ -3237,6 +3238,7 @@ def compute_delivery_load(con, *, start_week: str | None = None,
                 "actual": actual, "billing": billing, "committed": (stage == "受注"),
                 "deal_name": r["deal_name"] or "", "delivery_title": r["delivery_title"] or "",
                 "account_name": r["account_name"] or "",
+                "delivery_id": r["delivery_id"], "delivery_start": r["delivery_start"] or "",
             })
     base = base_workload_by_owner(con)
     owners = sorted(set(list(base.keys()) + list(cells.keys())),
