@@ -233,24 +233,34 @@ def _call_claude_haiku(prompt: str, *, timeout: int = 20, max_wait: int = 25) ->
     return result[0] or ""
 
 
-def _generate_issue_ai_summary(issue: dict, memos: list[dict]) -> str:
-    """論点のメモ全履歴からAIサマリーを生成する。失敗時は空文字（呼び出し側は既存サマリーを保持すること）。"""
-    if not memos:
+def _generate_issue_ai_summary(issue: dict, notes_text: str) -> str:
+    """論点メモ(rich_notes)の全文からAIサマリーを生成する。失敗時は空文字（呼び出し側は既存サマリーを保持すること）。"""
+    if not (notes_text or "").strip():
         return ""
-    memo_text = "\n".join(
-        f"- ({(m.get('created_at') or '')[:16]}) {m.get('body','')}"
-        for m in memos
-    )
     prompt = (
-        f"以下は社内論点「{issue.get('issue','')}」についての議論メモの履歴です。\n"
+        f"以下は社内論点「{issue.get('issue','')}」についての論点メモです。\n"
         "話されているサブトピック・論点ごとに分けて、日本語で箇条書きに要約してください。\n"
         "各行は必ず「・トピック名：内容」の形式で書いてください"
         "（トピック名は名詞句で2〜10文字程度の短い見出し、内容にできれば結論や合意事項が分かるように書く）。\n"
         "まだ結論が出ていない・保留中の論点があれば、そのように分かるように書いてください。\n"
         "箇条書きは最大6行程度、前置きや「要約:」等の言葉は不要で、箇条書き本文だけを出力してください。\n\n"
-        f"{memo_text}"
+        f"{notes_text}"
     )
     return _call_claude_haiku(prompt)
+
+
+def _issue_notes_text(con, issue_id: int) -> str:
+    """論点メモ(rich_notes kind='issue')の全ノートをタグ除去した平文で連結する（AIサマリ生成の入力）。"""
+    parts = []
+    for n in sfa_db.list_rich_notes(con, "issue", issue_id):
+        title = (n.get("title") or "").strip()
+        body = re.sub(r"<[^>]+>", "\n", n.get("body") or "")   # ブロック境界を改行に
+        body = html.unescape(body)
+        body = re.sub(r"[ \t]+\n", "\n", body)
+        body = re.sub(r"\n{3,}", "\n\n", body).strip()
+        if title or body:
+            parts.append((f"# {title}\n" if title else "") + body)
+    return "\n\n".join(parts).strip()
 
 
 def _content_disposition(filename: str) -> str:
@@ -6120,8 +6130,10 @@ function rnSyncTriggers(){ var has=false;
   for(var i=0;i<_rnNotes.length;i++){ var n=_rnNotes[i];
     if((n.title||'').trim()||((n.body||'').replace(/<[^>]+>/g,'').replace(/&nbsp;/g,'').trim())){has=true;break;} }
   document.querySelectorAll('.rn-trg[data-kind="'+_rnKind+'"][data-id="'+_rnId+'"]').forEach(function(b){ b.classList.toggle('on',has); }); }
-function rnClose(){ if(_rnDirty)rnSave(); document.getElementById('rnModal').classList.remove('open');
-  document.getElementById('rnBackdrop').style.display='none'; }
+function rnClose(){ var wasDirty=_rnDirty; if(_rnDirty)rnSave(); document.getElementById('rnModal').classList.remove('open');
+  document.getElementById('rnBackdrop').style.display='none';
+  // 論点詳細ページ等では、閉じた後にノートカードを最新化するためリロード（保存fetchの完了を少し待つ）。
+  if(window._rnReloadOnClose){ setTimeout(function(){ location.reload(); }, wasDirty?450:60); } }
 function rnCmd(ev,cmd,val){ ev.preventDefault(); var e=_rnEl(); e.focus();
   document.execCommand(cmd,false,val||null); rnNorm(); rnDirty(); return false; }
 // チェックリストは「行ごと」に切替（liに .cl を付ける）。リスト全体ではなく現在行だけを対象にする。
@@ -7552,33 +7564,25 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
 
     rows = ""
     for it in issues:
-        return_to = _deal_issues_url(status=status, member=member, q=q, sort=sort, open_issue=it["id"])
-        memos = sfa_db.list_deal_issue_memos(con, it["id"])
-        is_open = str(open_issue) == str(it["id"])
-        memo_panel = _issue_memo_panel_html(memos, it, return_to=return_to)
+        return_to = _deal_issues_url(status=status, member=member, q=q, sort=sort)
         summary_box = _ai_summary_hover_html(it.get('ai_summary'), issue_id=it['id'], return_to=return_to)
         deal_cell = (
             f'<a href="/deal/{it["deal_id"]}">{_esc(it.get("account_name"))}</a>'
             f'<div class="muted">{_esc(it.get("deal_name"))}</div>'
             if it.get('deal_id') else '<span class="muted">商談共通</span>'
         )
+        # 論点名クリックで詳細ページ（左:編集項目／右:サマリ＋論点メモ）を開く。
         rows += f"""
         <tr>
           <td>{deal_cell}</td>
           <td><div style="display:flex;align-items:flex-start;gap:5px">
             {_rich_note_btn("issue", it['id'], it['id'] in rn_issue_ids)}
-            <span>{_esc(it.get('issue'))}</span></div></td>
+            <a href="/deal-issue/{it['id']}" style="font-weight:600">{_esc(it.get('issue'))}</a></div></td>
           <td>{_issue_status_select_html(it['id'], it.get('status'))}</td>
           <td>{_issue_members_inline_html(it['id'], it.get('members'))}</td>
           <td>{_issue_due_date_input_html(it['id'], it.get('due_date'))}</td>
-          <td>
-            {summary_box}
-            <details class="di-memo-details"{' open' if is_open else ''}>
-              <summary style="cursor:pointer">メモ（{len(memos)}）</summary>
-              {memo_panel}
-            </details>
-          </td>
-          <td><a href="/deal-issue/{it['id']}/edit">編集</a></td>
+          <td>{summary_box}</td>
+          <td><a href="/deal-issue/{it['id']}">開く</a></td>
         </tr>"""
 
     return f"""
@@ -7595,7 +7599,7 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
       <table style="table-layout:fixed;width:100%">
         <tr>{_sticky_th('商談', width='16%')}{_sticky_th('論点', width='14%')}{_sticky_th('ステータス', width='9%')}
             {_sticky_th('議論メンバー', width='14%')}{_sticky_th('解消期限', width='9%')}
-            {_sticky_th('サマリー・メモ', width='34%')}{_sticky_th('', width='5%')}</tr>
+            {_sticky_th('AIサマリー（論点メモから生成）', width='34%')}{_sticky_th('', width='5%')}</tr>
         {rows or '<tr><td colspan=7 class=muted>論点がまだありません</td></tr>'}
       </table>
       </div>
@@ -7688,6 +7692,95 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
         o.style.display = (!q || o.text.includes(q)) ? '' : 'none';
       }}
     }}
+    </script>"""
+
+
+def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> str:
+    """論点の詳細ページ。左＝編集項目（保存/削除）、右＝AIサマリ＋論点メモ（クリックで大画面編集）。"""
+    it = issue
+    iid = it["id"]
+    self_url = f"/deal-issue/{iid}"
+    back_href = return_to or (f'/deal/{it["deal_id"]}' if it.get("deal_id") else "/deal-issues")
+    deal_label = (f'{_esc(it.get("account_name"))} / {_esc(it.get("deal_name"))}'
+                  if it.get("deal_id") else '商談共通（特定の商談に紐づかない論点）')
+    selected_members = set((it.get("members") or "").split(","))
+    members_html = "".join(
+        f'<label style="display:inline-flex;align-items:center;gap:4px;margin:0 14px 6px 0;font-weight:normal">'
+        f'<input type="checkbox" name="members" value="{_esc(m)}"'
+        f'{" checked" if m in selected_members else ""} style="width:auto">{_esc(m)}</label>'
+        for m in sfa_db.DEAL_ISSUE_MEMBERS
+    )
+    # 左: 編集フォーム（保存先は既存の /deal-issue/{id}/edit。保存後はこの詳細へ戻る）
+    left = f"""
+      <div class="card" style="flex:1;min-width:320px;max-width:480px">
+        <h2 style="margin-top:0">論点を編集</h2>
+        <form method="post" action="/deal-issue/{iid}/edit" id="issueForm">
+          <input type="hidden" name="return_to" value="{_esc(self_url)}">
+          <label>商談</label>
+          <div class="muted" style="margin:4px 0 10px">{deal_label}</div>
+          <label>論点 *</label>
+          <input name="issue" required value="{_esc(it.get('issue'))}">
+          <label>議論メンバー</label>
+          <div style="margin:4px 0 10px">{members_html}</div>
+          <div class="grid">
+            <div><label>ステータス</label><select name="status">{_opt(sfa_db.DEAL_ISSUE_STATUSES, it.get('status') or '議論中')}</select></div>
+            <div><label>解消期限</label><input type="date" name="due_date" value="{_esc(it.get('due_date'))}"></div>
+          </div>
+          <div style="margin-top:16px">
+            <button class="btn" type="submit">保存</button>
+            <a class="btn sec" href="{_esc(back_href)}">キャンセル</a>
+          </div>
+        </form>
+        <form method="post" action="/deal-issue/{iid}/delete" style="margin-top:10px"
+          onsubmit="return confirm('削除しますか？')">
+          <button class="btn" style="background:#ef4444" type="submit">削除</button></form>
+      </div>"""
+    # 右: AIサマリ（論点メモから生成）＋ 論点メモ一覧（カードクリックで大画面編集）
+    summary_html = _format_ai_summary_html(it.get("ai_summary"))
+    notes = sfa_db.list_rich_notes(con, "issue", iid)
+    if notes:
+        note_cards = "".join(
+            f'<div class="di-note-card" onclick="rnOpen(&#39;issue&#39;,{iid})" '
+            f'title="クリックで大きく編集">'
+            f'<div class="di-note-ttl">{_esc((n.get("title") or "無題"))}</div>'
+            f'<div class="di-note-pv">{_rich_note_preview(n.get("body") or "", 120) or "（空）"}</div></div>'
+            for n in notes
+        )
+    else:
+        note_cards = '<div class="muted">論点メモはまだありません。「📝 論点メモ」から追加してください。</div>'
+    right = f"""
+      <div class="card" style="flex:1;min-width:320px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <h2 style="margin:0">論点サマリ</h2>
+          <form method="post" action="/deal-issue/{iid}/regenerate_summary" style="display:inline">
+            <input type="hidden" name="return_to" value="{_esc(self_url)}">
+            <button type="submit" class="btn sec" style="font-size:12px" title="論点メモから再生成">🔄 サマリ再生成</button>
+          </form>
+        </div>
+        <div class="ai-summary-text" style="margin:8px 0 16px">{summary_html}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;
+          border-top:1px solid #eef1f5;padding-top:12px">
+          <h2 style="margin:0">論点メモ</h2>
+          {_rich_note_chip("issue", iid)}
+        </div>
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">{note_cards}</div>
+      </div>"""
+    return f"""
+    <style>
+    {AI_SUMMARY_HOVER_CSS}
+    .di-note-card{{border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;cursor:pointer;background:#fff;
+      transition:background .12s,border-color .12s}}
+    .di-note-card:hover{{background:#f8fafc;border-color:#bfdbfe}}
+    .di-note-ttl{{font-weight:600;font-size:13px;color:#334155;margin-bottom:2px}}
+    .di-note-pv{{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+    </style>
+    <div class="card"><p style="margin:0"><a class="btn sec" href="{_esc(back_href)}">← 戻る</a></p></div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+      {left}
+      {right}
+    </div>
+    <script>window._rnReloadOnClose = true;
+    {DEAL_ISSUE_INLINE_EDIT_JS}
     </script>"""
 
 
@@ -10848,6 +10941,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         )
                     except (ValueError, IndexError):
                         self._send(render("<div class=card>ページが見つかりません</div>"), 404)
+                elif path.startswith("/deal-issue/") and path[len("/deal-issue/"):].isdigit():
+                    iid = int(path[len("/deal-issue/"):])
+                    iss = sfa_db.get_deal_issue(con, iid)
+                    return_to = self._qs().get("return_to", [None])[0]
+                    self._send(
+                        render(deal_issue_detail_page(con, iss, return_to=return_to) if iss
+                               else "<div class=card>論点が見つかりません</div>"),
+                        200 if iss else 404,
+                    )
                 elif path == "/accounts":
                     self._send(render(accounts_page(con)))
                 elif path == "/accounts/duplicates":
@@ -12212,8 +12314,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         return
                     existing = sfa_db.get_deal_issue(con, iid)
                     if existing:
-                        memos = sfa_db.list_deal_issue_memos(con, iid)
-                        summary = _generate_issue_ai_summary(existing, memos)
+                        summary = _generate_issue_ai_summary(existing, _issue_notes_text(con, iid))
                         if summary:
                             sfa_db.set_deal_issue_ai_summary(con, iid, summary)
                     _return_to = f.get("return_to") or ""

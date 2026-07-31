@@ -958,6 +958,22 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
                 "SELECT 'deal', d.id, NULL, d.rich_note, 0, datetime('now'), datetime('now') FROM deals d "
                 "WHERE d.rich_note IS NOT NULL AND trim(d.rich_note) <> '' "
                 "AND NOT EXISTS (SELECT 1 FROM rich_notes r WHERE r.kind='deal' AND r.entity_id=d.id)")
+        # 旧: deal_issue_memos（追記式メモ）→ rich_notes(kind='issue') へ一度だけ集約移行（冪等）。
+        # 論点ごとに全メモを「旧メモ（移行）」1ノートへ時系列で連結（各行=日時付きの段落）。
+        # HTMLとして描画されるため <,&,> をエスケープし、改行は <br> にする。
+        con.execute(
+            "INSERT INTO rich_notes (kind, entity_id, title, body, sort_order, created_at, updated_at) "
+            "SELECT 'issue', issue_id, '旧メモ（移行）', group_concat(line, ''), 0, "
+            "  datetime('now'), datetime('now') FROM ("
+            "  SELECT m.issue_id AS issue_id, "
+            "    '<p>・(' || substr(COALESCE(m.created_at,''),1,16) || ') ' || "
+            "    replace(replace(replace(replace(COALESCE(m.body,''),'&','&amp;'),'<','&lt;'),'>','&gt;'),"
+            "      char(10),'<br>') || '</p>' AS line "
+            "  FROM deal_issue_memos m WHERE trim(COALESCE(m.body,'')) <> '' "
+            "  ORDER BY m.issue_id, m.created_at, m.id"
+            ") GROUP BY issue_id "
+            "HAVING issue_id NOT IN "
+            "  (SELECT entity_id FROM rich_notes WHERE kind='issue' AND title='旧メモ（移行）')")
         thread_cols = {r[1] for r in con.execute("PRAGMA table_info(slack_threads)")}
         if "meta" not in thread_cols:
             con.execute("ALTER TABLE slack_threads ADD COLUMN meta TEXT")
