@@ -4464,7 +4464,11 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'{_rich_note_btn("deal", did, did in rn_deal_ids)}'
             f'<a href="/deal/{did}?return_to={urllib.parse.quote(return_to_url, safe="")}" title="{_esc(d.get("account_name"))}" '
             f'style="display:inline-block;max-width:135px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle">{_esc(d.get("account_name"))}</a>'
-            f'</div></td>'
+            f'</div>'
+            + (f'<div style="font-size:10px;color:#94a3b8;max-width:160px;white-space:nowrap;overflow:hidden;'
+               f'text-overflow:ellipsis" title="業界: {_esc(d.get("industry"))}">🏭 {_esc(d.get("industry"))}</div>'
+               if d.get("industry") else "")
+            + f'</td>'
             f'<td>{_name_input}</td>'
             f'<td>{_udeal_sel(did, "stage", stages, d.get("stage") or "", disabled=_ro)}</td>'
             f'<td>{_udeal_sel(did, "importance", sfa_db.IMPORTANCE_OPTIONS, d.get("importance") or "", disabled=_ro)}</td>'
