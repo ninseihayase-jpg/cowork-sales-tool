@@ -499,3 +499,26 @@ def test_delete_deal_cascades_children_and_detaches_lead(con):
     # リードは残るが deal_id は NULL（＝未商談化に戻る）
     lead = con.execute("SELECT deal_id FROM leads WHERE company=?", ("元リード社",)).fetchone()
     assert lead is not None and lead[0] is None
+
+
+def test_business_type_tree_default_and_save_sync(con):
+    """事業種別ツリー(L1×L2)の既定・保存・L1フラットマスタ同期を検証（マスタ編集対応）。"""
+    # 既定は現行L1マスタ×既定L2（定数）から構築される
+    tree = sfa_db.get_business_type_tree(con)
+    assert "AI導入" in tree and "AI開発(軽)" in tree["AI導入"]
+    assert sfa_db.business_type_l2_of(con, "AI導入") == list(tree["AI導入"])
+    # 全L2平坦（重複除去・順序保持）
+    all_l2 = sfa_db.business_type_l2_all(con)
+    assert "AI開発(軽)" in all_l2 and len(all_l2) == len(set(all_l2))
+    # 保存: 新L1追加・既存L1にL2追加・空L1と重複L2は掃除される
+    sfa_db.set_business_type_tree(con, {
+        "AI導入": ["AI開発(軽)", "新L2", "新L2"],   # 重複は1つに
+        "新規L1": ["only"],
+        "  ": ["捨てられる"],                        # 空L1名は除外
+    })
+    assert sfa_db.business_type_l2_of(con, "AI導入") == ["AI開発(軽)", "新L2"]
+    assert sfa_db.business_type_l2_of(con, "新規L1") == ["only"]
+    assert "  " not in sfa_db.get_business_type_tree(con)
+    # L1フラットマスタがツリーのキーへ同期される（既存コードの参照経路を維持）
+    l1 = sfa_db.get_master_list(con, "business_type_l1")
+    assert l1 == ["AI導入", "新規L1"]

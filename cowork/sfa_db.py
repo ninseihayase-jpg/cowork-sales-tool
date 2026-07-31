@@ -1171,6 +1171,71 @@ def tech_seed_l1_of(con) -> dict:
     return m
 
 
+# ---- 事業種別のツリー（L1→L2）。tech_seed_tree と同方式で masters に JSON 保持 ----
+# 以前はコード内定数 BUSINESS_TYPE_L2_BY_L1 で固定だったが、マスタ画面で編集可能にした。
+
+def get_business_type_tree(con) -> dict:
+    """事業種別 {L1: [L2, ...]} を挿入順で返す。未保存なら現行L1マスタ×既定L2から構築。"""
+    row = con.execute("SELECT values_json FROM masters WHERE key='business_type_tree'").fetchone()
+    if row:
+        try:
+            data = _json.loads(row[0])
+            if isinstance(data, dict):
+                return {str(k): [str(x) for x in (v or [])] for k, v in data.items()}
+        except (ValueError, TypeError):
+            print("[masters] business_type_tree broken, falling back to default", flush=True)
+    # フォールバック: 現行L1フラットマスタのキー順 × 既定L2（定数）で構築。
+    l1_keys = get_master_list(con, "business_type_l1") or list(BUSINESS_TYPE_L1)
+    return {l1: list(BUSINESS_TYPE_L2_BY_L1.get(l1, [])) for l1 in l1_keys}
+
+
+def set_business_type_tree(con, tree: dict) -> None:
+    """ツリーを保存。空L1名は除外・各L1内L2は重複除去(順序保持)。
+    既存コードが参照する business_type_l1 フラットマスタも、ツリーのキーへ同期する。"""
+    clean: dict = {}
+    for k, v in tree.items():
+        k = str(k).strip()
+        if not k:
+            continue
+        seen: set = set()
+        items: list = []
+        for x in (v or []):
+            x = str(x).strip()
+            if x and x not in seen:
+                seen.add(x)
+                items.append(x)
+        clean[k] = items
+    con.execute(
+        "INSERT INTO masters(key,values_json) VALUES('business_type_tree',?) "
+        "ON CONFLICT(key) DO UPDATE SET values_json=excluded.values_json",
+        (_json.dumps(clean, ensure_ascii=False),),
+    )
+    # L1フラットマスタをツリーのキーに同期（get_master_list('business_type_l1') 経路を維持）。
+    con.execute(
+        "INSERT INTO masters(key,values_json) VALUES('business_type_l1',?) "
+        "ON CONFLICT(key) DO UPDATE SET values_json=excluded.values_json",
+        (_json.dumps(list(clean.keys()), ensure_ascii=False),),
+    )
+    con.commit()
+
+
+def business_type_l2_of(con, l1: str | None) -> list:
+    """指定L1配下のL2一覧。"""
+    return list(get_business_type_tree(con).get(l1 or "", []))
+
+
+def business_type_l2_all(con) -> list:
+    """全L2を平坦に返す（重複除去・順序保持）。フィルタや一括編集の選択肢用。"""
+    seen: set = set()
+    out: list = []
+    for leaves in get_business_type_tree(con).values():
+        for x in leaves:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+    return out
+
+
 # ---- 取得系 ----
 def list_accounts(con) -> list[dict]:
     return [dict(r) for r in con.execute("SELECT * FROM accounts ORDER BY name")]

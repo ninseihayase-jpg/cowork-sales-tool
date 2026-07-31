@@ -55,7 +55,7 @@ def _to_float(v: str):
 
 
 def parse_deals_csv(csv_text: str, *, stages=None, biz_l1=None, owners=None, lead_patterns=None,
-                     company_sizes=None) -> list[dict]:
+                     company_sizes=None, biz_l2_by_l1=None) -> list[dict]:
     """CSVテキストを商談/アカウント辞書リストに変換する。
 
     各要素は {"kind": "deal"|"account", "company": ..., ...} の形。
@@ -103,7 +103,7 @@ def parse_deals_csv(csv_text: str, *, stages=None, biz_l1=None, owners=None, lea
             if biz1 not in valid_biz_l1:
                 biz1 = None
             biz2 = g("事業種別L2", "business_type_l2")
-            valid_biz2 = set(sfa_db.BUSINESS_TYPE_L2_BY_L1.get(biz1, [])) if biz1 else set()
+            valid_biz2 = set((biz_l2_by_l1 or sfa_db.BUSINESS_TYPE_L2_BY_L1).get(biz1, [])) if biz1 else set()
             if biz2 not in valid_biz2:
                 biz2 = None
             owner = g("担当者", "owner")
@@ -185,7 +185,8 @@ def import_deals(con, csv_text: str, industries=None, company_sizes=None) -> tup
     owners = sfa_db.get_master_list(con, "owners")
     patterns = sfa_db.get_master_list(con, "lead_patterns")
     rows = parse_deals_csv(csv_text, stages=stages, biz_l1=biz_l1, owners=owners, lead_patterns=patterns,
-                           company_sizes=company_sizes)
+                           company_sizes=company_sizes,
+                           biz_l2_by_l1=sfa_db.get_business_type_tree(con))
     if industries and company_sizes and os.environ.get("ANTHROPIC_API_KEY"):
         rows = _estimate_fields(rows, industries, company_sizes)
 
@@ -247,7 +248,7 @@ def build_ai_prompt(con) -> str:
     industries = sfa_db.get_master_list(con, "industries")
 
     biz_l2_lines = "\n".join(
-        f"  - **{l1}**: {' / '.join(sfa_db.BUSINESS_TYPE_L2_BY_L1.get(l1, [])) or '(なし)'}"
+        f"  - **{l1}**: {' / '.join(sfa_db.business_type_l2_of(con, l1)) or '(なし)'}"
         for l1 in biz_l1
     )
 

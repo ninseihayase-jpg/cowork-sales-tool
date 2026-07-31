@@ -160,10 +160,10 @@ def _csv_safe(v):
     return v
 
 
-def _opt_l2(l1: str | None, selected: str | None) -> str:
-    """L1に対応するL2選択肢を生成。"""
+def _opt_l2(con, l1: str | None, selected: str | None) -> str:
+    """L1に対応するL2選択肢を生成（マスタのツリーを参照）。"""
     opts = ['<option value=""></option>']
-    for v in sfa_db.BUSINESS_TYPE_L2_BY_L1.get(l1 or "", []):
+    for v in sfa_db.business_type_l2_of(con, l1):
         sel = " selected" if v == selected else ""
         opts.append(f'<option value="{html.escape(v)}"{sel}>{html.escape(v)}</option>')
     return "".join(opts)
@@ -532,6 +532,8 @@ _CLOSE_MODAL_HTML = (
     ' var useSt=st.length>0;'
     ' var impEl=document.getElementById("impFilter"); var imp=impEl?impEl.value:"";'
     ' var indEl=document.getElementById("indFilter"); var ind=indEl?indEl.value:"";'
+    ' var l1El=document.getElementById("l1Filter"); var l1v=l1El?l1El.value:"";'
+    ' var l2El=document.getElementById("l2Filter"); var l2v=l2El?l2El.value:"";'
     ' var n=0;'
     ' document.querySelectorAll("tr[data-account]").forEach(function(tr){'
     '  var dind=tr.getAttribute("data-industry")||"";'
@@ -539,7 +541,9 @@ _CLOSE_MODAL_HTML = (
     '  var okS=!useSt||st.indexOf(tr.getAttribute("data-stage")||"")>=0;'
     '  var di=tr.getAttribute("data-importance")||""; var okI=!imp||(imp==="__none__"?di==="":di===imp);'
     '  var okInd=!ind||(ind==="__none__"?dind==="":dind===ind.toLowerCase());'
-    '  var show=(okA&&okS&&okI&&okInd); tr.style.display=show?"":"none";'
+    '  var dl1=tr.getAttribute("data-l1")||""; var okL1=!l1v||(l1v==="__none__"?dl1==="":dl1===l1v);'
+    '  var dl2=tr.getAttribute("data-l2")||""; var okL2=!l2v||(l2v==="__none__"?dl2==="":dl2===l2v);'
+    '  var show=(okA&&okS&&okI&&okInd&&okL1&&okL2); tr.style.display=show?"":"none";'
     '  if(show)n++; else {var c=tr.querySelector("[name=ids]"); if(c)c.checked=false;}});'
     ' var lbl=document.getElementById("stgFilterLbl");'
     ' if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
@@ -4207,10 +4211,30 @@ def tasks_digest_page(con, result: str | None = None) -> str:
     {blocks}"""
 
 
+def _biz_type_block(l1: str, leaves: list) -> str:
+    """事業種別マスタの1ブロック(L1)。L1名＋配下L2(1行ずつ)のtextarea。tech_seedと同UI。"""
+    lines = "\n".join(leaves)
+    return (
+        '<div class="bt-block" style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;'
+        'margin-bottom:10px;background:#fafbfc">'
+        '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">'
+        f'<input name="bt_l1_name[]" value="{_esc(l1)}" placeholder="種別L1（例: AI導入）" '
+        'style="flex:1;font-weight:700">'
+        '<button type="button" class="btn sec" style="font-size:11px;white-space:nowrap" '
+        "onclick=\"this.closest('.bt-block').remove()\">このL1を削除</button>"
+        '</div>'
+        f'<textarea name="bt_l2_lines[]" rows="5" placeholder="配下のL2を1行ずつ入力" '
+        f'style="font-size:13px;width:100%;box-sizing:border-box">{_esc(lines)}</textarea>'
+        '</div>')
+
+
 def masters_page(con) -> str:
-    """入力マスタ編集ページ。各リストの選択肢を追加・削除・並び替えできる。"""
+    """入力マスタ編集ページ。各リストの選択肢を追加・削除・並び替えできる。
+    事業種別は L1×L2 のツリー構造のため、専用のツリー編集UIで扱う（フラットな L1 カードは出さない）。"""
     cards = []
     for key, label in sfa_db.MASTER_LABELS.items():
+        if key == "business_type_l1":
+            continue  # L1はツリー編集カード（下部）で扱うためフラット表示しない
         values = sfa_db.get_master_list(con, key)
         items_html = "".join(
             f'<div class="master-item" draggable="true" data-key="{html.escape(key)}" data-idx="{i}">'
@@ -4238,6 +4262,21 @@ def masters_page(con) -> str:
           <div id="hidden_{key}">{hidden_inputs}</div>
         </div>""")
 
+    # 事業種別（L1×L2）ツリー編集カード
+    _bt_tree = sfa_db.get_business_type_tree(con)
+    _bt_blocks = "".join(_biz_type_block(l1, leaves) for l1, leaves in _bt_tree.items()) \
+        or _biz_type_block("", [])
+    biz_type_card = f"""
+        <div class="card" id="master_business_type">
+          <h2>事業種別（L1 × L2 ツリー）</h2>
+          <p class="muted" style="margin:0 0 10px;font-size:12px">L1（大分類）ごとに、配下のL2（小分類）を1行ずつ入力します。
+            「＋ L1を追加」で分類を足せます。L1名が空の枠は保存時に削除されます。
+            商談のL2ドロップダウン・一覧のL2フィルタはこのツリーに連動します。</p>
+          <div id="btBlocks">{_bt_blocks}</div>
+          <button type="button" class="btn sec" onclick="btAddBlock()">＋ L1を追加</button>
+          <template id="btBlockTpl">{_biz_type_block("", [])}</template>
+        </div>"""
+
     return f"""
     <div class="card" style="background:#f0f4f8;border:1.5px solid #d4dae4">
       <h2>⚙ 入力マスタの編集</h2>
@@ -4245,6 +4284,7 @@ def masters_page(con) -> str:
     </div>
     <form method="post" action="/masters/save" id="master_form">
       {''.join(cards)}
+      {biz_type_card}
       <p><button class="btn">すべて保存</button>
          <a class="btn sec" href="/">キャンセル</a></p>
     </form>
@@ -4306,8 +4346,12 @@ def masters_page(con) -> str:
         item.ondragend = () => {{ rebuildHidden(key); container._dragging = null; }};
       }});
     }}
+    function btAddBlock() {{
+      const t = document.getElementById('btBlockTpl');
+      document.getElementById('btBlocks').insertAdjacentHTML('beforeend', t.innerHTML);
+    }}
     document.addEventListener('DOMContentLoaded', () => {{
-      {'; '.join(f"initDrag('{html.escape(key)}')" for key in sfa_db.MASTER_LABELS)}
+      {'; '.join(f"initDrag('{html.escape(key)}')" for key in sfa_db.MASTER_LABELS if key != 'business_type_l1')}
     }});
     </script>"""
 
@@ -4389,7 +4433,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         _ro = (d.get("status") == "closed")  # クローズ済みは閲覧専用（編集不可）
         _dis = " disabled" if _ro else ""
         _ro_sty = f";{_ro_input_style}" if _ro else ""
-        l2_values = sfa_db.BUSINESS_TYPE_L2_BY_L1.get(d.get("business_type_l1") or "", [])
+        l2_values = sfa_db.business_type_l2_of(con, d.get("business_type_l1"))
         inp_budget = (f'<input type="text" value="{_esc(d.get("client_budget") or "")}"{_dis}'
                       f' onchange="updateDealField({did}, \'client_budget\', this.value)"'
                       f' style="font-size:11px;padding:1px 2px;width:72px{_ro_sty}">')
@@ -4460,7 +4504,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                        f'onchange="updateDealField({did}, \'deal_name\', this.value)" '
                        f'style="font-size:12px;padding:2px 4px;width:150px{_ro_sty}">')
         rows.append(
-            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-industry="{_esc((d.get("industry") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}">'
+            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-industry="{_esc((d.get("industry") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}" data-l1="{_esc(d.get("business_type_l1") or "")}" data-l2="{_esc(d.get("business_type_l2") or "")}">'
             f'{cb_td}'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
             f'<td><div style="display:flex;align-items:center;gap:5px">'
@@ -4748,6 +4792,43 @@ def _industry_filter_select() -> str:
     )
 
 
+def _l1l2_filter_selects(con) -> str:
+    """事業種別L1/L2の絞り込み<select>2つ（クライアント側）。L1選択でL2の選択肢が連動する。
+    全タブ共通の filterDealsByAccount() で data-l1 / data-l2 を判定する。"""
+    tree = sfa_db.get_business_type_tree(con)
+    l1_opts = "".join(f'<option value="{html.escape(l1)}">{html.escape(l1)}</option>' for l1 in tree.keys())
+    map_json = json.dumps(tree, ensure_ascii=False)
+    # JS部は素の文字列（f-string不使用）で組み、__MAP__ だけ差し込む（波括弧のエスケープ回避）。
+    js = """<script>
+window.DEAL_L2_FILTER_MAP = __MAP__;
+function onL1FilterChange(){
+  var l1El = document.getElementById('l1Filter'); if(!l1El) return;
+  var l1 = l1El.value;
+  var sel = document.getElementById('l2Filter'); if(!sel) return;
+  var prev = sel.value;
+  var arr;
+  if(l1 && l1 !== '__none__'){ arr = window.DEAL_L2_FILTER_MAP[l1] || []; }
+  else { arr = []; for(var k in window.DEAL_L2_FILTER_MAP){ (window.DEAL_L2_FILTER_MAP[k]||[]).forEach(function(x){ if(arr.indexOf(x)<0) arr.push(x); }); } }
+  var opts = ['<option value="">全種別L2</option>'];
+  arr.forEach(function(x){ var e=x.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); opts.push('<option value="'+e+'">'+e+'</option>'); });
+  opts.push('<option value="__none__">L2:未設定</option>');
+  sel.innerHTML = opts.join('');
+  if(l1 === '__none__'){ sel.value=''; sel.disabled=true; }
+  else { sel.disabled=false; if(arr.indexOf(prev)>=0 || prev==='' || prev==='__none__') sel.value=prev; }
+  filterDealsByAccount();
+}
+document.addEventListener('DOMContentLoaded', function(){ if(document.getElementById('l1Filter')) onL1FilterChange(); });
+</script>""".replace("__MAP__", map_json)
+    return (
+        '<select id="l1Filter" onchange="onL1FilterChange()" title="事業種別L1で絞り込み">'
+        '<option value="">全種別L1</option>' + l1_opts +
+        '<option value="__none__">L1:未設定</option></select>'
+        '<select id="l2Filter" onchange="filterDealsByAccount()" title="事業種別L2で絞り込み（L1連動）">'
+        '<option value="">全種別L2</option><option value="__none__">L2:未設定</option></select>'
+        + js
+    )
+
+
 def _stage_multi_filter(stages: list[str], selected=()) -> str:
     """ステージの複数選択フィルタ（クライアント側・チェックボックスのドロップダウン）。
     チェック変更で filterDealsByAccount() を呼び、data-stage を持つ行を絞り込む。全タブ共通。
@@ -4884,17 +4965,14 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       {_stage_multi_filter(stages, selected=stages_sel)}
       <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
       {_industry_filter_select()}
+      {_l1l2_filter_selects(con)}
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
         oninput="_deb('filterDealsByAccount')" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=active">リセット</a>
     </form>"""
     # バルク編集用JSオブジェクト構築（選択肢を持つフィールド）。フリー入力系はJS側でinput化。
-    _all_l2 = []
-    for _vs in sfa_db.BUSINESS_TYPE_L2_BY_L1.values():
-        for _v in _vs:
-            if _v not in _all_l2:
-                _all_l2.append(_v)
+    _all_l2 = sfa_db.business_type_l2_all(con)
     deal_bulk_options = {
         "stage": [["", "（変更なし）"]] + [[s, s] for s in stages],
         "importance": [["", "（変更なし）"]] + [[v, v] for v in sfa_db.IMPORTANCE_OPTIONS],
@@ -4985,7 +5063,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     </table></div>
     <script>
     const DEAL_BULK_OPTIONS = {deal_bulk_options_json};
-    const DEAL_L2_MAP = {json.dumps(sfa_db.BUSINESS_TYPE_L2_BY_L1, ensure_ascii=False)};
+    const DEAL_L2_MAP = {json.dumps(sfa_db.get_business_type_tree(con), ensure_ascii=False)};
     function updateDealL1(id, l1_value) {{
       updateDealField(id, 'business_type_l1', l1_value);
       var l2sel = document.getElementById('l2_' + id);
@@ -5122,6 +5200,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       {_stage_multi_filter(stages, selected=stages_sel)}
       <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
       {_industry_filter_select()}
+      {_l1l2_filter_selects(con)}
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
         oninput="_deb('filterDealsByAccount')" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=byDate">リセット</a>
@@ -5183,6 +5262,7 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       {_industry_filter_select()}
+      {_l1l2_filter_selects(con)}
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
         oninput="_deb('filterDealsByAccount')" style="max-width:220px">
       {_toggle_btn}
@@ -6615,7 +6695,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         <div><label>事業種別L1</label>
           <select name="business_type_l1" id="biz_l1" onchange="updateL2()">{_opt(sfa_db.get_master_list(con,'business_type_l1'), deal.get('business_type_l1'))}</select></div>
         <div><label>事業種別L2</label>
-          <select name="business_type_l2" id="biz_l2">{_opt_l2(deal.get('business_type_l1'), deal.get('business_type_l2'))}</select></div>
+          <select name="business_type_l2" id="biz_l2">{_opt_l2(con, deal.get('business_type_l1'), deal.get('business_type_l2'))}</select></div>
         <div><label>リード経路</label>
           <select name="lead_pattern">{_opt(sfa_db.get_master_list(con,'lead_patterns'), deal.get('lead_pattern'))}</select></div>
         <div><label>展示会名（展示会由来のとき）</label>
@@ -6656,7 +6736,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     {revert_btn}{close_btn}{delete_btn}
     <script>
     {new_acc_js}
-    const L2_MAP = {json.dumps(sfa_db.BUSINESS_TYPE_L2_BY_L1, ensure_ascii=False)};
+    const L2_MAP = {json.dumps(sfa_db.get_business_type_tree(con), ensure_ascii=False)};
     function updateL2() {{
       const l1 = document.getElementById('biz_l1').value;
       const sel = document.getElementById('biz_l2');
@@ -9913,7 +9993,7 @@ def deals_import_page(con, result: str = "") -> str:
 
     biz_l2_html = "".join(
         f'<div style="margin:4px 0 4px 12px">└ <strong>{html.escape(l1)}</strong>: '
-        f'{_chips(sfa_db.BUSINESS_TYPE_L2_BY_L1.get(l1, []))}</div>'
+        f'{_chips(sfa_db.business_type_l2_of(con, l1))}</div>'
         for l1 in biz_l1_list
     )
 
@@ -10916,9 +10996,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 # ── マスタ ──
                 elif path == "/masters/save":
                     for key in sfa_db.MASTER_KEYS:
+                        if key == "business_type_l1":
+                            continue  # 事業種別L1はツリー(business_type_tree)保存側でキー同期する
                         values = f_list.get(f"{key}[]", [])
                         values = [v.strip() for v in values if v.strip()]
                         sfa_db.set_master_list(con, key, values)
+                    # 事業種別 L1×L2 ツリー（tech_seed と同方式）。空L1は除外。
+                    _bt_names = f_list.get("bt_l1_name[]", [])
+                    _bt_lines = f_list.get("bt_l2_lines[]", [])
+                    _bt_tree = {}
+                    for _i, _nm in enumerate(_bt_names):
+                        _nm = (_nm or "").strip()
+                        if not _nm:
+                            continue
+                        _raw = _bt_lines[_i] if _i < len(_bt_lines) else ""
+                        _bt_tree[_nm] = [ln.strip() for ln in _raw.replace("\r", "").split("\n") if ln.strip()]
+                    sfa_db.set_business_type_tree(con, _bt_tree)
                     self._redirect("/")
 
                 # ── 技術シード マスタ（ツリー L1→L2, #60） ──
