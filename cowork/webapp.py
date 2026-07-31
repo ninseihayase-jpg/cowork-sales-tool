@@ -531,12 +531,15 @@ _CLOSE_MODAL_HTML = (
     ' var st=[]; document.querySelectorAll(".stg-cb:checked").forEach(function(b){st.push(b.value);});'
     ' var useSt=st.length>0;'
     ' var impEl=document.getElementById("impFilter"); var imp=impEl?impEl.value:"";'
+    ' var indEl=document.getElementById("indFilter"); var ind=indEl?indEl.value:"";'
     ' var n=0;'
     ' document.querySelectorAll("tr[data-account]").forEach(function(tr){'
-    '  var okA=tr.getAttribute("data-account").indexOf(q)>=0;'
+    '  var dind=tr.getAttribute("data-industry")||"";'
+    '  var okA=(tr.getAttribute("data-account").indexOf(q)>=0)||(q&&dind.indexOf(q)>=0);'
     '  var okS=!useSt||st.indexOf(tr.getAttribute("data-stage")||"")>=0;'
     '  var di=tr.getAttribute("data-importance")||""; var okI=!imp||(imp==="__none__"?di==="":di===imp);'
-    '  var show=(okA&&okS&&okI); tr.style.display=show?"":"none";'
+    '  var okInd=!ind||(ind==="__none__"?dind==="":dind===ind.toLowerCase());'
+    '  var show=(okA&&okS&&okI&&okInd); tr.style.display=show?"":"none";'
     '  if(show)n++; else {var c=tr.querySelector("[name=ids]"); if(c)c.checked=false;}});'
     ' var lbl=document.getElementById("stgFilterLbl");'
     ' if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
@@ -4457,7 +4460,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                        f'onchange="updateDealField({did}, \'deal_name\', this.value)" '
                        f'style="font-size:12px;padding:2px 4px;width:150px{_ro_sty}">')
         rows.append(
-            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}">'
+            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-industry="{_esc((d.get("industry") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}">'
             f'{cb_td}'
             f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
             f'<td><div style="display:flex;align-items:center;gap:5px">'
@@ -4735,6 +4738,16 @@ def _ms_type_opts(ms_type: str | None) -> str:
     )
 
 
+def _industry_filter_select() -> str:
+    """アカウント業界の絞り込み<select>（クライアント側・filterDealsByAccount()で使用）。全タブ共通。"""
+    return (
+        '<select id="indFilter" onchange="filterDealsByAccount()" title="アカウントの業界で絞り込み">'
+        '<option value="">全業界</option>'
+        + "".join(f'<option value="{html.escape(i)}">{html.escape(i)}</option>' for i in sfa_db.INDUSTRIES)
+        + '<option value="__none__">業界:未設定</option></select>'
+    )
+
+
 def _stage_multi_filter(stages: list[str], selected=()) -> str:
     """ステージの複数選択フィルタ（クライアント側・チェックボックスのドロップダウン）。
     チェック変更で filterDealsByAccount() を呼び、data-stage を持つ行を絞り込む。全タブ共通。
@@ -4870,8 +4883,9 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <select name="status" onchange="this.form.submit()">{status_opts}</select>
       {_stage_multi_filter(stages, selected=stages_sel)}
       <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
+      {_industry_filter_select()}
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
-      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
+      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
         oninput="_deb('filterDealsByAccount')" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=active">リセット</a>
     </form>"""
@@ -5107,7 +5121,8 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       {_stage_multi_filter(stages, selected=stages_sel)}
       <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
-      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
+      {_industry_filter_select()}
+      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
         oninput="_deb('filterDealsByAccount')" style="max-width:220px">
       <a class="btn sec" href="/deals?tab=byDate">リセット</a>
     </form>"""
@@ -5167,7 +5182,8 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
       <input type="hidden" name="exclude_today" value="{'1' if exclude_today else '0'}">
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
-      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名で検索..."
+      {_industry_filter_select()}
+      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
         oninput="_deb('filterDealsByAccount')" style="max-width:220px">
       {_toggle_btn}
       <a class="btn sec" href="/deals?tab=overdue">リセット</a>
