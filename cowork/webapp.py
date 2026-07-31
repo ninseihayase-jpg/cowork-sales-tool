@@ -4287,6 +4287,29 @@ def masters_page(con) -> str:
           <template id="btBlockTpl">{_biz_type_block("", [])}</template>
         </div>"""
 
+    # 担当者ごとの担当領域の割当カード（領域の候補は上の「担当領域」マスタで編集）
+    _domains = sfa_db.get_master_list(con, "owner_domains")
+    _dom_map = sfa_db.get_owner_domain_map(con)
+    _owner_rows = "".join(
+        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+        f'<span style="min-width:110px;font-size:13px">{html.escape(o)}</span>'
+        f'<input type="hidden" name="owdom_owner[]" value="{html.escape(o)}">'
+        f'<select name="owdom_value[]" style="max-width:200px">'
+        f'<option value="">（未設定）</option>'
+        + "".join(f'<option value="{html.escape(dv)}"'
+                  f'{" selected" if _dom_map.get(o) == dv else ""}>{html.escape(dv)}</option>'
+                  for dv in _domains)
+        + '</select></div>'
+        for o in sfa_db.get_master_list(con, "owners")
+    )
+    owner_domain_card = f"""
+        <div class="card" id="master_owner_domain">
+          <h2>担当者の担当領域</h2>
+          <p class="muted" style="margin:0 0 10px;font-size:12px">各担当者に担当領域を割り当てます（領域の候補は上の「担当領域」で編集）。
+            最大余剰工数の計算対象/対象外の判定などに使われます。</p>
+          {_owner_rows or '<div class="muted">担当者がいません</div>'}
+        </div>"""
+
     return f"""
     <div class="card" style="background:#f0f4f8;border:1.5px solid #d4dae4">
       <h2>⚙ 入力マスタの編集</h2>
@@ -4295,6 +4318,7 @@ def masters_page(con) -> str:
     <form method="post" action="/masters/save" id="master_form">
       {''.join(cards)}
       {biz_type_card}
+      {owner_domain_card}
       <p><button class="btn">すべて保存</button>
          <a class="btn sec" href="/">キャンセル</a></p>
     </form>
@@ -10440,6 +10464,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _load["base_items"] = sfa_db.list_base_workload(con)  # 明細(人×機能×%)
                         _load["base_max"] = sfa_db.get_owner_base_max(con)    # 人→最大稼働率%（未設定は100扱い・互換）
                         _load["base_max_periods"] = sfa_db.list_base_max_periods(con)  # 人→期間別最大稼働率（#75）
+                        _load["owner_domains"] = sfa_db.get_owner_domain_map(con)  # 人→担当領域（余剰工数の対象判定用）
                         self._send_cors_json(json.dumps(_load, ensure_ascii=False).encode())
                 elif path == "/api/base_workload":
                     # Hishoダッシュボード用: ベース工数(人×機能×%)。{owner:pct}合算＋明細（#75）。
@@ -11114,6 +11139,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _raw = _bt_lines[_i] if _i < len(_bt_lines) else ""
                         _bt_tree[_nm] = [ln.strip() for ln in _raw.replace("\r", "").split("\n") if ln.strip()]
                     sfa_db.set_business_type_tree(con, _bt_tree)
+                    # 担当者→担当領域 の割当（parallel arrays）。空領域は未設定扱い。
+                    _ow = f_list.get("owdom_owner[]", [])
+                    _ov = f_list.get("owdom_value[]", [])
+                    _dom_map = {}
+                    for _i, _o in enumerate(_ow):
+                        _v = (_ov[_i] if _i < len(_ov) else "").strip()
+                        if (_o or "").strip() and _v:
+                            _dom_map[_o.strip()] = _v
+                    sfa_db.set_owner_domain_map(con, _dom_map)
                     self._redirect("/")
 
                 # ── 技術シード マスタ（ツリー L1→L2, #60） ──

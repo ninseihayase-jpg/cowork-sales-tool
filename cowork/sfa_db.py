@@ -37,6 +37,8 @@ BUSINESS_TYPE_L2_BY_L1 = {
     "AI導入":        ["AI開発(軽)", "AI開発(重)", "汎用AIエージェント(調達)", "汎用AIエージェント(SCM)", "汎用AIエージェント(IT)", "AXパートナー"],
     "他":            ["調達BPO(スポット)", "未定"],
 }
+# 担当者の担当領域（最大余剰工数の対象/対象外判定などに使う）。マスタ編集可。
+OWNER_DOMAINS = ["営業", "コンサルタント", "エンジニア", "オペレータ", "その他"]
 LEAD_PATTERNS = ["Connection", "Exh.", "Partner", "Advisor", "PE", "Under", "SNS", "HP", "na"]
 COMPANY_SIZES = ["500億未満", "1000億未満", "3000億未満", "5000億未満", "5000億以上"]
 ACTIVITY_TYPES = ["面談", "電話", "メール", "メモ"]
@@ -93,6 +95,7 @@ MASTER_KEYS = {
     "company_sizes":     COMPANY_SIZES,
     "activity_types":    ACTIVITY_TYPES,
     "task_categories":   TASK_CATEGORIES,
+    "owner_domains":     OWNER_DOMAINS,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -103,6 +106,7 @@ MASTER_LABELS = {
     "company_sizes":     "企業規模",
     "activity_types":    "活動種別",
     "task_categories":   "タスク種類",
+    "owner_domains":     "担当領域",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -1238,6 +1242,36 @@ def set_business_type_tree(con, tree: dict) -> None:
 def business_type_l2_of(con, l1: str | None) -> list:
     """指定L1配下のL2一覧。"""
     return list(get_business_type_tree(con).get(l1 or "", []))
+
+
+def get_owner_domain_map(con) -> dict:
+    """担当者→担当領域 のマップ（masters key='owner_domain_map' にJSON保持）。未設定は空dict。"""
+    row = con.execute("SELECT values_json FROM masters WHERE key='owner_domain_map'").fetchone()
+    if row:
+        try:
+            data = _json.loads(row[0])
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items() if str(v).strip()}
+        except (ValueError, TypeError):
+            print("[masters] owner_domain_map broken, ignoring", flush=True)
+    return {}
+
+
+def set_owner_domain_map(con, mapping: dict) -> None:
+    """担当者→担当領域 を保存。空の領域は除外（＝未設定扱い）。"""
+    clean = {str(k).strip(): str(v).strip() for k, v in mapping.items()
+             if str(k).strip() and str(v).strip()}
+    con.execute(
+        "INSERT INTO masters(key,values_json) VALUES('owner_domain_map',?) "
+        "ON CONFLICT(key) DO UPDATE SET values_json=excluded.values_json",
+        (_json.dumps(clean, ensure_ascii=False),),
+    )
+    con.commit()
+
+
+def owner_domain_of(con, owner: str) -> str:
+    """指定担当者の担当領域（未設定は空文字）。"""
+    return get_owner_domain_map(con).get(owner or "", "")
 
 
 def business_type_l2_all(con) -> list:
