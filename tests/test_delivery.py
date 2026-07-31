@@ -342,3 +342,25 @@ def test_add_assignment_defaults_weeks_from_delivery_period(con):
     dv = sfa_db.get_delivery(con, dvid)
     # webappの/assignment/addは from/to 未入力時 dv.start_week/end_week を採用する（本体はこの前提）
     assert dv["start_week"] == "2026-08-03" and dv["end_week"] == "2026-08-31"
+
+
+def test_base_max_periods_effective_and_replace(con):
+    """ベース最大稼働率の期間版（#75）: 期間別に実効値を返す・総入れ替え・空行スキップ。"""
+    con.execute("INSERT INTO accounts(name) VALUES('社')"); con.commit()
+    # 7/6〜8/2=100 / 8/3〜継続=80
+    sfa_db.replace_base_max_periods(con, "早瀬", [
+        {"from_week": "2026-07-06", "to_week": "2026-08-02", "max_pct": 100},
+        {"from_week": "2026-08-03", "to_week": "", "max_pct": 80},
+    ])
+    ps = sfa_db.list_base_max_periods(con)["早瀬"]
+    assert len(ps) == 2 and ps[1]["to_week"] == ""
+    assert sfa_db.base_max_at(con, "早瀬", "2026-07-13") == 100
+    assert sfa_db.base_max_at(con, "早瀬", "2026-08-10") == 80   # 継続期間
+    assert sfa_db.base_max_at(con, "未登録", "2026-08-10") == 100  # 未設定は100
+    # 全空行はスキップ（保存されない）
+    sfa_db.replace_base_max_periods(con, "中島", [{"from_week": "", "to_week": "", "max_pct": ""}])
+    assert not sfa_db.list_base_max_periods(con).get("中島")
+    # 総入れ替え（1期間に置換）
+    sfa_db.replace_base_max_periods(con, "早瀬", [{"from_week": "", "to_week": "", "max_pct": 50}])
+    assert len(sfa_db.list_base_max_periods(con)["早瀬"]) == 1
+    assert sfa_db.base_max_at(con, "早瀬", "2027-01-01") == 50   # 開区間=常に適用

@@ -1679,11 +1679,13 @@ def base_workload_page(con) -> str:
         by_owner_rows.setdefault(r["owner"], []).append(r)
     by_owner_sum = sfa_db.base_workload_by_owner(con)
     _base_max = sfa_db.get_owner_base_max(con)
+    _bmp = sfa_db.list_base_max_periods(con)
     # マスタ外にベースを持つ人（旧データ等）も末尾に出す
     extra = [o for o in by_owner_rows if o not in set(_owners_ord)]
     order = _owners_ord + sorted(extra)
 
     SLOTS = 5
+    MAX_PERIODS = 3
     blocks = ""
     for o in order:
         rws = by_owner_rows.get(o, [])
@@ -1699,25 +1701,45 @@ def base_workload_page(con) -> str:
                 f'<input type="number" name="pct" min="0" max="200" step="5" value="{pc}" placeholder="%" class="bwPct" style="width:56px;font-size:12px">'
                 f'<button type="button" class="btn sec" style="font-size:11px;color:#c53030;padding:2px 6px" '
                 f'onclick="bwClear(this)" title="この項目をクリア">×</button></span>')
-        _mx = _num_pct(_base_max[o]) if o in _base_max else "100"
+        # ベース最大稼働率の期間編集（開始週/終了週/最大%）×MAX_PERIODS。既存期間を前詰め、無ければ単一値を1行目に。
+        _ps = list(_bmp.get(o) or [])
+        if not _ps and o in _base_max:
+            _ps = [{"from_week": "", "to_week": "", "max_pct": _base_max[o]}]
+        mx_rows = ""
+        for i in range(MAX_PERIODS):
+            _p = _ps[i] if i < len(_ps) else {"from_week": "", "to_week": "", "max_pct": ""}
+            _mv = _num_pct(_p["max_pct"]) if (_p.get("max_pct") not in (None, "")) else ""
+            mx_rows += (
+                f'<div style="display:flex;gap:5px;align-items:center;margin:2px 0;font-size:11px">'
+                f'<input type="date" name="from_week" value="{_esc(_p.get("from_week") or "")}" class="bmFrom" style="font-size:11px" title="開始週(月曜)">'
+                f'<span class="muted">〜</span>'
+                f'<input type="date" name="to_week" value="{_esc(_p.get("to_week") or "")}" class="bmTo" style="font-size:11px" title="終了週(空=以降継続)">'
+                f'<input type="number" name="max_pct" min="0" max="100" step="5" value="{_mv}" class="bmMax" placeholder="%" style="width:58px;font-size:11px" title="最大稼働率%">%'
+                f'</div>')
+        max_form = (
+            f'<form class="bwMaxForm" method="post" action="/base-workload/save-max-periods" data-owner="{_esc(o)}" '
+            f'style="border-top:1px dashed #eef1f6;margin-top:6px;padding-top:6px">'
+            f'<input type="hidden" name="owner" value="{_esc(o)}">'
+            f'<div style="font-size:11px;color:#475569;margin-bottom:2px">ベース最大稼働率（期間別・InProcに割ける最大%）'
+            f'<span class="muted" style="font-size:10px">　終了週は空＝以降ずっと。未来へ追加（過去は原則編集しない）</span>'
+            f'<span class="bwMaxSaved" style="font-size:10px;color:#94a3b8;margin-left:6px"></span></div>'
+            f'{mx_rows}<div class="bwGap" style="font-size:11px;color:#c53030;margin-top:2px"></div></form>')
         blocks += (
-            f'<form class="bwForm" method="post" action="/base-workload/save-slots" data-owner="{_esc(o)}" '
-            f'style="border:1px solid #eef1f6;border-radius:8px;padding:8px 10px;margin-bottom:6px">'
+            f'<div style="border:1px solid #eef1f6;border-radius:8px;padding:8px 10px;margin-bottom:6px">'
+            f'<form class="bwForm" method="post" action="/base-workload/save-slots" data-owner="{_esc(o)}">'
             f'<input type="hidden" name="owner" value="{_esc(o)}">'
             f'<div style="font-size:12px;margin-bottom:4px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>{_esc(o)}</b> '
             f'<span class="muted">合計 <span class="bwSum">{_num_pct(tot)}</span>%</span>'
-            f'<label style="font-size:11px">ベース最大稼働率 '
-            f'<input type="number" name="max_pct" min="0" max="100" step="5" value="{_mx}" class="bwMax" style="width:60px;font-size:12px">%'
-            f'<span class="muted" style="font-size:10px">（InProcに割ける最大稼働率）</span></label>'
             f'<span class="bwSaved" style="font-size:10px;color:#94a3b8"></span></div>'
-            f'{cells}</form>')
+            f'{cells}</form>{max_form}</div>')
     return f"""
     <div class="card">
       <p style="margin:0 0 8px"><a href="/deliveries">← Delivery一覧</a></p>
       <h2 style="margin:0 0 4px">ベース工数（恒常稼働：人 × 機能 × %）</h2>
       <p class="muted" style="margin:0 0 12px">案件に紐づかない恒常的な稼働（営業・管理・採用など）を人ごとに最大{SLOTS}項目まで登録。工数は合計されます。
         マスタの全員を表示・未入力はベース0%。<b>入力すると自動保存</b>（保存ボタンなし）。「×」でその項目をクリア。
-        Hishoの総工数（デモ開発＋Delivery＋<b>ベース</b>）に加算されます。例: 早瀬 営業 30%。</p>
+        Hishoの総工数（デモ開発＋Delivery＋<b>ベース</b>）に加算されます。例: 早瀬 営業 30%。<br>
+        <b>ベース最大稼働率</b>は期間別に設定でき（開始週/終了週/最大%）、稼働予定の負荷率(色)の分母になります。期間の間に空きがあると⚠表示。</p>
       <div style="overflow:auto">{blocks}</div>
     </div>
     <script>
@@ -1742,10 +1764,38 @@ def base_workload_page(con) -> str:
     function bwClear(btn){{ var sp=btn.parentElement;
       sp.querySelectorAll('input').forEach(function(i){{ i.value=''; }});
       var form=btn.closest('.bwForm'); if(form){{ _bwPack(form); _bwSave(form); }} }}
+    // 期間フォーム: 保存＋期間の隙間チェック（⚠）
+    function _bmSave(form){{
+      var st=form.querySelector('.bwMaxSaved'); if(st){{st.textContent='保存中…';st.style.color='#94a3b8';}}
+      var body=new URLSearchParams(new FormData(form)); body.set('ajax','1');
+      fetch(form.action,{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:body.toString()}})
+        .then(function(r){{ if(st){{st.textContent=r.ok?'保存済み':'保存失敗';st.style.color=r.ok?'#059669':'#b91c1c';}} }})
+        .catch(function(){{ if(st){{st.textContent='保存失敗';st.style.color='#b91c1c';}} }});
+    }}
+    function _bmGap(form){{
+      var fs=form.querySelectorAll('.bmFrom'), ts=form.querySelectorAll('.bmTo'), ms=form.querySelectorAll('.bmMax');
+      var ps=[];
+      for(var i=0;i<fs.length;i++){{ var fw=fs[i].value, tw=ts[i].value, mx=ms[i]?ms[i].value:'';
+        if(fw||tw||mx) ps.push({{f:fw,t:tw}}); }}
+      ps.sort(function(a,b){{ if(!a.f&&b.f)return -1; if(a.f&&!b.f)return 1; return a.f<b.f?-1:(a.f>b.f?1:0); }});
+      var msgs=[];
+      for(var j=0;j+1<ps.length;j++){{ var cur=ps[j], nxt=ps[j+1];
+        if(!cur.t){{ msgs.push((cur.f||'(開始未定)')+'は終了なし(継続)なのに後続の期間があります'); continue; }}
+        if(!nxt.f){{ continue; }}
+        var d=new Date(cur.t); d.setDate(d.getDate()+7); var expect=d.toISOString().slice(0,10);
+        if(nxt.f>expect){{ msgs.push(cur.t+'の翌週〜'+nxt.f+'の手前に空き期間があります'); }}
+        else if(nxt.f<=cur.t){{ msgs.push('期間が重複('+cur.t+' と '+nxt.f+')'); }}
+      }}
+      var el=form.querySelector('.bwGap'); if(el) el.textContent = msgs.length ? ('⚠ '+msgs.join(' / ')) : '';
+    }}
     document.addEventListener('DOMContentLoaded',function(){{
       document.querySelectorAll('.bwForm').forEach(function(form){{
         form.addEventListener('change',function(){{ _bwSave(form); }});
         form.querySelectorAll('.bwPct').forEach(function(i){{ i.addEventListener('input',function(){{ _bwRecalc(form); }}); }});
+      }});
+      document.querySelectorAll('.bwMaxForm').forEach(function(form){{
+        _bmGap(form);
+        form.addEventListener('change',function(){{ _bmGap(form); _bmSave(form); }});
       }});
     }});
     </script>"""
@@ -10195,7 +10245,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _load["points_per_fte"] = sfa_db.POINTS_PER_FTE
                         _load["owner_order"] = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
                         _load["base_items"] = sfa_db.list_base_workload(con)  # 明細(人×機能×%)
-                        _load["base_max"] = sfa_db.get_owner_base_max(con)    # 人→最大稼働率%（未設定は100扱い）
+                        _load["base_max"] = sfa_db.get_owner_base_max(con)    # 人→最大稼働率%（未設定は100扱い・互換）
+                        _load["base_max_periods"] = sfa_db.list_base_max_periods(con)  # 人→期間別最大稼働率（#75）
                         self._send_cors_json(json.dumps(_load, ensure_ascii=False).encode())
                 elif path == "/api/base_workload":
                     # Hishoダッシュボード用: ベース工数(人×機能×%)。{owner:pct}合算＋明細（#75）。
@@ -11377,6 +11428,26 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         sfa_db.replace_base_workload_for_owner(con, _ow, _items)
                         if "max_pct" in f:
                             sfa_db.set_owner_base_max(con, _ow, _to_float(f.get("max_pct"), 100.0))
+                    if f.get("ajax"):
+                        self._send(b"", status=204)
+                    else:
+                        self._redirect("/base-workload")
+                elif path == "/base-workload/save-max-periods":
+                    # ベース最大稼働率の期間（開始週/終了週/最大%）×N を送信内容で総入れ替え。週は月曜スナップ。
+                    _ow = (f.get("owner", "") or "").strip()
+                    if _ow:
+                        _fws = f_list.get("from_week", [])
+                        _tws = f_list.get("to_week", [])
+                        _mxs = f_list.get("max_pct", [])
+                        _n = max(len(_fws), len(_tws), len(_mxs))
+                        _periods = []
+                        for _i in range(_n):
+                            _periods.append({
+                                "from_week": _snap_monday(_fws[_i] if _i < len(_fws) else ""),
+                                "to_week": _snap_monday(_tws[_i] if _i < len(_tws) else ""),
+                                "max_pct": (_mxs[_i] if _i < len(_mxs) else ""),
+                            })
+                        sfa_db.replace_base_max_periods(con, _ow, _periods)
                     if f.get("ajax"):
                         self._send(b"", status=204)
                     else:

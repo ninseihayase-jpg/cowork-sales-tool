@@ -781,6 +781,19 @@ CREATE TABLE IF NOT EXISTS owner_base_max (
     updated_at  TEXT DEFAULT (datetime('now'))
 );
 
+-- ベース最大稼働率の期間版（#75）。owner_base_max（単一）を期間で上書きできるようにする。
+-- from_week/to_week は月曜(YYYY-MM-DD)。to_week 空=以降ずっと継続。過去分は基本編集しない運用。
+CREATE TABLE IF NOT EXISTS owner_base_max_periods (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner       TEXT NOT NULL,
+    from_week   TEXT,               -- 開始週(月曜)。空=下限なし
+    to_week     TEXT,               -- 終了週(月曜)。空=継続
+    max_pct     REAL NOT NULL DEFAULT 100,
+    created_at  TEXT DEFAULT (datetime('now')),
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_obmp_owner ON owner_base_max_periods(owner, from_week);
+
 -- ベース工数（#75）。案件に紐づかない恒常稼働（人×機能×%）。例: 早瀬 営業 30%。
 -- functionは自由入力。正本SFA＋Hishoからの書き戻し(POST /api/base_workload)で両方編集。
 CREATE TABLE IF NOT EXISTS base_workload (
@@ -3160,6 +3173,75 @@ def set_owner_base_max(con, owner: str, max_pct) -> None:
         "ON CONFLICT(owner) DO UPDATE SET max_pct=excluded.max_pct, updated_at=datetime('now')",
         (owner, float(max_pct if max_pct is not None else 100)))
     con.commit()
+
+
+# ---- ベース最大稼働率の期間版（#75）----
+
+def list_base_max_periods(con) -> dict:
+    """{owner: [{id, from_week, to_week, max_pct}, ...]}。from_week昇順（空=先頭）→id。"""
+    out: dict = {}
+    for r in con.execute(
+        "SELECT id, owner, from_week, to_week, max_pct FROM owner_base_max_periods "
+        "ORDER BY owner, CASE WHEN from_week IS NULL OR from_week='' THEN 0 ELSE 1 END, from_week, id"):
+        out.setdefault(r["owner"], []).append(
+            {"id": r["id"], "from_week": r["from_week"] or "",
+             "to_week": r["to_week"] or "", "max_pct": r["max_pct"]})
+    return out
+
+
+def replace_base_max_periods(con, owner: str, periods: list) -> None:
+    """指定メンバーのベース最大稼働率の期間を総入れ替え。periods=[{from_week,to_week,max_pct}]。
+    from/to が両方空 かつ 既定値のみの空行は無視。保存後、owner_base_max（単一・互換用）を
+    「今週を含む期間の値」または最新の開いた期間の値で更新する。"""
+    con.execute("DELETE FROM owner_base_max_periods WHERE owner=?", (owner,))
+    kept = []
+    for p in periods:
+        fw = (p.get("from_week") or "").strip()
+        tw = (p.get("to_week") or "").strip()
+        mx = p.get("max_pct")
+        # 全項目空（週なし＆max未入力）はスキップ
+        if not fw and not tw and (mx is None or mx == ""):
+            continue
+        mxv = float(mx) if (mx is not None and mx != "") else 100.0
+        con.execute(
+            "INSERT INTO owner_base_max_periods (owner, from_week, to_week, max_pct) VALUES (?,?,?,?)",
+            (owner, fw or None, tw or None, mxv))
+        kept.append({"from_week": fw, "to_week": tw, "max_pct": mxv})
+    con.commit()
+    # 互換: 単一 owner_base_max を「今週の実効値」に更新（無ければ既存維持/100）
+    today_mon = _monday_of(date.today())
+    eff = _base_max_pick(kept, today_mon)
+    if eff is not None:
+        set_owner_base_max(con, owner, eff)
+
+
+def _base_max_pick(periods: list, week: str):
+    """periods（[{from_week,to_week,max_pct}]）から week を含む期間の max_pct を返す。無ければNone。
+    from空=下限なし / to空=以降継続。複数該当時は最も限定的（from が新しい）を優先。"""
+    best = None
+    best_from = None
+    for p in periods:
+        fw = (p.get("from_week") or "").strip()
+        tw = (p.get("to_week") or "").strip()
+        if fw and week < fw:
+            continue
+        if tw and week > tw:
+            continue
+        # 該当。from がより新しい（大きい）ものを優先
+        if best is None or (fw or "") >= (best_from or ""):
+            best = p.get("max_pct")
+            best_from = fw
+    return best
+
+
+def base_max_at(con, owner: str, week: str):
+    """owner の week 時点のベース最大稼働率。期間があれば期間優先、無ければ単一値、無ければ100。"""
+    periods = list_base_max_periods(con).get(owner, [])
+    v = _base_max_pick(periods, week)
+    if v is not None:
+        return v
+    single = get_owner_base_max(con).get(owner)
+    return single if single is not None else 100.0
 
 
 def replace_base_workload_for_owner(con, owner: str, items: list) -> None:
