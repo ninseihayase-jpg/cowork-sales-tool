@@ -2834,9 +2834,10 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
       </script>
     """
     sec_exh = _audit_section(
-        "展示会ファネル（分類・展示会でフィルタ／画面遷移なし）",
-        "lead_pattern='Exh.' が母集団。面談は『同一日=1面談』(日付なしは除外)。面談0回で次回MS当日以降=初回面談待ち。"
-        "1次実施でも次回MSが『アポ』(2次商談)なら『2次面談アポ済』＝進捗扱い。展示会/分類の選択は即時フィルタ(遷移なし)。",
+        "└ 詳細：展示会名別ファネル（上の全案件ファネルの Exh. 経路を展示会ごとに分解）",
+        "母集団は上の全案件ファネルのうち lead_pattern='Exh.'。同じ11区分だが、こちらは経路ではなく"
+        "『どの展示会か』で切れる（＝展示会名タグ #80 の内訳）。面談は『同一日=1面談』(日付なしは除外)。"
+        "面談0回で次回MS当日以降=初回面談待ち。1次実施でも次回MSが『アポ』(2次商談)なら進捗扱い。展示会/分類の選択は即時フィルタ(遷移なし)。",
         f'総数 <b>{_total_all}</b>件（下の分類別カウントは選択中の展示会に連動）',
         _exh_detail,
         warn="母集団は『lead_pattern=Exh.』タグに全依存。『不成立(要検証)』＝面談0回だが初回面談待ちでない件"
@@ -3183,7 +3184,7 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <a class="btn sec" href="/weekly-numbers/audit">今週</a>
       </form>
     </div>
-    {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_importance}{sec_exh}{sec_A}{sec_c1}{sec_c2}{sec_c3}{sec_c4}{sec_F}{sec_allf}{sec_G}"""
+    {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_importance}{sec_A}{sec_c1}{sec_c2}{sec_c3}{sec_c4}{sec_F}{sec_allf}{sec_exh}{sec_G}"""
 
 
 def deal_hygiene_page(con) -> str:
