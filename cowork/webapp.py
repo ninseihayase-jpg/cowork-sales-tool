@@ -4505,6 +4505,29 @@ def masters_page(con) -> str:
           {_owner_rows or '<div class="muted">担当者がいません</div>'}
         </div>"""
 
+    # 業界ごとのターゲット領域の割当カード（候補は上の「ターゲット領域」マスタで編集）
+    _targets = sfa_db.get_master_list(con, "target_domains")
+    _tgt_map = sfa_db.get_industry_target_map(con)
+    _ind_rows = "".join(
+        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+        f'<span style="min-width:200px;font-size:13px">{html.escape(ind)}</span>'
+        f'<input type="hidden" name="itg_industry[]" value="{html.escape(ind)}">'
+        f'<select name="itg_value[]" style="max-width:200px">'
+        f'<option value="">（未設定）</option>'
+        + "".join(f'<option value="{html.escape(tv)}"'
+                  f'{" selected" if _tgt_map.get(ind) == tv else ""}>{html.escape(tv)}</option>'
+                  for tv in _targets)
+        + '</select></div>'
+        for ind in sfa_db.get_master_list(con, "industries")
+    )
+    target_domain_card = f"""
+        <div class="card" id="master_target_domain">
+          <h2>業界のターゲット領域</h2>
+          <p class="muted" style="margin:0 0 10px;font-size:12px">各業界にターゲット領域を割り当てます（候補は上の「ターゲット領域」で編集）。
+            業界を持つデータ（アカウント・商談・リード等）に自動的に付随させて使います。</p>
+          {_ind_rows or '<div class="muted">業界がありません</div>'}
+        </div>"""
+
     return f"""
     <div class="card" style="background:#f0f4f8;border:1.5px solid #d4dae4">
       <h2>⚙ 入力マスタの編集</h2>
@@ -4514,6 +4537,7 @@ def masters_page(con) -> str:
       {''.join(cards)}
       {biz_type_card}
       {owner_domain_card}
+      {target_domain_card}
       <p><button class="btn">すべて保存</button>
          <a class="btn sec" href="/">キャンセル</a></p>
     </form>
@@ -11389,6 +11413,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         if (_o or "").strip() and _v:
                             _dom_map[_o.strip()] = _v
                     sfa_db.set_owner_domain_map(con, _dom_map)
+                    # 業界→ターゲット領域 の割当（parallel arrays）。空領域は未設定扱い。
+                    _ti = f_list.get("itg_industry[]", [])
+                    _tv = f_list.get("itg_value[]", [])
+                    _tgt_map = {}
+                    for _i, _ind in enumerate(_ti):
+                        _v = (_tv[_i] if _i < len(_tv) else "").strip()
+                        if (_ind or "").strip() and _v:
+                            _tgt_map[_ind.strip()] = _v
+                    sfa_db.set_industry_target_map(con, _tgt_map)
                     self._redirect("/")
 
                 # ── 技術シード マスタ（ツリー L1→L2, #60） ──

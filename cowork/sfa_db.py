@@ -39,6 +39,8 @@ BUSINESS_TYPE_L2_BY_L1 = {
 }
 # 担当者の担当領域（最大余剰工数の対象/対象外判定などに使う）。マスタ編集可。
 OWNER_DOMAINS = ["営業", "コンサルタント", "エンジニア", "オペレータ", "その他"]
+# 業界のターゲット領域（業界→領域の対応。業界を持つ各所で自動的に付随させる）。マスタ編集可。
+TARGET_DOMAINS = ["製造", "建設", "その他"]
 LEAD_PATTERNS = ["Connection", "Exh.", "Partner", "Advisor", "PE", "Under", "SNS", "HP", "na"]
 COMPANY_SIZES = ["500億未満", "1000億未満", "3000億未満", "5000億未満", "5000億以上"]
 ACTIVITY_TYPES = ["面談", "電話", "メール", "メモ"]
@@ -96,6 +98,7 @@ MASTER_KEYS = {
     "activity_types":    ACTIVITY_TYPES,
     "task_categories":   TASK_CATEGORIES,
     "owner_domains":     OWNER_DOMAINS,
+    "target_domains":    TARGET_DOMAINS,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -107,6 +110,7 @@ MASTER_LABELS = {
     "activity_types":    "活動種別",
     "task_categories":   "タスク種類",
     "owner_domains":     "担当領域",
+    "target_domains":    "ターゲット領域",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -1272,6 +1276,36 @@ def set_owner_domain_map(con, mapping: dict) -> None:
 def owner_domain_of(con, owner: str) -> str:
     """指定担当者の担当領域（未設定は空文字）。"""
     return get_owner_domain_map(con).get(owner or "", "")
+
+
+def get_industry_target_map(con) -> dict:
+    """業界→ターゲット領域 のマップ（masters key='industry_target_map' にJSON保持）。未設定は空dict。"""
+    row = con.execute("SELECT values_json FROM masters WHERE key='industry_target_map'").fetchone()
+    if row:
+        try:
+            data = _json.loads(row[0])
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items() if str(v).strip()}
+        except (ValueError, TypeError):
+            print("[masters] industry_target_map broken, ignoring", flush=True)
+    return {}
+
+
+def set_industry_target_map(con, mapping: dict) -> None:
+    """業界→ターゲット領域 を保存。空の領域は除外（＝未設定扱い）。"""
+    clean = {str(k).strip(): str(v).strip() for k, v in mapping.items()
+             if str(k).strip() and str(v).strip()}
+    con.execute(
+        "INSERT INTO masters(key,values_json) VALUES('industry_target_map',?) "
+        "ON CONFLICT(key) DO UPDATE SET values_json=excluded.values_json",
+        (_json.dumps(clean, ensure_ascii=False),),
+    )
+    con.commit()
+
+
+def target_domain_of_industry(con, industry: str) -> str:
+    """指定業界のターゲット領域（未設定は空文字）。業界を持つ各所で自動付随させる用。"""
+    return get_industry_target_map(con).get(industry or "", "")
 
 
 def business_type_l2_all(con) -> list:
