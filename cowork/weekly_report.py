@@ -362,6 +362,7 @@ def exhibition_deal_rows(con, all_deals: bool = False) -> list[dict]:
 EXH_BUCKETS = [
     ("waiting", "① 初回面談待ち（面談0・進行中）"),
     ("no_deal", "② 不成立（面談0・要検証）"),
+    ("no_deal_cancel", "②a キャンセル（面談0・日程調整キャンセル等）"),
     ("first_open", "③ 1次面談どまり・継続中"),
     ("first_closed", "④ 1次面談どまり・終了（理由別）"),
     ("req", "⑤ 2次以降・要件詰め"),
@@ -377,6 +378,7 @@ EXH_BUCKETS = [
 _EXH_RAIL_LABELS = {
     "waiting": "① 初回面談待ち",
     "no_deal": "② 不成立（面談0）",
+    "no_deal_cancel": "②a キャンセル（面談0）",
     "first_open": "③ 1次どまり・継続",
     "first_closed": "④ 1次どまり・終了",
     "req": "⑤ 2次〜要件詰め",
@@ -411,6 +413,9 @@ def classify_exhibition_deal(row: dict, today: str) -> str:
         # ※当日ちょうどのMS(これから面談)も待ちに含める（>=）。過去日/未設定/クローズは不成立。
         if not closed and nms and nms >= today:
             return "waiting"
+        # ②から「キャンセル」を切り出す（②a）。面談前の日程調整キャンセル等を別集計にする（ユーザー確定）。
+        if closed and cr == "キャンセル":
+            return "no_deal_cancel"
         return "no_deal"
     # 「2次面談アポ取得以降」の進捗判定（#27）:
     #   面談2回以上実施済み、または 1次実施済み＆次回MSが『アポ』(=2次商談)で当日以降。
