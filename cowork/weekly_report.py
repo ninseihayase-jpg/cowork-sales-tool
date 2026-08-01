@@ -346,7 +346,7 @@ def exhibition_deal_rows(con, all_deals: bool = False) -> list[dict]:
     rows = con.execute(
         "SELECT d.id, d.deal_name, d.stage, d.status, d.close_reason, d.next_milestone_date, "
         "d.next_milestone_type, d.exhibition_name, d.importance, d.business_type_l1, d.business_type_l2, "
-        "d.lead_pattern, acc.name acc, "
+        "d.lead_pattern, d.value_lumpsum, d.value_recurring, acc.name acc, "
         "(SELECT COUNT(DISTINCT a.occurred_on) FROM activities a "
         "   WHERE a.deal_id=d.id AND a.type='面談' "
         "     AND a.occurred_on IS NOT NULL AND a.occurred_on != '') mtg, "

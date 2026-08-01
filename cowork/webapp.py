@@ -1247,27 +1247,31 @@ def build_funnel_drill_xlsx(con, all_deals: bool = False) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = title[:31]
-    ws.cell(row=1, column=1, value=f"{title}（区分＋重要度/種別）  母集団={pop}  出力日={today}").font = Font(bold=True)
+    # ヘッダーは1行目（タイトル行なし）＝ピボット挿入で表全体を自動認識。母集団/出力日はファイル名に持たせる。
     header = ["区分", col2, "案件名", "アカウント", "重要度", "種別L1", "種別L2",
-              "面談回数", "ステージ", "状態", "終了理由", "次回MS", "開発案件"]
+              "面談回数", "ステージ", "状態", "終了理由", "次回MS", "開発案件",
+              "単発(万)", "継続月(万)", "年額換算(万)"]
     for c, h in enumerate(header, 1):
-        ws.cell(row=2, column=c, value=h).font = Font(bold=True)
-    r = 3
+        ws.cell(row=1, column=c, value=h).font = Font(bold=True)
+    r = 2
     for row in rows:
         col2v = ((row.get("lead_pattern") or "") or "（未設定）") if all_deals else (row.get("exhibition_name") or "")
+        lump = row.get("value_lumpsum") or 0
+        rec = row.get("value_recurring") or 0
         vals = [label.get(row["_bucket"], row["_bucket"]), col2v, row.get("deal_name") or "",
                 row.get("acc") or "", row.get("importance") or "", row.get("business_type_l1") or "",
                 row.get("business_type_l2") or "", row.get("mtg") or 0, row.get("stage") or "",
                 ("クローズ" if row.get("status") == "closed" else "open"), row.get("close_reason") or "",
-                row.get("next_milestone_date") or "", ("有" if row.get("has_dev") else "")]
+                row.get("next_milestone_date") or "", ("有" if row.get("has_dev") else ""),
+                lump, rec, lump + rec * 12]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
         r += 1
-    widths = [26, 16, 26, 20, 8, 14, 14, 9, 14, 8, 14, 12, 8]
+    widths = [26, 16, 26, 20, 8, 14, 14, 9, 14, 8, 14, 12, 8, 10, 11, 12]
     from openpyxl.utils import get_column_letter
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = "A3"
+    ws.freeze_panes = "A2"
     bio = BytesIO()
     wb.save(bio)
     return bio.getvalue()
@@ -1286,26 +1290,26 @@ def build_position_xlsx(con) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "ポジション内訳"
-    ws.cell(row=1, column=1,
-            value=f"商談ポジション内訳（区分＋重要度/種別）  出力日={_today_jst().isoformat()}").font = Font(bold=True)
+    # ヘッダーは1行目（タイトル行なし）＝ピボット挿入で表全体を自動認識。出力日はファイル名に持たせる。
     header = ["区分", "アカウント", "案件名", "ステージ", "状態", "重要度", "種別L1", "種別L2",
-              "単発(万)", "継続月(万)"]
+              "単発(万)", "継続月(万)", "年額換算(万)"]
     for c, h in enumerate(header, 1):
-        ws.cell(row=2, column=c, value=h).font = Font(bold=True)
-    r = 3
+        ws.cell(row=1, column=c, value=h).font = Font(bold=True)
+    r = 2
     for row in A["rows"]:
+        lump = row.get("value_lumpsum") or 0
+        rec = row.get("value_recurring") or 0
         vals = [bl.get(row.get("_bucket"), row.get("_bucket")), row.get("account") or "",
                 row.get("deal_name") or "", row.get("stage") or "",
                 ("クローズ" if row.get("status") == "closed" else "open"),
                 row.get("importance") or "", row.get("business_type_l1") or "",
-                row.get("business_type_l2") or "", row.get("value_lumpsum") or 0,
-                row.get("value_recurring") or 0]
+                row.get("business_type_l2") or "", lump, rec, lump + rec * 12]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
         r += 1
-    for i, w in enumerate([22, 20, 26, 14, 8, 8, 14, 14, 10, 10], 1):
+    for i, w in enumerate([22, 20, 26, 14, 8, 8, 14, 14, 10, 11, 12], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = "A3"
+    ws.freeze_panes = "A2"
     bio = BytesIO()
     wb.save(bio)
     return bio.getvalue()
@@ -1330,32 +1334,35 @@ def build_all_funnel_xlsx(con) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "全案件ファネル明細"
-    ws.cell(row=1, column=1,
-            value=f"全案件ファネル（1行1商談・縦持ち）  母集団=全商談(open+closed)  出力日={today}"
-            ).font = Font(bold=True)
+    # ヘッダーは1行目（タイトル行を置かない）＝ピボット挿入時にセル1つ選ぶだけで表全体を自動認識できる。
+    # 母集団/出力日はファイル名(all_funnel_YYYY-MM-DD.xlsx)に持たせる。
     # 内訳(理由)＝マトリクスの②④⑩ブレイクダウン相当。tidyでは各行が自分の理由を持つ:
     #   クローズ済→終了理由(close_reason) ／ 未クローズ→「（未クローズ）」。
+    # 金額は 単発(万)/継続月(万)/年額換算(万)=単発+継続月×12 を測定値列として末尾に付与。
     header = ["区分", "経路", "重要度", "種別L1", "種別L2", "内訳（理由）",
-              "アカウント", "案件名", "面談回数", "ステージ", "状態", "終了理由", "次回MS", "開発案件"]
+              "アカウント", "案件名", "面談回数", "ステージ", "状態", "終了理由", "次回MS", "開発案件",
+              "単発(万)", "継続月(万)", "年額換算(万)"]
     for c, h in enumerate(header, 1):
-        ws.cell(row=2, column=c, value=h).font = Font(bold=True)
-    r = 3
+        ws.cell(row=1, column=c, value=h).font = Font(bold=True)
+    r = 2
     for row in rows:
         route = (row.get("lead_pattern") or "") or "（未設定）"
         closed = row.get("status") == "closed"
         reason = (row.get("close_reason") or "（理由未設定）") if closed else "（未クローズ）"
+        lump = row.get("value_lumpsum") or 0
+        rec = row.get("value_recurring") or 0
         vals = [label.get(row["_bucket"], row["_bucket"]), route, row.get("importance") or "",
                 row.get("business_type_l1") or "", row.get("business_type_l2") or "", reason,
                 row.get("acc") or "", row.get("deal_name") or "", row.get("mtg") or 0,
                 row.get("stage") or "", ("クローズ" if closed else "open"),
                 row.get("close_reason") or "", row.get("next_milestone_date") or "",
-                ("有" if row.get("has_dev") else "")]
+                ("有" if row.get("has_dev") else ""), lump, rec, lump + rec * 12]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
         r += 1
-    for i, w in enumerate([26, 12, 8, 14, 14, 16, 20, 26, 9, 14, 8, 14, 12, 8], 1):
+    for i, w in enumerate([26, 12, 8, 14, 14, 16, 20, 26, 9, 14, 8, 14, 12, 8, 10, 11, 12], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = "A3"
+    ws.freeze_panes = "A2"
 
     mat = weekly_report.all_funnel_matrix(con, today=today)
     routes = mat["routes"]
