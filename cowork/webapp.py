@@ -1143,38 +1143,43 @@ def _heat_style(pct: float) -> str:
     return "background:#dc2626;color:#fff;font-weight:700"
 
 
-def build_exhibition_funnel_xlsx(con, exhibition: str | None = None) -> bytes:
-    """展示会ファネルを『区分→内訳(理由)』のカスケード（列を1つずつ右へずらす）でxlsx化。Excel転記用。"""
+def build_exhibition_funnel_xlsx(con) -> bytes:
+    """展示会ファネルを『縦=区分→内訳(理由) × 横=展示会』のマトリクスでxlsx化。Excel転記用。"""
     import openpyxl
     from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
     from io import BytesIO
     import cowork.weekly_report as weekly_report
-    rows = weekly_report.exhibition_funnel_export_rows(
-        con, today=_today_jst().isoformat(), exhibition=exhibition)
-    title = "全展示会" if (not exhibition or exhibition == "__all__") else (
-        "（展示会名未設定）" if exhibition == "__none__" else exhibition)
+    mat = weekly_report.exhibition_funnel_matrix(con, today=_today_jst().isoformat())
+    exhs = mat["exhibitions"]
+    rows = mat["rows"]
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "展示会ファネル"
     ws.cell(row=1, column=1,
-            value=f"展示会ファネル（{title}）  母集団=lead_pattern='Exh.'  出力日={_today_jst().isoformat()}"
+            value=f"展示会ファネル（縦=区分/理由 × 横=展示会）  母集団=lead_pattern='Exh.'  出力日={_today_jst().isoformat()}"
             ).font = Font(bold=True)
-    for c, h in enumerate(["区分", "内訳（理由）", "件数"], 1):
+    header = ["区分", "内訳（理由）", "合計"] + list(exhs)
+    for c, h in enumerate(header, 1):
         ws.cell(row=2, column=c, value=h).font = Font(bold=True)
     r = 3
     for row in rows:
         top = bool(row["kubun"])   # 区分の小計行（合計含む）は太字
         ws.cell(row=r, column=1, value=row["kubun"] or None)
         ws.cell(row=r, column=2, value=row["reason"] or None)
-        ws.cell(row=r, column=3, value=row["count"])
+        ws.cell(row=r, column=3, value=row["total"])
+        for i, e in enumerate(exhs):
+            ws.cell(row=r, column=4 + i, value=row["by_exh"].get(e, 0))
         if top:
-            for c in (1, 2, 3):
+            for c in range(1, 4 + len(exhs)):
                 ws.cell(row=r, column=c).font = Font(bold=True)
         r += 1
     ws.column_dimensions["A"].width = 28
     ws.column_dimensions["B"].width = 22
     ws.column_dimensions["C"].width = 8
-    ws.freeze_panes = "A3"
+    for i in range(len(exhs)):
+        ws.column_dimensions[get_column_letter(4 + i)].width = 18
+    ws.freeze_panes = "D3"   # 区分/内訳/合計 の3列＋見出し2行を固定
     bio = BytesIO()
     wb.save(bio)
     return bio.getvalue()
@@ -2592,8 +2597,8 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <button class="btn sec" type="button"
           onclick="document.getElementById('exhSel').value='__all__';document.getElementById('bktSel').value='__all__';exhFilter()">クリア</button>
         <a class="btn sec" href="/exhibition-tagging">🎪 展示会名をタグ付け</a>
-        <button class="btn sec" type="button" title="ファネルを区分→理由のカスケードでExcel出力（選択中の展示会）"
-          onclick="var e=document.getElementById('exhSel').value;location.href='/weekly-numbers/exhibition.xlsx'+(e&&e!=='__all__'?('?exh='+encodeURIComponent(e)):'');">📊 Excel出力</button>
+        <a class="btn sec" href="/weekly-numbers/exhibition.xlsx"
+          title="ファネルを『縦=区分/理由 × 横=展示会』のマトリクスでExcel出力">📊 Excel出力（展示会×区分）</a>
         <span id="exhVis" class="muted" style="font-size:12px;align-self:center"></span>
       </div>
       <div style="margin:0 0 6px;padding:8px 10px;background:#f8fafc;border-radius:6px">{_cnt_html}</div>
@@ -10893,11 +10898,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(data_tagging_page(con)))
                 elif path == "/weekly-numbers/exhibition.xlsx":
                     try:
-                        _exf = self._qs().get("exh", [None])[0]
-                        _xls = build_exhibition_funnel_xlsx(con, exhibition=_exf)
-                        _sfx = "" if (not _exf or _exf == "__all__") else "_" + (
-                            "未設定" if _exf == "__none__" else _exf)
-                        _name = f"exhibition_funnel{_sfx}_{_today_jst().isoformat()}.xlsx"
+                        _xls = build_exhibition_funnel_xlsx(con)
+                        _name = f"exhibition_funnel_{_today_jst().isoformat()}.xlsx"
                         self.send_response(200)
                         self.send_header("Content-Type",
                                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
