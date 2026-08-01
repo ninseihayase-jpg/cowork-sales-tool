@@ -1312,43 +1312,53 @@ def build_position_xlsx(con) -> bytes:
 
 
 def build_all_funnel_xlsx(con) -> bytes:
-    """全案件ファネルを『縦=区分/理由 × 横=経路』のマトリクス(Sheet1)＋経路別CV(Sheet2)でxlsx化。"""
+    """全案件ファネルを『1行1商談の縦持ち(tidy)』でxlsx化（Sheet1=明細／Sheet2=経路別CV）。
+    区分・経路・重要度・種別L1・種別L2をすべて列として持つため、Excelのピボットで
+    任意の切り口（区分×経路、区分×重要度、経路×種別L1 等）に自由に集計できる。"""
     import openpyxl
     from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter
     from io import BytesIO
     import cowork.weekly_report as weekly_report
     today = _today_jst().isoformat()
-    mat = weekly_report.all_funnel_matrix(con, today=today)
-    routes = mat["routes"]
+    rows = weekly_report.exhibition_deal_rows(con, all_deals=True)
+    label = dict(weekly_report.EXH_BUCKETS)
+    order = {k: i for i, (k, _) in enumerate(weekly_report.EXH_BUCKETS)}
+    for r in rows:
+        r["_bucket"] = weekly_report.classify_exhibition_deal(r, today)
+    rows.sort(key=lambda r: (order.get(r["_bucket"], 99), -(r.get("mtg") or 0), r.get("id") or 0))
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "全案件ファネル"
+    ws.title = "全案件ファネル明細"
     ws.cell(row=1, column=1,
-            value=f"全案件ファネル（縦=区分/理由 × 横=経路）  母集団=全商談(open+closed)  出力日={today}"
+            value=f"全案件ファネル（1行1商談・縦持ち）  母集団=全商談(open+closed)  出力日={today}"
             ).font = Font(bold=True)
-    header = ["区分", "内訳（理由）", "合計"] + list(routes)
+    # 内訳(理由)＝マトリクスの②④⑩ブレイクダウン相当。tidyでは各行が自分の理由を持つ:
+    #   クローズ済→終了理由(close_reason) ／ 未クローズ→「（未クローズ）」。
+    header = ["区分", "経路", "重要度", "種別L1", "種別L2", "内訳（理由）",
+              "アカウント", "案件名", "面談回数", "ステージ", "状態", "終了理由", "次回MS", "開発案件"]
     for c, h in enumerate(header, 1):
         ws.cell(row=2, column=c, value=h).font = Font(bold=True)
     r = 3
-    for row in mat["rows"]:
-        top = bool(row["kubun"])
-        ws.cell(row=r, column=1, value=row["kubun"] or None)
-        ws.cell(row=r, column=2, value=row["reason"] or None)
-        ws.cell(row=r, column=3, value=row["total"])
-        for i, rt in enumerate(routes):
-            ws.cell(row=r, column=4 + i, value=row["by_route"].get(rt, 0))
-        if top:
-            for c in range(1, 4 + len(routes)):
-                ws.cell(row=r, column=c).font = Font(bold=True)
+    for row in rows:
+        route = (row.get("lead_pattern") or "") or "（未設定）"
+        closed = row.get("status") == "closed"
+        reason = (row.get("close_reason") or "（理由未設定）") if closed else "（未クローズ）"
+        vals = [label.get(row["_bucket"], row["_bucket"]), route, row.get("importance") or "",
+                row.get("business_type_l1") or "", row.get("business_type_l2") or "", reason,
+                row.get("acc") or "", row.get("deal_name") or "", row.get("mtg") or 0,
+                row.get("stage") or "", ("クローズ" if closed else "open"),
+                row.get("close_reason") or "", row.get("next_milestone_date") or "",
+                ("有" if row.get("has_dev") else "")]
+        for c, v in enumerate(vals, 1):
+            ws.cell(row=r, column=c, value=v)
         r += 1
-    ws.column_dimensions["A"].width = 28
-    ws.column_dimensions["B"].width = 22
-    ws.column_dimensions["C"].width = 8
-    for i in range(len(routes)):
-        ws.column_dimensions[get_column_letter(4 + i)].width = 14
-    ws.freeze_panes = "D3"
+    for i, w in enumerate([26, 12, 8, 14, 14, 16, 20, 26, 9, 14, 8, 14, 12, 8], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A3"
 
+    mat = weekly_report.all_funnel_matrix(con, today=today)
+    routes = mat["routes"]
     ws2 = wb.create_sheet("経路別CV")
     ws2.cell(row=1, column=1, value=f"経路別CV（到達ベース）  出力日={today}").font = Font(bold=True)
     cvh = ["経路", "母数", "初回面談到達", "2次到達", "受注",
@@ -3008,7 +3018,7 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <label style="font-size:13px">経路: <select id="afRtSel" onchange="afFilter()">{_af_rt_sel}</select></label>
         <label style="font-size:13px">分類: <select id="afBktSel" onchange="afFilter()">{_af_bkt_sel}</select></label>
         <button class="btn sec" type="button" onclick="document.getElementById('afRtSel').value='__all__';document.getElementById('afBktSel').value='__all__';afFilter()">クリア</button>
-        <a class="btn sec" href="/weekly-numbers/all-funnel.xlsx" title="全案件ファネルを『縦=区分/理由 × 横=経路』のマトリクス＋経路別CVでExcel出力">📊 Excel出力（経路×区分＋CV）</a>
+        <a class="btn sec" href="/weekly-numbers/all-funnel.xlsx" title="全案件ファネルを1行1商談の縦持ち（区分・経路・重要度・種別L1L2を列に）＋経路別CVでExcel出力。ピボットで任意集計可">📊 Excel出力（縦持ち明細＋CV）</a>
         <span id="afVis" class="muted" style="font-size:12px;align-self:center"></span>
       </div>
       <div style="margin:0 0 10px;padding:8px 10px;background:#f8fafc;border-radius:6px">{_af_cnt_html}</div>
