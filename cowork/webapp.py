@@ -578,7 +578,8 @@ _CLOSE_MODAL_HTML = (
     ' _saveDealFilters();'
     '}'
     # クライアント側フィルタの保存/復元（タブ単位）。サーバ側フィルタ変更や編集からの復帰後も維持。
-    'function _dealFilterKey(){var p=new URLSearchParams(location.search);return "dflt:"+location.pathname+":"+(p.get("tab")||"");}'
+    # キーはパスのみ（tabクエリの有無で変わらないよう固定）。サーバ側フィルタ変更のリロードでも一致する。
+    'function _dealFilterKey(){return "dflt:"+location.pathname;}'
     'function _saveDealFilters(){try{var s={imp:[]};'
     ' var i=document.getElementById("accSearchInput"); if(i)s.q=i.value;'
     ' document.querySelectorAll(".imp-cb:checked").forEach(function(b){s.imp.push(b.value);});'
@@ -603,7 +604,8 @@ _CLOSE_MODAL_HTML = (
     # 初期表示: 商談一覧ではクライアント側フィルタを復元＋リンク戻り先を補正して適用。
     'document.addEventListener("DOMContentLoaded",function(){try{'
     ' if(document.getElementById("accSearchInput")){ _fixDealReturnTo(); var r=_restoreDealFilters();'
-    '   if(r||document.querySelector(".stg-cb:checked")||document.querySelector(".imp-cb:checked")) filterDealsByAccount(); }'
+    '   if(!r && typeof onL1FilterChange==="function") onL1FilterChange();'  # 復元なしでもL2選択肢を初期構築
+    '   filterDealsByAccount(); }'
     ' else if(document.querySelector(".stg-cb:checked")){ filterDealsByAccount(); }'
     '}catch(e){}});'
     '</script>'
@@ -5101,7 +5103,6 @@ function onL1FilterChange(){
   else { sel.disabled=false; if(arr.indexOf(prev)>=0 || prev==='' || prev==='__none__') sel.value=prev; }
   filterDealsByAccount();
 }
-document.addEventListener('DOMContentLoaded', function(){ if(document.getElementById('l1Filter')) onL1FilterChange(); });
 </script>""".replace("__MAP__", map_json)
     return (
         '<select id="l1Filter" onchange="onL1FilterChange()" title="事業種別L1で絞り込み">'
