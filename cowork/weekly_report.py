@@ -337,19 +337,22 @@ def render_number_rail(nums: dict) -> str:
     return "".join(parts)
 
 
-def exhibition_deal_rows(con) -> list[dict]:
+def exhibition_deal_rows(con, all_deals: bool = False) -> list[dict]:
     """展示会由来(lead_pattern='Exh.')商談＋面談回数(同一日=1)＋開発案件有無＋status/stage/理由/次回MS。
-    ファネル分類と監査ドリルダウンの共通ソース。
-    面談回数は『日付(occurred_on)のある面談』のみを同一日=1で数える（日付なしはカウントしない）。"""
+    ファネル分類と監査ドリルダウンの共通ソース。重要度/種別L1/L2/経路(lead_pattern)も併せて返す。
+    面談回数は『日付(occurred_on)のある面談』のみを同一日=1で数える（日付なしはカウントしない）。
+    all_deals=True で lead_pattern を問わず全商談(open+closed)を対象にする（全案件ファネル用）。"""
+    _where = "" if all_deals else "WHERE d.lead_pattern='Exh.'"
     rows = con.execute(
         "SELECT d.id, d.deal_name, d.stage, d.status, d.close_reason, d.next_milestone_date, "
-        "d.next_milestone_type, d.exhibition_name, acc.name acc, "
+        "d.next_milestone_type, d.exhibition_name, d.importance, d.business_type_l1, d.business_type_l2, "
+        "d.lead_pattern, acc.name acc, "
         "(SELECT COUNT(DISTINCT a.occurred_on) FROM activities a "
         "   WHERE a.deal_id=d.id AND a.type='面談' "
         "     AND a.occurred_on IS NOT NULL AND a.occurred_on != '') mtg, "
         "EXISTS(SELECT 1 FROM dev_projects dp WHERE dp.deal_id=d.id) has_dev "
         "FROM deals d LEFT JOIN accounts acc ON acc.id=d.account_id "
-        "WHERE d.lead_pattern='Exh.' ORDER BY mtg DESC, d.id").fetchall()
+        f"{_where} ORDER BY mtg DESC, d.id").fetchall()
     return [dict(r) for r in rows]
 
 
@@ -531,6 +534,76 @@ def exhibition_funnel_matrix(con, today: str | None = None) -> dict:
     return {"exhibitions": exh_cols, "rows": out_rows}
 
 
+def funnel_cvs(rows: list[dict], today: str) -> dict:
+    """ファネル各段の到達件数とCV（到達ベース）を返す。rows は exhibition_deal_rows 形式。
+      total  … 母集団件数
+      first  … 初回面談到達（面談1回以上）
+      second … 2次到達（面談2回以上）
+      won    … 受注（bucket='won'）
+      cv_first  = first/total   （初回面談到達率）
+      cv_second = second/first  （初回→2次到達率）
+      cv_won    = won/second    （2次→受注率）"""
+    total = len(rows)
+    first = sum(1 for r in rows if (r.get("mtg") or 0) >= 1)
+    second = sum(1 for r in rows if (r.get("mtg") or 0) >= 2)
+    won = sum(1 for r in rows if classify_exhibition_deal(r, today) == "won")
+
+    def _pct(n, d):
+        return round(n / d * 100, 1) if d else 0.0
+
+    return {"total": total, "first": first, "second": second, "won": won,
+            "cv_first": _pct(first, total), "cv_second": _pct(second, first),
+            "cv_won": _pct(won, second)}
+
+
+def all_funnel_matrix(con, today: str | None = None) -> dict:
+    """全案件ファネル（展示会以外も含む全商談 open+closed）を『縦=区分→内訳(理由)のカスケード ×
+    横=経路(lead_pattern)』のマトリクスで返す。展示会ファネルと同じ11区分で分類し、経路別に集計する。
+    戻り値: {"routes":[経路...（＋未設定）], "rows":[{kubun,reason,by_route,total}...],
+             "cvs":{"__all__":{...}, 経路:{...}}}（cvs は funnel_cvs 形式）。"""
+    today = today or date.today().isoformat()
+    data = exhibition_deal_rows(con, all_deals=True)
+
+    def _route_of(r):
+        return (r.get("lead_pattern") or "") or "（未設定）"
+
+    present = {_route_of(r) for r in data}
+    routes = [p for p in sfa_db.LEAD_PATTERNS if p in present]
+    if "（未設定）" in present:
+        routes.append("（未設定）")
+    for p in sorted(present):   # マスタ外(レガシー)の経路値も末尾に拾う
+        if p not in routes:
+            routes.append(p)
+
+    def _counts(items):
+        d: dict = {}
+        for r in items:
+            e = _route_of(r)
+            d[e] = d.get(e, 0) + 1
+        return d
+
+    by_bucket: dict = {k: [] for k, _ in EXH_BUCKETS}
+    for r in data:
+        by_bucket[classify_exhibition_deal(r, today)].append(r)
+    out_rows: list = []
+    for k, lbl in EXH_BUCKETS:
+        grp = by_bucket.get(k, [])
+        out_rows.append({"kubun": lbl, "reason": "", "by_route": _counts(grp), "total": len(grp)})
+        if k in EXH_BREAKDOWN_BUCKETS and grp:
+            by_reason: dict = {}
+            for r in grp:
+                cr = (r.get("close_reason") or "（理由未設定）") if (r.get("status") or "open") == "closed" else "（未クローズ）"
+                by_reason.setdefault(cr, []).append(r)
+            for cr in sorted(by_reason, key=lambda x: (-len(by_reason[x]), x)):
+                items = by_reason[cr]
+                out_rows.append({"kubun": "", "reason": cr, "by_route": _counts(items), "total": len(items)})
+    out_rows.append({"kubun": "合計", "reason": "", "by_route": _counts(data), "total": len(data)})
+    cvs = {"__all__": funnel_cvs(data, today)}
+    for rt in routes:
+        cvs[rt] = funnel_cvs([r for r in data if _route_of(r) == rt], today)
+    return {"routes": routes, "rows": out_rows, "cvs": cvs}
+
+
 def _stock_wow(con, week_start: str, prev_start: str) -> dict:
     """ストック指標の前週比。先週スナップショットが無ければ available=False。"""
     cur = sfa_db.get_weekly_snapshot(con, week_start)
@@ -599,7 +672,8 @@ def _kpi_deal_rows(con) -> list[dict]:
     """全商談に面談集計(meeting_count / first_meeting / last_meeting)を付けて返す（A/C/F共通ソース）。
     面談＝activities.type='面談' かつ occurred_on が非空。meeting_count は面談“件数”。"""
     rows = con.execute(
-        "SELECT d.id, d.deal_name, d.stage, d.status, d.close_reason, d.business_type_l1, d.cost_stage, "
+        "SELECT d.id, d.deal_name, d.stage, d.status, d.close_reason, d.business_type_l1, "
+        "d.business_type_l2, d.importance, d.cost_stage, "
         "d.client_budget, d.next_milestone_date, d.value_lumpsum, d.value_recurring, "
         "acc.name AS account, "
         "(SELECT COUNT(*) FROM activities a WHERE a.deal_id=d.id AND a.type='面談' "

@@ -1227,6 +1227,153 @@ def build_exhibition_funnel_xlsx(con) -> bytes:
     return bio.getvalue()
 
 
+def build_funnel_drill_xlsx(con, all_deals: bool = False) -> bytes:
+    """ファネル明細を1行1商談でxlsx化（区分＋重要度/種別L1L2込み）。
+    all_deals=False: 展示会由来(lead_pattern='Exh.')／True: 全商談。2列目は展示会名 or 経路。"""
+    import openpyxl
+    from openpyxl.styles import Font
+    from io import BytesIO
+    import cowork.weekly_report as weekly_report
+    today = _today_jst().isoformat()
+    rows = weekly_report.exhibition_deal_rows(con, all_deals=all_deals)
+    label = dict(weekly_report.EXH_BUCKETS)
+    order = {k: i for i, (k, _) in enumerate(weekly_report.EXH_BUCKETS)}
+    for r in rows:
+        r["_bucket"] = weekly_report.classify_exhibition_deal(r, today)
+    rows.sort(key=lambda r: (order.get(r["_bucket"], 99), -(r.get("mtg") or 0), r.get("id") or 0))
+    col2 = "経路" if all_deals else "展示会"
+    title = "全案件ファネル明細" if all_deals else "展示会ファネル明細"
+    pop = "全商談(open+closed)" if all_deals else "lead_pattern='Exh.'"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = title[:31]
+    ws.cell(row=1, column=1, value=f"{title}（区分＋重要度/種別）  母集団={pop}  出力日={today}").font = Font(bold=True)
+    header = ["区分", col2, "案件名", "アカウント", "重要度", "種別L1", "種別L2",
+              "面談回数", "ステージ", "状態", "終了理由", "次回MS", "開発案件"]
+    for c, h in enumerate(header, 1):
+        ws.cell(row=2, column=c, value=h).font = Font(bold=True)
+    r = 3
+    for row in rows:
+        col2v = ((row.get("lead_pattern") or "") or "（未設定）") if all_deals else (row.get("exhibition_name") or "")
+        vals = [label.get(row["_bucket"], row["_bucket"]), col2v, row.get("deal_name") or "",
+                row.get("acc") or "", row.get("importance") or "", row.get("business_type_l1") or "",
+                row.get("business_type_l2") or "", row.get("mtg") or 0, row.get("stage") or "",
+                ("クローズ" if row.get("status") == "closed" else "open"), row.get("close_reason") or "",
+                row.get("next_milestone_date") or "", ("有" if row.get("has_dev") else "")]
+        for c, v in enumerate(vals, 1):
+            ws.cell(row=r, column=c, value=v)
+        r += 1
+    widths = [26, 16, 26, 20, 8, 14, 14, 9, 14, 8, 14, 12, 8]
+    from openpyxl.utils import get_column_letter
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A3"
+    bio = BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
+def build_position_xlsx(con) -> bytes:
+    """商談ポジション内訳(KPI-A)の明細を1行1商談でxlsx化（区分＋重要度/種別L1L2込み）。"""
+    import openpyxl
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+    from io import BytesIO
+    import cowork.weekly_report as weekly_report
+    kpi = weekly_report.compute_kpi_pack(con, today=_today_jst())
+    A = kpi["A"]
+    bl = {"pipe": "パイプライン(進行中)", "won": "受注", "lost": "失注", "cost": "コスト削減(進行中)"}
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "ポジション内訳"
+    ws.cell(row=1, column=1,
+            value=f"商談ポジション内訳（区分＋重要度/種別）  出力日={_today_jst().isoformat()}").font = Font(bold=True)
+    header = ["区分", "アカウント", "案件名", "ステージ", "状態", "重要度", "種別L1", "種別L2",
+              "単発(万)", "継続月(万)"]
+    for c, h in enumerate(header, 1):
+        ws.cell(row=2, column=c, value=h).font = Font(bold=True)
+    r = 3
+    for row in A["rows"]:
+        vals = [bl.get(row.get("_bucket"), row.get("_bucket")), row.get("account") or "",
+                row.get("deal_name") or "", row.get("stage") or "",
+                ("クローズ" if row.get("status") == "closed" else "open"),
+                row.get("importance") or "", row.get("business_type_l1") or "",
+                row.get("business_type_l2") or "", row.get("value_lumpsum") or 0,
+                row.get("value_recurring") or 0]
+        for c, v in enumerate(vals, 1):
+            ws.cell(row=r, column=c, value=v)
+        r += 1
+    for i, w in enumerate([22, 20, 26, 14, 8, 8, 14, 14, 10, 10], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A3"
+    bio = BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
+def build_all_funnel_xlsx(con) -> bytes:
+    """全案件ファネルを『縦=区分/理由 × 横=経路』のマトリクス(Sheet1)＋経路別CV(Sheet2)でxlsx化。"""
+    import openpyxl
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+    from io import BytesIO
+    import cowork.weekly_report as weekly_report
+    today = _today_jst().isoformat()
+    mat = weekly_report.all_funnel_matrix(con, today=today)
+    routes = mat["routes"]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "全案件ファネル"
+    ws.cell(row=1, column=1,
+            value=f"全案件ファネル（縦=区分/理由 × 横=経路）  母集団=全商談(open+closed)  出力日={today}"
+            ).font = Font(bold=True)
+    header = ["区分", "内訳（理由）", "合計"] + list(routes)
+    for c, h in enumerate(header, 1):
+        ws.cell(row=2, column=c, value=h).font = Font(bold=True)
+    r = 3
+    for row in mat["rows"]:
+        top = bool(row["kubun"])
+        ws.cell(row=r, column=1, value=row["kubun"] or None)
+        ws.cell(row=r, column=2, value=row["reason"] or None)
+        ws.cell(row=r, column=3, value=row["total"])
+        for i, rt in enumerate(routes):
+            ws.cell(row=r, column=4 + i, value=row["by_route"].get(rt, 0))
+        if top:
+            for c in range(1, 4 + len(routes)):
+                ws.cell(row=r, column=c).font = Font(bold=True)
+        r += 1
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 8
+    for i in range(len(routes)):
+        ws.column_dimensions[get_column_letter(4 + i)].width = 14
+    ws.freeze_panes = "D3"
+
+    ws2 = wb.create_sheet("経路別CV")
+    ws2.cell(row=1, column=1, value=f"経路別CV（到達ベース）  出力日={today}").font = Font(bold=True)
+    cvh = ["経路", "母数", "初回面談到達", "2次到達", "受注",
+           "CV①初回面談到達率(%)", "CV②初回→2次(%)", "CV③2次→受注(%)"]
+    for c, h in enumerate(cvh, 1):
+        ws2.cell(row=2, column=c, value=h).font = Font(bold=True)
+    cvs = mat["cvs"]
+    r = 3
+    for key in (["__all__"] + list(routes)):
+        c = cvs[key]
+        name = "全経路（合計）" if key == "__all__" else key
+        for col, v in enumerate([name, c["total"], c["first"], c["second"], c["won"],
+                                 c["cv_first"], c["cv_second"], c["cv_won"]], 1):
+            cell = ws2.cell(row=r, column=col, value=v)
+            if key == "__all__":
+                cell.font = Font(bold=True)
+        r += 1
+    ws2.column_dimensions["A"].width = 16
+    for i in range(2, 9):
+        ws2.column_dimensions[get_column_letter(i)].width = 18
+    bio = BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
 def build_deliveries_xlsx(con) -> bytes:
     """Delivery全テーブル情報のxlsx（一覧＋アサイン明細＋体制）。一覧画面の一括抽出用（#75）。"""
     import openpyxl
@@ -2619,7 +2766,8 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         f"var _c=document.getElementById('exc_{k}');if(_c)_c.textContent=(counts['{k}']||0);"
         for k, _l in _wr.EXH_BUCKETS)
     _thead = "".join(_sticky_th(h) for h in
-                     ["区分", "展示会", "案件名", "アカウント", "面談", "ステージ", "状態", "終了理由", "次回MS", "開発"])
+                     ["区分", "展示会", "案件名", "アカウント", "重要度", "種別L1", "種別L2",
+                      "面談", "ステージ", "状態", "終了理由", "次回MS", "開発"])
     _exrows = "".join(
         f'<tr class="exrow" data-exh="{_esc(r.get("exhibition_name") or "")}" data-bucket="{r["_bucket"]}"'
         f' data-cr="{_esc((r.get("close_reason") or "（理由未設定）") if r.get("status") == "closed" else "（未クローズ）")}">'
@@ -2627,11 +2775,14 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         f'<td>{_esc(r.get("exhibition_name") or "—")}</td>'
         f'<td><a href="/deal/{r["id"]}?return_to=%2Fweekly-numbers%2Faudit" '
         f'title="この商談を開いて編集">{_esc(r["deal_name"] or "—")}</a></td><td>{_esc(r["acc"] or "—")}</td>'
+        f'<td>{_esc(r.get("importance") or "—")}</td>'
+        f'<td>{_esc(r.get("business_type_l1") or "—")}</td>'
+        f'<td>{_esc(r.get("business_type_l2") or "—")}</td>'
         f'<td>{r["mtg"] or 0}</td><td>{_esc(r["stage"] or "—")}</td>'
         f'<td>{"クローズ" if (r.get("status") == "closed") else "open"}</td>'
         f'<td>{_esc(r["close_reason"] or "—")}</td><td>{_esc(r["next_milestone_date"] or "—")}</td>'
         f'<td>{"✓" if r.get("has_dev") else "—"}</td></tr>'
-        for r in exh_all) or '<tr><td colspan=10 class=muted>展示会由来(lead_pattern=Exh.)の商談はありません。</td></tr>'
+        for r in exh_all) or '<tr><td colspan=13 class=muted>展示会由来(lead_pattern=Exh.)の商談はありません。</td></tr>'
     _exh_detail = f"""
       <div class="filter-row" style="margin:0 0 8px">
         <label style="font-size:13px">展示会: <select id="exhSel" onchange="exhFilter()">{_exh_sel}</select></label>
@@ -2641,11 +2792,13 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <a class="btn sec" href="/exhibition-tagging">🎪 展示会名をタグ付け</a>
         <a class="btn sec" href="/weekly-numbers/exhibition.xlsx"
           title="ファネルを『縦=区分/理由 × 横=展示会』のマトリクスでExcel出力">📊 Excel出力（展示会×区分）</a>
+        <a class="btn sec" href="/weekly-numbers/exhibition-drill.xlsx"
+          title="この明細（区分＋重要度/種別L1L2込み）を1行1商談でExcel出力">📄 明細Excel（重要度/種別込み）</a>
         <span id="exhVis" class="muted" style="font-size:12px;align-self:center"></span>
       </div>
       <div style="margin:0 0 6px;padding:8px 10px;background:#f8fafc;border-radius:6px">{_cnt_html}</div>
       <div id="exhBreak" style="margin:0 0 10px;padding:8px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:12px"></div>
-      <div style="overflow:auto;max-height:64vh"><table id="exhTbl" style="min-width:980px">
+      <div style="overflow:auto;max-height:64vh"><table id="exhTbl" style="min-width:1180px">
       <tr>{_thead}</tr>{_exrows}</table></div>
       <script>
       var _EXH_BRK = {{ 'no_deal':'② 不成立（面談0・要検証）', 'first_closed':'④ 1次面談どまり・終了', 'adv_ended':'⑩ 2次以降・終了（失注以外）' }};
@@ -2717,14 +2870,18 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
     # A. 商談ポジション内訳
     A = kpi["A"]
     _a_bl = {"pipe": "パイプライン(進行中)", "won": "受注", "lost": "失注", "cost": "コスト削減(進行中)"}
-    a_tbl = _audit_table(
-        ["区分", "アカウント", "案件名", "ステージ", "状態", "L1", "単発(万)", "継続月(万)"],
+    a_body = _audit_table(
+        ["区分", "アカウント", "案件名", "ステージ", "状態", "重要度", "種別L1", "種別L2", "単発(万)", "継続月(万)"],
         [[_esc(_a_bl.get(r["_bucket"], r["_bucket"])), _esc(r.get("account") or "—"),
           _esc(r.get("deal_name") or "—"), _esc(r.get("stage") or "—"),
           ("クローズ" if r.get("status") == "closed" else "open"),
-          _esc(r.get("business_type_l1") or "—"),
+          _esc(r.get("importance") or "—"),
+          _esc(r.get("business_type_l1") or "—"), _esc(r.get("business_type_l2") or "—"),
           f'{(r.get("value_lumpsum") or 0):,.0f}', f'{(r.get("value_recurring") or 0):,.0f}']
          for r in A["rows"]])
+    a_tbl = ('<div style="margin:0 0 6px"><a class="btn sec" href="/weekly-numbers/position.xlsx" '
+             'title="この明細（区分＋重要度/種別L1L2込み）を1行1商談でExcel出力">📄 明細Excel（重要度/種別込み）</a></div>'
+             + a_body)
     sec_A = _audit_section(
         "商談ポジション内訳",
         "sales=business_type_l1≠'コスト削減'。パイプライン=sales&open&stage≠受注／受注=stage='受注'(全status)／"
@@ -2790,7 +2947,102 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         f'cv1(初回面談→提案) <b>{F["cv1"]:g}%</b>（{F["reachedProp"]}/{F["reachedFM"]}）・'
         f'cv2(提案→受注) <b>{F["cv2"]:g}%</b>（{F["won"]}/{F["reachedProp"]}）',
         f_tbl,
-        warn="母数が小さいため率のブレが大きい参考値。件数の推移とあわせて読むこと。")
+        warn="母数が小さいため率のブレが大きい参考値。件数の推移とあわせて読むこと。"
+             "より詳細な段階別CVは下の『全案件ファネル＋CV』を参照。")
+
+    # F2. 全案件ファネル＋CV（経路別・展示会ファネル構造を全商談に適用 #89）
+    _allf = _wr.all_funnel_matrix(con, today=_today)
+    _routes = _allf["routes"]
+    _cvs = _allf["cvs"]
+    _af_rows = _wr.exhibition_deal_rows(con, all_deals=True)
+    for _r in _af_rows:
+        _r["_bucket"] = _wr.classify_exhibition_deal(_r, _today)
+    _af_rows.sort(key=lambda r: (_bucket_order.get(r["_bucket"], 99), -(r.get("mtg") or 0), r.get("id") or 0))
+
+    def _route_of(r):
+        return (r.get("lead_pattern") or "") or "（未設定）"
+
+    _af_rt_sel = ('<option value="__all__">全経路</option>'
+                  + "".join(f'<option value="{_esc(rt)}">{_esc(rt)}</option>' for rt in _routes))
+    _af_bkt_sel = ('<option value="__all__">全分類</option>'
+                   + "".join(f'<option value="{k}">{_esc(lbl)}</option>' for k, lbl in _wr.EXH_BUCKETS))
+
+    def _cv_cells(c):
+        return (f'<td>{c["total"]}</td><td>{c["first"]}</td><td>{c["second"]}</td><td>{c["won"]}</td>'
+                f'<td>{c["cv_first"]:g}%</td><td>{c["cv_second"]:g}%</td><td>{c["cv_won"]:g}%</td>')
+    _cv_head = "".join(_sticky_th(h) for h in
+                       ["経路", "母数", "初回面談到達", "2次到達", "受注",
+                        "CV①初回面談到達率", "CV②初回→2次", "CV③2次→受注"])
+    _cv_body = (f'<tr style="font-weight:700;background:#f1f5f9"><td>全経路（合計）</td>{_cv_cells(_cvs["__all__"])}</tr>'
+                + "".join(f'<tr><td>{_esc(rt)}</td>{_cv_cells(_cvs[rt])}</tr>' for rt in _routes))
+    _af_cnt_html = "".join(
+        f'<span style="display:inline-block;margin:0 14px 4px 0;font-size:12px">'
+        f'{_esc(lbl)}: <b id="afc_{k}">0</b></span>' for k, lbl in _wr.EXH_BUCKETS)
+    _af_js_cnt = "".join(
+        f"var _c=document.getElementById('afc_{k}');if(_c)_c.textContent=(counts['{k}']||0);"
+        for k, _l in _wr.EXH_BUCKETS)
+    _af_thead = "".join(_sticky_th(h) for h in
+                        ["区分", "経路", "案件名", "アカウント", "重要度", "種別L1", "種別L2",
+                         "面談", "ステージ", "状態", "終了理由", "次回MS", "開発"])
+    _af_drows = "".join(
+        f'<tr class="afrow" data-route="{_esc(_route_of(r))}" data-bucket="{r["_bucket"]}">'
+        f'<td>{_esc(_bucket_label.get(r["_bucket"], r["_bucket"]))}</td>'
+        f'<td>{_esc(_route_of(r))}</td>'
+        f'<td><a href="/deal/{r["id"]}?return_to=%2Fweekly-numbers%2Faudit">{_esc(r["deal_name"] or "—")}</a></td>'
+        f'<td>{_esc(r["acc"] or "—")}</td>'
+        f'<td>{_esc(r.get("importance") or "—")}</td>'
+        f'<td>{_esc(r.get("business_type_l1") or "—")}</td>'
+        f'<td>{_esc(r.get("business_type_l2") or "—")}</td>'
+        f'<td>{r["mtg"] or 0}</td><td>{_esc(r["stage"] or "—")}</td>'
+        f'<td>{"クローズ" if (r.get("status") == "closed") else "open"}</td>'
+        f'<td>{_esc(r["close_reason"] or "—")}</td><td>{_esc(r["next_milestone_date"] or "—")}</td>'
+        f'<td>{"✓" if r.get("has_dev") else "—"}</td></tr>'
+        for r in _af_rows) or '<tr><td colspan=13 class=muted>商談がありません。</td></tr>'
+    _allf_detail = f"""
+      <div style="font-weight:600;font-size:13px;margin:4px 0">経路別CV（到達ベース）</div>
+      <div style="overflow:auto;max-height:44vh;margin:0 0 12px"><table style="min-width:760px">
+      <tr>{_cv_head}</tr>{_cv_body}</table></div>
+      <div style="font-weight:600;font-size:13px;margin:4px 0">明細（経路/分類でフィルタ／画面遷移なし）</div>
+      <div class="filter-row" style="margin:0 0 8px">
+        <label style="font-size:13px">経路: <select id="afRtSel" onchange="afFilter()">{_af_rt_sel}</select></label>
+        <label style="font-size:13px">分類: <select id="afBktSel" onchange="afFilter()">{_af_bkt_sel}</select></label>
+        <button class="btn sec" type="button" onclick="document.getElementById('afRtSel').value='__all__';document.getElementById('afBktSel').value='__all__';afFilter()">クリア</button>
+        <a class="btn sec" href="/weekly-numbers/all-funnel.xlsx" title="全案件ファネルを『縦=区分/理由 × 横=経路』のマトリクス＋経路別CVでExcel出力">📊 Excel出力（経路×区分＋CV）</a>
+        <span id="afVis" class="muted" style="font-size:12px;align-self:center"></span>
+      </div>
+      <div style="margin:0 0 10px;padding:8px 10px;background:#f8fafc;border-radius:6px">{_af_cnt_html}</div>
+      <div style="overflow:auto;max-height:60vh"><table id="afTbl" style="min-width:1180px">
+      <tr>{_af_thead}</tr>{_af_drows}</table></div>
+      <script>
+      function afFilter() {{
+        var rt = document.getElementById('afRtSel').value;
+        var bk = document.getElementById('afBktSel').value;
+        var counts = {{}}; var cohort = 0; var vis = 0;
+        document.querySelectorAll('#afTbl tr.afrow').forEach(function(tr) {{
+          var e = tr.getAttribute('data-route') || ''; var b = tr.getAttribute('data-bucket') || '';
+          var inC = (rt === '__all__') || (e === rt);
+          if (inC) {{ cohort++; counts[b] = (counts[b] || 0) + 1; }}
+          var show = inC && (bk === '__all__' || b === bk);
+          tr.style.display = show ? '' : 'none'; if (show) vis++;
+        }});
+        {_af_js_cnt}
+        var v = document.getElementById('afVis');
+        if (v) v.textContent = '対象 ' + cohort + '件 / 表示 ' + vis + '件';
+      }}
+      afFilter();
+      </script>
+    """
+    _cv_all = _cvs["__all__"]
+    sec_allf = _audit_section(
+        "全案件ファネル＋CV（全商談・経路別／展示会ファネルの構造を全案件に適用）",
+        "母集団=全商談(open+closed・経路問わず)。展示会ファネルと同じ11区分で分類し、経路(lead_pattern)別に集計。"
+        "CV①初回面談到達率=面談1回以上/母数、CV②初回→2次=面談2回以上/初回面談到達、CV③2次→受注=受注/面談2回以上。",
+        f'全体CV: 初回面談到達 <b>{_cv_all["cv_first"]:g}%</b>（{_cv_all["first"]}/{_cv_all["total"]}）／'
+        f'初回→2次 <b>{_cv_all["cv_second"]:g}%</b>（{_cv_all["second"]}/{_cv_all["first"]}）／'
+        f'2次→受注 <b>{_cv_all["cv_won"]:g}%</b>（{_cv_all["won"]}/{_cv_all["second"]}）',
+        _allf_detail,
+        warn="面談回数は activities(type='面談'・日付あり) の入力精度に依存。活動履歴が疎な経路は"
+             "『初回面談待ち/不成立』側に過大に落ちるため、CV②③の解釈は入力状況とあわせて行うこと。")
 
     # G. デリバリー（進行中）
     G = kpi["G"]
@@ -2929,7 +3181,7 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <a class="btn sec" href="/weekly-numbers/audit">今週</a>
       </form>
     </div>
-    {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_importance}{sec_exh}{sec_A}{sec_c1}{sec_c2}{sec_c3}{sec_c4}{sec_F}{sec_G}"""
+    {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_importance}{sec_exh}{sec_A}{sec_c1}{sec_c2}{sec_c3}{sec_c4}{sec_F}{sec_allf}{sec_G}"""
 
 
 def deal_hygiene_page(con) -> str:
@@ -11183,6 +11435,26 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     try:
                         _xls = build_exhibition_funnel_xlsx(con)
                         _name = f"exhibition_funnel_{_today_jst().isoformat()}.xlsx"
+                        self.send_response(200)
+                        self.send_header("Content-Type",
+                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                        self.send_header("Content-Disposition", _content_disposition(_name))
+                        self.send_header("Content-Length", str(len(_xls)))
+                        self.end_headers()
+                        self.wfile.write(_xls)
+                    except Exception as _e:  # noqa: BLE001
+                        import traceback as _tb; _tb.print_exc()
+                        self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
+                elif path in ("/weekly-numbers/exhibition-drill.xlsx",
+                              "/weekly-numbers/position.xlsx", "/weekly-numbers/all-funnel.xlsx"):
+                    try:
+                        if path.endswith("position.xlsx"):
+                            _xls = build_position_xlsx(con); _stub = "position"
+                        elif path.endswith("all-funnel.xlsx"):
+                            _xls = build_all_funnel_xlsx(con); _stub = "all_funnel"
+                        else:
+                            _xls = build_funnel_drill_xlsx(con, all_deals=False); _stub = "exhibition_funnel_drill"
+                        _name = f"{_stub}_{_today_jst().isoformat()}.xlsx"
                         self.send_response(200)
                         self.send_header("Content-Type",
                                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
