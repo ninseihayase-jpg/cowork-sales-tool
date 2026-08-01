@@ -541,12 +541,13 @@ _CLOSE_MODAL_HTML = (
     '}'
     # 事業種別L1変更時はL2の選択肢が変わるため、保存後にリロードして再描画（シンプル・確実）
     'function updateDealL1(id,l1){updateDealField(id,"business_type_l1",l1).then(function(){location.reload();});}'
-    # 商談一覧の絞り込み（アカウント名テキスト＋ステージ複数選択チェック。全タブ共通）。
+    # 商談一覧の絞り込み（アカウント名/業界テキスト＋ステージ/重要度は複数選択＋業界/種別L1/L2。全タブ共通）。
+    # 全条件を常にAND（順不同）で判定。クライアント側フィルタはsessionStorageに保存し、サーバ側フィルタ
+    # (担当/状態/ステージ/MS種別=フォーム送信でリロード)を変えても保持される。
     'function filterDealsByAccount(){'
     ' var i=document.getElementById("accSearchInput"); var q=i?(i.value||"").toLowerCase():"";'
-    ' var st=[]; document.querySelectorAll(".stg-cb:checked").forEach(function(b){st.push(b.value);});'
-    ' var useSt=st.length>0;'
-    ' var impEl=document.getElementById("impFilter"); var imp=impEl?impEl.value:"";'
+    ' var st=[]; document.querySelectorAll(".stg-cb:checked").forEach(function(b){st.push(b.value);}); var useSt=st.length>0;'
+    ' var imp=[]; document.querySelectorAll(".imp-cb:checked").forEach(function(b){imp.push(b.value);}); var useImp=imp.length>0;'
     ' var indEl=document.getElementById("indFilter"); var ind=indEl?indEl.value:"";'
     ' var l1El=document.getElementById("l1Filter"); var l1v=l1El?l1El.value:"";'
     ' var l2El=document.getElementById("l2Filter"); var l2v=l2El?l2El.value:"";'
@@ -555,20 +556,44 @@ _CLOSE_MODAL_HTML = (
     '  var dind=tr.getAttribute("data-industry")||"";'
     '  var okA=(tr.getAttribute("data-account").indexOf(q)>=0)||(q&&dind.indexOf(q)>=0);'
     '  var okS=!useSt||st.indexOf(tr.getAttribute("data-stage")||"")>=0;'
-    '  var di=tr.getAttribute("data-importance")||""; var okI=!imp||(imp==="__none__"?di==="":di===imp);'
+    '  var di=tr.getAttribute("data-importance")||""; var okI=!useImp||imp.indexOf(di===""?"__none__":di)>=0;'
     '  var okInd=!ind||(ind==="__none__"?dind==="":dind===ind.toLowerCase());'
     '  var dl1=tr.getAttribute("data-l1")||""; var okL1=!l1v||(l1v==="__none__"?dl1==="":dl1===l1v);'
     '  var dl2=tr.getAttribute("data-l2")||""; var okL2=!l2v||(l2v==="__none__"?dl2==="":dl2===l2v);'
     '  var show=(okA&&okS&&okI&&okInd&&okL1&&okL2); tr.style.display=show?"":"none";'
     '  if(show)n++; else {var c=tr.querySelector("[name=ids]"); if(c)c.checked=false;}});'
-    ' var lbl=document.getElementById("stgFilterLbl");'
-    ' if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
+    ' var lbl=document.getElementById("stgFilterLbl"); if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
+    ' var ilbl=document.getElementById("impFilterLbl"); if(ilbl)ilbl.textContent=useImp?("重要度:"+imp.length+"選択"):"重要度:全て";'
     ' var dc=document.getElementById("dealCount"); if(dc)dc.textContent=n;'
     ' var ca=document.getElementById("deal_chk_all"); if(ca)ca.checked=false;'
+    ' _saveDealFilters();'
     '}'
-    # 初期表示時、URL由来で初期チェックされたステージがあれば絞り込みを適用（日付変更で保持）。
-    'document.addEventListener("DOMContentLoaded",function(){'
-    ' try{if(document.querySelector(".stg-cb:checked"))filterDealsByAccount();}catch(e){}});'
+    # クライアント側フィルタの保存/復元（タブ単位）。サーバ側フィルタ変更や編集からの復帰後も維持。
+    'function _dealFilterKey(){var p=new URLSearchParams(location.search);return "dflt:"+location.pathname+":"+(p.get("tab")||"");}'
+    'function _saveDealFilters(){try{var s={imp:[]};'
+    ' var i=document.getElementById("accSearchInput"); if(i)s.q=i.value;'
+    ' document.querySelectorAll(".imp-cb:checked").forEach(function(b){s.imp.push(b.value);});'
+    ' var ind=document.getElementById("indFilter"); if(ind)s.ind=ind.value;'
+    ' var l1=document.getElementById("l1Filter"); if(l1)s.l1=l1.value;'
+    ' var l2=document.getElementById("l2Filter"); if(l2)s.l2=l2.value;'
+    ' sessionStorage.setItem(_dealFilterKey(),JSON.stringify(s));}catch(e){}}'
+    'function _restoreDealFilters(){try{var raw=sessionStorage.getItem(_dealFilterKey()); if(!raw)return false; var s=JSON.parse(raw);'
+    ' var i=document.getElementById("accSearchInput"); if(i&&s.q!=null)i.value=s.q;'
+    ' if(s.imp){document.querySelectorAll(".imp-cb").forEach(function(b){b.checked=s.imp.indexOf(b.value)>=0;});}'
+    ' var ind=document.getElementById("indFilter"); if(ind&&s.ind!=null)ind.value=s.ind;'
+    ' var l1=document.getElementById("l1Filter"); if(l1&&s.l1!=null){l1.value=s.l1; if(typeof onL1FilterChange==="function")onL1FilterChange();}'
+    ' var l2=document.getElementById("l2Filter"); if(l2&&s.l2!=null)l2.value=s.l2;'
+    ' return true;}catch(e){return false;}}'
+    # 商談リンクの戻り先を現在の絞り込み状態（URL＝サーバ側フィルタ）にする。編集から同じ画面へ戻す用。
+    'function _fixDealReturnTo(){try{var cur=encodeURIComponent(location.pathname+location.search);'
+    ' document.querySelectorAll("a[href^=\\"/deal/\\"]").forEach(function(a){var h=a.getAttribute("href"); if(!h)return;'
+    '  var base=h.split("?")[0]; if(/^\\/deal\\/[0-9]+$/.test(base)){a.setAttribute("href",base+"?return_to="+cur);}});}catch(e){}}'
+    # 初期表示: 商談一覧ではクライアント側フィルタを復元＋リンク戻り先を補正して適用。
+    'document.addEventListener("DOMContentLoaded",function(){try{'
+    ' if(document.getElementById("accSearchInput")){ _fixDealReturnTo(); var r=_restoreDealFilters();'
+    '   if(r||document.querySelector(".stg-cb:checked")||document.querySelector(".imp-cb:checked")) filterDealsByAccount(); }'
+    ' else if(document.querySelector(".stg-cb:checked")){ filterDealsByAccount(); }'
+    '}catch(e){}});'
     '</script>'
 )
 
@@ -5067,6 +5092,25 @@ def _stage_multi_filter(stages: list[str], selected=()) -> str:
         'filterDealsByAccount();return false;">クリア</a></div></div></details>')
 
 
+def _importance_multi_filter() -> str:
+    """重要度の複数選択フィルタ（クライアント側・チェックボックスのドロップダウン）。全タブ共通。
+    値: 高/中/低/__none__(未入力)。filterDealsByAccount() が .imp-cb:checked をORメンバーシップで判定。"""
+    _opts = [("高", "高"), ("中", "中"), ("低", "低"), ("__none__", "（未入力）")]
+    boxes = "".join(
+        f'<label style="display:block;padding:3px 8px;white-space:nowrap;font-size:12px;cursor:pointer">'
+        f'<input type="checkbox" class="imp-cb" value="{html.escape(v)}" onchange="filterDealsByAccount()"> '
+        f'{html.escape(lbl)}</label>'
+        for v, lbl in _opts)
+    return (
+        '<details class="tb-menu" style="display:inline-block">'
+        '<summary class="btn sec" style="font-size:12px"><span id="impFilterLbl">重要度:全て</span> ▾</summary>'
+        f'<div class="tb-panel" style="padding:4px 0">{boxes}'
+        '<div style="border-top:1px solid #e5e7eb;margin-top:4px;padding-top:4px">'
+        '<a href="#" style="font-size:11px;padding:3px 8px;display:block" '
+        'onclick="document.querySelectorAll(\'.imp-cb\').forEach(function(c){c.checked=false;});'
+        'filterDealsByAccount();return false;">クリア</a></div></div></details>')
+
+
 def _filter_deals_by_ms_type(deals: list, ms_type: str | None) -> list:
     """次回MS種別で商談リストを後段フィルタ（"none"=未設定・未指定はそのまま）。"""
     if ms_type == "none":
@@ -5179,7 +5223,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="status" onchange="this.form.submit()">{status_opts}</select>
       {_stage_multi_filter(stages, selected=stages_sel)}
-      <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
+      {_importance_multi_filter()}
       {_industry_filter_select()}
       {_l1l2_filter_selects(con)}
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
@@ -5414,7 +5458,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       {_stage_multi_filter(stages, selected=stages_sel)}
-      <select id="impFilter" onchange="filterDealsByAccount()" title="重要度で絞り込み"><option value="">全重要度</option><option value="高">重要度:高</option><option value="中">重要度:中</option><option value="低">重要度:低</option><option value="__none__">重要度:未入力</option></select>
+      {_importance_multi_filter()}
       {_industry_filter_select()}
       {_l1l2_filter_selects(con)}
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
@@ -5477,6 +5521,7 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
       <input type="hidden" name="exclude_today" value="{'1' if exclude_today else '0'}">
       <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
       <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
+      {_importance_multi_filter()}
       {_industry_filter_select()}
       {_l1l2_filter_selects(con)}
       <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
