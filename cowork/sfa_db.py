@@ -1012,6 +1012,10 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # 技術シード機能（#46）: 必要な技術シード（カンマ区切り）を後方互換追加
         if "tech_seeds" not in dp_cols:
             con.execute("ALTER TABLE dev_projects ADD COLUMN tech_seeds TEXT")
+        # 失注クローズ済みだがステージが失注/受注でない既存商談を stage='失注' に補正（冪等・表示整合）。
+        con.execute(
+            "UPDATE deals SET stage='失注' WHERE status='closed' AND close_reason='失注' "
+            "AND COALESCE(stage,'') NOT IN ('失注','受注')")
         # tasks に project(大項目)・next_action(次アクション) を後方互換追加（#30・前回デプロイ後の追加列）
         _task_cols = {r[1] for r in con.execute("PRAGMA table_info(tasks)")}
         if _task_cols and "project" not in _task_cols:
@@ -1590,8 +1594,10 @@ def reopen_deal(con, deal_id: int) -> dict:
     deal = get_deal(con, deal_id)
     if not deal:
         return {"reopened": False}
+    # 失注クローズ時にstage='失注'にしていた場合、再開時は進行中ステージ(提案)へ戻す（受注は保持）。
+    _stg_fix = ", stage='提案'" if (deal.get("stage") == "失注") else ""
     con.execute(
-        "UPDATE deals SET status='open', close_reason=NULL, updated_at=datetime('now') WHERE id=?",
+        f"UPDATE deals SET status='open', close_reason=NULL{_stg_fix}, updated_at=datetime('now') WHERE id=?",
         (int(deal_id),))
     relinked = None
     accname = deal.get("account_name")

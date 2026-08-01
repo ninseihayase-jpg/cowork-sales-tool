@@ -123,7 +123,10 @@ INPROC_MEMBERS = [
 
 def _opt(values: list[str], selected: str | None) -> str:
     out = ['<option value=""></option>']
-    for v in values:
+    vals = list(values)
+    if selected and selected not in vals:
+        vals = [selected] + vals  # マスタ外の現値も必ず表示（例: 旧/失注ステージ）
+    for v in vals:
         sel = " selected" if v == selected else ""
         out.append(f'<option value="{html.escape(v)}"{sel}>{html.escape(v)}</option>')
     return "".join(out)
@@ -4649,9 +4652,12 @@ def activity_deal_picker(con) -> str:
 def _udeal_sel(deal_id, field, values, current, *, sel_id=None, cascade_l1=False, disabled=False):
     """商談一覧の共通インライン編集セレクト。cascade_l1=Trueなら事業種別L1(保存後リロード)。
     disabled=Trueで編集不可（クローズ済み商談などの閲覧専用行に使う）。"""
+    _vals = list(values)
+    if current and current not in _vals:
+        _vals = [current] + _vals  # マスタ外の現値も表示（例: 失注ステージ）
     opts = "".join(
         f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
-        for v in values)
+        for v in _vals)
     id_attr = f' id="{sel_id}"' if sel_id else ""
     if disabled:
         return (f'<select{id_attr} disabled '
@@ -12844,6 +12850,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                    "next_milestone_type": "type"}[field]
                             sfa_db.set_earliest_milestone_field(con, deal_id, _mf, value)
                             _ok = True
+                        elif field == "close_reason":
+                            # 終了理由=失注ならステージも「失注」に同期（表示を実態と一致・#67例外）。
+                            if value == "失注":
+                                con.execute("UPDATE deals SET close_reason=?, stage='失注', "
+                                            "updated_at=datetime('now') WHERE id=?", (value, deal_id))
+                            else:
+                                con.execute("UPDATE deals SET close_reason=?, updated_at=datetime('now') WHERE id=?",
+                                            (value or None, deal_id))
+                            con.commit()
+                            _ok = True
                         else:
                             con.execute(
                                 f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
@@ -13693,10 +13709,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _existing_note = _deal.get("note") or ""
                             _body = f"{_existing_note}\n{_close_line}" if _existing_note else _close_line
                             _new_note = f"[リードに戻す時のメモ] {_memo}\n{_body}" if _memo else _body
+                            # 終了理由=失注のときはステージも「失注」にして表示を実態と一致させる（#67の例外）。
                             con.execute(
                                 "UPDATE deals SET status='closed', note=?, "
-                                "close_reason=COALESCE(?, close_reason), updated_at=datetime('now') WHERE id=?",
-                                (_new_note, _cr, _did),
+                                "close_reason=COALESCE(?, close_reason), "
+                                "stage=CASE WHEN ?='失注' THEN '失注' ELSE stage END, "
+                                "updated_at=datetime('now') WHERE id=?",
+                                (_new_note, _cr, _cr, _did),
                             )
 
                             _lid = None
