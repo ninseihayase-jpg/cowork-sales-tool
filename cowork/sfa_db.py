@@ -1027,6 +1027,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         if _task_cols and "summary" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN summary TEXT")
             con.execute("ALTER TABLE tasks ADD COLUMN summary_at TEXT")
+        # ソフト削除（削除の確認・復活用）。deleted_at が入っていれば削除済み扱い。
+        if _task_cols and "deleted_at" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN deleted_at TEXT")
         # 事務員向けタスク（/desk-tasks）用の後方互換追加。破壊的変更はしない。
         if _task_cols and "is_admin" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN is_admin INTEGER DEFAULT 0")
@@ -2620,12 +2623,17 @@ def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
                category: str | None = None, project: str | None = None,
                link_type: str | None = None,
                link_id: int | None = None, exclude_done: bool = False,
-               admin: bool | None = None) -> list[dict]:
+               admin: bool | None = None, only_deleted: bool = False) -> list[dict]:
     """admin=True で事務タスク(is_admin=1)のみ、admin=False で通常タスク(is_admin=0/NULL)のみ、
-    admin=None（既定）で両方。既存呼び出しは admin=None のため挙動不変。"""
+    admin=None（既定）で両方。既存呼び出しは admin=None のため挙動不変。
+    既定はソフト削除済み(deleted_at)を除外。only_deleted=True で削除済みのみ（復活画面用）。"""
     q = "SELECT * FROM tasks"
     conds: list = []
     params: list = []
+    if only_deleted:
+        conds.append("deleted_at IS NOT NULL AND deleted_at != ''")
+    else:
+        conds.append("(deleted_at IS NULL OR deleted_at = '')")
     if admin is True:
         conds.append("COALESCE(is_admin,0) = 1")
     elif admin is False:
@@ -2669,6 +2677,18 @@ def set_task_status(con, id: int, status: str, commit: bool = True) -> None:
 
 
 def delete_task(con, id: int) -> None:
+    """ソフト削除（deleted_at を打つ）。復活可能。物理削除は hard_delete_task。"""
+    con.execute("UPDATE tasks SET deleted_at=datetime('now'), updated_at=datetime('now') WHERE id=?", (int(id),))
+    con.commit()
+
+
+def restore_task(con, id: int) -> None:
+    """ソフト削除の復活（deleted_at を解除）。"""
+    con.execute("UPDATE tasks SET deleted_at=NULL, updated_at=datetime('now') WHERE id=?", (int(id),))
+    con.commit()
+
+
+def hard_delete_task(con, id: int) -> None:
     con.execute("DELETE FROM tasks WHERE id=?", (int(id),))
     con.commit()
 

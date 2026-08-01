@@ -3435,7 +3435,16 @@ function closeNotes(){ var i=document.getElementById('noteInput');
   document.getElementById('notesPop').style.display='none'; document.getElementById('notesBackdrop').style.display='none'; }
 document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ var p=document.getElementById('notesPop'); if(p&&p.style.display==='block'){ e.preventDefault(); closeNotes(); } } });
 function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').toLowerCase().trim();
-  document.querySelectorAll('.task-card').forEach(function(c){ c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
+  var po=document.getElementById('taskPinOnly'); po=!!(po&&po.checked);
+  document.querySelectorAll('.task-card').forEach(function(c){
+    var okQ=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0);
+    var okP=(!po||c.getAttribute('data-pinned')==='1');
+    c.style.display=(okQ&&okP)?'':'none'; }); }
+// ピン切替時: その列の中でピンを先頭へ並べ替え（安定ソート）。
+function _tcReorderCol(body){ if(!body)return;
+  var cards=Array.prototype.slice.call(body.querySelectorAll(':scope > .task-card'));
+  cards.sort(function(a,b){ return (a.getAttribute('data-pinned')==='1'?0:1)-(b.getAttribute('data-pinned')==='1'?0:1); });
+  cards.forEach(function(c){ body.appendChild(c); }); }
 var _TC_IDLE_MS=45000;
 function _tcTouch(card){ if(card)card.setAttribute('data-touch',Date.now()); }
 // カード内のどこをクリックしても展開（操作系＝ボタン/リンク/入力は除く）。開いているときは何もしない。
@@ -3453,7 +3462,7 @@ function tcDue(id,ds){ var c=document.getElementById('tc-'+id); if(c){ var col=_
   taskField(id,'due_date',ds); }
 function tcPin(id){ var c=document.getElementById('tc-'+id); var cur=c.getAttribute('data-pinned')==='1'; var nv=cur?'0':'1';
   fetch('/task/'+id+'/field',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'field=pinned&value='+nv})
-   .then(function(r){return r.json();}).then(function(d){ if(!d.ok)return; c.setAttribute('data-pinned',nv); c.classList.toggle('pinned',nv==='1'); var b=c.querySelector('.tc-pin'); if(b)b.classList.toggle('on',nv==='1'); _tcFlash(id); }); }
+   .then(function(r){return r.json();}).then(function(d){ if(!d.ok)return; c.setAttribute('data-pinned',nv); c.classList.toggle('pinned',nv==='1'); var b=c.querySelector('.tc-pin'); if(b)b.classList.toggle('on',nv==='1'); _tcReorderCol(c.parentNode); _tcFlash(id); }); }
 function tcAiCat(id){ var c=document.getElementById('tc-'+id);
   fetch('/task/'+id+'/ai-category',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'x=1'})
    .then(function(r){return r.json();}).then(function(d){ if(!d.ok||!d.category){ if(d&&!d.category)alert('AIが種類を判定できませんでした'); return; }
@@ -3924,12 +3933,47 @@ _DESK_CSS = """<style>
 </style>"""
 
 
+def desk_tasks_deleted_page(con) -> str:
+    """削除済み事務タスクの確認・復活ビュー（ソフト削除された is_admin=1）。"""
+    dels = sfa_db.list_tasks(con, admin=True, only_deleted=True)
+    rows = "".join(
+        f'<tr>'
+        f'<td>{_esc(t.get("title") or "(無題)")}</td>'
+        f'<td>{_esc(t.get("requester") or "—")}</td>'
+        f'<td>{_esc(t.get("assignee") or "—")}</td>'
+        f'<td>{_esc(t.get("status") or "—")}</td>'
+        f'<td>{_esc(t.get("category") or "—")}</td>'
+        f'<td>{_esc(t.get("due_date") or "—")}</td>'
+        f'<td class="muted" style="font-size:11px">{_esc((t.get("deleted_at") or "")[:16])}</td>'
+        f'<td><form method="post" action="/task/{t["id"]}/restore" style="margin:0">'
+        f'<input type="hidden" name="return_to" value="/desk-tasks?deleted=1">'
+        f'<button class="btn sec" type="submit" title="このタスクを復活">↩ 復活</button></form></td>'
+        f'</tr>'
+        for t in dels
+    ) or '<tr><td colspan=8 class=muted>削除済みの事務タスクはありません（ソフト削除以降のみ復活可能）。</td></tr>'
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>🗑 削除済み 事務タスク（{len(dels)}）</span>
+        <a class="btn sec" href="/desk-tasks" style="font-size:12px">← 事務タスクへ戻る</a>
+      </h2>
+      <p class="muted" style="font-size:12px">削除したタスクの確認・復活ができます。※この機能の導入より前に削除したものは復元できません。</p>
+      <div style="overflow:auto;max-height:72vh">
+      <table style="width:100%;border-collapse:collapse">
+        <tr>{_sticky_th('件名')}{_sticky_th('依頼者')}{_sticky_th('担当')}{_sticky_th('状態')}{_sticky_th('種類')}{_sticky_th('期限')}{_sticky_th('削除日時')}{_sticky_th('')}</tr>
+        {rows}
+      </table></div>
+    </div>"""
+
+
 def desk_tasks_page(con, *, requester: str | None = None, status: str | None = None,
                     category: str | None = None, urgency: str | None = None,
-                    assignee: str | None = None) -> str:
+                    assignee: str | None = None, deleted: bool = False) -> str:
     """事務員向けタスク管理ビュー（is_admin=1のみ）。各メンバーから降ってくる依頼を
     受付・可視化する。受信箱→未着手→対応中→保留→完了のカンバン。依頼者・期限・緊急度・
     カテゴリを表示。上部に依頼者別未完了件数と期限アラート集計（#事務タスク）。"""
+    if deleted:
+        return desk_tasks_deleted_page(con)
     owners = sfa_db.get_master_list(con, "owners")
     cats = sfa_db.ADMIN_TASK_CATEGORIES
     _td = _today_jst()
@@ -4135,6 +4179,8 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
       <select name="category" onchange="this.form.submit()">{_fopt(cats, category, '種類:全て')}</select>
       <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
       <input type="text" id="taskSearch" placeholder="🔍 件名・依頼者・内容で検索…" oninput="_deb('taskFilter')" style="max-width:240px">
+      <label style="font-size:13px;display:inline-flex;align-items:center;gap:4px;cursor:pointer" title="最優先ピンのみ表示">
+        <input type="checkbox" id="taskPinOnly" onchange="taskFilter()" style="width:auto">★ピンのみ</label>
       <a class="btn sec" href="/desk-tasks">リセット</a>
     </form>"""
 
@@ -4180,7 +4226,10 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>🗂 事務タスク（{len(tasks)}）</span>
-        <a class="btn sec" href="/tasks" style="font-size:12px">✅ 通常タスクへ</a>
+        <span style="display:flex;gap:8px;flex-wrap:wrap">
+          <a class="btn sec" href="/desk-tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
+          <a class="btn sec" href="/tasks" style="font-size:12px">✅ 通常タスクへ</a>
+        </span>
       </h2>
       {agg}
       {new_form}
@@ -11067,7 +11116,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         status=(_dq.get("status", [""])[0] or None),
                         category=(_dq.get("category", [""])[0] or None),
                         urgency=(_dq.get("urgency", [""])[0] or None),
-                        assignee=(_dq.get("assignee", [""])[0] or None))))
+                        assignee=(_dq.get("assignee", [""])[0] or None),
+                        deleted=bool(_dq.get("deleted", [""])[0]))))
                 elif path == "/tasks/digest":
                     self._send(render(tasks_digest_page(con)))
                 elif path == "/task-projects":
@@ -11730,6 +11780,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
                     else:
                         self._redirect("/tasks")
+
+                elif (path.startswith("/task/") and path.endswith("/restore")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    sfa_db.restore_task(con, int(path.split("/")[2]))
+                    _rt = f.get("return_to") or ""
+                    if f.get("ajax") == "1":
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                    else:
+                        self._redirect(_rt if _rt.startswith("/") else "/desk-tasks?deleted=1")
 
                 # ── 開発点数マスタ / 担当キャパ（#41） ──
                 elif path == "/dev-point-master/save":
