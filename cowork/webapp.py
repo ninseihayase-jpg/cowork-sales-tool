@@ -539,8 +539,15 @@ _CLOSE_MODAL_HTML = (
     ' .then(function(r){return r.json();}).then(function(d){if(!d.ok)alert("更新エラー");return d;})'
     ' .catch(function(){alert("通信エラー");});'
     '}'
-    # 事業種別L1変更時はL2の選択肢が変わるため、保存後にリロードして再描画（シンプル・確実）
-    'function updateDealL1(id,l1){updateDealField(id,"business_type_l1",l1).then(function(){location.reload();});}'
+    # 事業種別L1変更時: リロードせず、その行のL2セレクトを client側で再構築（フィルタ/スクロール維持）。
+    'function updateDealL1(id,l1){updateDealField(id,"business_type_l1",l1);'
+    ' var tr=document.querySelector("tr[data-account] [name=ids][value=\\""+id+"\\"]"); tr=tr?tr.closest("tr"):null;'
+    ' if(tr){tr.setAttribute("data-l1",l1||""); tr.setAttribute("data-l2","");}'
+    ' var sel=document.getElementById("l2_"+id); var m=(window.DEAL_L2_FILTER_MAP||{});'
+    ' if(sel){ var a=m[l1]||[]; var e=function(s){return (""+s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");};'
+    '  var o="<option value=\\"\\"></option>"; for(var i=0;i<a.length;i++){var v=e(a[i]); o+="<option value=\\""+v+"\\">"+v+"</option>";}'
+    '  sel.innerHTML=o; sel.value=""; updateDealField(id,"business_type_l2","");}'
+    ' if(typeof filterDealsByAccount==="function")filterDealsByAccount();}'
     # 商談一覧の絞り込み（アカウント名/業界テキスト＋ステージ/重要度は複数選択＋業界/種別L1/L2。全タブ共通）。
     # 全条件を常にAND（順不同）で判定。クライアント側フィルタはsessionStorageに保存し、サーバ側フィルタ
     # (担当/状態/ステージ/MS種別=フォーム送信でリロード)を変えても保持される。
