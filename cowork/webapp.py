@@ -2768,6 +2768,47 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         g_tbl,
         warn="金額は商談単位で重複排除して1回だけ計上（按分しない）。1商談に複数の進行中deliveryがあっても金額は二重計上されません。")
 
+    # 7) 重要度の検証（進行中）。重要度別の件数/金額＋未入力案件をその場で付与。
+    _imp_order = list(sfa_db.IMPORTANCE_OPTIONS) + ["（未入力）"]
+    _imp_db = {r["imp"]: r for r in con.execute(
+        f"SELECT COALESCE(NULLIF(TRIM(d.importance),''),'（未入力）') imp, COUNT(*) n, "
+        f"COALESCE(SUM(d.value_lumpsum),0) lump FROM deals d WHERE {open_cond} GROUP BY imp")}
+    _imp_agg = _audit_table(
+        ["重要度", "件数", "金額合計(万円)"],
+        [[_esc(k), str(_imp_db[k]["n"] if k in _imp_db else 0),
+          f'{(_imp_db[k]["lump"] if k in _imp_db else 0):,.0f}'] for k in _imp_order])
+    _imp_unset = con.execute(
+        f"SELECT d.id, d.stage, d.business_type_l1 l1, d.business_type_l2 l2, d.owner, "
+        f"a.name account, d.deal_name, d.value_lumpsum lump FROM deals d "
+        f"LEFT JOIN accounts a ON a.id=d.account_id "
+        f"WHERE {open_cond} AND (d.importance IS NULL OR TRIM(d.importance)='') "
+        f"ORDER BY d.value_lumpsum DESC").fetchall()
+    _imp_opts = '<option value="">（未入力）</option>' + "".join(
+        f'<option value="{_esc(v)}">{_esc(v)}</option>' for v in sfa_db.IMPORTANCE_OPTIONS)
+    _imp_unset_rows = []
+    for r in _imp_unset:
+        _sel = (f'<select onchange="impAuditSet({r["id"]}, this)" '
+                f'style="font-size:12px">{_imp_opts}</select>')
+        _biz = _esc(r["l1"] or "—") + (f' / {_esc(r["l2"])}' if r["l2"] else "")
+        _amt = f'{r["lump"]:,.0f}' if r["lump"] is not None else "—"
+        _imp_unset_rows.append([
+            _sel, _esc(r["stage"] or "—"), _biz, _esc(r["owner"] or "—"), _esc(r["account"] or "—"),
+            f'<a href="/deal/{r["id"]}?return_to=%2Fweekly-numbers%2Faudit">{_esc(r["deal_name"] or "—")}</a>',
+            _amt])
+    _imp_unset_tbl = _audit_table(
+        ["重要度", "ステージ", "事業種別", "担当", "アカウント", "案件", "金額(万)"], _imp_unset_rows)
+    sec_importance = f"""
+    <div class="card" style="margin-bottom:10px">
+      <h3 style="margin:0 0 4px">重要度の検証（進行中の商談）</h3>
+      <div class="muted" style="font-size:12px;margin-bottom:6px">重要度別の件数・金額合計と、重要度が未入力の案件（セレクトでその場で付与）。対象=進行中(open)。</div>
+      <div style="font-weight:600;font-size:13px;margin:4px 0">重要度別 集計</div>
+      {_imp_agg}
+      <div style="font-weight:600;font-size:13px;margin:12px 0 4px">重要度 未入力の案件（{len(_imp_unset)}件・金額降順）— セレクトで即付与</div>
+      <div style="overflow-x:auto">{_imp_unset_tbl}</div>
+      <script>function impAuditSet(id, el){{ updateDealField(id, 'importance', el.value);
+        if (el.value) {{ var tr = el.closest('tr'); if (tr) tr.style.background = '#ecfdf5'; }} }}</script>
+    </div>"""
+
     week_input = (as_of.isoformat() if hasattr(as_of, "isoformat") else "")
     return f"""
     <div class="card">
@@ -2784,7 +2825,7 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <a class="btn sec" href="/weekly-numbers/audit">今週</a>
       </form>
     </div>
-    {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_exh}{sec_A}{sec_c1}{sec_c2}{sec_c3}{sec_c4}{sec_F}{sec_G}"""
+    {sec_mtg}{sec_deal}{sec_pipe}{sec_stage}{sec_importance}{sec_exh}{sec_A}{sec_c1}{sec_c2}{sec_c3}{sec_c4}{sec_F}{sec_G}"""
 
 
 def deal_hygiene_page(con) -> str:
