@@ -3435,11 +3435,7 @@ function closeNotes(){ var i=document.getElementById('noteInput');
   document.getElementById('notesPop').style.display='none'; document.getElementById('notesBackdrop').style.display='none'; }
 document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ var p=document.getElementById('notesPop'); if(p&&p.style.display==='block'){ e.preventDefault(); closeNotes(); } } });
 function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').toLowerCase().trim();
-  var po=document.getElementById('taskPinOnly'); po=!!(po&&po.checked);
-  document.querySelectorAll('.task-card').forEach(function(c){
-    var okQ=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0);
-    var okP=(!po||c.getAttribute('data-pinned')==='1');
-    c.style.display=(okQ&&okP)?'':'none'; }); }
+  document.querySelectorAll('.task-card').forEach(function(c){ c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
 // ピン切替時: その列を元のルールで並べ直す（ピン優先→期限昇順(未設定は末尾)→id降順）。
 // list_tasks の ORDER BY と一致。ピンを外すと本来の位置へ戻る。
 function _tcReorderCol(body){ if(!body)return;
@@ -3938,7 +3934,8 @@ _DESK_CSS = """<style>
 .desk-agg{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
 .desk-agg .box{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;font-size:12px;text-decoration:none;color:inherit}
 .desk-agg .box b{font-size:16px}
-.desk-alert-over b{color:#dc2626}.desk-alert-today b{color:#f59e0b}.desk-alert-tmr b{color:#eab308}.desk-alert-hold b{color:#64748b}
+.desk-alert-over b{color:#dc2626}.desk-alert-today b{color:#f59e0b}.desk-alert-tmr b{color:#eab308}.desk-alert-hold b{color:#64748b}.desk-alert-pin b{color:#d97706}
+.desk-agg .box.on{background:#fffbeb;border-color:#f59e0b;box-shadow:0 0 0 1px #f59e0b inset}
 .m-req{font-size:9px;background:#eef2ff;color:#3730a3;border-radius:4px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>"""
 
@@ -3978,7 +3975,8 @@ def desk_tasks_deleted_page(con) -> str:
 
 def desk_tasks_page(con, *, requester: str | None = None, status: str | None = None,
                     category: str | None = None, urgency: str | None = None,
-                    assignee: str | None = None, deleted: bool = False) -> str:
+                    assignee: str | None = None, pinned: bool = False,
+                    deleted: bool = False) -> str:
     """事務員向けタスク管理ビュー（is_admin=1のみ）。各メンバーから降ってくる依頼を
     受付・可視化する。受信箱→未着手→対応中→保留→完了のカンバン。依頼者・期限・緊急度・
     カテゴリを表示。上部に依頼者別未完了件数と期限アラート集計（#事務タスク）。"""
@@ -4005,6 +4003,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
     today_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == today)
     tmr_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == tomorrow)
     hold_n = sum(1 for t in open_admin if (t.get("status") or "") == "保留")
+    pinned_n = sum(1 for t in all_admin if t.get("pinned"))  # 最優先ピン件数（全体）
     requesters_all = sorted({(t.get("requester") or "").strip() for t in all_admin if (t.get("requester") or "").strip()})
 
     # 表示対象（フィルタ適用）
@@ -4039,6 +4038,8 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
                 return not due
             return True
         tasks = [t for t in tasks if _uok(t)]
+    if pinned:
+        tasks = [t for t in tasks if t.get("pinned")]  # 最優先ピンのみ（上部ボックスから）
 
     cols = {s: [] for s in sfa_db.TASK_STATUSES}
     for t in tasks:
@@ -4161,6 +4162,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         <a class="box desk-alert-today" href="/desk-tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
         <a class="box desk-alert-tmr" href="/desk-tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
         <a class="box desk-alert-hold" href="/desk-tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b>{hold_n}</b></a>
+        <a class="box desk-alert-pin{' on' if pinned else ''}" href="/desk-tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b>{pinned_n}</b></a>
       </div>
       <div style="font-size:12px;color:#475569;margin:2px 0 4px">依頼者別 未完了：</div>
       <div class="desk-agg">{req_boxes}</div>"""
@@ -4189,8 +4191,6 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
       <select name="category" onchange="this.form.submit()">{_fopt(cats, category, '種類:全て')}</select>
       <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
       <input type="text" id="taskSearch" placeholder="🔍 件名・依頼者・内容で検索…" oninput="_deb('taskFilter')" style="max-width:240px">
-      <label style="font-size:13px;display:inline-flex;align-items:center;gap:4px;cursor:pointer" title="最優先ピンのみ表示">
-        <input type="checkbox" id="taskPinOnly" onchange="taskFilter()" style="width:auto">★ピンのみ</label>
       <a class="btn sec" href="/desk-tasks">リセット</a>
     </form>"""
 
@@ -11127,6 +11127,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         category=(_dq.get("category", [""])[0] or None),
                         urgency=(_dq.get("urgency", [""])[0] or None),
                         assignee=(_dq.get("assignee", [""])[0] or None),
+                        pinned=bool(_dq.get("pinned", [""])[0]),
                         deleted=bool(_dq.get("deleted", [""])[0]))))
                 elif path == "/tasks/digest":
                     self._send(render(tasks_digest_page(con)))
