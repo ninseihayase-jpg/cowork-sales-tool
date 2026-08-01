@@ -587,7 +587,8 @@ _CLOSE_MODAL_HTML = (
     # 商談リンクの戻り先を現在の絞り込み状態（URL＝サーバ側フィルタ）にする。編集から同じ画面へ戻す用。
     'function _fixDealReturnTo(){try{var cur=encodeURIComponent(location.pathname+location.search);'
     ' document.querySelectorAll("a[href^=\\"/deal/\\"]").forEach(function(a){var h=a.getAttribute("href"); if(!h)return;'
-    '  var base=h.split("?")[0]; if(/^\\/deal\\/[0-9]+$/.test(base)){a.setAttribute("href",base+"?return_to="+cur);}});}catch(e){}}'
+    '  var base=h.split("?")[0]; if(/^\\/deal\\/[0-9]+$/.test(base)){a.setAttribute("href",base+"?return_to="+cur);}});'
+    ' var b=document.getElementById("bulkReturnTo"); if(b) b.value=location.pathname+location.search;}catch(e){}}'
     # 初期表示: 商談一覧ではクライアント側フィルタを復元＋リンク戻り先を補正して適用。
     'document.addEventListener("DOMContentLoaded",function(){try{'
     ' if(document.getElementById("accSearchInput")){ _fixDealReturnTo(); var r=_restoreDealFilters();'
@@ -5318,6 +5319,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     {filter_row}
     <form id="deal_bulk_form" method="post" action="/deals/bulk_edit"
           onsubmit="document.querySelectorAll('#deal_bulk_form tr.deal-row').forEach(function(r){{if(r.style.display==='none'){{var c=r.querySelector('[name=ids]');if(c)c.checked=false;}}}});return true;">
+    <input type="hidden" name="return_to" id="bulkReturnTo">
     {unified_deal_table(con, deals, return_to_url="/deals", bulk=True)}
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
       <select id="deal_bulk_field" name="field" style="width:auto">
@@ -12192,7 +12194,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                         theme_link.sync_deal(theme_client, con, did)
                                     except Exception:  # noqa: BLE001
                                         pass
-                    self._redirect("/deals")
+                    _rt = f.get("return_to") or ""
+                    self._redirect(_rt if _rt.startswith("/") else "/deals")
 
                 # ── 商談 ──
                 elif path == "/deal/save":
