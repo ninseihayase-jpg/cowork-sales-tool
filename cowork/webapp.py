@@ -549,6 +549,7 @@ _CLOSE_MODAL_HTML = (
     ' var st=[]; document.querySelectorAll(".stg-cb:checked").forEach(function(b){st.push(b.value);}); var useSt=st.length>0;'
     ' var imp=[]; document.querySelectorAll(".imp-cb:checked").forEach(function(b){imp.push(b.value);}); var useImp=imp.length>0;'
     ' var indEl=document.getElementById("indFilter"); var ind=indEl?indEl.value:"";'
+    ' var tgtEl=document.getElementById("tgtFilter"); var tgt=tgtEl?tgtEl.value:"";'
     ' var l1El=document.getElementById("l1Filter"); var l1v=l1El?l1El.value:"";'
     ' var l2El=document.getElementById("l2Filter"); var l2v=l2El?l2El.value:"";'
     ' var n=0;'
@@ -558,9 +559,10 @@ _CLOSE_MODAL_HTML = (
     '  var okS=!useSt||st.indexOf(tr.getAttribute("data-stage")||"")>=0;'
     '  var di=tr.getAttribute("data-importance")||""; var okI=!useImp||imp.indexOf(di===""?"__none__":di)>=0;'
     '  var okInd=!ind||(ind==="__none__"?dind==="":dind===ind.toLowerCase());'
+    '  var dtg=tr.getAttribute("data-target")||""; var okTg=!tgt||(tgt==="__none__"?dtg==="":dtg===tgt);'
     '  var dl1=tr.getAttribute("data-l1")||""; var okL1=!l1v||(l1v==="__none__"?dl1==="":dl1===l1v);'
     '  var dl2=tr.getAttribute("data-l2")||""; var okL2=!l2v||(l2v==="__none__"?dl2==="":dl2===l2v);'
-    '  var show=(okA&&okS&&okI&&okInd&&okL1&&okL2); tr.style.display=show?"":"none";'
+    '  var show=(okA&&okS&&okI&&okInd&&okTg&&okL1&&okL2); tr.style.display=show?"":"none";'
     '  if(show)n++; else {var c=tr.querySelector("[name=ids]"); if(c)c.checked=false;}});'
     ' var lbl=document.getElementById("stgFilterLbl"); if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
     ' var ilbl=document.getElementById("impFilterLbl"); if(ilbl)ilbl.textContent=useImp?("重要度:"+imp.length+"選択"):"重要度:全て";'
@@ -574,6 +576,7 @@ _CLOSE_MODAL_HTML = (
     ' var i=document.getElementById("accSearchInput"); if(i)s.q=i.value;'
     ' document.querySelectorAll(".imp-cb:checked").forEach(function(b){s.imp.push(b.value);});'
     ' var ind=document.getElementById("indFilter"); if(ind)s.ind=ind.value;'
+    ' var tgt=document.getElementById("tgtFilter"); if(tgt)s.tgt=tgt.value;'
     ' var l1=document.getElementById("l1Filter"); if(l1)s.l1=l1.value;'
     ' var l2=document.getElementById("l2Filter"); if(l2)s.l2=l2.value;'
     ' sessionStorage.setItem(_dealFilterKey(),JSON.stringify(s));}catch(e){}}'
@@ -581,6 +584,7 @@ _CLOSE_MODAL_HTML = (
     ' var i=document.getElementById("accSearchInput"); if(i&&s.q!=null)i.value=s.q;'
     ' if(s.imp){document.querySelectorAll(".imp-cb").forEach(function(b){b.checked=s.imp.indexOf(b.value)>=0;});}'
     ' var ind=document.getElementById("indFilter"); if(ind&&s.ind!=null)ind.value=s.ind;'
+    ' var tgt=document.getElementById("tgtFilter"); if(tgt&&s.tgt!=null)tgt.value=s.tgt;'
     ' var l1=document.getElementById("l1Filter"); if(l1&&s.l1!=null){l1.value=s.l1; if(typeof onL1FilterChange==="function")onL1FilterChange();}'
     ' var l2=document.getElementById("l2Filter"); if(l2&&s.l2!=null)l2.value=s.l2;'
     ' return true;}catch(e){return false;}}'
@@ -4660,6 +4664,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
     stages = sfa_db.get_master_list(con, "deal_stages")
     owners = sfa_db.get_master_list(con, "owners")
     l1_list = sfa_db.get_master_list(con, "business_type_l1")
+    _tgt_map = sfa_db.get_industry_target_map(con)  # 業界→ターゲット領域（行に自動付随・フィルタ用）
     # ツール表示用に、開発案件を商談ごとにまとめる（1クエリ）
     dev_by_deal: dict = {}
     for dp in sfa_db.list_dev_projects(con):
@@ -4760,7 +4765,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                        f'onchange="updateDealField({did}, \'deal_name\', this.value)" '
                        f'style="font-size:12px;padding:2px 4px;width:150px{_ro_sty}">')
         rows.append(
-            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-industry="{_esc((d.get("industry") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}" data-l1="{_esc(d.get("business_type_l1") or "")}" data-l2="{_esc(d.get("business_type_l2") or "")}">'
+            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-industry="{_esc((d.get("industry") or "").lower())}" data-target="{_esc(_tgt_map.get(d.get("industry") or "", ""))}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}" data-l1="{_esc(d.get("business_type_l1") or "")}" data-l2="{_esc(d.get("business_type_l2") or "")}">'
             f'{cb_td}'
             f'<td class="muted dlfz" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
             f'<td class="dlfz dlfz-last"><div style="display:flex;align-items:center;gap:5px">'
@@ -5058,6 +5063,18 @@ def _industry_filter_select() -> str:
     )
 
 
+def _target_filter_select(con) -> str:
+    """ターゲット領域の絞り込み<select>（クライアント側・filterDealsByAccount()で使用）。全タブ共通。
+    領域は業界→ターゲット領域マスタから各行に自動付随（data-target）。"""
+    targets = sfa_db.get_master_list(con, "target_domains")
+    return (
+        '<select id="tgtFilter" onchange="filterDealsByAccount()" title="ターゲット領域で絞り込み">'
+        '<option value="">全ターゲット領域</option>'
+        + "".join(f'<option value="{html.escape(t)}">{html.escape(t)}</option>' for t in targets)
+        + '<option value="__none__">領域:未設定</option></select>'
+    )
+
+
 def _l1l2_filter_selects(con) -> str:
     """事業種別L1/L2の絞り込み<select>2つ（クライアント側）。L1選択でL2の選択肢が連動する。
     全タブ共通の filterDealsByAccount() で data-l1 / data-l2 を判定する。"""
@@ -5243,18 +5260,23 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
     )
     # 選択するだけで自動絞り込み（onchangeで即送信・「絞り込み」ボタンは廃止）
     # フィルタUIは全タブで「サーバ側select群 → 次回MS種別 → 🔍アカウント検索 → リセット」の順で統一。
-    filter_row = f"""<form method="get" action="/deals" class="filter-row">
+    filter_row = f"""<form method="get" action="/deals" class="filter-row" style="flex-wrap:wrap">
       <input type="hidden" name="tab" value="active">
-      <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
-      <select name="status" onchange="this.form.submit()">{status_opts}</select>
-      {_stage_multi_filter(stages, selected=stages_sel)}
-      {_importance_multi_filter()}
-      {_industry_filter_select()}
-      {_l1l2_filter_selects(con)}
-      <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
-      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
-        oninput="_deb('filterDealsByAccount')" style="max-width:220px">
-      <a class="btn sec" href="/deals?tab=active">リセット</a>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%">
+        <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
+        <select name="status" onchange="this.form.submit()">{status_opts}</select>
+        {_stage_multi_filter(stages, selected=stages_sel)}
+        {_importance_multi_filter()}
+        {_industry_filter_select()}
+        {_target_filter_select(con)}
+        {_l1l2_filter_selects(con)}
+        <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:6px">
+        <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
+          oninput="_deb('filterDealsByAccount')" style="max-width:260px">
+        <a class="btn sec" href="/deals?tab=active">リセット</a>
+      </div>
     </form>"""
     # バルク編集用JSオブジェクト構築（選択肢を持つフィールド）。フリー入力系はJS側でinput化。
     _all_l2 = sfa_db.business_type_l2_all(con)
@@ -5473,23 +5495,28 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
     _date_val = "" if week_mode else target_date
     _week_val = week if week_mode else ""
     # 日入力・週入力は片方を選ぶともう片方をクリアして自動送信（選択即反映・「表示」ボタン廃止）
-    form = f"""<form method="get" action="/deals" class="filter-row">
+    form = f"""<form method="get" action="/deals" class="filter-row" style="flex-wrap:wrap">
       <input type="hidden" name="tab" value="byDate">
-      <a class="btn sec" href="{_prev_href}">{_prev_lbl}</a>
-      <input type="date" name="date" value="{_esc(_date_val)}" title="日で表示"
-        onchange="this.form.week.value='';this.form.submit()">
-      <input type="week" name="week" value="{_esc(_week_val)}" title="週で表示"
-        onchange="this.form.date.value='';this.form.submit()">
-      <a class="btn sec" href="{_next_href}">{_next_lbl}</a>
-      <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
-      <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
-      {_stage_multi_filter(stages, selected=stages_sel)}
-      {_importance_multi_filter()}
-      {_industry_filter_select()}
-      {_l1l2_filter_selects(con)}
-      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
-        oninput="_deb('filterDealsByAccount')" style="max-width:220px">
-      <a class="btn sec" href="/deals?tab=byDate">リセット</a>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%">
+        <a class="btn sec" href="{_prev_href}">{_prev_lbl}</a>
+        <input type="date" name="date" value="{_esc(_date_val)}" title="日で表示"
+          onchange="this.form.week.value='';this.form.submit()">
+        <input type="week" name="week" value="{_esc(_week_val)}" title="週で表示"
+          onchange="this.form.date.value='';this.form.submit()">
+        <a class="btn sec" href="{_next_href}">{_next_lbl}</a>
+        <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
+        <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
+        {_stage_multi_filter(stages, selected=stages_sel)}
+        {_importance_multi_filter()}
+        {_industry_filter_select()}
+        {_target_filter_select(con)}
+        {_l1l2_filter_selects(con)}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:6px">
+        <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
+          oninput="_deb('filterDealsByAccount')" style="max-width:260px">
+        <a class="btn sec" href="/deals?tab=byDate">リセット</a>
+      </div>
     </form>"""
 
     if week_mode:
@@ -5542,18 +5569,23 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
         _toggle_btn = (f'<a class="btn" href="{_toggle_href}" '
                        f'style="background:#2563eb" title="次回MS日が当日ちょうどの商談を隠し、前日以前の超過のみ表示">'
                        f'🕑 当日MSを除く</a>')
-    form = f"""<form method="get" action="/deals" class="filter-row">
+    form = f"""<form method="get" action="/deals" class="filter-row" style="flex-wrap:wrap">
       <input type="hidden" name="tab" value="overdue">
       <input type="hidden" name="exclude_today" value="{'1' if exclude_today else '0'}">
-      <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
-      <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
-      {_importance_multi_filter()}
-      {_industry_filter_select()}
-      {_l1l2_filter_selects(con)}
-      <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
-        oninput="_deb('filterDealsByAccount')" style="max-width:220px">
-      {_toggle_btn}
-      <a class="btn sec" href="/deals?tab=overdue">リセット</a>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%">
+        <select name="owner" onchange="this.form.submit()">{owner_opts}</select>
+        <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
+        {_importance_multi_filter()}
+        {_industry_filter_select()}
+        {_target_filter_select(con)}
+        {_l1l2_filter_selects(con)}
+        {_toggle_btn}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:6px">
+        <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
+          oninput="_deb('filterDealsByAccount')" style="max-width:260px">
+        <a class="btn sec" href="/deals?tab=overdue">リセット</a>
+      </div>
     </form>"""
     _return_qs = urllib.parse.urlencode(
         {**_base_q, "exclude_today": "1" if exclude_today else "0"})
