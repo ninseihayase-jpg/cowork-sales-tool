@@ -2537,10 +2537,12 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
     _thead = "".join(_sticky_th(h) for h in
                      ["区分", "展示会", "案件名", "アカウント", "面談", "ステージ", "状態", "終了理由", "次回MS", "開発"])
     _exrows = "".join(
-        f'<tr class="exrow" data-exh="{_esc(r.get("exhibition_name") or "")}" data-bucket="{r["_bucket"]}">'
+        f'<tr class="exrow" data-exh="{_esc(r.get("exhibition_name") or "")}" data-bucket="{r["_bucket"]}"'
+        f' data-cr="{_esc((r.get("close_reason") or "（理由未設定）") if r.get("status") == "closed" else "（未クローズ）")}">'
         f'<td>{_esc(_bucket_label.get(r["_bucket"], r["_bucket"]))}</td>'
         f'<td>{_esc(r.get("exhibition_name") or "—")}</td>'
-        f'<td>{_esc(r["deal_name"] or "—")}</td><td>{_esc(r["acc"] or "—")}</td>'
+        f'<td><a href="/deal/{r["id"]}?return_to=%2Fweekly-numbers%2Faudit" '
+        f'title="この商談を開いて編集">{_esc(r["deal_name"] or "—")}</a></td><td>{_esc(r["acc"] or "—")}</td>'
         f'<td>{r["mtg"] or 0}</td><td>{_esc(r["stage"] or "—")}</td>'
         f'<td>{"クローズ" if (r.get("status") == "closed") else "open"}</td>'
         f'<td>{_esc(r["close_reason"] or "—")}</td><td>{_esc(r["next_milestone_date"] or "—")}</td>'
@@ -2555,22 +2557,37 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <a class="btn sec" href="/exhibition-tagging">🎪 展示会名をタグ付け</a>
         <span id="exhVis" class="muted" style="font-size:12px;align-self:center"></span>
       </div>
-      <div style="margin:0 0 10px;padding:8px 10px;background:#f8fafc;border-radius:6px">{_cnt_html}</div>
+      <div style="margin:0 0 6px;padding:8px 10px;background:#f8fafc;border-radius:6px">{_cnt_html}</div>
+      <div id="exhBreak" style="margin:0 0 10px;padding:8px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:12px"></div>
       <div style="overflow:auto;max-height:64vh"><table id="exhTbl" style="min-width:980px">
       <tr>{_thead}</tr>{_exrows}</table></div>
       <script>
+      var _EXH_BRK = {{ 'no_deal':'② 不成立（面談0・要検証）', 'first_closed':'④ 1次面談どまり・終了', 'adv_ended':'⑩ 2次以降・終了（失注以外）' }};
       function exhFilter() {{
         var ex = document.getElementById('exhSel').value;
         var bk = document.getElementById('bktSel').value;
         var counts = {{}}; var cohort = 0; var vis = 0;
+        var brk = {{ 'no_deal':{{}}, 'first_closed':{{}}, 'adv_ended':{{}} }};
         document.querySelectorAll('#exhTbl tr.exrow').forEach(function(tr) {{
           var e = tr.getAttribute('data-exh') || ''; var b = tr.getAttribute('data-bucket') || '';
           var inC = (ex === '__all__') || (ex === '__none__' ? e === '' : e === ex);
-          if (inC) {{ cohort++; counts[b] = (counts[b] || 0) + 1; }}
+          if (inC) {{ cohort++; counts[b] = (counts[b] || 0) + 1;
+            if (brk[b]) {{ var cr = tr.getAttribute('data-cr') || '（未クローズ）'; brk[b][cr] = (brk[b][cr] || 0) + 1; }} }}
           var show = inC && (bk === '__all__' || b === bk);
           tr.style.display = show ? '' : 'none'; if (show) vis++;
         }});
         {_js_cnt}
+        // ②④⑩のクローズ理由別内訳（選択中の展示会に連動）
+        var hb = '';
+        Object.keys(_EXH_BRK).forEach(function(k) {{
+          var m = brk[k]; var ks = Object.keys(m); if (!ks.length) return;
+          ks.sort(function(a, c) {{ return m[c] - m[a]; }});
+          var tot = 0; ks.forEach(function(x) {{ tot += m[x]; }});
+          hb += '<div style="margin:2px 0"><b>' + _EXH_BRK[k] + '</b>（計' + tot + '）　'
+             + ks.map(function(x) {{ return x + ' <b>' + m[x] + '</b>'; }}).join(' ／ ') + '</div>';
+        }});
+        var eb = document.getElementById('exhBreak');
+        if (eb) eb.innerHTML = hb || '<span class="muted">②④⑩ の対象がありません。</span>';
         var v = document.getElementById('exhVis');
         if (v) v.textContent = '対象 ' + cohort + '件 / 表示 ' + vis + '件';
       }}
