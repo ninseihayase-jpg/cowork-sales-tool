@@ -509,7 +509,9 @@ _CLOSE_MODAL_HTML = (
     '<label>終了理由 <span style="color:#c53030">＊必須</span></label>'
     f'<select name="close_reason" id="closeModalReason" required><option value="">選択してください</option>{_CLOSE_REASON_OPTS}</select>'
     '<label>詳細（任意）</label>'
-    '<textarea name="memo" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="3" placeholder="補足があれば"></textarea>'
+    # 高さ固定（focus/blurで伸縮させない）。伸縮reflowでボタンがずれ「クローズする」初回クリックが
+    # 外れる不具合の対処。モーダルは十分な領域があるため縮小表示は不要。
+    '<textarea name="memo" rows="4" style="resize:vertical;min-height:5em" placeholder="補足があれば"></textarea>'
     '<p class="muted" style="font-size:11px;margin:8px 0 12px">この商談はクローズされ、リード（フォロー中）に戻ります。</p>'
     '<div style="display:flex;gap:8px;justify-content:flex-end">'
     '<button type="button" class="btn sec" onclick="closeCloseModal()">キャンセル</button>'
