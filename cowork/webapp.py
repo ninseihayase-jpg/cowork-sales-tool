@@ -1143,6 +1143,43 @@ def _heat_style(pct: float) -> str:
     return "background:#dc2626;color:#fff;font-weight:700"
 
 
+def build_exhibition_funnel_xlsx(con, exhibition: str | None = None) -> bytes:
+    """展示会ファネルを『区分→内訳(理由)』のカスケード（列を1つずつ右へずらす）でxlsx化。Excel転記用。"""
+    import openpyxl
+    from openpyxl.styles import Font
+    from io import BytesIO
+    import cowork.weekly_report as weekly_report
+    rows = weekly_report.exhibition_funnel_export_rows(
+        con, today=_today_jst().isoformat(), exhibition=exhibition)
+    title = "全展示会" if (not exhibition or exhibition == "__all__") else (
+        "（展示会名未設定）" if exhibition == "__none__" else exhibition)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "展示会ファネル"
+    ws.cell(row=1, column=1,
+            value=f"展示会ファネル（{title}）  母集団=lead_pattern='Exh.'  出力日={_today_jst().isoformat()}"
+            ).font = Font(bold=True)
+    for c, h in enumerate(["区分", "内訳（理由）", "件数"], 1):
+        ws.cell(row=2, column=c, value=h).font = Font(bold=True)
+    r = 3
+    for row in rows:
+        top = bool(row["kubun"])   # 区分の小計行（合計含む）は太字
+        ws.cell(row=r, column=1, value=row["kubun"] or None)
+        ws.cell(row=r, column=2, value=row["reason"] or None)
+        ws.cell(row=r, column=3, value=row["count"])
+        if top:
+            for c in (1, 2, 3):
+                ws.cell(row=r, column=c).font = Font(bold=True)
+        r += 1
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 8
+    ws.freeze_panes = "A3"
+    bio = BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
 def build_deliveries_xlsx(con) -> bytes:
     """Delivery全テーブル情報のxlsx（一覧＋アサイン明細＋体制）。一覧画面の一括抽出用（#75）。"""
     import openpyxl
@@ -2555,6 +2592,8 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         <button class="btn sec" type="button"
           onclick="document.getElementById('exhSel').value='__all__';document.getElementById('bktSel').value='__all__';exhFilter()">クリア</button>
         <a class="btn sec" href="/exhibition-tagging">🎪 展示会名をタグ付け</a>
+        <button class="btn sec" type="button" title="ファネルを区分→理由のカスケードでExcel出力（選択中の展示会）"
+          onclick="var e=document.getElementById('exhSel').value;location.href='/weekly-numbers/exhibition.xlsx'+(e&&e!=='__all__'?('?exh='+encodeURIComponent(e)):'');">📊 Excel出力</button>
         <span id="exhVis" class="muted" style="font-size:12px;align-self:center"></span>
       </div>
       <div style="margin:0 0 6px;padding:8px 10px;background:#f8fafc;border-radius:6px">{_cnt_html}</div>
@@ -10852,6 +10891,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(slack_memo_backfill_page(con, offset=_off)))
                 elif path == "/data-tagging":
                     self._send(render(data_tagging_page(con)))
+                elif path == "/weekly-numbers/exhibition.xlsx":
+                    try:
+                        _exf = self._qs().get("exh", [None])[0]
+                        _xls = build_exhibition_funnel_xlsx(con, exhibition=_exf)
+                        _sfx = "" if (not _exf or _exf == "__all__") else "_" + (
+                            "未設定" if _exf == "__none__" else _exf)
+                        _name = f"exhibition_funnel{_sfx}_{_today_jst().isoformat()}.xlsx"
+                        self.send_response(200)
+                        self.send_header("Content-Type",
+                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                        self.send_header("Content-Disposition", _content_disposition(_name))
+                        self.send_header("Content-Length", str(len(_xls)))
+                        self.end_headers()
+                        self.wfile.write(_xls)
+                    except Exception as _e:  # noqa: BLE001
+                        import traceback as _tb; _tb.print_exc()
+                        self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
                 elif path == "/deliveries/export.xlsx":
                     try:
                         _xls = build_deliveries_xlsx(con)

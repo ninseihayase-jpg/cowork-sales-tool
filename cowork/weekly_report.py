@@ -456,6 +456,43 @@ def _exhibition_funnel(con, today: str | None = None) -> dict:
     }
 
 
+# 理由ブレイクダウンの対象バケット（②不成立 / ④1次どまり終了 / ⑩2次以降終了）。
+EXH_BREAKDOWN_BUCKETS = ("no_deal", "first_closed", "adv_ended")
+
+
+def exhibition_funnel_export_rows(con, today: str | None = None, exhibition: str | None = None) -> list[dict]:
+    """展示会ファネルを『区分→内訳(理由)』のカスケード構造でエクスポート用に返す（Excel転記用）。
+    各行 = {"kubun": <区分ラベル or ''>, "reason": <内訳ラベル or ''>, "count": int}。
+    kubunが埋まる行=区分の小計、reasonが埋まる行=その区分の理由内訳（1列右にずらす）。
+    exhibition: None=全展示会 / '__none__'=展示会名未設定 / それ以外=その展示会名のみ。"""
+    today = today or date.today().isoformat()
+    rows = exhibition_deal_rows(con)
+    if exhibition is not None:
+        if exhibition == "__none__":
+            rows = [r for r in rows if not (r.get("exhibition_name") or "")]
+        elif exhibition != "__all__":
+            rows = [r for r in rows if (r.get("exhibition_name") or "") == exhibition]
+    by_bucket: dict = {k: [] for k, _ in EXH_BUCKETS}
+    for r in rows:
+        by_bucket[classify_exhibition_deal(r, today)].append(r)
+    out: list = []
+    for k, lbl in EXH_BUCKETS:
+        grp = by_bucket.get(k, [])
+        out.append({"kubun": lbl, "reason": "", "count": len(grp)})
+        if k in EXH_BREAKDOWN_BUCKETS and grp:
+            byr: dict = {}
+            for r in grp:
+                if (r.get("status") or "open") == "closed":
+                    cr = r.get("close_reason") or "（理由未設定）"
+                else:
+                    cr = "（未クローズ）"
+                byr[cr] = byr.get(cr, 0) + 1
+            for cr in sorted(byr, key=lambda x: (-byr[x], x)):
+                out.append({"kubun": "", "reason": cr, "count": byr[cr]})
+    out.append({"kubun": "合計", "reason": "", "count": len(rows)})
+    return out
+
+
 def _stock_wow(con, week_start: str, prev_start: str) -> dict:
     """ストック指標の前週比。先週スナップショットが無ければ available=False。"""
     cur = sfa_db.get_weekly_snapshot(con, week_start)
