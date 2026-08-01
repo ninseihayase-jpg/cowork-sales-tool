@@ -2797,16 +2797,78 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
             _amt])
     _imp_unset_tbl = _audit_table(
         ["重要度", "ステージ", "事業種別", "担当", "アカウント", "案件", "金額(万)"], _imp_unset_rows)
+    # 全open商談の一覧（重要度/事業種別/担当でクライアント側フィルタ。展示会ファネルと同仕様）。
+    _imp_all = con.execute(
+        f"SELECT d.id, d.importance imp, d.stage, d.business_type_l1 l1, d.business_type_l2 l2, "
+        f"d.owner, a.name account, d.deal_name, d.value_lumpsum lump FROM deals d "
+        f"LEFT JOIN accounts a ON a.id=d.account_id WHERE {open_cond} "
+        f"ORDER BY CASE COALESCE(NULLIF(TRIM(d.importance),''),'') "
+        f"WHEN '高' THEN 0 WHEN '中' THEN 1 WHEN '低' THEN 2 ELSE 3 END, d.value_lumpsum DESC").fetchall()
+    _l1_list = list(sfa_db.get_business_type_tree(con).keys())
+    _own_list = sfa_db.get_master_list(con, "owners")
+    _imp_fopts = ('<option value="__all__">全重要度</option>'
+                  + "".join(f'<option value="{_esc(v)}">{_esc(v)}</option>' for v in sfa_db.IMPORTANCE_OPTIONS)
+                  + '<option value="__none__">（未入力）</option>')
+    _l1_fopts = ('<option value="__all__">全事業種別</option>'
+                 + "".join(f'<option value="{_esc(v)}">{_esc(v)}</option>' for v in _l1_list)
+                 + '<option value="__none__">（未設定）</option>')
+    _own_fopts = ('<option value="__all__">全担当</option>'
+                  + "".join(f'<option value="{_esc(v)}">{_esc(v)}</option>' for v in _own_list)
+                  + '<option value="__none__">（未設定）</option>')
+    _imp_all_rows = ""
+    for r in _imp_all:
+        _cur = r["imp"] or ""
+        _rsel = (f'<select onchange="impRowSet({r["id"]}, this)" style="font-size:12px">'
+                 f'<option value="">（未入力）</option>'
+                 + "".join(f'<option value="{_esc(v)}"{" selected" if v == _cur else ""}>{_esc(v)}</option>'
+                           for v in sfa_db.IMPORTANCE_OPTIONS) + '</select>')
+        _biz = _esc(r["l1"] or "—") + (f' / {_esc(r["l2"])}' if r["l2"] else "")
+        _amt = f'{r["lump"]:,.0f}' if r["lump"] is not None else "—"
+        _imp_all_rows += (
+            f'<tr class="improw" data-imp="{_esc(_cur)}" data-l1="{_esc(r["l1"] or "")}" data-owner="{_esc(r["owner"] or "")}">'
+            f'<td>{_rsel}</td><td>{_esc(r["stage"] or "—")}</td><td>{_biz}</td>'
+            f'<td>{_esc(r["owner"] or "—")}</td><td>{_esc(r["account"] or "—")}</td>'
+            f'<td><a href="/deal/{r["id"]}?return_to=%2Fweekly-numbers%2Faudit">{_esc(r["deal_name"] or "—")}</a></td>'
+            f'<td>{_amt}</td></tr>')
+    _imp_all_head = "".join(_sticky_th(h) for h in
+                            ["重要度", "ステージ", "事業種別", "担当", "アカウント", "案件", "金額(万)"])
     sec_importance = f"""
     <div class="card" style="margin-bottom:10px">
       <h3 style="margin:0 0 4px">重要度の検証（進行中の商談）</h3>
-      <div class="muted" style="font-size:12px;margin-bottom:6px">重要度別の件数・金額合計と、重要度が未入力の案件（セレクトでその場で付与）。対象=進行中(open)。</div>
+      <div class="muted" style="font-size:12px;margin-bottom:6px">重要度別の件数・金額合計と、案件一覧（重要度/事業種別/担当でフィルタ）。重要度はセレクトでその場付与。対象=進行中(open)。</div>
       <div style="font-weight:600;font-size:13px;margin:4px 0">重要度別 集計</div>
       {_imp_agg}
       <div style="font-weight:600;font-size:13px;margin:12px 0 4px">重要度 未入力の案件（{len(_imp_unset)}件・金額降順）— セレクトで即付与</div>
       <div style="overflow-x:auto">{_imp_unset_tbl}</div>
-      <script>function impAuditSet(id, el){{ updateDealField(id, 'importance', el.value);
-        if (el.value) {{ var tr = el.closest('tr'); if (tr) tr.style.background = '#ecfdf5'; }} }}</script>
+      <div style="font-weight:600;font-size:13px;margin:14px 0 4px">案件一覧（フィルタ）</div>
+      <div class="filter-row" style="margin:0 0 8px">
+        <label style="font-size:13px">重要度: <select id="impFImp" onchange="impListFilter()">{_imp_fopts}</select></label>
+        <label style="font-size:13px">事業種別: <select id="impFL1" onchange="impListFilter()">{_l1_fopts}</select></label>
+        <label style="font-size:13px">担当: <select id="impFOwn" onchange="impListFilter()">{_own_fopts}</select></label>
+        <button class="btn sec" type="button" onclick="document.getElementById('impFImp').value='__all__';document.getElementById('impFL1').value='__all__';document.getElementById('impFOwn').value='__all__';impListFilter()">クリア</button>
+        <span id="impVis" class="muted" style="font-size:12px;align-self:center"></span>
+      </div>
+      <div style="overflow:auto;max-height:60vh"><table id="impTbl" style="min-width:900px">
+      <tr>{_imp_all_head}</tr>{_imp_all_rows or '<tr><td colspan=7 class=muted>進行中の商談がありません。</td></tr>'}</table></div>
+      <script>
+      function impAuditSet(id, el){{ updateDealField(id, 'importance', el.value);
+        if (el.value) {{ var tr = el.closest('tr'); if (tr) tr.style.background = '#ecfdf5'; }} }}
+      function impRowSet(id, el){{ updateDealField(id, 'importance', el.value);
+        var tr = el.closest('tr'); if (tr) tr.setAttribute('data-imp', el.value); }}
+      function impListFilter(){{
+        var vi = document.getElementById('impFImp').value, vl = document.getElementById('impFL1').value, vo = document.getElementById('impFOwn').value;
+        var n = 0;
+        document.querySelectorAll('#impTbl tr.improw').forEach(function(tr){{
+          var im = tr.getAttribute('data-imp') || '', l1 = tr.getAttribute('data-l1') || '', ow = tr.getAttribute('data-owner') || '';
+          var okI = (vi === '__all__') || (vi === '__none__' ? im === '' : im === vi);
+          var okL = (vl === '__all__') || (vl === '__none__' ? l1 === '' : l1 === vl);
+          var okO = (vo === '__all__') || (vo === '__none__' ? ow === '' : ow === vo);
+          var show = okI && okL && okO; tr.style.display = show ? '' : 'none'; if (show) n++;
+        }});
+        var v = document.getElementById('impVis'); if (v) v.textContent = '表示 ' + n + '件';
+      }}
+      impListFilter();
+      </script>
     </div>"""
 
     week_input = (as_of.isoformat() if hasattr(as_of, "isoformat") else "")
