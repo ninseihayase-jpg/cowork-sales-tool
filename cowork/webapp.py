@@ -3440,10 +3440,20 @@ function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').t
     var okQ=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0);
     var okP=(!po||c.getAttribute('data-pinned')==='1');
     c.style.display=(okQ&&okP)?'':'none'; }); }
-// ピン切替時: その列の中でピンを先頭へ並べ替え（安定ソート）。
+// ピン切替時: その列を元のルールで並べ直す（ピン優先→期限昇順(未設定は末尾)→id降順）。
+// list_tasks の ORDER BY と一致。ピンを外すと本来の位置へ戻る。
 function _tcReorderCol(body){ if(!body)return;
   var cards=Array.prototype.slice.call(body.querySelectorAll(':scope > .task-card'));
-  cards.sort(function(a,b){ return (a.getAttribute('data-pinned')==='1'?0:1)-(b.getAttribute('data-pinned')==='1'?0:1); });
+  function _due(c){ var i=c.querySelector('.tc-due'); return (i&&i.value)?i.value:''; }
+  function _idOf(c){ var m=/(\\d+)/.exec(c.id||''); return m?+m[1]:0; }
+  cards.sort(function(a,b){
+    var pa=a.getAttribute('data-pinned')==='1'?0:1, pb=b.getAttribute('data-pinned')==='1'?0:1;
+    if(pa!==pb) return pa-pb;
+    var da=_due(a), db=_due(b), ea=da?0:1, eb=db?0:1;
+    if(ea!==eb) return ea-eb;               // 期限なしは末尾
+    if(da!==db) return da<db?-1:1;          // 期限昇順
+    return _idOf(b)-_idOf(a);               // id降順（新しい順）
+  });
   cards.forEach(function(c){ body.appendChild(c); }); }
 var _TC_IDLE_MS=45000;
 function _tcTouch(card){ if(card)card.setAttribute('data-touch',Date.now()); }
