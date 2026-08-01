@@ -371,6 +371,10 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  tr:hover td{{background:#fafbfd}}
  /* 縦スクロール時に見出しを固定表示する共通クラス（旧: 各thへの直書きstyleを置換） */
  th.sticky{{position:sticky;top:0;background:#fff;z-index:2}}
+ /* 商談一覧: 横スクロール時に「#」「アカウント」までを左固定（left値はJSで実測して設定）。 */
+ td.dlfz{{position:sticky;z-index:1;background:#fff}}
+ th.dlfz{{position:sticky;top:0;z-index:6;background:#fff}}
+ td.dlfz-last,th.dlfz-last{{box-shadow:1px 0 0 #e6e9f0}}
  /* 開発案件一覧: 左側カラム(テーマ〜商談)を横スクロールでも固定表示。
     box-sizing:border-boxで幅=leftオフセットを一致させる（paddingでズレるのを防ぐ） */
  #dpTable td.frz,#dpTable th.frz{{box-sizing:border-box}}
@@ -4448,13 +4452,15 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
     ms_counts = sfa_db.count_open_milestones(con, [d["id"] for d in deals])
     rn_deal_ids = sfa_db.rich_note_entity_ids(con, "deal")  # ノートありの商談（📝点灯用）
 
-    cb_th = ('<th class="sticky" style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択（表示中のみ）"'
+    cb_th = ('<th class="dlfz" style="width:28px"><input type="checkbox" id="deal_chk_all" title="全選択（表示中のみ）"'
              ' onchange="var v=this.checked;document.querySelectorAll(\'#deal_bulk_form tr.deal-row\').forEach('
              'function(r){if(r.style.display!==\'none\'){var c=r.querySelector(\'[name=ids]\');if(c)c.checked=v;}});">'
              '</th>') if bulk else ""
     _th_total = _sticky_th("提案総額<br><span style='font-size:10px;color:#8893a8'>(万円)</span>")
+    # 横スクロール時に「#」「アカウント」までを左に固定表示（dlfz=frozen-left, dlfz-last=境界の影）。
     header = (
-        f'<tr>{cb_th}{_sticky_th("#")}{_sticky_th("アカウント")}{_sticky_th("案件名")}{_sticky_th("ステージ")}'
+        f'<tr>{cb_th}<th class="dlfz">#</th><th class="dlfz dlfz-last">アカウント</th>'
+        f'{_sticky_th("案件名")}{_sticky_th("ステージ")}'
         f'{_sticky_th("重要度")}{_sticky_th("主担当")}{_sticky_th("サブ担当")}{_sticky_th("種別L1")}{_sticky_th("種別L2")}'
         f'{_sticky_th("予算")}{_th_total}'
         f'{_sticky_th("次回MS日")}{_sticky_th("次回MS")}{_sticky_th("ツール")}{_sticky_th("クローズ")}</tr>'
@@ -4529,7 +4535,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                          f' onclick="openCloseModal({did}, \'{return_to_url}\')">クローズ</button>')
         else:
             close_btn = '<span class="muted">クローズ済</span>'
-        cb_td = (f'<td style="width:28px"><input type="checkbox" name="ids" value="{did}"'
+        cb_td = (f'<td class="dlfz" style="width:28px"><input type="checkbox" name="ids" value="{did}"'
                  f'{" disabled" if _ro else ""}></td>') if bulk else ""
         _closed_badge = ('<br><span style="display:inline-block;background:#c53030;color:#fff;'
                          'border-radius:4px;padding:1px 5px;font-size:10px;margin-top:3px;'
@@ -4540,8 +4546,8 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         rows.append(
             f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-industry="{_esc((d.get("industry") or "").lower())}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}" data-l1="{_esc(d.get("business_type_l1") or "")}" data-l2="{_esc(d.get("business_type_l2") or "")}">'
             f'{cb_td}'
-            f'<td class="muted" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
-            f'<td><div style="display:flex;align-items:center;gap:5px">'
+            f'<td class="muted dlfz" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
+            f'<td class="dlfz dlfz-last"><div style="display:flex;align-items:center;gap:5px">'
             f'{_rich_note_btn("deal", did, did in rn_deal_ids)}'
             f'<a href="/deal/{did}?return_to={urllib.parse.quote(return_to_url, safe="")}" title="{_esc(d.get("account_name"))}" '
             f'style="display:inline-block;max-width:135px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle">{_esc(d.get("account_name"))}</a>'
@@ -4562,8 +4568,18 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'<td>{tool_cell}</td><td>{close_btn}</td></tr>'
         )
     body = "".join(rows) or f'<tr><td colspan={17 if bulk else 16} class=muted>商談がありません。</td></tr>'
-    return (f'<div style="overflow:auto;max-height:70vh"><table style="min-width:1560px">'
-            f'{header}{body}</table></div>' + _MS_PANEL_BLOCK + _TOOL_LINK_PANEL_BLOCK)
+    # 横スクロール時に「#」「アカウント」までを左に固定。列の実幅を測ってleftを算出（幅可変のため）。
+    _frz_js = ('<script>(function(){'
+               'function dlFreeze(){var t=document.getElementById("dealTbl");if(!t)return;'
+               'var h=t.querySelector("tr");if(!h)return;var hf=h.querySelectorAll(".dlfz");if(!hf.length)return;'
+               'var L=[],a=0;for(var i=0;i<hf.length;i++){L.push(a);a+=hf[i].getBoundingClientRect().width;}'
+               'var rs=t.querySelectorAll("tr");for(var r=0;r<rs.length;r++){var fs=rs[r].querySelectorAll(".dlfz");'
+               'for(var j=0;j<fs.length;j++){fs[j].style.left=Math.round(L[j])+"px";}}}'
+               'window.addEventListener("load",dlFreeze);window.addEventListener("resize",dlFreeze);'
+               'if(document.readyState!=="loading")dlFreeze();else document.addEventListener("DOMContentLoaded",dlFreeze);'
+               '})();</script>')
+    return (f'<div style="overflow:auto;max-height:70vh"><table id="dealTbl" style="min-width:1560px">'
+            f'{header}{body}</table></div>' + _frz_js + _MS_PANEL_BLOCK + _TOOL_LINK_PANEL_BLOCK)
 
 
 # 一覧の「次回MS」欄から全MSを確認/追加/編集/削除するポップオーバー（#48）。全タブ共通・1回だけ出力。
