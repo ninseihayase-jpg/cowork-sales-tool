@@ -5420,28 +5420,48 @@ def _l1l2_filter_selects(con) -> str:
     全タブ共通の filterDealsByAccount() で data-l1 / data-l2 を判定する。"""
     tree = sfa_db.get_business_type_tree(con)
     l1_opts = "".join(f'<option value="{html.escape(l1)}">{html.escape(l1)}</option>' for l1 in tree.keys())
-    # データに実在するが現行マスタに無いL1（旧マスタ値・例: AI導入）。フィルタに出ないと絞り込めず
-    # 一括修正できないため、旧値も選択肢に出す（末尾に「⚠旧」表記でまとめる）。L2連動マップにも
-    # 旧L1配下に実在するL2を足す。
+    # データに実在するが現行マスタに無いL1/L2（旧マスタ値・例: L1=AI導入）。フィルタに出ないと
+    # 絞り込めず一括修正できないため、旧値も選択肢に出す（「⚠旧」表記）。
+    #   ・旧L1: マスタに無いL1。末尾に区切り＋⚠旧で列挙。
+    #   ・旧L2: 現行L1配下でもマスタに無いL2（有効L1にぶら下がる孤立L2）＋旧L1配下の全L2。
     _master_l1 = set(tree.keys())
-    _legacy_l1 = [r["l1"] for r in con.execute(
-        "SELECT DISTINCT business_type_l1 l1 FROM deals "
-        "WHERE business_type_l1 IS NOT NULL AND TRIM(business_type_l1)!='' "
-        "ORDER BY business_type_l1").fetchall() if r["l1"] not in _master_l1]
-    combined = {k: list(v) for k, v in tree.items()}
-    for _l1 in _legacy_l1:
-        combined[_l1] = [r["l2"] for r in con.execute(
-            "SELECT DISTINCT business_type_l2 l2 FROM deals WHERE business_type_l1=? "
-            "AND business_type_l2 IS NOT NULL AND TRIM(business_type_l2)!='' "
-            "ORDER BY business_type_l2", (_l1,)).fetchall()]
+    _data_l2: dict = {}         # l1 -> データ実在L2（出現順）
+    _legacy_l1: list = []
+    for r in con.execute(
+            "SELECT DISTINCT business_type_l1 l1, business_type_l2 l2 FROM deals "
+            "WHERE business_type_l1 IS NOT NULL AND TRIM(business_type_l1)!='' "
+            "ORDER BY business_type_l1, business_type_l2").fetchall():
+        _l1 = r["l1"]
+        if _l1 not in _master_l1 and _l1 not in _legacy_l1:
+            _legacy_l1.append(_l1)
+        _l2 = (r["l2"] or "").strip()
+        if _l2:
+            _data_l2.setdefault(_l1, [])
+            if _l2 not in _data_l2[_l1]:
+                _data_l2[_l1].append(_l2)
+    combined: dict = {}
+    legacy_l2: dict = {}        # l1 -> 旧L2リスト（⚠旧表記の対象）
+    for _l1, _l2s in tree.items():            # 現行L1: マスタL2 ＋ データにしか無いL2(旧)
+        _extra = [x for x in _data_l2.get(_l1, []) if x not in _l2s]
+        combined[_l1] = list(_l2s) + _extra
+        if _extra:
+            legacy_l2[_l1] = _extra
+    for _l1 in _legacy_l1:                     # 旧L1: 配下のデータL2は全て旧扱い
+        _l2s = _data_l2.get(_l1, [])
+        combined[_l1] = list(_l2s)
+        if _l2s:
+            legacy_l2[_l1] = list(_l2s)
     if _legacy_l1:
         l1_opts += '<option disabled style="font-weight:700;color:#b45309">— 旧マスタ（データに残存）—</option>'
         l1_opts += "".join(
             f'<option value="{html.escape(l1)}">{html.escape(l1)} ⚠旧</option>' for l1 in _legacy_l1)
     map_json = json.dumps(combined, ensure_ascii=False)
+    legacy_json = json.dumps(legacy_l2, ensure_ascii=False)
     # JS部は素の文字列（f-string不使用）で組み、__MAP__ だけ差し込む（波括弧のエスケープ回避）。
     js = """<script>
 window.DEAL_L2_FILTER_MAP = __MAP__;
+window.DEAL_L2_LEGACY = __LEG__;
+function _l2Lg(l1,x){ var a=(window.DEAL_L2_LEGACY||{})[l1]||[]; return (a.indexOf(x)>=0)?' ⚠旧':''; }
 function onL1FilterChange(){
   var l1El = document.getElementById('l1Filter'); if(!l1El) return;
   var l1 = l1El.value;
@@ -5450,14 +5470,14 @@ function onL1FilterChange(){
   var e=function(x){ return (''+x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
   var opts = ['<option value="">全種別L2</option>'];
   if(l1 && l1 !== '__none__'){
-    // 特定L1選択時: そのL1配下のL2のみ（フラット）
-    (window.DEAL_L2_FILTER_MAP[l1] || []).forEach(function(x){ opts.push('<option value="'+e(x)+'">'+e(x)+'</option>'); });
+    // 特定L1選択時: そのL1配下のL2のみ（フラット）。旧マスタL2は「⚠旧」表記。
+    (window.DEAL_L2_FILTER_MAP[l1] || []).forEach(function(x){ opts.push('<option value="'+e(x)+'">'+e(x)+_l2Lg(l1,x)+'</option>'); });
   } else {
-    // 全L1: 「L1（見出し）／ └ L2」のツリー表記でまとめて表示
+    // 全L1: 「L1（見出し）／ └ L2」のツリー表記でまとめて表示。旧マスタL2は「⚠旧」表記。
     for(var k in window.DEAL_L2_FILTER_MAP){
       var arr = window.DEAL_L2_FILTER_MAP[k] || []; if(!arr.length) continue;
       opts.push('<option disabled style="font-weight:700;color:#334155">'+e(k)+'</option>');
-      arr.forEach(function(x){ opts.push('<option value="'+e(x)+'">　└ '+e(x)+'</option>'); });
+      arr.forEach(function(x){ opts.push('<option value="'+e(x)+'">　└ '+e(x)+_l2Lg(k,x)+'</option>'); });
     }
   }
   opts.push('<option value="__none__">L2:未設定</option>');
@@ -5466,7 +5486,7 @@ function onL1FilterChange(){
   else { sel.disabled=false; sel.value=prev; }   // 値が存在しなければブラウザが空に戻す
   filterDealsByAccount();
 }
-</script>""".replace("__MAP__", map_json)
+</script>""".replace("__MAP__", map_json).replace("__LEG__", legacy_json)
     return (
         '<select id="l1Filter" onchange="onL1FilterChange()" title="事業種別L1で絞り込み">'
         '<option value="">全種別L1</option>' + l1_opts +
