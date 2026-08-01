@@ -4698,9 +4698,9 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
     rows = []
     for d in deals:
         did = d["id"]
-        _ro = (d.get("status") == "closed")  # クローズ済みは閲覧専用（編集不可）
-        _dis = " disabled" if _ro else ""
-        _ro_sty = f";{_ro_input_style}" if _ro else ""
+        _ro = (d.get("status") == "closed")  # クローズ済み（Close表示は残すが、編集は可能にする）
+        _dis = ""        # クローズ済みでもインライン編集を許可
+        _ro_sty = ""
         l2_values = sfa_db.business_type_l2_of(con, d.get("business_type_l1"))
         inp_budget = (f'<input type="text" value="{_esc(d.get("client_budget") or "")}"{_dis}'
                       f' onchange="updateDealField({did}, \'client_budget\', this.value)"'
@@ -4712,22 +4712,17 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                        f' onchange="updateDealField({did}, \'next_milestone_date\', this.value)"'
                        f' style="font-size:11px;padding:1px 2px{_ro_sty}">')
         _ms_open = ms_counts.get(did, 0)
-        # 一覧から全MSを確認/追加/編集できるパネルのトリガー（未完了2件以上は強調）。
-        # クローズ済みは編集不可のため、パネルを開かない静的表示にする。
-        if _ro:
-            _ms_trigger = (f'<span class="ms-trigger" style="cursor:default;opacity:.6">'
-                           f'🗂 MS·{_ms_open}</span>')
-        else:
-            _ms_trigger = (
-                f'<button type="button" id="mstrg_{did}" class="ms-trigger{" has-multi" if _ms_open >= 2 else ""}" '
-                f'onclick="openMsPanel({did}, this)" title="この商談の次回MSを一覧・追加・編集">'
-                f'🗂 MS·<span id="mscount_{did}">{_ms_open}</span></button>')
+        # 一覧から全MSを確認/追加/編集できるパネルのトリガー（未完了2件以上は強調）。クローズ済みも編集可。
+        _ms_trigger = (
+            f'<button type="button" id="mstrg_{did}" class="ms-trigger{" has-multi" if _ms_open >= 2 else ""}" '
+            f'onclick="openMsPanel({did}, this)" title="この商談の次回MSを一覧・追加・編集">'
+            f'🗂 MS·<span id="mscount_{did}">{_ms_open}</span></button>')
         inp_ms_label = (f'<input type="text" id="mslabel_{did}" value="{_esc(d.get("next_milestone_label"))}"{_dis}'
                         f' onchange="updateDealField({did}, \'next_milestone_label\', this.value)"'
                         f' style="font-size:11px;padding:1px 2px;width:130px{_ro_sty}"><br>'
                         + f'<span id="mstype_{did}">'
                         + _udeal_sel(did, "next_milestone_type", sfa_db.NEXT_MS_TYPES,
-                                     d.get("next_milestone_type") or "", disabled=_ro)
+                                     d.get("next_milestone_type") or "", disabled=False)
                         + '</span> ' + _ms_trigger)
         tool_btns = " ".join(
             _tool_link_btn(dp.get("tool_url"), tool_id=dp.get("tool_login_id"), tool_password=dp.get("tool_login_pass"))
@@ -4763,11 +4758,10 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                          f' onclick="openCloseModal({did}, \'{return_to_url}\')">クローズ</button>')
         else:
             close_btn = '<span class="muted">クローズ済</span>'
-        cb_td = (f'<td class="dlfz" style="width:28px"><input type="checkbox" name="ids" value="{did}"'
-                 f'{" disabled" if _ro else ""}></td>') if bulk else ""
+        cb_td = (f'<td class="dlfz" style="width:28px"><input type="checkbox" name="ids" value="{did}"></td>') if bulk else ""
         _closed_badge = ('<br><span style="display:inline-block;background:#c53030;color:#fff;'
                          'border-radius:4px;padding:1px 5px;font-size:10px;margin-top:3px;'
-                         'white-space:nowrap">Close(編集不可)</span>') if _ro else ""
+                         'white-space:nowrap">Close</span>') if _ro else ""
         _name_input = (f'<input type="text" value="{_esc(d.get("deal_name"))}"{_dis} '
                        f'onchange="updateDealField({did}, \'deal_name\', this.value)" '
                        f'style="font-size:12px;padding:2px 4px;width:150px{_ro_sty}">')
@@ -4785,12 +4779,12 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                if d.get("industry") else "")
             + f'</td>'
             f'<td>{_name_input}</td>'
-            f'<td>{_udeal_sel(did, "stage", stages, d.get("stage") or "", disabled=_ro)}</td>'
-            f'<td>{_udeal_sel(did, "importance", sfa_db.IMPORTANCE_OPTIONS, d.get("importance") or "", disabled=_ro)}</td>'
-            f'<td>{_udeal_sel(did, "owner", owners, d.get("owner") or "", disabled=_ro)}</td>'
-            f'<td>{_udeal_sel(did, "sub_owner", owners, d.get("sub_owner") or "", disabled=_ro)}</td>'
-            f'<td>{_udeal_sel(did, "business_type_l1", l1_list, d.get("business_type_l1") or "", cascade_l1=True, disabled=_ro)}</td>'
-            f'<td>{_udeal_sel(did, "business_type_l2", l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{did}", disabled=_ro)}</td>'
+            f'<td>{_udeal_sel(did, "stage", stages, d.get("stage") or "", disabled=False)}</td>'
+            f'<td>{_udeal_sel(did, "importance", sfa_db.IMPORTANCE_OPTIONS, d.get("importance") or "", disabled=False)}</td>'
+            f'<td>{_udeal_sel(did, "owner", owners, d.get("owner") or "", disabled=False)}</td>'
+            f'<td>{_udeal_sel(did, "sub_owner", owners, d.get("sub_owner") or "", disabled=False)}</td>'
+            f'<td>{_udeal_sel(did, "business_type_l1", l1_list, d.get("business_type_l1") or "", cascade_l1=True, disabled=False)}</td>'
+            f'<td>{_udeal_sel(did, "business_type_l2", l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{did}", disabled=False)}</td>'
             f'<td>{inp_budget}</td><td>{inp_total}</td>'
             f'<td>{inp_ms_date}</td><td>{inp_ms_label}</td>'
             f'<td>{tool_cell}</td><td>{close_btn}</td></tr>'
