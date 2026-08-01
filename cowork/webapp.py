@@ -5420,7 +5420,25 @@ def _l1l2_filter_selects(con) -> str:
     全タブ共通の filterDealsByAccount() で data-l1 / data-l2 を判定する。"""
     tree = sfa_db.get_business_type_tree(con)
     l1_opts = "".join(f'<option value="{html.escape(l1)}">{html.escape(l1)}</option>' for l1 in tree.keys())
-    map_json = json.dumps(tree, ensure_ascii=False)
+    # データに実在するが現行マスタに無いL1（旧マスタ値・例: AI導入）。フィルタに出ないと絞り込めず
+    # 一括修正できないため、旧値も選択肢に出す（末尾に「⚠旧」表記でまとめる）。L2連動マップにも
+    # 旧L1配下に実在するL2を足す。
+    _master_l1 = set(tree.keys())
+    _legacy_l1 = [r["l1"] for r in con.execute(
+        "SELECT DISTINCT business_type_l1 l1 FROM deals "
+        "WHERE business_type_l1 IS NOT NULL AND TRIM(business_type_l1)!='' "
+        "ORDER BY business_type_l1").fetchall() if r["l1"] not in _master_l1]
+    combined = {k: list(v) for k, v in tree.items()}
+    for _l1 in _legacy_l1:
+        combined[_l1] = [r["l2"] for r in con.execute(
+            "SELECT DISTINCT business_type_l2 l2 FROM deals WHERE business_type_l1=? "
+            "AND business_type_l2 IS NOT NULL AND TRIM(business_type_l2)!='' "
+            "ORDER BY business_type_l2", (_l1,)).fetchall()]
+    if _legacy_l1:
+        l1_opts += '<option disabled style="font-weight:700;color:#b45309">— 旧マスタ（データに残存）—</option>'
+        l1_opts += "".join(
+            f'<option value="{html.escape(l1)}">{html.escape(l1)} ⚠旧</option>' for l1 in _legacy_l1)
+    map_json = json.dumps(combined, ensure_ascii=False)
     # JS部は素の文字列（f-string不使用）で組み、__MAP__ だけ差し込む（波括弧のエスケープ回避）。
     js = """<script>
 window.DEAL_L2_FILTER_MAP = __MAP__;
