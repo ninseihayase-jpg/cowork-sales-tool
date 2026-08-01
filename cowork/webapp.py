@@ -3126,10 +3126,9 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
             f'<td>{_amt}</td></tr>')
     _imp_all_head = "".join(_sticky_th(h) for h in
                             ["重要度", "ステージ", "事業種別", "担当", "アカウント", "案件", "金額(万)"])
-    sec_importance = f"""
-    <div class="card" style="margin-bottom:10px">
-      <h3 style="margin:0 0 4px">重要度の検証（進行中の商談）</h3>
-      <div class="muted" style="font-size:12px;margin-bottom:6px">重要度別の件数・金額合計と、案件一覧（重要度/事業種別/担当でフィルタ）。重要度はセレクトでその場付与。対象=進行中(open)。</div>
+    _imp_summary = "／".join(
+        f'{_esc(k)} <b>{(_imp_db[k]["n"] if k in _imp_db else 0)}</b>' for k in _imp_order)
+    _imp_detail = f"""
       <div style="font-weight:600;font-size:13px;margin:4px 0">重要度別 集計</div>
       {_imp_agg}
       <div style="font-weight:600;font-size:13px;margin:12px 0 4px">重要度 未入力の案件（{len(_imp_unset)}件・金額降順）— セレクトで即付与</div>
@@ -3162,8 +3161,11 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
         var v = document.getElementById('impVis'); if (v) v.textContent = '表示 ' + n + '件';
       }}
       impListFilter();
-      </script>
-    </div>"""
+      </script>"""
+    sec_importance = _audit_section(
+        "重要度の検証（進行中の商談）",
+        "重要度別の件数・金額合計と、案件一覧（重要度/事業種別/担当でフィルタ）。重要度はセレクトでその場付与。対象=進行中(open)。",
+        _imp_summary, _imp_detail)
 
     week_input = (as_of.isoformat() if hasattr(as_of, "isoformat") else "")
     return f"""
