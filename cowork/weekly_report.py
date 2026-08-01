@@ -398,6 +398,10 @@ def classify_exhibition_deal(row: dict, today: str) -> str:
     nms = row.get("next_milestone_date") or ""
     nms_type = row.get("next_milestone_type") or ""
     closed = (status == "closed")
+    # 受注は面談回数に関わらず最優先で「受注」に分類する。
+    # （面談を活動履歴に残さず受注したケースを②不成立/④どまりへ取りこぼさないため。実事故あり）
+    if stage == "受注":
+        return "won"
     if mtg == 0:
         # 面談0回: 次回MSが当日以降(これから面談予定)＝初回面談待ち、それ以外＝不成立(要検証)。
         # ※当日ちょうどのMS(これから面談)も待ちに含める（>=）。過去日/未設定/クローズは不成立。
