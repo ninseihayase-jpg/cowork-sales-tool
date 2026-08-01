@@ -5098,15 +5098,23 @@ function onL1FilterChange(){
   var l1 = l1El.value;
   var sel = document.getElementById('l2Filter'); if(!sel) return;
   var prev = sel.value;
-  var arr;
-  if(l1 && l1 !== '__none__'){ arr = window.DEAL_L2_FILTER_MAP[l1] || []; }
-  else { arr = []; for(var k in window.DEAL_L2_FILTER_MAP){ (window.DEAL_L2_FILTER_MAP[k]||[]).forEach(function(x){ if(arr.indexOf(x)<0) arr.push(x); }); } }
+  var e=function(x){ return (''+x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
   var opts = ['<option value="">全種別L2</option>'];
-  arr.forEach(function(x){ var e=x.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); opts.push('<option value="'+e+'">'+e+'</option>'); });
+  if(l1 && l1 !== '__none__'){
+    // 特定L1選択時: そのL1配下のL2のみ（フラット）
+    (window.DEAL_L2_FILTER_MAP[l1] || []).forEach(function(x){ opts.push('<option value="'+e(x)+'">'+e(x)+'</option>'); });
+  } else {
+    // 全L1: 「L1（見出し）／ └ L2」のツリー表記でまとめて表示
+    for(var k in window.DEAL_L2_FILTER_MAP){
+      var arr = window.DEAL_L2_FILTER_MAP[k] || []; if(!arr.length) continue;
+      opts.push('<option disabled style="font-weight:700;color:#334155">'+e(k)+'</option>');
+      arr.forEach(function(x){ opts.push('<option value="'+e(x)+'">　└ '+e(x)+'</option>'); });
+    }
+  }
   opts.push('<option value="__none__">L2:未設定</option>');
   sel.innerHTML = opts.join('');
   if(l1 === '__none__'){ sel.value=''; sel.disabled=true; }
-  else { sel.disabled=false; if(arr.indexOf(prev)>=0 || prev==='' || prev==='__none__') sel.value=prev; }
+  else { sel.disabled=false; sel.value=prev; }   // 値が存在しなければブラウザが空に戻す
   filterDealsByAccount();
 }
 </script>""".replace("__MAP__", map_json)
