@@ -12629,6 +12629,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     con.execute(
                                         f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
                                         (value or None, did))
+                                # 受注→自動クローズ（一括でも。stageは受注のままstatus=closed）
+                                if field == "stage" and value == "受注":
+                                    for did in ids:
+                                        sfa_db.close_won_if_needed(con, did)
                                 con.commit()
                                 if field == "stage":
                                     for did in ids:
@@ -12719,6 +12723,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         fee_rate=num("fee_rate"),
                         diagnosis_cost=num("diagnosis_cost"),
                     )
+                    # 受注→自動クローズ（フォームで受注ステージ保存時。stageは受注のままstatus=closed）
+                    if (f.get("stage") or "") == "受注":
+                        sfa_db.close_won_if_needed(con, did, commit=True)
                     # #75: 提案以降ステージで保存されたらDeliveryを自動起票（未作成時のみ）
                     try:
                         sfa_db.ensure_delivery_on_stage(con, did, f.get("stage") or "")
@@ -13245,6 +13252,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     "UPDATE deals SET stage=?, updated_at=datetime('now') WHERE id=?",
                                     (value or None, deal_id),
                                 )
+                                # 受注→自動クローズ（stageを受注にした瞬間に完了扱い）
+                                if value == "受注":
+                                    sfa_db.close_won_if_needed(con, deal_id)
                                 con.commit()
                                 _ok = True
                                 # #75: 提案以降に到達したらDeliveryを自動起票（未作成時のみ）

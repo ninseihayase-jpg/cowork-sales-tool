@@ -3127,6 +3127,24 @@ def ensure_delivery_on_stage(con, deal_id: int, stage: str | None) -> int | None
     return create_delivery(con, deal_id=deal_id, title=(deal.get("deal_name") or ""))
 
 
+def close_won_if_needed(con, deal_id: int, *, commit: bool = False) -> bool:
+    """受注→自動クローズ運用: stage='受注' かつ未クローズなら status='closed' にする
+    （close_reason は既存が空のとき '受注' を既定投入。stage は '受注' のまま保持）。
+    クローズしたら True。ステージを受注にした瞬間に案件を完了扱いにするための共通処理で、
+    フォーム保存・一括編集・インラインstage変更の全経路から呼ぶ。commit=False（既定）は
+    呼び出し側でまとめて commit する想定。"""
+    row = con.execute("SELECT stage, status FROM deals WHERE id=?", (int(deal_id),)).fetchone()
+    if not row or (row["stage"] or "") != "受注" or (row["status"] or "open") == "closed":
+        return False
+    con.execute(
+        "UPDATE deals SET status='closed', "
+        "close_reason=COALESCE(NULLIF(close_reason,''),'受注'), "
+        "updated_at=datetime('now') WHERE id=?", (int(deal_id),))
+    if commit:
+        con.commit()
+    return True
+
+
 def list_delivery_assignments(con, delivery_id: int) -> list[dict]:
     return [dict(r) for r in con.execute(
         "SELECT * FROM delivery_assignments WHERE delivery_id=? ORDER BY owner, from_week",
