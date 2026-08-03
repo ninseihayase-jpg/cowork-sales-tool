@@ -39,14 +39,28 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ── 担当解決（Slackユーザー → SFA担当名） ─────────────────────────────────
 
 def _owner_slack_map() -> dict:
-    """config/owner_slack_map.json（担当名→email）。_始まりのキーは除外。"""
+    """担当名→email のマップ。config/owner_slack_map.json をベースに、環境変数
+    OWNER_SLACK_MAP_JSON（同形式のJSON）があれば上書きマージする。
+    ※公開リポジトリにメールを載せないため、秘匿したい担当は env 側で設定する
+    （SFAリポジトリはPUBLIC。env値はRender等の秘匿設定に置く）。_始まりのキーは除外。"""
+    out: dict = {}
     p = os.path.join(_PROJECT_ROOT, "config", "owner_slack_map.json")
     try:
         with open(p, encoding="utf-8") as f:
-            d = json.load(f)
-        return {k: v for k, v in d.items() if not k.startswith("_")}
+            for k, v in json.load(f).items():
+                if not k.startswith("_"):
+                    out[k] = v
     except Exception:
-        return {}
+        pass
+    env = os.environ.get("OWNER_SLACK_MAP_JSON", "").strip()
+    if env:
+        try:
+            for k, v in json.loads(env).items():
+                if not str(k).startswith("_"):
+                    out[k] = v   # env が優先（ファイルの値を上書き）
+        except Exception:
+            print("[slack_tasks] OWNER_SLACK_MAP_JSON のJSON解析に失敗（無視）", flush=True)
+    return out
 
 
 def owner_from_slack_user(user_id: str, token: str | None = None) -> str | None:
