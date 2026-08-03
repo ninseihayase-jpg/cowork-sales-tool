@@ -3501,11 +3501,14 @@ def delete_delivery_role(con, role_id: int) -> None:
 
 
 def list_base_workload(con, owner: str | None = None) -> list[dict]:
+    # 並びは id 順＝SFAベース工数フォームで最後に保存したスロット順（機能名のアルファベット順ではない）。
+    # replace_base_workload_for_owner が DELETE→INSERT でスロット順に採番するため、id順＝入力順になる。
+    # これによりSFAフォーム・Hishoダッシュボード（base_items）の表示順が一致する。
     if owner:
         return [dict(r) for r in con.execute(
-            "SELECT * FROM base_workload WHERE owner=? ORDER BY function", (owner,))]
+            "SELECT * FROM base_workload WHERE owner=? ORDER BY id", (owner,))]
     return [dict(r) for r in con.execute(
-        "SELECT * FROM base_workload ORDER BY owner, function")]
+        "SELECT * FROM base_workload ORDER BY owner, id")]
 
 
 def base_workload_by_owner(con) -> dict:
