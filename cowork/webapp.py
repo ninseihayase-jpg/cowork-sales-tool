@@ -11147,6 +11147,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             "by_owner": sfa_db.base_workload_by_owner(con),
                             "items": sfa_db.list_base_workload(con),
                         }, ensure_ascii=False).encode())
+                elif path == "/api/weekly_workload/all":
+                    # Hishoダッシュボード用: 週次稼働の手動プラン一式（owner→week→{items,note,total}）。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        self._send_cors_json(json.dumps(
+                            {"cells": sfa_db.list_weekly_workload_all(con)}, ensure_ascii=False).encode())
                 elif path == "/api/memo/list_all":
                     # スプシ出力用: 全メモ + deals/accounts JOIN
                     qs = self._qs()
@@ -14238,6 +14247,43 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         done = 1 if data.get("done") else 0
                         con.execute("UPDATE meeting_notes SET task_done=? WHERE id=?", (done, int(note_id)))
                         con.commit()
+                        self._send_cors_json(json.dumps({"ok": True}, ensure_ascii=False).encode())
+
+                # ── 週次稼働の手動プラン: 保存/クリア（Hishoダッシュボードから）──
+                elif path == "/api/weekly_workload/save":
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            data = f
+                        _owner = (data.get("owner") or "").strip()
+                        _week = (data.get("week") or "").strip()
+                        _items = data.get("items") or []
+                        _note = data.get("note")
+                        if not _owner or not _week or not isinstance(_items, list):
+                            self._send_cors_json(b'{"error":"bad_request"}', status=400)
+                        else:
+                            sfa_db.save_weekly_workload(con, _owner, _week, _items, note=_note)
+                            self._send_cors_json(json.dumps(
+                                sfa_db.get_weekly_workload(con, _owner, _week), ensure_ascii=False).encode())
+                elif path == "/api/weekly_workload/clear":
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            data = f
+                        _owner = (data.get("owner") or "").strip()
+                        _week = (data.get("week") or "").strip()
+                        if _owner and _week:
+                            sfa_db.clear_weekly_workload(con, _owner, _week)
                         self._send_cors_json(json.dumps({"ok": True}, ensure_ascii=False).encode())
 
                 # ── 翌日アポSlack通知の重複防止マーカー ──

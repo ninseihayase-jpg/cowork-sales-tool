@@ -812,6 +812,28 @@ CREATE TABLE IF NOT EXISTS base_workload (
     updated_at  TEXT DEFAULT (datetime('now')),
     UNIQUE(owner, function)
 );
+
+-- 週次稼働の手動編集（#稼働予定）。owner×week（ISO月曜）ごとに、Deliveryやベースの
+-- 自動計算を複製して手動で組み替えた「手動プラン」。存在する(owner,week)は手動採用、
+-- 無ければ自動。項目(label×pct×種別)＋セル単位の備考。Hishoダッシュボードから編集(POST)。
+CREATE TABLE IF NOT EXISTS weekly_workload_manual (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner       TEXT NOT NULL,             -- メンバー
+    week        TEXT NOT NULL,             -- ISO月曜 'YYYY-MM-DD'
+    label       TEXT NOT NULL,             -- 項目名（案件名/機能名/自由入力）
+    kind        TEXT,                      -- 'D'(Delivery)/'base'/'other'
+    pct         REAL NOT NULL DEFAULT 0,   -- 稼働率(%)
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT DEFAULT (datetime('now')),
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS weekly_workload_note (
+    owner       TEXT NOT NULL,
+    week        TEXT NOT NULL,
+    note        TEXT,                      -- セル単位の備考メモ
+    updated_at  TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (owner, week)
+);
 """
 
 
@@ -3353,6 +3375,76 @@ def upsert_base_workload(con, owner: str, function: str, pct: float) -> None:
         "ON CONFLICT(owner, function) DO UPDATE SET pct=excluded.pct, updated_at=datetime('now')",
         (owner, function, float(pct or 0)))
     con.commit()
+
+
+# ---- 週次稼働の手動編集（#稼働予定）。owner×week に手動プラン（項目＋備考）を持つ。 ----
+def get_weekly_workload(con, owner: str, week: str) -> dict:
+    """1セル分の手動プラン。{owner, week, items:[{id,label,kind,pct,sort_order}], note, exists}。"""
+    items = [dict(r) for r in con.execute(
+        "SELECT id, label, kind, pct, sort_order FROM weekly_workload_manual "
+        "WHERE owner=? AND week=? ORDER BY sort_order, id", (owner, week))]
+    nr = con.execute("SELECT note FROM weekly_workload_note WHERE owner=? AND week=?",
+                     (owner, week)).fetchone()
+    note = (nr["note"] if nr else "") or ""
+    return {"owner": owner, "week": week, "items": items, "note": note,
+            "exists": bool(items) or bool(note)}
+
+
+def save_weekly_workload(con, owner: str, week: str, items: list, note=None) -> None:
+    """1セルの手動プランを全置換で保存。items=[{label,pct,kind}]。noteはNoneなら据え置き。
+    itemsが空でnoteも空なら手動プランを消して自動に戻す（clearと同義）。"""
+    owner = (owner or "").strip()
+    week = (week or "").strip()
+    if not owner or not week:
+        return
+    norm = []
+    for it in (items or []):
+        lab = (str(it.get("label") or "")).strip()
+        if not lab:
+            continue
+        try:
+            pct = float(it.get("pct") or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        norm.append((lab, (it.get("kind") or "other"), pct))
+    note_val = None if note is None else (str(note).strip())
+    if not norm and not (note_val or ""):
+        clear_weekly_workload(con, owner, week)
+        return
+    con.execute("DELETE FROM weekly_workload_manual WHERE owner=? AND week=?", (owner, week))
+    for i, (lab, kind, pct) in enumerate(norm):
+        con.execute(
+            "INSERT INTO weekly_workload_manual(owner, week, label, kind, pct, sort_order) "
+            "VALUES(?,?,?,?,?,?)", (owner, week, lab, kind, pct, i))
+    if note_val is not None:
+        con.execute(
+            "INSERT INTO weekly_workload_note(owner, week, note, updated_at) "
+            "VALUES(?,?,?,datetime('now')) "
+            "ON CONFLICT(owner, week) DO UPDATE SET note=excluded.note, updated_at=datetime('now')",
+            (owner, week, note_val))
+    con.commit()
+
+
+def clear_weekly_workload(con, owner: str, week: str) -> None:
+    """手動プランを削除して自動に戻す。"""
+    con.execute("DELETE FROM weekly_workload_manual WHERE owner=? AND week=?", (owner, week))
+    con.execute("DELETE FROM weekly_workload_note WHERE owner=? AND week=?", (owner, week))
+    con.commit()
+
+
+def list_weekly_workload_all(con) -> dict:
+    """全手動セルを {owner: {week: {items:[{label,kind,pct}], note, total}}} で返す（グリッド表示用）。"""
+    out: dict = {}
+    for r in con.execute(
+            "SELECT owner, week, label, kind, pct FROM weekly_workload_manual "
+            "ORDER BY owner, week, sort_order, id"):
+        cell = out.setdefault(r["owner"], {}).setdefault(r["week"], {"items": [], "note": "", "total": 0.0})
+        cell["items"].append({"label": r["label"], "kind": r["kind"], "pct": r["pct"]})
+        cell["total"] += (r["pct"] or 0)
+    for r in con.execute("SELECT owner, week, note FROM weekly_workload_note"):
+        cell = out.setdefault(r["owner"], {}).setdefault(r["week"], {"items": [], "note": "", "total": 0.0})
+        cell["note"] = r["note"] or ""
+    return out
 
 
 def get_owner_base_max(con) -> dict:
