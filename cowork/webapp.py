@@ -4209,10 +4209,10 @@ _DESK_CSS = """<style>
 .desk-alert-over b{color:#dc2626}.desk-alert-today b{color:#f59e0b}.desk-alert-tmr b{color:#eab308}.desk-alert-hold b{color:#64748b}.desk-alert-pin b{color:#d97706}
 .desk-agg .box.on{background:#fffbeb;border-color:#f59e0b;box-shadow:0 0 0 1px #f59e0b inset}
 .m-req{font-size:9px;background:#eef2ff;color:#3730a3;border-radius:4px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tc-rec-badge{font-size:12px;margin:0 2px}
-.tc-recur{margin-top:6px;border-top:1px dashed #e2e8f0;padding-top:6px;position:relative}
-.tc-recur-cb{font-size:12px;color:#475569;cursor:pointer;display:inline-flex;align-items:center;gap:4px}
-.tc-recur-panel{position:absolute;left:0;right:0;z-index:30;margin-top:4px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.16)}
+.tc-rec-pin{border:none;background:transparent;color:#cbd5e1;cursor:pointer;font-size:12px;padding:0;line-height:1}
+.tc-rec-pin.on{color:#2563eb}
+.tc-rec-wrap{position:relative;display:inline-flex}
+.tc-recur-panel{position:absolute;top:100%;right:0;width:236px;z-index:40;margin-top:4px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.16);text-align:left;white-space:normal;cursor:default}
 .tc-recur-row{display:flex;align-items:center;gap:6px;margin:5px 0;font-size:12px;flex-wrap:wrap}
 .tc-recur-row label{min-width:64px;color:#64748b}
 .tc-recur-row input[type=number],.tc-recur-row select{font-size:12px;padding:2px 4px}
@@ -4223,8 +4223,12 @@ _DESK_CSS = """<style>
 
 # 繰り返し発生（定期複製）の設定パネル用JS（事務タスク看板専用）。/task/{id}/recur に保存。
 _DESK_RECUR_JS = """<script>
-function tcRecurToggle(id,on){ var p=document.querySelector('#tcrec-'+id+' .tc-recur-panel'); if(p)p.style.display=on?'block':'none';
-  if(!on){ _tcRecurPost(id,{is_recurring:0}); } }
+// ヘッダの🔁アイコン（ピン★の左）で複製設定パネルを開閉。ON時はアイコンを着色（tc-rec-pin.on）。
+function tcRecurPanel(id,ev){ if(ev)ev.stopPropagation();
+  var p=document.getElementById('tcrec-'+id); if(!p)return;
+  var willOpen=(p.style.display==='none'||!p.style.display);
+  document.querySelectorAll('.tc-recur-panel').forEach(function(x){ if(x!==p)x.style.display='none'; });
+  p.style.display=willOpen?'block':'none'; }
 function tcRecurFreqUI(id){ var box=document.getElementById('tcrec-'+id); if(!box)return;
   var f=box.querySelector('.tc-rec-freq').value; box.setAttribute('data-freq',f);
   var m=box.querySelector('.tc-rec-monthly'); var w=box.querySelector('.tc-rec-weekly');
@@ -4234,20 +4238,23 @@ function tcRecurSave(id){ var box=document.getElementById('tcrec-'+id); if(!box)
   if(f==='weekly'){ var wd=box.querySelector('.tc-rec-wday'); day=wd?wd.value:''; }
   else { var md=box.querySelector('.tc-rec-mday'); day=md?md.value:''; }
   var note=box.querySelector('.tc-rec-note');
-  if(f==='monthly'&&(day===''||isNaN(parseInt(day,10)))){ if(note)note.textContent='複製日（1〜31）を入力してください'; if(note)note.style.color='#dc2626'; return; }
-  _tcRecurPost(id,{is_recurring:1,recur_freq:f,recur_dup_day:day},note); }
-function _tcRecurPost(id,params,noteEl){ var body='is_recurring='+(params.is_recurring?1:0);
+  if(f==='monthly'&&(day===''||isNaN(parseInt(day,10)))){ if(note){note.textContent='複製日（1〜31）を入力';note.style.color='#dc2626';} return; }
+  _tcRecurPost(id,{is_recurring:1,recur_freq:f,recur_dup_day:day},note,true); }
+function tcRecurOff(id){ _tcRecurPost(id,{is_recurring:0},null,true); }
+function _tcRecurPost(id,params,noteEl,closePanel){ var body='is_recurring='+(params.is_recurring?1:0);
   if(params.recur_freq)body+='&recur_freq='+encodeURIComponent(params.recur_freq);
   if(params.recur_dup_day!=null&&params.recur_dup_day!=='')body+='&recur_dup_day='+encodeURIComponent(params.recur_dup_day);
   fetch('/task/'+id+'/recur',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
    .then(function(r){return r.json();}).then(function(d){
      if(!d.ok){ if(noteEl){noteEl.textContent='保存エラー: '+(d.error||'');noteEl.style.color='#dc2626';} else alert('繰り返し設定エラー: '+(d.error||'')); return; }
      var card=document.getElementById('tc-'+id);
-     if(card){ var h=card.querySelector('.tc-head'); var b=card.querySelector('.tc-rec-badge');
-       if(d.is_recurring){ if(!b&&h){ b=document.createElement('span'); b.className='tc-rec-badge'; b.title='繰り返し発生'; b.textContent='🔁'; var car=h.querySelector('.tc-car'); h.insertBefore(b,car); } }
-       else if(b){ b.remove(); } }
+     if(card){ var pin=card.querySelector('.tc-rec-pin'); if(pin)pin.classList.toggle('on',!!d.is_recurring); }
      if(noteEl){ noteEl.textContent=d.is_recurring?'✓ 保存しました':''; noteEl.style.color='#16a34a'; }
+     if(closePanel){ var p=document.getElementById('tcrec-'+id); if(p)setTimeout(function(){p.style.display='none';},500); }
      if(typeof _tcFlash==='function')_tcFlash(id); }); }
+// パネル外クリックで閉じる（アイコン/パネル内は除外）。
+document.addEventListener('click',function(e){ if(e.target.closest&&(e.target.closest('.tc-recur-panel')||e.target.closest('.tc-rec-pin')))return;
+  document.querySelectorAll('.tc-recur-panel').forEach(function(x){ x.style.display='none'; }); });
 </script>"""
 
 
@@ -4426,34 +4433,40 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         m_asg = f'<span class="m-asg">🧑‍💼{_esc(asg)}</span>' if asg else ""
         m_due = (f'<span class="m-due" style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
                  if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
-        # 繰り返し発生（定期複製）。チェックでフローティングパネルを表示し、頻度＋複製タイミングを保存。
+        # 繰り返し発生（定期複製）。ヘッダのアイコン🔁（ピン★の左）で表示＝コンパクトでも見える。
+        # クリックで複製設定のドロップダウン（頻度＋複製タイミング）を開閉。ON時はアイコンを着色。
         is_rec = bool(t.get("is_recurring"))
         rec_freq = (t.get("recur_freq") or "monthly")
         rec_day = t.get("recur_dup_day")
-        rec_badge = ('<span class="tc-rec-badge" title="繰り返し発生">🔁</span>' if is_rec else '')
         mday_val = (str(rec_day) if (rec_freq == "monthly" and rec_day is not None) else "")
         _wd_opts = "".join(
             f'<option value="{i}"{" selected" if (rec_freq == "weekly" and rec_day is not None and int(rec_day) == i) else ""}>{lbl}</option>'
             for i, lbl in enumerate(sfa_db.RECUR_WEEKDAY_LABELS))
-        recur_html = (
-            f'<div class="tc-recur" id="tcrec-{tid}" data-freq="{_esc(rec_freq)}">'
-            f'<label class="tc-recur-cb"><input type="checkbox"{" checked" if is_rec else ""} '
-            f'onchange="tcRecurToggle({tid},this.checked)"> 🔁 繰り返し発生</label>'
-            f'<div class="tc-recur-panel" style="display:{"block" if is_rec else "none"}">'
+        _off_btn = (f'<button type="button" class="btn sec" style="color:#c53030" '
+                    f'onclick="tcRecurOff({tid})">繰り返しOFF</button>') if is_rec else ""
+        rec_wrap = (
+            f'<span class="tc-rec-wrap">'
+            f'<button type="button" class="tc-rec-pin{" on" if is_rec else ""}" '
+            f'onclick="tcRecurPanel({tid},event)" title="🔁繰り返し発生（複製設定）">🔁</button>'
+            f'<div class="tc-recur-panel" id="tcrec-{tid}" data-freq="{_esc(rec_freq)}" '
+            f'style="display:none" onclick="event.stopPropagation()">'
+            f'<div style="font-weight:600;font-size:12px;margin-bottom:4px">🔁 繰り返し発生（複製設定）</div>'
             f'<div class="tc-recur-row"><label>頻度</label>'
             f'<select class="tc-rec-freq" onchange="tcRecurFreqUI({tid})">'
             f'<option value="monthly"{" selected" if rec_freq != "weekly" else ""}>毎月</option>'
             f'<option value="weekly"{" selected" if rec_freq == "weekly" else ""}>毎週</option></select></div>'
             f'<div class="tc-recur-row tc-rec-monthly" style="display:{"none" if rec_freq == "weekly" else "flex"}">'
-            f'<label>複製タイミング</label><span>毎月 '
+            f'<label>複製日</label><span>毎月 '
             f'<input type="number" class="tc-rec-mday" min="1" max="31" value="{_esc(mday_val)}" '
             f'placeholder="20" style="width:56px"> 日</span></div>'
             f'<div class="tc-recur-row tc-rec-weekly" style="display:{"flex" if rec_freq == "weekly" else "none"}">'
-            f'<label>複製タイミング</label><span>毎週 <select class="tc-rec-wday">{_wd_opts}</select> 曜</span></div>'
-            f'<div class="tc-recur-row"><button type="button" class="btn sec" '
-            f'onclick="tcRecurSave({tid})">保存</button><span class="tc-rec-note"></span></div>'
-            f'<div class="tc-recur-help">複製タイミングが来たら、この内容を「◯月分／◯週分」を付けた新規カードに複製します。</div>'
-            f'</div></div>')
+            f'<label>複製曜日</label><span>毎週 <select class="tc-rec-wday">{_wd_opts}</select> 曜</span></div>'
+            f'<div class="tc-recur-row" style="justify-content:space-between">'
+            f'<button type="button" class="btn sec" onclick="tcRecurSave({tid})">保存</button>'
+            f'{_off_btn}'
+            f'<span class="tc-rec-note"></span></div>'
+            f'<div class="tc-recur-help">複製タイミングが来たら、この内容を「◯月分／◯週分」付きの新規カードに複製します。</div>'
+            f'</div></span>')
         return (
             f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
             f'data-status="{_esc(status)}" data-pinned="{1 if pinned else 0}" data-search="{search}" '
@@ -4461,7 +4474,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'<div class="tc-head">'
             f'<span class="tc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
             f'<span class="tc-ttl">{_esc(t.get("title"))}</span>'
-            f'{rec_badge}{pin_btn}<span class="tc-car">▸</span></div>'
+            f'{rec_wrap}{pin_btn}<span class="tc-car">▸</span></div>'
             f'<div class="tc-mini">{m_req}{m_asg}{m_due}</div>'
             f'<div class="tc-actions"></div>'
             f'<div class="tc-body">'
@@ -4476,7 +4489,6 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'{asg_sel}{cat_sel}{slack_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}</div>'
             f'<div class="tc-notes" onclick="openSummary({tid})" title="進捗メモのAIサマリを見る">📝 {log_snip}</div>'
-            f'{recur_html}'
             f'<div class="tc-foot">'
             f'<button type="button" class="tc-disc" onclick="openNotes({tid},&#39;discussion&#39;,&#39;進捗メモ&#39;)" title="進捗メモ＋AIサマリ">💬 進捗メモ</button>'
             f'<a class="tc-edit" href="/tasks/{tid}/edit">編集</a>'

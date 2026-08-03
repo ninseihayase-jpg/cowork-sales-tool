@@ -192,11 +192,14 @@ def test_recurring_template_not_duplicated_when_off(con):
 
 
 def test_desk_page_renders_recur_ui(con):
-    """desk_tasks_page が繰り返しUI（チェックボックス＋パネル）を含めて描画できる（スモーク）。"""
+    """desk_tasks_page が繰り返しUI（ヘッダの🔁アイコン＋ドロップダウン設定パネル）を描画できる（スモーク）。
+    繰り返し発生はピン★の左のアイコンで表示し、ON時は着色（tc-rec-pin on）。"""
     from cowork import webapp
     tid = sfa_db.upsert_task(con, title="月末締め作業", is_admin=1, assignee="あみ")
     sfa_db.set_task_recur(con, tid, is_recurring=True, recur_freq="monthly", recur_dup_day=20)
     html = webapp.desk_tasks_page(con)
     assert "繰り返し発生" in html
-    assert f"tcRecurToggle({tid}" in html
-    assert "🔁" in html  # 有効化済みバッジ
+    assert f"tcRecurPanel({tid}" in html          # ヘッダアイコンのクリックでパネル開閉
+    assert 'class="tc-rec-pin on"' in html         # ON状態は着色アイコン
+    assert f"tcRecurOff({tid}" in html             # ON時は繰り返しOFFボタン
+    assert "🔁" in html
