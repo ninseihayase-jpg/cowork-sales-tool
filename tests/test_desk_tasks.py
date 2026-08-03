@@ -203,3 +203,41 @@ def test_desk_page_renders_recur_ui(con):
     assert 'class="tc-rec-pin on"' in html         # ON状態は着色アイコン
     assert f"tcRecurOff({tid}" in html             # ON時は繰り返しOFFボタン
     assert "🔁" in html
+
+
+def test_admin_slack_dedup_concurrent(tmp_path):
+    """同一Slackメッセージ(channel+ts)への near-simultaneous な複数起票でも1件に収れんする。
+    SELECT→INSERT を _CREATE_LOCK で直列化した回帰テスト（実事故: 1依頼が3枚起票の再発防止）。
+    件名を変えて呼ぶ＝AI抽出が毎回違う件名を返す状況を模擬。"""
+    import threading
+    from cowork import slack_tasks as st
+    path = str(tmp_path / "dedup.db")
+    sfa_db.init_db(path)
+    N = 5
+    results: list[int] = []
+    barrier = threading.Barrier(N)
+
+    def worker(i: int):
+        c = sfa_db.connect(path)
+        try:
+            barrier.wait()  # 5スレッドの発火をそろえて競合させる
+            tid = st.create_task_from_fields(
+                c, title=f"請求書作成 案{i}", is_admin=1, ai_category=False,
+                slack_channel="C123", slack_ts="1699999999.000100", requester="土屋")
+            results.append(tid)
+        finally:
+            c.close()
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(N)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    c = sfa_db.connect(path)
+    n = c.execute(
+        "SELECT COUNT(*) FROM tasks WHERE slack_channel='C123' AND slack_ts='1699999999.000100' "
+        "AND COALESCE(is_admin,0)=1").fetchone()[0]
+    c.close()
+    assert n == 1, f"重複起票が発生: {n}件"
+    assert len(set(results)) == 1, f"戻りidが割れている: {results}"

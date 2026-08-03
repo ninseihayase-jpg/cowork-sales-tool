@@ -12,10 +12,16 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import date
 
 from . import sfa_db
 from .slack_bot import _slack_post, _slack_get, _call_claude  # 既存基盤を流用
+
+# Slack起票の重複チェック(SELECT)→INSERT を直列化するロック。Slackが同一依頼を複数イベント
+# （別event_id）で near-simultaneous に配信しても、重複判定が競合せず1件に収れんさせる。
+# 本体は単一プロセスのThreadingHTTPServer（スレッドのみ）なのでプロセス内ロックで十分。
+_CREATE_LOCK = threading.Lock()
 
 # 🎯 = "dart"。通常タスク化トリガー（is_admin=0）。誤爆防止のため🎯のみに限定。
 TASK_REACTIONS = {"dart"}
@@ -185,13 +191,9 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
     is_admin=1 で事務タスク（requester=依頼者）。事務タスクは分類体系が異なるためAI後追い判定はしない。
     事務タスクは期限未指定なら既定で3営業日後にし、受信箱に留める（受付=受信箱の運用のため自動整理しない）。
     同一Slackメッセージ(slack_channel+slack_ts+is_admin)から既にタスクがあれば新規作成せず既存idを返す
-    （Slackの再送・別event_id二重配信・再操作による重複起票を防ぐ）。"""
-    if slack_channel and slack_ts:
-        _dup = con.execute(
-            "SELECT id FROM tasks WHERE slack_channel=? AND slack_ts=? AND COALESCE(is_admin,0)=? LIMIT 1",
-            (slack_channel, slack_ts, 1 if is_admin else 0)).fetchone()
-        if _dup:
-            return _dup[0]  # 同一メッセージからの重複起票を防止（既存タスクを返す）
+    （Slackの再送・別event_id二重配信・再操作による重複起票を防ぐ）。同一メッセージの
+    重複判定(SELECT)→INSERT は _CREATE_LOCK で直列化する（AI呼び出しはロック外）。"""
+    # AIカテゴリ判定はロック外で先に済ませる（遅い呼び出しでの直列化を避ける）。事務は判定しない。
     if not category and ai_category and not is_admin:
         try:
             from .webapp import _ai_guess_task_category  # 遅延import（循環回避）
@@ -200,19 +202,28 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
             category = None
     if is_admin and not (due_date or "").strip():
         due_date = _admin_default_due()   # 事務タスクの既定期限＝3営業日後
-    tid = sfa_db.upsert_task(
-        con, title=title or "(無題)", next_action=next_action or None,
-        assignee=assignee or None, due_date=due_date or None,
-        project=project or None, category=category or None,
-        status="受信箱", source="slack", is_admin=1 if is_admin else 0,
-        requester=requester or None,
-        slack_channel=slack_channel, slack_ts=slack_ts, slack_permalink=slack_permalink,
-        created_by=created_by)
-    # 担当＋期限が揃えば受信箱→未着手へ自動整理（通常/事務とも）。事務タスクはSlack起票時に
-    # 既定担当あみ＋期限3営業日後が入るため、実質すぐ未着手に上がる。担当未割当（担当空欄）の
-    # 受付だけが受信箱に留まる。
-    if (assignee or "").strip() and (due_date or "").strip():
-        sfa_db.set_task_status(con, tid, "未着手")
+    # 重複チェック→INSERTを直列化。Slackが1依頼を複数イベント(別event_id)で
+    # near-simultaneous に配信しても、ここで1件に収れんさせる（実事故: 1依頼が3枚起票）。
+    with _CREATE_LOCK:
+        if slack_channel and slack_ts:
+            _dup = con.execute(
+                "SELECT id FROM tasks WHERE slack_channel=? AND slack_ts=? AND COALESCE(is_admin,0)=? LIMIT 1",
+                (slack_channel, slack_ts, 1 if is_admin else 0)).fetchone()
+            if _dup:
+                return _dup[0]  # 同一メッセージからの重複起票を防止（既存タスクを返す）
+        tid = sfa_db.upsert_task(
+            con, title=title or "(無題)", next_action=next_action or None,
+            assignee=assignee or None, due_date=due_date or None,
+            project=project or None, category=category or None,
+            status="受信箱", source="slack", is_admin=1 if is_admin else 0,
+            requester=requester or None,
+            slack_channel=slack_channel, slack_ts=slack_ts, slack_permalink=slack_permalink,
+            created_by=created_by)
+        # 担当＋期限が揃えば受信箱→未着手へ自動整理（通常/事務とも）。事務タスクはSlack起票時に
+        # 既定担当あみ＋期限3営業日後が入るため、実質すぐ未着手に上がる。担当未割当（担当空欄）の
+        # 受付だけが受信箱に留まる。
+        if (assignee or "").strip() and (due_date or "").strip():
+            sfa_db.set_task_status(con, tid, "未着手")
     return tid
 
 
