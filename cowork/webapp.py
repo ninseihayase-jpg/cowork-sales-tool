@@ -3768,12 +3768,19 @@ document.addEventListener('DOMContentLoaded',function(){ document.querySelectorA
   if(board){ ['input','change','click','keydown'].forEach(function(evt){ board.addEventListener(evt,function(e){ var c=e.target.closest('.task-card.open'); if(c)_tcTouch(c); }); }); }
   // 一定時間(45秒)操作の無い開いたカードは自動でコンパクトに戻す
   setInterval(function(){ var now=Date.now(); document.querySelectorAll('.task-card.open').forEach(function(c){ var t=parseInt(c.getAttribute('data-touch')||'0'); if(t&&now-t>_TC_IDLE_MS)c.classList.remove('open'); }); },5000);
-  // Slack等からの直リンク(#tc-<id>)で該当タスクを開いてスクロール
-  if(location.hash&&location.hash.indexOf('#tc-')===0){ var fc=document.getElementById(location.hash.slice(1));
-    if(fc){ fc.classList.add('open'); _tcTouch(fc); fc.style.outline='2px solid #2563eb';
-      setTimeout(function(){fc.scrollIntoView({behavior:'smooth',block:'center'});},150);
-      setTimeout(function(){fc.style.outline='';},2500); } }
+  // Slack等からの直リンク(#tc-<id> / 旧#dc-<id>)で該当タスクを開いてスクロール＆強調
+  _deskFocusHash();
+  window.addEventListener('hashchange', _deskFocusHash);
 });
+function _deskFocusHash(){
+  var m=(location.hash||'').replace(/^#/,'').match(/^(?:tc|dc)-(\d+)$/);
+  if(!m) return;
+  var fc=document.getElementById('tc-'+m[1]); if(!fc) return;
+  fc.classList.add('open'); if(typeof _tcTouch==='function')_tcTouch(fc);
+  fc.style.outline='2px solid #2563eb';
+  setTimeout(function(){fc.scrollIntoView({behavior:'smooth',block:'center'});},150);
+  setTimeout(function(){fc.style.outline='';},2500);
+}
 </script>
 <div id="notesBackdrop"></div><div id="notesPop"></div>
 """

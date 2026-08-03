@@ -329,7 +329,7 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
             slack_permalink=permalink,
             created_by=owner_from_slack_user(user_id, token=token) or user_id,
             is_admin=1, requester=requester)
-        link = f"{SFA_TOOL_URL}/desk-tasks#dc-{tid}"
+        link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
         _req = f"（依頼者: {requester}）" if requester else ""
         _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
                     text=f"📋 事務タスク化しました: {prefill['title']}",
@@ -399,7 +399,7 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
     if not created:
         # 同一メッセージからの多重配信（別event_id）＝既に起票済み。返信もしない（3重返信の抑止）。
         return tid
-    link = f"{SFA_TOOL_URL}/desk-tasks#dc-{tid}"
+    link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
     _req = f"（依頼者: {requester}）" if requester else ""
     _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
                 text=f"事務タスク化しました: {prefill['title']}",
