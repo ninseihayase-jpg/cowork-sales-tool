@@ -225,7 +225,7 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
         # 受付だけが受信箱に留まる。
         if (assignee or "").strip() and (due_date or "").strip():
             sfa_db.set_task_status(con, tid, "未着手")
-    return tid
+    return (tid, True) if return_created else tid
 
 
 # ── スラッシュコマンド /task ───────────────────────────────────────────────
