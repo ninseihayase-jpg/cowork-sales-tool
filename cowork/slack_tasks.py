@@ -30,6 +30,8 @@ ADMIN_TASK_REACTIONS = {"clipboard"}
 SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "") or "https://sfa-crm.onrender.com"
 # 事務員の既定担当（先頭の事務員＝原則この人が受ける。sfa_db側でカンマ区切りを解釈済み）。
 DESK_ASSIGNEE = sfa_db.DESK_ASSIGNEE_DEFAULT
+# 事務タスク完了通知のフォールバック投稿先＝#オペレータ全体チャネル（起票元スレッドが無い場合）。
+SLACK_OPS_CHANNEL_ID = os.environ.get("SLACK_OPS_CHANNEL_ID", "")
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -60,6 +62,71 @@ def owner_from_slack_user(user_id: str, token: str | None = None) -> str | None:
         if (mail or "").lower() == email:
             return name
     return None
+
+
+def _slack_user_id_for(name: str, token: str | None = None) -> str | None:
+    """SFA担当名 → SlackユーザーID。owner_slack_map の email を users.lookupByEmail で解決。
+    マップ未登録・Slack未登録なら None（＝メンション対象外）。"""
+    name = (name or "").strip()
+    if not name:
+        return None
+    email = (_owner_slack_map().get(name) or "").strip()
+    if not email:
+        return None
+    r = _slack_get("users.lookupByEmail", {"email": email}, token=token)
+    return (r.get("user") or {}).get("id") if r.get("ok") else None
+
+
+def notify_task_done(con, task_id: int, token: str | None = None) -> bool:
+    """事務タスク(is_admin=1)が完了したとき、Ope Botから完了通知を投稿する。
+    - 依頼者・担当者のうち Slack登録が見つかる人を @メンション。
+    - 宛先: 起票元Slackスレッド(slack_channel+slack_ts)があればそのスレッド、
+      無ければ #オペレータ全体チャネル(SLACK_OPS_CHANNEL_ID)。
+    - 見つからない相手はメンションせず「直接ご連絡を」と注記。双方不明でもメンションなしで投稿。
+    token省略時は事務Bot(SLACK_DESK_TOKEN)として投稿。投稿したら True。"""
+    from .slack_bot import SLACK_DESK_TOKEN
+    tok = token or SLACK_DESK_TOKEN
+    if not tok:
+        print("[slack_tasks] notify_task_done: 事務Botトークン未設定でスキップ", flush=True)
+        return False
+    t = sfa_db.get_task(con, task_id)
+    if not t or not t.get("is_admin"):
+        return False
+    title = (t.get("title") or "(無題)").strip()
+    link = f"{SFA_TOOL_URL}/desk-tasks#tc-{task_id}"
+    ch = (t.get("slack_channel") or "").strip()
+    ts = (t.get("slack_ts") or "").strip()
+    if ch and ts:
+        channel, thread_ts = ch, ts           # 起票元スレッドに返信
+    else:
+        channel, thread_ts = SLACK_OPS_CHANNEL_ID, None   # フォールバック=オペレータ全体
+    if not channel:
+        print("[slack_tasks] notify_task_done: 投稿先が無い（SLACK_OPS_CHANNEL_ID未設定＆スレッド無し）", flush=True)
+        return False
+    # 依頼者・担当者のメンション解決（Slack登録者のみ）。見つからない相手は注記。
+    resolved, missing = [], []
+    for role, nm in (("依頼者", t.get("requester")), ("担当者", t.get("assignee"))):
+        nm = (nm or "").strip()
+        if not nm:
+            continue
+        uid = _slack_user_id_for(nm, token=tok)
+        (resolved if uid else missing).append((role, nm, uid))
+    mention = " ".join(f"<@{uid}>" for (_r, _n, uid) in resolved)
+    lines = []
+    if mention:
+        lines.append(mention)
+    lines.append(f"✅ 事務タスクが完了しました：*{title}*")
+    lines.append("ご確認のうえ、続きの対応や不明点は担当者までお願いします。")
+    lines.append(f"<{link}|▶ 対象カードを開く>")
+    for (role, nm, _u) in missing:
+        lines.append(f"※ {role}「{nm}」がSlackで見つからないため、必要に応じて直接ご連絡ください。")
+    payload = {"channel": channel, "text": "\n".join(lines)}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    r = _slack_post("chat.postMessage", token=tok, **payload)
+    if not r.get("ok"):
+        print(f"[slack_tasks] notify_task_done post failed: {r.get('error')}", flush=True)
+    return bool(r.get("ok"))
 
 
 # ── AI補助（自由文 → タスク項目を抽出） ───────────────────────────────────
@@ -535,8 +602,14 @@ def _handle_block_action(con, payload: dict) -> None:
         _respond_url(resp_url, "⚠ タスクが見つかりません（削除済み？）")
         return
     if name == "task_done":
+        _was_done = (tk.get("status") or "") == "完了"
         sfa_db.set_task_status(con, tid, "完了")
         _respond_url(resp_url, f"✓ 完了にしました: {tk.get('title')}")
+        if not _was_done:   # 完了への遷移時のみ通知（既に完了なら二重通知しない）
+            try:
+                notify_task_done(con, tid)
+            except Exception as _e:  # noqa: BLE001
+                print(f"[slack_tasks] notify_task_done(slack) error: {_e}", flush=True)
     elif name == "task_start":
         sfa_db.set_task_status(con, tid, "対応中")
         _respond_url(resp_url, f"▶ 対応中にしました: {tk.get('title')}")

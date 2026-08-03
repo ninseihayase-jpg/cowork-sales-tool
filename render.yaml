@@ -34,6 +34,12 @@ services:
         sync: false          # ブラウザ向けBasic認証ユーザー名。未設定だと全ページ503
       - key: SFA_BASIC_PASS
         sync: false          # ブラウザ向けBasic認証パスワード
+      - key: SLACK_DESK_BOT_TOKEN
+        sync: false          # 事務Bot(Ope Bot)のトークン。@事務Botメンション起票・完了通知の投稿に使用
+      - key: SLACK_DESK_SIGNING_SECRET
+        sync: false          # 事務Botの署名シークレット（/slack/desk-events 検証）
+      - key: SLACK_OPS_CHANNEL_ID
+        sync: false          # #オペレータ全体チャネルID。事務タスク完了通知で起票元スレッドが無い時の投稿先
     disk:
       name: sfa-db
       mountPath: /data

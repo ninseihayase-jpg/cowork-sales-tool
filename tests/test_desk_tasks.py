@@ -241,3 +241,38 @@ def test_admin_slack_dedup_concurrent(tmp_path):
     c.close()
     assert n == 1, f"重複起票が発生: {n}件"
     assert len(set(results)) == 1, f"戻りidが割れている: {results}"
+
+
+def test_notify_task_done(con, monkeypatch):
+    """完了通知: 起票元スレッドへ返信・Slack登録者のみメンション・未登録は注記・
+    双方未登録＆スレッド無しは #OPSへメンションなし投稿、を検証（Slack呼び出しはモック）。"""
+    from cowork import slack_tasks as st
+    posts = []
+    monkeypatch.setattr(st, "_slack_post", lambda method, token=None, **kw: (posts.append((method, kw)) or {"ok": True}))
+    monkeypatch.setattr(st, "_slack_user_id_for", lambda name, token=None: {"早瀬": "U_HAYASE"}.get((name or "").strip()))
+
+    # (1) 起票元スレッドあり／依頼者=登録・担当者=未登録
+    tid = sfa_db.upsert_task(con, title="月末締め作業", is_admin=1, requester="早瀬", assignee="あみ",
+                             slack_channel="C1", slack_ts="111.222", status="対応中")
+    assert st.notify_task_done(con, tid, token="xoxb-test") is True
+    method, kw = posts[-1]
+    assert method == "chat.postMessage"
+    assert kw["channel"] == "C1" and kw.get("thread_ts") == "111.222"
+    assert "<@U_HAYASE>" in kw["text"]                 # 依頼者=早瀬をメンション
+    assert "あみ" in kw["text"] and "見つからない" in kw["text"]   # 担当者=未登録の注記
+    assert f"tc-{tid}" in kw["text"]                   # 対象カードリンク
+
+    # (2) スレッド無し＆双方未登録 → OPSチャネルへメンションなし投稿
+    monkeypatch.setattr(st, "SLACK_OPS_CHANNEL_ID", "C_OPS")
+    tid2 = sfa_db.upsert_task(con, title="X", is_admin=1, requester="不明A", assignee="不明B", status="対応中")
+    posts.clear()
+    assert st.notify_task_done(con, tid2, token="xoxb-test") is True
+    _, kw2 = posts[-1]
+    assert kw2["channel"] == "C_OPS" and "thread_ts" not in kw2
+    assert "<@" not in kw2["text"]                     # 双方未登録＝メンションなし
+
+    # (3) 非事務タスク(is_admin=0)は通知しない
+    posts.clear()
+    tid3 = sfa_db.upsert_task(con, title="通常", is_admin=0, status="対応中")
+    assert st.notify_task_done(con, tid3, token="xoxb-test") is False
+    assert not posts

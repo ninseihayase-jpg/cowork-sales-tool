@@ -12188,9 +12188,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     elif _field == "priority" and _value and _value not in sfa_db.TASK_PRIORITIES:
                         self._send(json.dumps({"ok": False, "error": "不正な優先度"}).encode(), ctype="application/json")
                     elif _field == "status":
+                        _prev_st = (sfa_db.get_task(con, _tid) or {}).get("status") or ""
                         sfa_db.set_task_status(con, _tid, _value)
                         self._send(json.dumps({"ok": True, "status": _value}, ensure_ascii=False).encode(),
                                    ctype="application/json")
+                        # 事務タスクが「完了」へ遷移したらOpe Botから完了通知（依頼者/担当者メンション）。
+                        # Slack APIのレイテンシで応答を止めないよう別スレッドで実行。冪等（遷移時のみ）。
+                        if _value == "完了" and _prev_st != "完了":
+                            import threading as _th
+
+                            def _notify_done(_id=_tid):
+                                _c = sfa_db.connect(db_path)
+                                try:
+                                    from cowork import slack_tasks as _stk
+                                    _stk.notify_task_done(_c, _id)
+                                except Exception as _e:  # noqa: BLE001
+                                    print(f"[task_done_notify] error: {_e}", flush=True)
+                                finally:
+                                    _c.close()
+                            _th.Thread(target=_notify_done, daemon=True).start()
                     elif _field == "pinned":
                         con.execute("UPDATE tasks SET pinned=?, updated_at=datetime('now') WHERE id=?",
                                     (1 if _value in ("1", "true", "on") else 0, _tid))
