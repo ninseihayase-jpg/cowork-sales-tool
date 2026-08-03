@@ -169,6 +169,11 @@ TASK_STATUSES = ["受信箱", "未着手", "対応中", "保留", "完了"]  # �
 TASK_OPEN_STATUSES = ["受信箱", "未着手", "対応中", "保留"]        # 完了以外
 TASK_PRIORITIES = ["高", "中", "低"]
 
+# 繰り返し発生（定期複製）。事務タスク等のテンプレカードに付与し、複製タイミングが来たら
+# 期間分の新規カードを複製生成する（→ duplicate_due_recurring_tasks）。
+TASK_RECUR_FREQS = ["monthly", "weekly"]         # 頻度: 毎月 / 毎週
+RECUR_WEEKDAY_LABELS = ["月", "火", "水", "木", "金", "土", "日"]  # 0=月 .. 6=日（date.weekday()準拠）
+
 # 事務員向けタスク（is_admin=1）。各メンバーから事務員に降ってくる依頼を分離管理する専用ビュー
 # (/desk-tasks) 用。カテゴリは開発系タスク(TASK_CATEGORIES)とは別体系。
 ADMIN_TASK_CATEGORIES = ["書類作成", "経費・請求", "予約・手配", "データ入力", "連絡・調整", "庶務", "その他"]
@@ -615,7 +620,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at    TEXT DEFAULT (datetime('now')),
     updated_at    TEXT DEFAULT (datetime('now')),
     done_at       TEXT,
-    remind_last_at TEXT
+    remind_last_at TEXT,
+    is_recurring  INTEGER DEFAULT 0,       -- 繰り返し発生テンプレ（1=このカードを定期複製する）
+    recur_freq    TEXT,                    -- 'monthly'（毎月）/ 'weekly'（毎週）
+    recur_dup_day INTEGER,                 -- 複製タイミング。毎月=月の日(1-31) / 毎週=曜日(0=月..6=日)
+    recur_last_period TEXT                 -- 最後に複製した期間キー 'YYYY-MM' / 'YYYY-Www'（冪等ガード）
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee);
@@ -1037,6 +1046,16 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN requester TEXT")
         if _task_cols and "slack_permalink" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN slack_permalink TEXT")
+        # 繰り返し発生（定期複製）用の後方互換追加。テンプレカードにフラグ＋頻度＋複製日＋
+        # 最終複製期間キーを持たせる（duplicate_due_recurring_tasks が使用）。破壊的変更はしない。
+        if _task_cols and "is_recurring" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN is_recurring INTEGER DEFAULT 0")
+        if _task_cols and "recur_freq" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN recur_freq TEXT")
+        if _task_cols and "recur_dup_day" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN recur_dup_day INTEGER")
+        if _task_cols and "recur_last_period" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN recur_last_period TEXT")
         # project列が存在する状態でインデックスを作る（SCHEMAではなくここで＝既存DBでも安全）
         if _task_cols:
             con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")
@@ -2691,6 +2710,132 @@ def restore_task(con, id: int) -> None:
 def hard_delete_task(con, id: int) -> None:
     con.execute("DELETE FROM tasks WHERE id=?", (int(id),))
     con.commit()
+
+
+# ---- 繰り返し発生（定期複製）（#事務タスク） ----
+# テンプレ側カードに is_recurring=1 と 頻度/複製日 を持たせておくと、日次判定
+# （duplicate_due_recurring_tasks）で複製タイミングが来た期間分のカードを新規複製する。
+# 複製先の列は既存の新規起票ルールに従い、複製カード自身は通常カード（繰り返しOFF）にする。
+
+def set_task_recur(con, task_id: int, *, is_recurring: bool,
+                   recur_freq: str | None = None, recur_dup_day=None,
+                   commit: bool = True) -> None:
+    """タスクの繰り返し設定を保存（テンプレ側カードにのみ付与）。
+    OFFにしたら頻度・複製日をクリアする。recur_last_period はここでは触らない
+    （複製の冪等キーは duplicate_due_recurring_tasks が管理する）。"""
+    if not is_recurring:
+        con.execute("UPDATE tasks SET is_recurring=0, recur_freq=NULL, recur_dup_day=NULL, "
+                    "updated_at=datetime('now') WHERE id=?", (int(task_id),))
+    else:
+        freq = recur_freq if recur_freq in TASK_RECUR_FREQS else "monthly"
+        try:
+            dd = int(recur_dup_day)
+        except (TypeError, ValueError):
+            dd = None
+        con.execute("UPDATE tasks SET is_recurring=1, recur_freq=?, recur_dup_day=?, "
+                    "updated_at=datetime('now') WHERE id=?", (freq, dd, int(task_id)))
+    if commit:
+        con.commit()
+
+
+def _recur_period_key(freq: str, d: date) -> str:
+    """複製の冪等キー。毎週='YYYY-Www'（ISO週）／毎月='YYYY-MM'。"""
+    if freq == "weekly":
+        iso = d.isocalendar()
+        return f"{iso[0]}-W{int(iso[1]):02d}"
+    return f"{d.year}-{d.month:02d}"
+
+
+def _recur_period_suffix(freq: str, d: date) -> str:
+    """複製カードの名称サフィックス。毎月='N月分'／毎週='M/D週分'（その週の月曜起点）。"""
+    if freq == "weekly":
+        monday = d - timedelta(days=d.weekday())
+        return f"{monday.month}/{monday.day}週分"
+    return f"{d.month}月分"
+
+
+def _days_in_month(year: int, month: int) -> int:
+    import calendar
+    return calendar.monthrange(year, month)[1]
+
+
+def _recur_is_due(freq: str, dup_day, today: date) -> bool:
+    """複製タイミングが来ているか。毎月=today.day>=複製日（月末超えはその月の末日にクランプ）、
+    毎週=today.weekday()>=複製曜日。実行漏れ（cron未実行日）があっても、当該期間内で
+    タイミング日以降なら発火する（期間キーの冪等ガードで二重複製は防ぐ）。"""
+    if freq == "weekly":
+        try:
+            wd = int(dup_day)
+        except (TypeError, ValueError):
+            wd = 0
+        wd = max(0, min(6, wd))
+        return today.weekday() >= wd
+    # monthly
+    try:
+        dd = int(dup_day)
+    except (TypeError, ValueError):
+        dd = 1
+    dd = max(1, min(31, dd))
+    eff = min(dd, _days_in_month(today.year, today.month))
+    return today.day >= eff
+
+
+def duplicate_due_recurring_tasks(con, today: date | None = None,
+                                  commit: bool = True) -> list[int]:
+    """繰り返し発生テンプレ（is_recurring=1）のうち、複製タイミングが来ていて
+    かつ当該期間をまだ複製していないものを、新規カードとして複製する。冪等（同日再実行で
+    増えない）。複製した/スキップした期間キーをテンプレの recur_last_period に記録する。
+    新規複製カードのidリストを返す。"""
+    if today is None:
+        from datetime import datetime, timezone
+        today = datetime.now(timezone(timedelta(hours=9))).date()  # JST基準
+    templates = [dict(r) for r in con.execute(
+        "SELECT * FROM tasks WHERE COALESCE(is_recurring,0)=1 "
+        "AND (deleted_at IS NULL OR deleted_at='')")]
+    new_ids: list[int] = []
+    for t in templates:
+        freq = t.get("recur_freq") or "monthly"
+        if freq not in TASK_RECUR_FREQS:
+            continue
+        if not _recur_is_due(freq, t.get("recur_dup_day"), today):
+            continue
+        pkey = _recur_period_key(freq, today)
+        if (t.get("recur_last_period") or "") == pkey:
+            continue  # 当該期間は複製済み（冪等）
+        suffix = _recur_period_suffix(freq, today)
+        base_title = (t.get("title") or "").strip()
+        new_title = (f"{base_title} {suffix}").strip()
+        # 二重複製の保険: 同名の通常カード（テンプレ以外）が既にあればスキップ
+        dup = con.execute(
+            "SELECT 1 FROM tasks WHERE title=? AND COALESCE(is_recurring,0)=0 "
+            "AND (deleted_at IS NULL OR deleted_at='') LIMIT 1", (new_title,)).fetchone()
+        if not dup:
+            is_admin = 1 if t.get("is_admin") else 0
+            assignee = (t.get("assignee") or "").strip() or None
+            # 期限: テンプレに相対期限の仕組みは無いため、事務タスクは新規起票と同じ既定
+            # （3営業日後）を入れて受付ルールに乗せる。通常タスクは空のまま。
+            due = add_business_days(today, 3).isoformat() if is_admin else None
+            nid = upsert_task(
+                con, title=new_title,
+                detail=t.get("detail") or None,
+                requester=t.get("requester") or None,
+                assignee=assignee,
+                due_date=due,
+                priority=t.get("priority") or "中",
+                category=t.get("category") or None,
+                status="受信箱", is_admin=is_admin, source="recur",
+                commit=False,
+            )
+            # 受付ルール: 担当＋期限が揃えば受信箱→未着手へ自動整理（手動/Slack起票と同じ）
+            if assignee and due:
+                set_task_status(con, nid, "未着手", commit=False)
+            new_ids.append(nid)
+        # 期間キーを記録（複製有無に関わらず＝当該期間はこれ以上動かさない）
+        con.execute("UPDATE tasks SET recur_last_period=?, updated_at=datetime('now') WHERE id=?",
+                    (pkey, t["id"]))
+    if commit:
+        con.commit()
+    return new_ids
 
 
 def add_task_note(con, task_id: int, body: str, author: str | None = None,
