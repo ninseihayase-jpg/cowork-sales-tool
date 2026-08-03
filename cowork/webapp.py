@@ -4212,7 +4212,7 @@ _DESK_CSS = """<style>
 .tc-rec-pin{border:none;background:transparent;color:#cbd5e1;cursor:pointer;font-size:12px;padding:0;line-height:1}
 .tc-rec-pin.on{color:#2563eb}
 .tc-rec-wrap{position:relative;display:inline-flex}
-.tc-recur-panel{position:absolute;top:100%;right:0;width:236px;z-index:40;margin-top:4px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.16);text-align:left;white-space:normal;cursor:default}
+.tc-recur-panel{position:fixed;width:236px;z-index:1000;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.16);text-align:left;white-space:normal;cursor:default}
 .tc-recur-row{display:flex;align-items:center;gap:6px;margin:5px 0;font-size:12px;flex-wrap:wrap}
 .tc-recur-row label{min-width:64px;color:#64748b}
 .tc-recur-row input[type=number],.tc-recur-row select{font-size:12px;padding:2px 4px}
@@ -4228,7 +4228,14 @@ function tcRecurPanel(id,ev){ if(ev)ev.stopPropagation();
   var p=document.getElementById('tcrec-'+id); if(!p)return;
   var willOpen=(p.style.display==='none'||!p.style.display);
   document.querySelectorAll('.tc-recur-panel').forEach(function(x){ if(x!==p)x.style.display='none'; });
-  p.style.display=willOpen?'block':'none'; }
+  if(!willOpen){ p.style.display='none'; return; }
+  // アイコン基準で position:fixed 配置（列のoverflowに切られないように）
+  var btn=(ev&&(ev.currentTarget||ev.target))||document.querySelector('#tc-'+id+' .tc-rec-pin');
+  p.style.display='block';
+  var r=btn.getBoundingClientRect(); var pw=p.offsetWidth||236, ph=p.offsetHeight||170;
+  var left=Math.max(8, Math.min(r.right-pw, window.innerWidth-pw-8));
+  var top=r.bottom+4; if(top+ph>window.innerHeight) top=Math.max(8, r.top-ph-4);
+  p.style.left=left+'px'; p.style.top=top+'px'; }
 function tcRecurFreqUI(id){ var box=document.getElementById('tcrec-'+id); if(!box)return;
   var f=box.querySelector('.tc-rec-freq').value; box.setAttribute('data-freq',f);
   var m=box.querySelector('.tc-rec-monthly'); var w=box.querySelector('.tc-rec-weekly');
