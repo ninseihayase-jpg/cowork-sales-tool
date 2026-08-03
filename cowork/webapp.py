@@ -4209,7 +4209,46 @@ _DESK_CSS = """<style>
 .desk-alert-over b{color:#dc2626}.desk-alert-today b{color:#f59e0b}.desk-alert-tmr b{color:#eab308}.desk-alert-hold b{color:#64748b}.desk-alert-pin b{color:#d97706}
 .desk-agg .box.on{background:#fffbeb;border-color:#f59e0b;box-shadow:0 0 0 1px #f59e0b inset}
 .m-req{font-size:9px;background:#eef2ff;color:#3730a3;border-radius:4px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tc-rec-badge{font-size:12px;margin:0 2px}
+.tc-recur{margin-top:6px;border-top:1px dashed #e2e8f0;padding-top:6px;position:relative}
+.tc-recur-cb{font-size:12px;color:#475569;cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+.tc-recur-panel{position:absolute;left:0;right:0;z-index:30;margin-top:4px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:10px;box-shadow:0 8px 24px rgba(0,0,0,.16)}
+.tc-recur-row{display:flex;align-items:center;gap:6px;margin:5px 0;font-size:12px;flex-wrap:wrap}
+.tc-recur-row label{min-width:64px;color:#64748b}
+.tc-recur-row input[type=number],.tc-recur-row select{font-size:12px;padding:2px 4px}
+.tc-recur-help{font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.4}
+.tc-rec-note{font-size:11px;color:#16a34a}
 </style>"""
+
+
+# 繰り返し発生（定期複製）の設定パネル用JS（事務タスク看板専用）。/task/{id}/recur に保存。
+_DESK_RECUR_JS = """<script>
+function tcRecurToggle(id,on){ var p=document.querySelector('#tcrec-'+id+' .tc-recur-panel'); if(p)p.style.display=on?'block':'none';
+  if(!on){ _tcRecurPost(id,{is_recurring:0}); } }
+function tcRecurFreqUI(id){ var box=document.getElementById('tcrec-'+id); if(!box)return;
+  var f=box.querySelector('.tc-rec-freq').value; box.setAttribute('data-freq',f);
+  var m=box.querySelector('.tc-rec-monthly'); var w=box.querySelector('.tc-rec-weekly');
+  if(m)m.style.display=(f==='weekly')?'none':'flex'; if(w)w.style.display=(f==='weekly')?'flex':'none'; }
+function tcRecurSave(id){ var box=document.getElementById('tcrec-'+id); if(!box)return;
+  var f=box.querySelector('.tc-rec-freq').value; var day;
+  if(f==='weekly'){ var wd=box.querySelector('.tc-rec-wday'); day=wd?wd.value:''; }
+  else { var md=box.querySelector('.tc-rec-mday'); day=md?md.value:''; }
+  var note=box.querySelector('.tc-rec-note');
+  if(f==='monthly'&&(day===''||isNaN(parseInt(day,10)))){ if(note)note.textContent='複製日（1〜31）を入力してください'; if(note)note.style.color='#dc2626'; return; }
+  _tcRecurPost(id,{is_recurring:1,recur_freq:f,recur_dup_day:day},note); }
+function _tcRecurPost(id,params,noteEl){ var body='is_recurring='+(params.is_recurring?1:0);
+  if(params.recur_freq)body+='&recur_freq='+encodeURIComponent(params.recur_freq);
+  if(params.recur_dup_day!=null&&params.recur_dup_day!=='')body+='&recur_dup_day='+encodeURIComponent(params.recur_dup_day);
+  fetch('/task/'+id+'/recur',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+   .then(function(r){return r.json();}).then(function(d){
+     if(!d.ok){ if(noteEl){noteEl.textContent='保存エラー: '+(d.error||'');noteEl.style.color='#dc2626';} else alert('繰り返し設定エラー: '+(d.error||'')); return; }
+     var card=document.getElementById('tc-'+id);
+     if(card){ var h=card.querySelector('.tc-head'); var b=card.querySelector('.tc-rec-badge');
+       if(d.is_recurring){ if(!b&&h){ b=document.createElement('span'); b.className='tc-rec-badge'; b.title='繰り返し発生'; b.textContent='🔁'; var car=h.querySelector('.tc-car'); h.insertBefore(b,car); } }
+       else if(b){ b.remove(); } }
+     if(noteEl){ noteEl.textContent=d.is_recurring?'✓ 保存しました':''; noteEl.style.color='#16a34a'; }
+     if(typeof _tcFlash==='function')_tcFlash(id); }); }
+</script>"""
 
 
 def desk_tasks_deleted_page(con) -> str:
@@ -4387,6 +4426,34 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         m_asg = f'<span class="m-asg">🧑‍💼{_esc(asg)}</span>' if asg else ""
         m_due = (f'<span class="m-due" style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
                  if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
+        # 繰り返し発生（定期複製）。チェックでフローティングパネルを表示し、頻度＋複製タイミングを保存。
+        is_rec = bool(t.get("is_recurring"))
+        rec_freq = (t.get("recur_freq") or "monthly")
+        rec_day = t.get("recur_dup_day")
+        rec_badge = ('<span class="tc-rec-badge" title="繰り返し発生">🔁</span>' if is_rec else '')
+        mday_val = (str(rec_day) if (rec_freq == "monthly" and rec_day is not None) else "")
+        _wd_opts = "".join(
+            f'<option value="{i}"{" selected" if (rec_freq == "weekly" and rec_day is not None and int(rec_day) == i) else ""}>{lbl}</option>'
+            for i, lbl in enumerate(sfa_db.RECUR_WEEKDAY_LABELS))
+        recur_html = (
+            f'<div class="tc-recur" id="tcrec-{tid}" data-freq="{_esc(rec_freq)}">'
+            f'<label class="tc-recur-cb"><input type="checkbox"{" checked" if is_rec else ""} '
+            f'onchange="tcRecurToggle({tid},this.checked)"> 🔁 繰り返し発生</label>'
+            f'<div class="tc-recur-panel" style="display:{"block" if is_rec else "none"}">'
+            f'<div class="tc-recur-row"><label>頻度</label>'
+            f'<select class="tc-rec-freq" onchange="tcRecurFreqUI({tid})">'
+            f'<option value="monthly"{" selected" if rec_freq != "weekly" else ""}>毎月</option>'
+            f'<option value="weekly"{" selected" if rec_freq == "weekly" else ""}>毎週</option></select></div>'
+            f'<div class="tc-recur-row tc-rec-monthly" style="display:{"none" if rec_freq == "weekly" else "flex"}">'
+            f'<label>複製タイミング</label><span>毎月 '
+            f'<input type="number" class="tc-rec-mday" min="1" max="31" value="{_esc(mday_val)}" '
+            f'placeholder="20" style="width:56px"> 日</span></div>'
+            f'<div class="tc-recur-row tc-rec-weekly" style="display:{"flex" if rec_freq == "weekly" else "none"}">'
+            f'<label>複製タイミング</label><span>毎週 <select class="tc-rec-wday">{_wd_opts}</select> 曜</span></div>'
+            f'<div class="tc-recur-row"><button type="button" class="btn sec" '
+            f'onclick="tcRecurSave({tid})">保存</button><span class="tc-rec-note"></span></div>'
+            f'<div class="tc-recur-help">複製タイミングが来たら、この内容を「◯月分／◯週分」を付けた新規カードに複製します。</div>'
+            f'</div></div>')
         return (
             f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
             f'data-status="{_esc(status)}" data-pinned="{1 if pinned else 0}" data-search="{search}" '
@@ -4394,7 +4461,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'<div class="tc-head">'
             f'<span class="tc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
             f'<span class="tc-ttl">{_esc(t.get("title"))}</span>'
-            f'{pin_btn}<span class="tc-car">▸</span></div>'
+            f'{rec_badge}{pin_btn}<span class="tc-car">▸</span></div>'
             f'<div class="tc-mini">{m_req}{m_asg}{m_due}</div>'
             f'<div class="tc-actions"></div>'
             f'<div class="tc-body">'
@@ -4409,6 +4476,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'{asg_sel}{cat_sel}{slack_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}</div>'
             f'<div class="tc-notes" onclick="openSummary({tid})" title="進捗メモのAIサマリを見る">📝 {log_snip}</div>'
+            f'{recur_html}'
             f'<div class="tc-foot">'
             f'<button type="button" class="tc-disc" onclick="openNotes({tid},&#39;discussion&#39;,&#39;進捗メモ&#39;)" title="進捗メモ＋AIサマリ">💬 進捗メモ</button>'
             f'<a class="tc-edit" href="/tasks/{tid}/edit">編集</a>'
@@ -4518,7 +4586,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
       {filter_row}
       {_desk_note}
       <div id="taskBoard">{columns}</div>
-    </div>{quick_js}{_TASKS_JS}{_DESK_CSS}"""
+    </div>{quick_js}{_TASKS_JS}{_DESK_CSS}{_DESK_RECUR_JS}"""
 
 
 def task_projects_page(con) -> str:
@@ -12111,6 +12179,36 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(json.dumps({"ok": True, "status": _st}, ensure_ascii=False).encode(),
                                    ctype="application/json")
 
+                elif (path.startswith("/task/") and path.endswith("/recur")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # 繰り返し発生（定期複製）の設定を保存。テンプレ側カードに付与する。
+                    _tid = int(path.split("/")[2])
+                    _on = f.get("is_recurring", "") in ("1", "true", "on")
+                    _freq = f.get("recur_freq") or None
+                    _day_raw = (f.get("recur_dup_day") or "").strip()
+                    if _on and _freq not in sfa_db.TASK_RECUR_FREQS:
+                        self._send(json.dumps({"ok": False, "error": "不正な頻度"}).encode(),
+                                   ctype="application/json")
+                    else:
+                        _day = None
+                        if _day_raw:
+                            try:
+                                _day = int(_day_raw)
+                            except ValueError:
+                                _day = None
+                        # 範囲チェック（毎月=1..31 / 毎週=0..6）。範囲外は保存しない。
+                        if _on and _freq == "weekly" and (_day is None or not (0 <= _day <= 6)):
+                            self._send(json.dumps({"ok": False, "error": "曜日が不正です"}).encode(),
+                                       ctype="application/json")
+                        elif _on and _freq == "monthly" and (_day is None or not (1 <= _day <= 31)):
+                            self._send(json.dumps({"ok": False, "error": "複製日は1〜31で指定してください"},
+                                                  ensure_ascii=False).encode(), ctype="application/json")
+                        else:
+                            sfa_db.set_task_recur(con, _tid, is_recurring=_on,
+                                                  recur_freq=_freq, recur_dup_day=_day)
+                            self._send(json.dumps({"ok": True, "is_recurring": 1 if _on else 0}).encode(),
+                                       ctype="application/json")
+
                 elif (path.startswith("/task/") and path.endswith("/ai-category")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     _tid = int(path.split("/")[2])
@@ -14308,6 +14406,30 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             self._send_cors_json(json.dumps({"ok": True}, ensure_ascii=False).encode())
                         else:
                             self._send_cors_json(b'{"error":"deal_id and date required"}', status=400)
+
+                elif path == "/api/tasks/duplicate_recurring":
+                    # 繰り返し発生テンプレの日次複製を実行（本番はディスクがwebサービス専属のため、
+                    # cronはこのAPI経由で複製する）。冪等（同一期間は二重複製しない）。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        _today_ov = None
+                        try:
+                            _data = json.loads(raw) if raw else {}
+                        except Exception:
+                            _data = f
+                        _tstr = (qs.get("today", [None])[0] or (_data.get("today") if isinstance(_data, dict) else "") or "").strip()
+                        if _tstr:
+                            try:
+                                _today_ov = date.fromisoformat(_tstr)
+                            except ValueError:
+                                _today_ov = None
+                        _new_ids = sfa_db.duplicate_due_recurring_tasks(con, today=_today_ov)
+                        self._send_cors_json(json.dumps(
+                            {"ok": True, "created": len(_new_ids), "ids": _new_ids},
+                            ensure_ascii=False).encode())
 
                 # ── Slack スラッシュコマンド /task（起票モーダルを開く）──
                 elif path == "/slack/commands":

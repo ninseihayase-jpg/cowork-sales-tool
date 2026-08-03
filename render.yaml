@@ -81,6 +81,22 @@ services:
       - key: SFA_API_TOKEN
         sync: false
 
+  # ── 繰り返し事務タスクの複製（日次 07:00 JST）────────────────────────
+  # 「繰り返し発生」テンプレの複製タイミングを判定し、期間分のカードを複製する（冪等）。
+  # ディスク（/data）はwebサービス専属のため、cronは /api/tasks/duplicate_recurring 経由で実行。
+  - type: cron
+    name: sfa-daily-recur-dup
+    env: python
+    region: singapore
+    schedule: "0 22 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scripts/duplicate_recurring_tasks.py
+    envVars:
+      - key: SFA_TOOL_URL
+        value: https://sfa-crm.onrender.com
+      - key: SFA_API_TOKEN
+        sync: false
+
   # ── 商談スプシエクスポート（日次 09:00 JST） ────────────────────────
   - type: cron
     name: sfa-daily-export
