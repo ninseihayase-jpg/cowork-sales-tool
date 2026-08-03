@@ -185,7 +185,7 @@ def _view_val(state: dict, block_id: str):
 def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_date=None,
                             project=None, category=None, slack_channel=None, slack_ts=None,
                             slack_permalink=None, created_by=None, ai_category=True,
-                            is_admin=0, requester=None) -> int:
+                            is_admin=0, requester=None, return_created=False):
     """モーダル/AI抽出の値からタスク作成。種類が空かつai_category=Trueならその場でAI判定
     （モーダル送信＝3秒制約のある文脈では ai_category=False にして背景で後追い判定）。
     is_admin=1 で事務タスク（requester=依頼者）。事務タスクは分類体系が異なるためAI後追い判定はしない。
@@ -210,7 +210,8 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
                 "SELECT id FROM tasks WHERE slack_channel=? AND slack_ts=? AND COALESCE(is_admin,0)=? LIMIT 1",
                 (slack_channel, slack_ts, 1 if is_admin else 0)).fetchone()
             if _dup:
-                return _dup[0]  # 同一メッセージからの重複起票を防止（既存タスクを返す）
+                # 同一メッセージからの重複起票を防止（既存タスクを返す）。created=Falseで多重返信も抑止。
+                return (_dup[0], False) if return_created else _dup[0]
         tid = sfa_db.upsert_task(
             con, title=title or "(無題)", next_action=next_action or None,
             assignee=assignee or None, due_date=due_date or None,
@@ -389,11 +390,15 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
     prefill = ai_extract_task(text, categories=sfa_db.ADMIN_TASK_CATEGORIES)
     requester = owner_from_slack_user(user_id, token=token)  # 依頼＝メンションした本人
     permalink = _message_permalink(channel, thread_ts, token=token)
-    tid = create_task_from_fields(
+    tid, created = create_task_from_fields(
         con, title=prefill["title"], next_action=prefill["next_action"] or None,
         assignee=(DESK_ASSIGNEE or None), due_date=prefill["due_date"] or None,
         category=prefill["category"] or None, slack_channel=channel, slack_ts=thread_ts,
-        slack_permalink=permalink, created_by=requester or user_id, is_admin=1, requester=requester)
+        slack_permalink=permalink, created_by=requester or user_id, is_admin=1, requester=requester,
+        return_created=True)
+    if not created:
+        # 同一メッセージからの多重配信（別event_id）＝既に起票済み。返信もしない（3重返信の抑止）。
+        return tid
     link = f"{SFA_TOOL_URL}/desk-tasks#dc-{tid}"
     _req = f"（依頼者: {requester}）" if requester else ""
     _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
