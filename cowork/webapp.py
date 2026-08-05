@@ -4261,6 +4261,8 @@ _DESK_CSS = """<style>
 .desk-agg .box.desk-alert-over.active b{color:#fff}
 .desk-agg .box.desk-alert-today.active{background:#f59e0b;border-color:#b45309;color:#fff;font-weight:600}
 .desk-agg .box.desk-alert-today.active b{color:#fff}
+.desk-agg .box.desk-alert-tmr.active{background:#facc15;border-color:#a16207;color:#1e293b;font-weight:600}
+.desk-agg .box.desk-alert-tmr.active b{color:#1e293b}
 .m-req{font-size:9px;background:#eef2ff;color:#3730a3;border-radius:4px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tc-rec-pin{border:none;background:transparent;color:#cbd5e1;cursor:pointer;font-size:12px;padding:0;line-height:1}
 .tc-rec-pin.on{color:#2563eb}
@@ -4572,7 +4574,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
       <div class="desk-agg">
         <a class="box desk-alert-over{' active' if overdue_n else ''}" href="/desk-tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b>{overdue_n}</b></a>
         <a class="box desk-alert-today{' active' if today_n else ''}" href="/desk-tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
-        <a class="box desk-alert-tmr" href="/desk-tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
+        <a class="box desk-alert-tmr{' active' if tmr_n else ''}" href="/desk-tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
         <a class="box desk-alert-hold" href="/desk-tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b>{hold_n}</b></a>
         <a class="box desk-alert-pin{' on' if pinned else ''}" href="/desk-tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b>{pinned_n}</b></a>
       </div>
