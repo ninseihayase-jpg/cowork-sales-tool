@@ -4134,8 +4134,10 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         m_asg = f'<span class="m-asg">👤{_esc(asg)}</span>' if asg else ""
         m_due = (f'<span class="m-due" style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
                  if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
+        _urg_border = f'border-left:4px solid {ucolor};' if status != "完了" else ""
         return (
             f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
+            f'style="{_urg_border}" '
             f'data-status="{_esc(status)}" data-pinned="{1 if pinned else 0}" data-search="{search}" '
             f'onclick="tcCardClick(event,this)">'
             f'<div class="tc-head">'
@@ -4529,8 +4531,10 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'<span class="tc-rec-note"></span></div>'
             f'<div class="tc-recur-help">複製タイミングが来たら、この内容を「◯月分／◯週分」付きの新規カードに複製します。</div>'
             f'</div></span>')
+        _urg_border = f'border-left:4px solid {ucolor};' if status != "完了" else ""
         return (
             f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
+            f'style="{_urg_border}" '
             f'data-status="{_esc(status)}" data-pinned="{1 if pinned else 0}" data-search="{search}" '
             f'onclick="tcCardClick(event,this)">'
             f'<div class="tc-head">'
