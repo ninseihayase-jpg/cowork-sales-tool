@@ -1464,6 +1464,47 @@ def build_deliveries_xlsx(con) -> bytes:
     return buf.getvalue()
 
 
+def build_deals_full_xlsx(con) -> bytes:
+    """商談・アカウント・活動履歴を全カラムJOINしたxlsx（1商談1活動=1行、活動がない商談も1行残す）。
+    カラムはPRAGMA table_infoで動的取得するため、スキーマ変更が入っても手直し不要。"""
+    import openpyxl
+    from openpyxl.styles import Font
+    from io import BytesIO
+
+    deal_cols = [r[1] for r in con.execute("PRAGMA table_info(deals)")]
+    account_cols = [r[1] for r in con.execute("PRAGMA table_info(accounts)")]
+    activity_cols = [r[1] for r in con.execute("PRAGMA table_info(activities)")]
+
+    select_parts = (
+        [f"d.{c} AS 商談_{c}" for c in deal_cols]
+        + [f"a.{c} AS アカウント_{c}" for c in account_cols]
+        + [f"act.{c} AS 活動履歴_{c}" for c in activity_cols]
+    )
+    query = (
+        "SELECT " + ", ".join(select_parts) + " "
+        "FROM deals d "
+        "LEFT JOIN accounts a ON a.id = d.account_id "
+        "LEFT JOIN activities act ON act.deal_id = d.id "
+        "ORDER BY d.id, act.occurred_on, act.id"
+    )
+    rows = con.execute(query).fetchall()
+    headers = [f"商談.{c}" for c in deal_cols] + [f"アカウント.{c}" for c in account_cols] + [f"活動履歴.{c}" for c in activity_cols]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "商談_活動履歴_全件"
+    for c, h in enumerate(headers, 1):
+        ws.cell(row=1, column=c, value=h).font = Font(bold=True)
+    for r, row in enumerate(rows, 2):
+        for c, v in enumerate(row, 1):
+            ws.cell(row=r, column=c, value=v)
+    ws.freeze_panes = "A2"
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def deliveries_page(con) -> str:
     """Delivery案件一覧（検索/フィルタ・インライン編集・一括削除・平均FTE）。#75。"""
     _statuses = sfa_db.DELIVERY_STATUSES
@@ -5918,6 +5959,7 @@ def deals_page(con, *, tab: str = "active", owner: str | None = None, status_fil
       <a class="{'btn' if is_overdue else 'btn sec'}" href="/deals?tab=overdue">MS超過の商談</a>
       <a class="{'btn' if is_by_date else 'btn sec'}" href="/deals?tab=byDate">特定日の商談</a>
       <a class="{'btn' if not (is_by_date or is_overdue) else 'btn sec'}" href="/deals?tab=active">進行中の商談</a>
+      <a class="btn sec" href="/deals/export_full.xlsx" style="font-size:12px;margin-left:auto">📥 xlsx出力（商談+活動履歴・全件全カラム）</a>
     </div>"""
     if is_overdue:
         body = overdue_deals_page(con, owner=owner, ms_type=ms_type, exclude_today=exclude_today)
@@ -11630,6 +11672,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     try:
                         _xls = build_deliveries_xlsx(con)
                         _name = f"delivery_export_{_today_jst().isoformat()}.xlsx"
+                        self.send_response(200)
+                        self.send_header("Content-Type",
+                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                        self.send_header("Content-Disposition", _content_disposition(_name))
+                        self.send_header("Content-Length", str(len(_xls)))
+                        self.end_headers()
+                        self.wfile.write(_xls)
+                    except Exception as _e:  # noqa: BLE001
+                        import traceback as _tb; _tb.print_exc()
+                        self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
+                elif path == "/deals/export_full.xlsx":
+                    try:
+                        _xls = build_deals_full_xlsx(con)
+                        _name = f"deals_full_export_{_today_jst().isoformat()}.xlsx"
                         self.send_response(200)
                         self.send_header("Content-Type",
                                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
