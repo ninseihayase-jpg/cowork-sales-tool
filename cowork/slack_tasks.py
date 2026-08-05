@@ -177,6 +177,9 @@ def ai_extract_task(text: str, today: str | None = None, categories: list | None
         out["category"] = ""  # 不一致は空に
     if not out["title"]:
         out["title"] = text[:80]
+    # 請求関連はAI判定の揺れによらず確実に「経費・請求」へ強制する（重要業務の分類漏れ対策）
+    if "経費・請求" in categories and sfa_db.is_billing_task(out["title"], text):
+        out["category"] = "経費・請求"
     return out
 
 
@@ -283,6 +286,9 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
             category = None
     if is_admin and not (due_date or "").strip():
         due_date = _admin_default_due()   # 事務タスクの既定期限＝3営業日後
+    # 請求関連は経路（AI抽出/モーダル手選択）に関わらず確実に「経費・請求」へ強制する（分類漏れ対策）
+    if is_admin and sfa_db.is_billing_task(title or "", next_action or ""):
+        category = "経費・請求"
     # 重複チェック→INSERTを直列化。Slackが1依頼を複数イベント(別event_id)で
     # near-simultaneous に配信しても、ここで1件に収れんさせる（実事故: 1依頼が3枚起票）。
     with _CREATE_LOCK:

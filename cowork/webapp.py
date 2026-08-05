@@ -3611,6 +3611,7 @@ _TASKS_JS = """
 .task-card{background:#fff;border:1px solid #e6e9f0;border-radius:8px;padding:5px 8px;margin-bottom:6px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
 .task-card.saved{outline:2px solid #10b981;transition:outline .15s}
 .task-card.pinned{border-color:#f59e0b}
+.task-card[data-status="完了"]{background:#f1f5f9;border-color:#e2e8f0}
 .tc-head{display:flex;align-items:center;gap:6px;cursor:pointer}
 .tc-dot{width:9px;height:9px;border-radius:50%;flex:none}
 .tc-ttl{flex:1;font-weight:600;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -4256,6 +4257,10 @@ _DESK_CSS = """<style>
 .desk-agg .box b{font-size:16px}
 .desk-alert-over b{color:#dc2626}.desk-alert-today b{color:#f59e0b}.desk-alert-tmr b{color:#eab308}.desk-alert-hold b{color:#64748b}.desk-alert-pin b{color:#d97706}
 .desk-agg .box.on{background:#fffbeb;border-color:#f59e0b;box-shadow:0 0 0 1px #f59e0b inset}
+.desk-agg .box.desk-alert-over.active{background:#dc2626;border-color:#991b1b;color:#fff;font-weight:600}
+.desk-agg .box.desk-alert-over.active b{color:#fff}
+.desk-agg .box.desk-alert-today.active{background:#f59e0b;border-color:#b45309;color:#fff;font-weight:600}
+.desk-agg .box.desk-alert-today.active b{color:#fff}
 .m-req{font-size:9px;background:#eef2ff;color:#3730a3;border-radius:4px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tc-rec-pin{border:none;background:transparent;color:#cbd5e1;cursor:pointer;font-size:12px;padding:0;line-height:1}
 .tc-rec-pin.on{color:#2563eb}
@@ -4565,8 +4570,8 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         '<span class="muted" style="font-size:12px">未完了の事務タスクはありません。</span>'
     agg = f"""
       <div class="desk-agg">
-        <a class="box desk-alert-over" href="/desk-tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b>{overdue_n}</b></a>
-        <a class="box desk-alert-today" href="/desk-tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
+        <a class="box desk-alert-over{' active' if overdue_n else ''}" href="/desk-tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b>{overdue_n}</b></a>
+        <a class="box desk-alert-today{' active' if today_n else ''}" href="/desk-tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
         <a class="box desk-alert-tmr" href="/desk-tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
         <a class="box desk-alert-hold" href="/desk-tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b>{hold_n}</b></a>
         <a class="box desk-alert-pin{' on' if pinned else ''}" href="/desk-tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b>{pinned_n}</b></a>
@@ -4645,6 +4650,12 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         <span>🗂 事務タスク（{len(tasks)}）</span>
         <span style="display:flex;gap:8px;flex-wrap:wrap">
           <a class="btn sec" href="/desk-tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
+          <form method="post" action="/desk-tasks/fix_billing_category" style="display:inline">
+            <button class="btn sec" style="font-size:12px" type="submit"
+              title="タイトル・詳細・次アクションに「請求書」「請求」「インボイス」を含む事務タスクの種類を一括で「経費・請求」に修正します">
+              🔧 請求分類を一括修正
+            </button>
+          </form>
           <a class="btn sec" href="/tasks" style="font-size:12px">✅ 通常タスクへ</a>
         </span>
       </h2>
@@ -11189,6 +11200,19 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         effective = None if status_q == "all" else status_q
                         deals = sfa_db.list_deals(con, status=effective)
                         self._send(json.dumps([dict(d) for d in deals], ensure_ascii=False, default=str).encode(), ctype="application/json")
+                elif path == "/api/admin_tasks":
+                    # 事務タスク一覧(is_admin=1)。請求リマインド等の外部cronから利用。トークン認証。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send(b'{"error":"unauthorized"}', status=401, ctype="application/json")
+                    else:
+                        _rows = con.execute(
+                            "SELECT * FROM tasks WHERE COALESCE(is_admin,0)=1 AND status != '完了' "
+                            "ORDER BY due_date"
+                        ).fetchall()
+                        self._send(json.dumps([dict(r) for r in _rows], ensure_ascii=False, default=str).encode(),
+                                   ctype="application/json")
                 elif path == "/api/deal_issues":
                     # 論点リマインド(#47)用: 議論中の論点一覧（deal/account名JOIN込み）。トークン認証。
                     qs = self._qs()
@@ -12089,6 +12113,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 事務タスク(is_admin=1)の手入力起票。既定担当は DESK_ASSIGNEE（先頭=アミ）。
                     # 期限未指定なら既定で3営業日後。担当＋期限が揃うので受信箱→未着手へ自動整理。
                     _cat = f.get("category") or None  # 事務はカテゴリ手選択（AI判定はしない）
+                    # 請求関連は手選択の有無に関わらず確実に「経費・請求」へ強制する（分類漏れ対策）
+                    if sfa_db.is_billing_task(f.get("title") or "", f.get("detail") or ""):
+                        _cat = "経費・請求"
                     _due = (f.get("due_date") or "").strip() or \
                         sfa_db.add_business_days(_today_jst(), 3).isoformat()
                     _asg = sfa_db.DESK_ASSIGNEE_DEFAULT or None
@@ -12116,6 +12143,26 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 事務タスク(is_admin=1)を全削除（立ち上げ直後の受付テスト分の一括片付け）。
                     _n = sfa_db.delete_admin_tasks(con)
                     self._send(render(desk_tasks_page(con), flash=f"🗑 事務タスクを {_n} 件削除しました。"))
+
+                elif path == "/desk-tasks/fix_billing_category":
+                    # 既存の事務タスクを対象に、請求関連のキーワード判定で「経費・請求」への
+                    # 分類漏れを一括修正する（#事務タスク改修）。
+                    _rows = con.execute(
+                        "SELECT id, title, detail, next_action, category FROM tasks WHERE COALESCE(is_admin,0)=1"
+                    ).fetchall()
+                    _fixed = 0
+                    for _row in _rows:
+                        _r = dict(_row)
+                        if _r.get("category") == "経費・請求":
+                            continue
+                        if sfa_db.is_billing_task(_r.get("title") or "",
+                                                  f"{_r.get('detail') or ''} {_r.get('next_action') or ''}"):
+                            con.execute(
+                                "UPDATE tasks SET category=?, updated_at=datetime('now') WHERE id=?",
+                                ("経費・請求", _r["id"]))
+                            _fixed += 1
+                    con.commit()
+                    self._send(render(desk_tasks_page(con), flash=f"🔧 請求関連の分類漏れ {_fixed} 件を「経費・請求」に修正しました。"))
 
                 elif path == "/rich-note/save":
                     # OneNote風メモ(#70)の1ノートを保存（新規/更新）。body は必ずサニタイズ。
@@ -14504,6 +14551,29 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             self._send_cors_json(json.dumps({"ok": True}, ensure_ascii=False).encode())
                         else:
                             self._send_cors_json(b'{"error":"deal_id and date required"}', status=400)
+
+                elif path == "/api/admin_tasks/mark_reminded":
+                    # 請求リマインドcron用: 同日の二重送信防止マーカー。tasks.remind_last_at(未使用列)を利用。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            data = f
+                        task_id = data.get("task_id")
+                        reminded_date = data.get("date")
+                        if task_id and reminded_date:
+                            con.execute(
+                                "UPDATE tasks SET remind_last_at=? WHERE id=?",
+                                (reminded_date, int(task_id)),
+                            )
+                            con.commit()
+                            self._send_cors_json(json.dumps({"ok": True}, ensure_ascii=False).encode())
+                        else:
+                            self._send_cors_json(b'{"error":"task_id and date required"}', status=400)
 
                 elif path == "/api/tasks/duplicate_recurring":
                     # 繰り返し発生テンプレの日次複製を実行（本番はディスクがwebサービス専属のため、
