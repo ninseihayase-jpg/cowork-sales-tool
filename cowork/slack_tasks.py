@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from datetime import date
 
@@ -140,6 +141,68 @@ def notify_task_done(con, task_id: int, token: str | None = None) -> bool:
     r = _slack_post("chat.postMessage", token=tok, **payload)
     if not r.get("ok"):
         print(f"[slack_tasks] notify_task_done post failed: {r.get('error')}", flush=True)
+    return bool(r.get("ok"))
+
+
+_URGENCY_EMOJI = {"高": "🔴", "中": "🟡", "低": "🟢"}
+
+
+def _estimate_urgency(source_text: str, due_date: str | None = None,
+                      category: str | None = None) -> tuple[str, str]:
+    """依頼内容から緊急度を推定して (level, reason) を返す。level=高/中/低。
+    期日の近さ・内容（請求/支払/締切/法対応は高め）を材料に Haiku で判定。失敗時は中。"""
+    prompt = (
+        "次の事務依頼の緊急度を推定し、JSONのみで答えてください（前置き・後置き禁止）。\n"
+        "level は 高 / 中 / 低 の3段階。reason は12文字以内の日本語（推定根拠）。\n"
+        "判断材料: 期日の近さ（明日まで・本日中は高）、内容（請求・支払・締切・法/契約対応は高め、"
+        "台帳更新・情報追記など軽作業は低め）。\n"
+        f"期日: {due_date or '未設定'}\n種別: {category or '不明'}\n"
+        f"本文:\n{(source_text or '')[:1500]}\n"
+        '出力例: {"level":"高","reason":"明日締切の請求"}'
+    )
+    try:
+        raw = _call_claude(prompt) or ""
+        m = re.search(r'\{.*\}', raw, re.S)
+        d = json.loads(m.group(0)) if m else {}
+        level = str(d.get("level", "")).strip()
+        reason = str(d.get("reason", "")).strip()[:20]
+        if level not in ("高", "中", "低"):
+            level = "中"
+        return level, reason
+    except Exception:
+        return "中", ""
+
+
+def notify_task_created(con, task_id: int, source_text: str = "", token: str | None = None) -> bool:
+    """事務タスク(is_admin=1)が起票されたとき、担当者へ簡潔なDMを送る（Ope Botから）。
+    内容: 推定緊急度／依頼者・タスク名・期日／Slackリンク。緊急度はHaikuで推定。
+    担当者がSlack未解決なら送らない。token省略時は事務Bot(SLACK_DESK_TOKEN)。"""
+    from .slack_bot import SLACK_DESK_TOKEN
+    tok = token or SLACK_DESK_TOKEN
+    if not tok:
+        return False
+    t = sfa_db.get_task(con, task_id)
+    if not t or not t.get("is_admin"):
+        return False
+    assignee = (t.get("assignee") or "").strip()
+    uid = _slack_user_id_for(assignee, token=tok)
+    if not uid:
+        print(f"[slack_tasks] notify_task_created: 担当「{assignee}」Slack未解決でDMスキップ", flush=True)
+        return False
+    title = (t.get("title") or "(無題)").strip()
+    requester = (t.get("requester") or "—").strip() or "—"
+    due = (t.get("due_date") or "未設定").strip() or "未設定"
+    link = (t.get("slack_permalink") or "").strip() or f"{SFA_TOOL_URL}/desk-tasks#tc-{task_id}"
+    level, reason = _estimate_urgency(source_text or title, due_date=t.get("due_date"),
+                                      category=t.get("category"))
+    emoji = _URGENCY_EMOJI.get(level, "🟡")
+    rtxt = f"（{reason}）" if reason else ""
+    text = (f"📋 新規事務タスク｜{emoji}緊急度: {level}{rtxt}\n"
+            f"依頼者 {requester} ／ タスク「{title}」／ 期日 {due}\n"
+            f"🔗 <{link}|Slackで開く>")
+    r = _slack_post("chat.postMessage", token=tok, channel=uid, text=text)
+    if not r.get("ok"):
+        print(f"[slack_tasks] notify_task_created DM failed: {r.get('error')}", flush=True)
     return bool(r.get("ok"))
 
 
@@ -409,13 +472,18 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
         author_id = (msg or {}).get("user") or ""
         requester = owner_from_slack_user(author_id, token=token) if author_id else None
         prefill = ai_extract_task(text, categories=sfa_db.ADMIN_TASK_CATEGORIES)
-        tid = create_task_from_fields(
+        tid, created = create_task_from_fields(
             con, title=prefill["title"], next_action=prefill["next_action"] or None,
             assignee=(DESK_ASSIGNEE or None), due_date=prefill["due_date"] or None,
             category=prefill["category"] or None, slack_channel=channel, slack_ts=ts,
             slack_permalink=permalink,
             created_by=owner_from_slack_user(user_id, token=token) or user_id,
-            is_admin=1, requester=requester)
+            is_admin=1, requester=requester, return_created=True)
+        if created:   # 新規起票時のみ担当者へDM（重複配信では送らない）
+            try:
+                notify_task_created(con, tid, source_text=text, token=token)
+            except Exception as _e:  # noqa: BLE001
+                print(f"[slack_tasks] notify_task_created(reaction) error: {_e}", flush=True)
         link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
         _req = f"（依頼者: {requester}）" if requester else ""
         _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
@@ -494,6 +562,11 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
                         "text": f"📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}},
                         _admin_due_context(con, tid),
                         _task_action_block(tid)])
+    # 担当者へ簡潔DM（推定緊急度＋依頼者/タスク/期日＋Slackリンク）。元の依頼本文で緊急度を推定。
+    try:
+        notify_task_created(con, tid, source_text=text, token=token)
+    except Exception as _e:  # noqa: BLE001
+        print(f"[slack_tasks] notify_task_created(mention) error: {_e}", flush=True)
     return tid
 
 

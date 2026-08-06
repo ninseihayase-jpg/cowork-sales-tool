@@ -276,3 +276,43 @@ def test_notify_task_done(con, monkeypatch):
     tid3 = sfa_db.upsert_task(con, title="通常", is_admin=0, status="対応中")
     assert st.notify_task_done(con, tid3, token="xoxb-test") is False
     assert not posts
+
+
+def test_notify_task_created_dm(con, monkeypatch):
+    """起票時DM: 担当者へ簡潔DM（推定緊急度＋依頼者/タスク/期日＋Slackリンク）。
+    緊急度はHaiku（モック）で推定。担当未解決/非事務はスキップ。"""
+    from cowork import slack_tasks as st
+    posts = []
+    monkeypatch.setattr(st, "_slack_post", lambda method, token=None, **kw: (posts.append((method, kw)) or {"ok": True}))
+    monkeypatch.setattr(st, "_slack_user_id_for", lambda name, token=None: {"あみ": "U_AMI"}.get((name or "").strip()))
+    monkeypatch.setattr(st, "_call_claude", lambda prompt: '{"level":"高","reason":"明日締切の請求"}')
+
+    tid = sfa_db.upsert_task(con, title="請求書作成＆提出", is_admin=1, requester="早瀬",
+                             assignee="あみ", due_date="2026-08-05",
+                             slack_permalink="https://slack.example/archives/C/p1", status="受信箱")
+    assert st.notify_task_created(con, tid, source_text="明日まで 請求書 作成", token="xoxb") is True
+    method, kw = posts[-1]
+    assert method == "chat.postMessage" and kw["channel"] == "U_AMI"     # 担当あみへDM
+    txt = kw["text"]
+    assert "緊急度: 高" in txt and "🔴" in txt and "明日締切の請求" in txt  # 推定緊急度
+    assert "早瀬" in txt and "請求書作成＆提出" in txt and "2026-08-05" in txt  # 依頼者/タスク/期日
+    assert "https://slack.example/archives/C/p1" in txt                  # Slackリンク(起票元優先)
+    assert txt.count("\n") <= 2   # 3行以内＝簡潔
+
+    # 担当がSlack未解決 → 送らない
+    posts.clear()
+    tid2 = sfa_db.upsert_task(con, title="X", is_admin=1, assignee="不明", status="受信箱")
+    assert st.notify_task_created(con, tid2, token="xoxb") is False and not posts
+
+    # 非事務(is_admin=0) → 送らない
+    posts.clear()
+    tid3 = sfa_db.upsert_task(con, title="通常", is_admin=0, assignee="あみ", status="受信箱")
+    assert st.notify_task_created(con, tid3, token="xoxb") is False and not posts
+
+
+def test_estimate_urgency_fallback(monkeypatch):
+    """Haiku応答が壊れていても中にフォールバックする。"""
+    from cowork import slack_tasks as st
+    monkeypatch.setattr(st, "_call_claude", lambda prompt: "ごめん、わかりません")  # JSON無し
+    level, reason = st._estimate_urgency("何か", due_date=None, category=None)
+    assert level == "中"
