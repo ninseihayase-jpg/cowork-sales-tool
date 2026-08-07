@@ -6925,6 +6925,7 @@ _RICH_NOTE_ASSETS = """
            oninput="rnDirty()" onclick="rnEditClick(event)" onkeydown="rnKey(event)"></div>
       <div class="rn-hint">
         <kbd>Tab</kbd> 字下げ ／ <kbd>Shift</kbd>+<kbd>Tab</kbd> 戻す
+        　<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> 行移動
         　<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>-</kbd> たたむ ／ <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>+</kbd> 開く
         　<kbd>Esc</kbd> 閉じる　・自動保存
       </div>
@@ -7021,6 +7022,14 @@ function rnDoOutdent(){ var li=rnCurrentLi(); if(!li)return;
     following.forEach(function(f){ns.appendChild(f);}); li.appendChild(ns); }
   grand.insertBefore(li, parentLi.nextSibling);
   if(!ul.children.length)ul.remove(); rnCaretInLi(li); }
+// OneNote互換: Alt+Shift+↑/↓ で現在行(liとその子リストごと)を同階層内で上下に移動。
+// 端（先頭/末尾）ではそのまま。キャレットは移動後のli内に戻す（連続移動できる）。
+function rnMoveLine(dir){ var li=rnCurrentLi(); if(!li)return;
+  if(dir<0){ var prev=li.previousElementSibling; if(!prev||prev.nodeName!=='LI')return;
+    li.parentNode.insertBefore(li, prev); }
+  else { var next=li.nextElementSibling; if(!next||next.nodeName!=='LI')return;
+    li.parentNode.insertBefore(li, next.nextElementSibling); }
+  rnCaretInLi(li); rnDirty(); }
 function rnParentLiWithChildren(){ var li=rnCurrentLi();
   while(li){ if(li.nodeName==='LI'&&li.querySelector(':scope>ul, :scope>ol'))return li; li=li.parentNode; } return null; }
 function rnCollapse(expand){ var li=rnParentLiWithChildren(); if(!li)return;
@@ -7030,6 +7039,9 @@ function rnKey(ev){
     if(rnCurrentLi()){ if(ev.shiftKey)rnDoOutdent(); else rnDoIndent(); }
     else if(!ev.shiftKey){ document.execCommand('insertHTML',false,'&nbsp;&nbsp;&nbsp;&nbsp;'); }
     rnDirty(); return; }
+  // 行移動ショートカット（OneNote互換）: Shift+Alt+↑ で上へ / Shift+Alt+↓ で下へ
+  if(ev.altKey&&ev.shiftKey&&(ev.key==='ArrowUp'||ev.code==='ArrowUp')){ ev.preventDefault(); rnMoveLine(-1); return; }
+  if(ev.altKey&&ev.shiftKey&&(ev.key==='ArrowDown'||ev.code==='ArrowDown')){ ev.preventDefault(); rnMoveLine(1); return; }
   // 折りたたみショートカット: Shift+Alt+- でたたむ / Shift+Alt++ で開く（JIS/US両対応）
   if(ev.altKey&&ev.shiftKey){
     var minus=(ev.key==='-'||ev.key==='_'||ev.code==='Minus');
