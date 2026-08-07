@@ -6708,11 +6708,13 @@ def account_detail(con, acc: dict) -> str:
 # contenteditableで書いたHTMLをそのまま保存すると任意スクリプトが混入しうるため、
 # 保存時に必ずホワイトリストでサニタイズする（public repo・本番相当データ・XSS対策）。
 _RN_ALLOWED_TAGS = {"p", "div", "br", "b", "strong", "i", "em", "u", "s", "strike",
-                    "del", "h3", "ul", "ol", "li", "span", "a"}
-_RN_VOID_TAGS = {"br"}
+                    "del", "h3", "ul", "ol", "li", "span", "a", "img"}
+_RN_VOID_TAGS = {"br", "img"}
 _RN_DROP_CONTENT_TAGS = {"script", "style", "head", "title", "meta", "link",
                          "iframe", "object", "embed", "noscript"}
-_RN_MAX_LEN = 200_000  # 1商談のノート上限（暴走・巨大貼付の抑止）
+_RN_MAX_LEN = 4_000_000  # 1ノート上限（画像インライン許容のため拡大。巨大貼付の暴走抑止は維持）
+# 画像src許可: 貼付由来のdata:image(base64) と 通常のhttp(s)/相対パスのみ。それ以外(javascript:等)は破棄。
+_RN_IMG_SRC_RE = re.compile(r"^(data:image/(png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/=\s]+|https?://|/)")
 
 
 class _RichNoteSanitizer(html.parser.HTMLParser):
@@ -6769,6 +6771,14 @@ class _RichNoteSanitizer(html.parser.HTMLParser):
                 cls = " ".join(c for c in v.split() if c in ("cl",))
                 if cls:
                     keep += f' class="{html.escape(cls, quote=True)}"'
+            elif tag == "img" and k == "src" and _RN_IMG_SRC_RE.match(v.strip()):
+                keep += f' src="{html.escape(v.strip(), quote=True)}"'
+            elif tag == "img" and k == "width":
+                try:
+                    w = max(20, min(2000, int(float(v))))   # 手動リサイズの幅(px)。範囲を制限
+                    keep += f' width="{w}"'
+                except (TypeError, ValueError):
+                    pass
         return keep
 
 
@@ -6779,8 +6789,8 @@ def _sanitize_rich_html(raw: str) -> str:
     p.feed(raw)
     p.close()
     out = "".join(p.out).strip()
-    # 中身がタグだけ（<br>や空div）なら空扱いにしてプレースホルダを出せるように
-    if not re.sub(r"<[^>]+>|&nbsp;|\s", "", out):
+    # 中身がタグだけ（<br>や空div）なら空扱い。ただし画像のみのノートは非空として保持する。
+    if not re.sub(r"<[^>]+>|&nbsp;|\s", "", out) and "<img" not in out:
         return ""
     return out
 
@@ -6897,6 +6907,10 @@ _RICH_NOTE_ASSETS = """
 .rn-edit li:has(> ul)::before,.rn-edit li:has(> ol)::before{content:"\\25BE";position:absolute;left:-30px;top:0;cursor:pointer;color:#64748b;font-size:11px;width:14px;text-align:center}
 .rn-edit li[data-collapsed="1"]:has(> ul)::before,.rn-edit li[data-collapsed="1"]:has(> ol)::before{content:"\\25B8";color:#2563eb}
 .rn-edit li[data-collapsed="1"] > ul,.rn-edit li[data-collapsed="1"] > ol{display:none}
+/* 画像: 既定は可視性を保つ幅（width属性）＋はみ出さない。クリックで選択→右下グリップでドラッグリサイズ。 */
+.rn-edit img{max-width:100%;height:auto;border-radius:4px;cursor:pointer;vertical-align:top;margin:2px 0}
+.rn-edit img.rn-sel{outline:2px solid #2563eb;outline-offset:1px}
+#rnImgGrip{position:fixed;width:14px;height:14px;background:#2563eb;border:2px solid #fff;border-radius:3px;box-shadow:0 1px 4px rgba(0,0,0,.4);cursor:nwse-resize;display:none;z-index:2147483000;touch-action:none}
 </style>
 <div id="rnBackdrop" onclick="rnClose()"></div>
 <div id="rnModal" role="dialog" aria-modal="true">
@@ -6912,7 +6926,9 @@ _RICH_NOTE_ASSETS = """
       <button type="button" class="rn-b" title="太字 (Ctrl+B)" onmousedown="return rnCmd(event,'bold')"><b>B</b></button>
       <button type="button" class="rn-b" title="取り消し線 (Ctrl+Shift+X)" onmousedown="return rnCmd(event,'strikeThrough')"><s>S</s></button>
       <button type="button" class="rn-b" title="リンク (Ctrl+K)" onmousedown="return rnLink(event)">🔗</button>
+      <button type="button" class="rn-b" title="画像を挿入（貼付・ドラッグでリサイズ）" onmousedown="return rnPickImage(event)">🖼</button>
     </span>
+    <input type="file" id="rnImgFile" accept="image/*" style="display:none" onchange="rnImgFileChosen(this)">
     <span class="rn-status" id="rnStatus"></span>
     <button type="button" class="rn-x" title="閉じる (Esc)" onclick="rnClose()">×</button>
   </div>
@@ -6921,8 +6937,8 @@ _RICH_NOTE_ASSETS = """
     <div class="rn-main">
       <input id="rnNoteTitle" class="rn-ntitle" placeholder="無題（タイトルを付けられます）" oninput="rnTitleInput()">
       <div class="rn-edit" id="rnEdit" contenteditable="true"
-           data-ph="ここにメモ…（🅷見出し / • 箇条書き / ☑ チェック / Tabで階層 / 子項目は▾で折りたたみ）"
-           oninput="rnDirty()" onclick="rnEditClick(event)" onkeydown="rnKey(event)"></div>
+           data-ph="ここにメモ…（🅷見出し / • 箇条書き / ☑ チェック / Tabで階層 / 子項目は▾で折りたたみ / 画像は貼付OK）"
+           oninput="rnDirty()" onclick="rnEditClick(event)" onkeydown="rnKey(event)" onpaste="rnPaste(event)"></div>
       <div class="rn-hint">
         <kbd>Tab</kbd> 字下げ ／ <kbd>Shift</kbd>+<kbd>Tab</kbd> 戻す
         　<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> 行移動
@@ -6962,7 +6978,7 @@ function rnRenderRail(){ var rail=document.getElementById('rnRail'); if(!rail)re
   rail.innerHTML=h; }
 function rnStash(){ if(_rnCur<0||_rnCur>=_rnNotes.length)return;
   _rnNotes[_rnCur].title=_rnTitleEl().value; _rnNotes[_rnCur].body=_rnEl().innerHTML; }
-function rnLoadCur(){ var n=_rnNotes[_rnCur]||{title:'',body:''};
+function rnLoadCur(){ if(typeof rnDeselectImg==='function')rnDeselectImg(); var n=_rnNotes[_rnCur]||{title:'',body:''};
   _rnTitleEl().value=n.title||''; _rnEl().innerHTML=n.body||''; }
 function rnSelect(i){ if(i===_rnCur)return; if(_rnDirty){rnStash();rnSave();} _rnCur=i; rnRenderRail(); rnLoadCur(); }
 function rnNew(){ if(_rnDirty){rnStash();rnSave();} _rnNotes.push({id:null,title:'',body:''}); _rnCur=_rnNotes.length-1; rnRenderRail(); rnLoadCur(); _rnTitleEl().focus(); }
@@ -7034,6 +7050,68 @@ function rnParentLiWithChildren(){ var li=rnCurrentLi();
   while(li){ if(li.nodeName==='LI'&&li.querySelector(':scope>ul, :scope>ol'))return li; li=li.parentNode; } return null; }
 function rnCollapse(expand){ var li=rnParentLiWithChildren(); if(!li)return;
   li.setAttribute('data-collapsed', expand?'0':'1'); rnDirty(); rnSave(); }
+// ── 画像: 貼付/挿入時に可視性を保つサイズへダウンスケール、クリック選択→右下グリップでリサイズ ──
+function _rnDownscale(file, maxDim, cb){
+  var fr=new FileReader();
+  fr.onload=function(e){ var img=new Image();
+    img.onload=function(){ var w=img.width, h=img.height;
+      if(w>maxDim||h>maxDim){ if(w>=h){ h=Math.round(h*maxDim/w); w=maxDim; } else { w=Math.round(w*maxDim/h); h=maxDim; } }
+      var c=document.createElement('canvas'); c.width=w; c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      var mime=(file.type==='image/png'||file.type==='image/gif')?'image/png':'image/jpeg';
+      cb(c.toDataURL(mime, mime==='image/jpeg'?0.72:undefined), w); };
+    img.onerror=function(){ cb(null,0); };
+    img.src=e.target.result; };
+  fr.readAsDataURL(file);
+}
+function _rnInsertImage(file){
+  if(!file || file.type.indexOf('image/')!==0) return;
+  _rnDownscale(file, 1000, function(dataUrl, natW){
+    if(!dataUrl) return;
+    var disp=Math.min(natW||420, 420);   // 既定表示幅＝可視性を保つサイズ（後で手動リサイズ可）
+    var el=_rnEl(); if(!el) return; el.focus();
+    document.execCommand('insertHTML', false, '<img src="'+dataUrl+'" width="'+disp+'">');
+    rnDirty();
+  });
+}
+function rnPaste(ev){
+  var items=((ev.clipboardData||{}).items)||[];
+  for(var i=0;i<items.length;i++){
+    if(items[i].kind==='file' && items[i].type.indexOf('image/')===0){
+      var f=items[i].getAsFile(); if(f){ ev.preventDefault(); _rnInsertImage(f); return; } } }
+  // 画像でなければ既定の（テキスト）ペーストに任せる
+}
+function rnPickImage(ev){ if(ev)ev.preventDefault(); var inp=document.getElementById('rnImgFile'); if(inp){ inp.value=''; inp.click(); } return false; }
+function rnImgFileChosen(inp){ if(inp&&inp.files&&inp.files[0]) _rnInsertImage(inp.files[0]); }
+var _rnSelImg=null, _rnDrag=null;
+function _rnGrip(){ var g=document.getElementById('rnImgGrip');
+  if(!g){ g=document.createElement('div'); g.id='rnImgGrip'; document.body.appendChild(g);
+    g.addEventListener('pointerdown', _rnGripDown);
+    window.addEventListener('scroll', _rnPositionGrip, true);   // capture=内側スクロールも拾う
+    window.addEventListener('resize', _rnPositionGrip); }
+  return g; }
+function rnSelectImg(img){ if(_rnSelImg&&_rnSelImg!==img)_rnSelImg.classList.remove('rn-sel');
+  _rnSelImg=img; img.classList.add('rn-sel'); _rnPositionGrip(); }
+function rnDeselectImg(){ if(_rnSelImg){ _rnSelImg.classList.remove('rn-sel'); _rnSelImg=null; }
+  var g=document.getElementById('rnImgGrip'); if(g)g.style.display='none'; }
+function _rnPositionGrip(){ if(!_rnSelImg){ return; } var g=_rnGrip();
+  var r=_rnSelImg.getBoundingClientRect(); g.style.display='block';
+  g.style.left=(r.right-7)+'px'; g.style.top=(r.bottom-7)+'px'; }
+function _rnGripDown(e){ if(!_rnSelImg)return; e.preventDefault();
+  _rnDrag={x:e.clientX, w:_rnSelImg.getBoundingClientRect().width};
+  try{ _rnGrip().setPointerCapture(e.pointerId); }catch(_){}
+  document.addEventListener('pointermove', _rnGripMove);
+  document.addEventListener('pointerup', _rnGripUp); }
+function _rnGripMove(e){ if(!_rnDrag||!_rnSelImg)return;
+  var maxw=(_rnEl()?_rnEl().clientWidth:800)-8;
+  var w=Math.max(40, Math.min(maxw, Math.round(_rnDrag.w+(e.clientX-_rnDrag.x))));
+  _rnSelImg.style.width=w+'px'; _rnSelImg.removeAttribute('height'); _rnPositionGrip(); }
+function _rnGripUp(){ if(!_rnDrag)return;
+  document.removeEventListener('pointermove', _rnGripMove);
+  document.removeEventListener('pointerup', _rnGripUp);
+  if(_rnSelImg){ var w=Math.round(_rnSelImg.getBoundingClientRect().width);
+    _rnSelImg.setAttribute('width', w); _rnSelImg.style.width=''; _rnPositionGrip(); }
+  _rnDrag=null; rnDirty(); rnSave(); }
 function rnKey(ev){
   if(ev.key==='Tab'){ ev.preventDefault();
     if(rnCurrentLi()){ if(ev.shiftKey)rnDoOutdent(); else rnDoIndent(); }
@@ -7060,7 +7138,10 @@ function rnKey(ev){
   }
 }
 function rnEditClick(ev){
-  var t=ev.target, li=t.closest('li');
+  var t=ev.target;
+  if(t && t.nodeName==='IMG'){ rnSelectImg(t); return; }   // 画像クリック=選択（右下グリップでリサイズ）
+  rnDeselectImg();
+  var li=t.closest('li');
   // ▾/•/☐ マーカーはliの左外側にあり、クリックがul/ol上に落ちることがある→Y座標で該当liを拾う
   if(!li && (t.nodeName==='UL'||t.nodeName==='OL')){
     for(var i=0;i<t.children.length;i++){ var c=t.children[i]; if(c.nodeName!=='LI')continue;

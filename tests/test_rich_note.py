@@ -43,7 +43,6 @@ def test_sanitizer_keeps_allowed(raw, expected):
 
 @pytest.mark.parametrize("raw", [
     "<script>alert(1)</script>",
-    '<img src=x onerror=alert(1)>',
     '<div onclick="evil()" style="color:red">x</div>',
     '<a href="javascript:evil()">x</a>',
     '<iframe src="http://evil"></iframe>',
@@ -51,8 +50,23 @@ def test_sanitizer_keeps_allowed(raw, expected):
 def test_sanitizer_strips_dangerous(raw):
     out = webapp._sanitize_rich_html(raw)
     # 実行系・イベント属性・危険スキームは一切残らない
-    for bad in ("<script", "onerror", "onclick", "javascript:", "<iframe", "<img", "style="):
+    for bad in ("<script", "onerror", "onclick", "javascript:", "<iframe", "style="):
         assert bad not in out
+
+
+def test_sanitizer_image_allowed_but_safe():
+    """画像は許可するが、危険属性(onerror等)・不正src(javascript:)は除去。data URI/幅は保持。"""
+    # data URI + width は保持
+    o = webapp._sanitize_rich_html('<img src="data:image/png;base64,iVBORw0KGg=" width="360">')
+    assert 'src="data:image/png;base64,iVBORw0KGg="' in o and 'width="360"' in o
+    # onerror 等のイベント属性は除去
+    assert "onerror" not in webapp._sanitize_rich_html('<img src="data:image/png;base64,AAAA" onerror="alert(1)">')
+    # javascript: src は破棄（imgタグは残るがsrcは付かない）
+    assert "javascript" not in webapp._sanitize_rich_html('<img src="javascript:alert(1)">')
+    # width は範囲clamp（>2000→2000）
+    assert 'width="2000"' in webapp._sanitize_rich_html('<img src="data:image/jpeg;base64,BBBB" width="9999">')
+    # 画像のみのノートは空扱いにせず保持する
+    assert "<img" in webapp._sanitize_rich_html('<img src="data:image/png;base64,CCCC">')
 
 
 def test_sanitizer_empty_like_becomes_blank():
