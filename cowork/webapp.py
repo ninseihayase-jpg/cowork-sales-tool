@@ -205,8 +205,10 @@ def _sticky_th(label: str, width: str | None = None) -> str:
     return f'<th class="sticky"{w}>{label}</th>'
 
 
-def _call_claude_haiku(prompt: str, *, timeout: int = 20, max_wait: int = 25) -> str:
-    """Claude Haikuを呼び出しテキストを返す。APIキー未設定・失敗・タイムアウト時は空文字。"""
+def _call_claude_haiku(prompt: str, *, timeout: int = 20, max_wait: int = 25,
+                       max_tokens: int = 512) -> str:
+    """Claude Haikuを呼び出しテキストを返す。APIキー未設定・失敗・タイムアウト時は空文字。
+    max_tokens は用途に応じて指定（要約=既定512／構造化整形など長い出力=2000〜4000を推奨）。"""
     if not ANTHROPIC_API_KEY:
         return ""
     result: list = [None]
@@ -215,7 +217,7 @@ def _call_claude_haiku(prompt: str, *, timeout: int = 20, max_wait: int = 25) ->
         try:
             payload = json.dumps({
                 "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 512,
+                "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
             }).encode()
             req = urllib.request.Request(
@@ -8862,14 +8864,16 @@ def _structure_hearing_transcript(transcript: str, item_labels: list) -> dict:
         '"email_draft":"相手宛のお礼＋次アクション確認メールの本文(署名不要・簡潔に)"}\n'
         f"ヒアリング項目:\n{labels_txt}\n\n文字起こし:\n{(transcript or '')[:12000]}\n"
     )
-    raw = _call_claude_haiku(prompt, timeout=40, max_wait=45)
+    raw = _call_claude_haiku(prompt, timeout=60, max_wait=65, max_tokens=3000)
     data = {}
     if raw:
         m = re.search(r"\{.*\}", raw, re.S)
         if m:
             try:
                 data = json.loads(m.group(0))
-            except Exception:
+            except Exception as _e:
+                print(f"[hearing structure] JSON parse failed ({_e}); raw_len={len(raw)} "
+                      f"head={raw[:120]!r}", flush=True)
                 data = {}
     got = {}
     for it in (data.get("items") if isinstance(data.get("items"), list) else []):
@@ -8983,6 +8987,19 @@ def _transcript_intake_form(*, action: str, cancel_href: str, inner_fields_html:
       </form>"""
 
 
+def _intake_ai_warn_html(ai_ok: bool) -> str:
+    """整形結果の確認画面で出す警告（共有）。キー未設定と呼び出し失敗を区別して原因を明示する。"""
+    if ai_ok:
+        return ""
+    if not ANTHROPIC_API_KEY:
+        msg = ("AIキー（ANTHROPIC_API_KEY）が未設定のため自動整形は行われませんでした。手動で編集して確定できます。"
+               "／管理者へ: Render(sfa-crm)の環境変数 ANTHROPIC_API_KEY を設定してください。")
+    else:
+        msg = "AI整形に失敗しました（タイムアウト／応答の解析失敗等）。手動で編集して確定できます。"
+    return ('<div style="background:#fef2f2;border-left:3px solid #dc2626;padding:6px 10px;'
+            'margin:6px 0;font-size:12px;color:#991b1b">⚠ ' + msg + '</div>')
+
+
 def hearing_intake_page(con, deal: dict) -> str:
     """P1: 面談の文字起こしを貼付/アップロードして取り込む入口（ソース非依存）。"""
     did = deal["id"]
@@ -9020,9 +9037,7 @@ def hearing_review_page(con, deal: dict, session: dict) -> str:
         f'<textarea name="answer_{i}" rows="2" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(it.get("answer") or "")}</textarea>'
         f'</div>' for i, it in enumerate(items)) or '<p class="muted">（項目なし。全体像・NextStepのみ）</p>'
     _ns_text = "\n".join(st.get("nextsteps") or [])
-    _ai_warn = "" if st.get("_ai_ok") else ('<div style="background:#fef2f2;border-left:3px solid #dc2626;padding:6px 10px;'
-                                            'margin:6px 0;font-size:12px;color:#991b1b">⚠ AI整形に失敗（APIキー未設定/タイムアウト等）。'
-                                            '手動で編集して確定できます。</div>')
+    _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
     return render(f"""
     <div class="card">
       <h2>🎙️ ヒアリング整形結果の確認</h2>
@@ -9064,14 +9079,16 @@ def _structure_issue_transcript(issue_title: str, transcript: str) -> dict:
         '"decisions":["合意/決定事項","..."],"nextsteps":["次にやること","..."]}\n'
         f"議論の文字起こし:\n{(transcript or '')[:12000]}\n"
     )
-    raw = _call_claude_haiku(prompt, timeout=40, max_wait=45)
+    raw = _call_claude_haiku(prompt, timeout=60, max_wait=65, max_tokens=3000)
     data = {}
     if raw:
         m = re.search(r"\{.*\}", raw, re.S)
         if m:
             try:
                 data = json.loads(m.group(0))
-            except Exception:
+            except Exception as _e:
+                print(f"[issue structure] JSON parse failed ({_e}); raw_len={len(raw)} "
+                      f"head={raw[:120]!r}", flush=True)
                 data = {}
     points = []
     for it in (data.get("points") if isinstance(data.get("points"), list) else []):
@@ -9141,9 +9158,7 @@ def issue_review_page(con, issue: dict, structured: dict) -> str:
     _dec_text = "\n".join(st.get("decisions") or [])
     _ns_text = "\n".join(st.get("nextsteps") or [])
     _title = f"議論整形メモ {_today_jst().isoformat()}"
-    _ai_warn = "" if st.get("_ai_ok") else ('<div style="background:#fef2f2;border-left:3px solid #dc2626;padding:6px 10px;'
-                                            'margin:6px 0;font-size:12px;color:#991b1b">⚠ AI整形に失敗（APIキー未設定/タイムアウト等）。'
-                                            '手動で編集して確定できます。</div>')
+    _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
     return render(f"""
     <div class="card">
       <h2>🎙️ 議論整形結果の確認</h2>
