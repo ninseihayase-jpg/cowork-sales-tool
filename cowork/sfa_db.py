@@ -587,7 +587,8 @@ CREATE TABLE IF NOT EXISTS deal_issues (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     deal_id     INTEGER REFERENCES deals(id) ON DELETE CASCADE,  -- NULL=商談に紐づかない共通論点
     issue       TEXT NOT NULL,        -- 論点
-    members     TEXT,                 -- 議論メンバー（複数選択、カンマ区切り）
+    members     TEXT,                 -- 議論メンバー（社員名の複数選択、カンマ区切り。OWNERS準拠）
+    responsible TEXT,                 -- 責任者（社員1名、OWNERS）
     status      TEXT DEFAULT '議論中', -- 議論中/議論済み/取り消し
     due_date    TEXT,                 -- 解消期限（YYYY-MM-DD）
     ai_summary  TEXT,                 -- メモ全履歴からAI自動生成したサマリー
@@ -1186,6 +1187,20 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("CREATE INDEX IF NOT EXISTS idx_deal_issues_deal ON deal_issues(deal_id)")
             con.commit()
             con.execute("PRAGMA foreign_keys = ON")
+        # 論点: 責任者カラムを後方互換で追加。
+        _issue_cols = {c[1] for c in con.execute("PRAGMA table_info(deal_issues)")}
+        if "responsible" not in _issue_cols:
+            con.execute("ALTER TABLE deal_issues ADD COLUMN responsible TEXT")
+        # 議論メンバーを区分（経営/営業担当/営業+開発担当/開発コア）から社員名方式へ移行。
+        # 旧区分のみで構成された members は一括クリアし、以後は社員名で入れ直す（ユーザー確定 2026-08-13）。
+        # 冪等: クリア後は名前が入るため下の判定に再度該当せず、二重実行しても影響しない。
+        _legacy_member_tokens = {"経営", "営業担当", "営業+開発担当", "開発コア"}
+        for _rid, _mem in con.execute(
+            "SELECT id, members FROM deal_issues WHERE members IS NOT NULL AND members != ''"
+        ).fetchall():
+            _toks = [t.strip() for t in (_mem or "").split(",") if t.strip()]
+            if _toks and all(t in _legacy_member_tokens for t in _toks):
+                con.execute("UPDATE deal_issues SET members=NULL WHERE id=?", (_rid,))
         con.commit()
     finally:
         con.close()
@@ -2614,7 +2629,7 @@ def set_dev_coef(con, coef_type: str, coef_key: str, coef_value: float) -> None:
 
 # ---- 社内論点（deal_id:N の議論ポイント管理） ----
 
-DEAL_ISSUE_FIELDS = ["deal_id", "issue", "members", "status", "due_date"]
+DEAL_ISSUE_FIELDS = ["deal_id", "issue", "members", "responsible", "status", "due_date"]
 
 _DEAL_ISSUE_SELECT = (
     "SELECT i.*, d.deal_name, d.owner AS sales_owner, d.sub_owner AS sales_sub_owner, "
@@ -2626,10 +2641,11 @@ DEAL_ISSUE_SORTS = ["due_date", "status", "updated_at"]
 
 
 def list_deal_issues(con, *, deal_id: int | None = None, status: str | None = None,
-                      member: str | None = None, q: str | None = None,
-                      sort: str = "due_date") -> list[dict]:
+                      member: str | None = None, responsible: str | None = None,
+                      q: str | None = None, sort: str = "due_date") -> list[dict]:
     """論点一覧。deal_id以外はすべて一覧画面の絞り込み用。
-    member指定時は議論メンバー（カンマ区切り複数選択）にその値を含む論点のみ返す。
+    member指定時は議論メンバー（社員名のカンマ区切り複数選択）にその名前を含む論点のみ返す。
+    responsible指定時は責任者がその社員名の論点のみ返す。
     q指定時はアカウント名・商談名の部分一致で絞り込む。"""
     q_sql = _DEAL_ISSUE_SELECT
     conds: list = []
@@ -2643,6 +2659,9 @@ def list_deal_issues(con, *, deal_id: int | None = None, status: str | None = No
     if member:
         conds.append("i.members LIKE ?")
         params.append(f"%{member}%")
+    if responsible:
+        conds.append("i.responsible = ?")
+        params.append(responsible)
     if q:
         conds.append("(a.name LIKE ? OR d.deal_name LIKE ?)")
         params.extend([f"%{q}%", f"%{q}%"])

@@ -8356,12 +8356,14 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
 
 # ── 社内論点（商談に紐づく議論ポイント管理） ─────────────────────────────────────
 
-def _deal_issues_url(*, status=None, member=None, q=None, sort=None, open_issue=None) -> str:
+def _deal_issues_url(*, status=None, member=None, responsible=None, q=None, sort=None, open_issue=None) -> str:
     params = {}
     if status:
         params["status"] = status
     if member:
         params["member"] = member
+    if responsible:
+        params["responsible"] = responsible
     if q:
         params["q"] = q
     if sort:
@@ -8382,15 +8384,30 @@ def _issue_status_select_html(issue_id: int, current: str | None) -> str:
 
 
 def _issue_members_inline_html(issue_id: int, current_members: str | None) -> str:
-    selected = set((current_members or "").split(","))
+    """議論メンバー（社員名の複数選択）のインライン編集。名前が多いのでポップオーバー(details)で表示。"""
+    selected = [m.strip() for m in (current_members or "").split(",") if m.strip()]
+    sel_set = set(selected)
     boxes = "".join(
-        f'<label style="display:inline-flex;align-items:center;gap:2px;margin:0 8px 2px 0;'
-        f'font-size:11px;font-weight:normal;white-space:nowrap">'
-        f'<input type="checkbox" value="{html.escape(m)}"{" checked" if m in selected else ""} '
+        f'<label style="display:flex;align-items:center;gap:5px;padding:3px 6px;'
+        f'font-size:12px;font-weight:normal;white-space:nowrap">'
+        f'<input type="checkbox" value="{html.escape(m)}"{" checked" if m in sel_set else ""} '
         f'onchange="diUpdateMembers({issue_id}, this)" style="width:auto">{html.escape(m)}</label>'
-        for m in sfa_db.DEAL_ISSUE_MEMBERS
+        for m in sfa_db.OWNERS
     )
-    return f'<div class="di-members-cell">{boxes}</div>'
+    summary = ("👥 " + "・".join(selected)) if selected else "＋メンバー"
+    return (f'<details class="di-members-cell di-mem-pop">'
+            f'<summary title="クリックで社員を選択">{html.escape(summary)}</summary>'
+            f'<div class="di-mem-menu">{boxes}</div></details>')
+
+
+def _issue_responsible_select_html(issue_id: int, current: str | None) -> str:
+    """責任者（社員1名）のインライン編集セレクト。"""
+    opts = '<option value="">（未設定）</option>' + "".join(
+        f'<option value="{html.escape(o)}"{" selected" if o == current else ""}>{html.escape(o)}</option>'
+        for o in sfa_db.OWNERS
+    )
+    return (f'<select onchange="updateDealIssueField({issue_id}, \'responsible\', this.value, true)" '
+            f'style="font-size:11px;padding:2px 4px">{opts}</select>')
 
 
 def _issue_due_date_input_html(issue_id: int, due_date: str | None) -> str:
@@ -8425,10 +8442,23 @@ function diUpdateMembers(id, checkboxEl) {
   _diMembersReloadTimer = setTimeout(function() { location.reload(); }, 900);
 }
 document.addEventListener('click', function(e) {
-  document.querySelectorAll('details.di-memo-details[open]').forEach(function(d) {
+  document.querySelectorAll('details.di-memo-details[open], details.di-mem-pop[open]').forEach(function(d) {
     if (!d.contains(e.target)) d.removeAttribute('open');
   });
 });
+"""
+
+# 議論メンバー（社員名）ポップオーバーの見た目。一覧のインライン編集で使用。
+DEAL_ISSUE_MEMBERS_POP_CSS = """
+.di-mem-pop{position:relative;display:inline-block}
+.di-mem-pop>summary{display:inline-block;list-style:none;cursor:pointer;font-size:11px;
+  background:#f1f5f9;border:1px solid #cbd5e1;border-radius:6px;padding:2px 8px;color:#334155;
+  white-space:normal;line-height:1.5}
+.di-mem-pop>summary::-webkit-details-marker{display:none}
+.di-mem-pop[open]>summary{background:#eff6ff;border-color:#60a5fa;color:#1d4ed8}
+.di-mem-menu{position:absolute;z-index:50;top:100%;left:0;margin-top:4px;background:#fff;
+  border:1px solid #cbd5e1;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.15);
+  padding:6px;max-height:260px;overflow:auto;min-width:130px}
 """
 
 
@@ -8510,10 +8540,12 @@ def _issue_memo_panel_html(memos: list[dict], issue: dict, *, return_to: str) ->
 
 
 def deal_issues_list_page(con, *, status: str | None = None, member: str | None = None,
+                           responsible: str | None = None,
                            q: str | None = None, sort: str | None = None,
                            open_issue: str | None = None) -> str:
     sort = sort or "due_date"
-    issues = sfa_db.list_deal_issues(con, status=status, member=member, q=q, sort=sort)
+    issues = sfa_db.list_deal_issues(con, status=status, member=member,
+                                     responsible=responsible, q=q, sort=sort)
     rn_issue_ids = sfa_db.rich_note_entity_ids(con, "issue")  # メモありの論点（📝点灯用）
 
     def _fopt(values, current):
@@ -8531,7 +8563,8 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
     filter_row = f"""<form method="get" action="/deal-issues" class="filter-row">
       <input name="q" placeholder="会社名・商談名で検索" value="{_esc(q or '')}">
       <select name="status" onchange="this.form.submit()">{_fopt(sfa_db.DEAL_ISSUE_STATUSES, status).replace('全て', 'ステータス:全て', 1)}</select>
-      <select name="member" onchange="this.form.submit()">{_fopt(sfa_db.DEAL_ISSUE_MEMBERS, member).replace('全て', '議論メンバー:全て', 1)}</select>
+      <select name="member" onchange="this.form.submit()">{_fopt(sfa_db.OWNERS, member).replace('全て', '議論メンバー:全て', 1)}</select>
+      <select name="responsible" onchange="this.form.submit()">{_fopt(sfa_db.OWNERS, responsible).replace('全て', '責任者:全て', 1)}</select>
       <select name="sort" onchange="this.form.submit()">{sort_opts}</select>
       <button class="btn sec" type="submit">検索</button>
       <a class="btn sec" href="/deal-issues">リセット</a>
@@ -8539,7 +8572,7 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
 
     rows = ""
     for it in issues:
-        return_to = _deal_issues_url(status=status, member=member, q=q, sort=sort)
+        return_to = _deal_issues_url(status=status, member=member, responsible=responsible, q=q, sort=sort)
         summary_box = _ai_summary_hover_html(it.get('ai_summary'), issue_id=it['id'], return_to=return_to)
         deal_cell = (
             f'<a href="/deal/{it["deal_id"]}">{_esc(it.get("account_name"))}</a>'
@@ -8555,6 +8588,7 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
             <a href="/deal-issue/{it['id']}" style="font-weight:600">{_esc(it.get('issue'))}</a></div></td>
           <td>{_issue_status_select_html(it['id'], it.get('status'))}</td>
           <td>{_issue_members_inline_html(it['id'], it.get('members'))}</td>
+          <td>{_issue_responsible_select_html(it['id'], it.get('responsible'))}</td>
           <td>{_issue_due_date_input_html(it['id'], it.get('due_date'))}</td>
           <td>{summary_box}</td>
           <td><a href="/deal-issue/{it['id']}">開く</a></td>
@@ -8563,6 +8597,7 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
     return f"""
     <style>
     {AI_SUMMARY_HOVER_CSS}
+    {DEAL_ISSUE_MEMBERS_POP_CSS}
     </style>
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -8572,10 +8607,10 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
       {filter_row}
       <div style="overflow:auto;max-height:70vh">
       <table style="table-layout:fixed;width:100%">
-        <tr>{_sticky_th('商談', width='16%')}{_sticky_th('論点', width='14%')}{_sticky_th('ステータス', width='9%')}
-            {_sticky_th('議論メンバー', width='14%')}{_sticky_th('解消期限', width='9%')}
-            {_sticky_th('AIサマリー（論点メモから生成）', width='34%')}{_sticky_th('', width='5%')}</tr>
-        {rows or '<tr><td colspan=7 class=muted>論点がまだありません</td></tr>'}
+        <tr>{_sticky_th('商談', width='15%')}{_sticky_th('論点', width='13%')}{_sticky_th('ステータス', width='8%')}
+            {_sticky_th('議論メンバー', width='13%')}{_sticky_th('責任者', width='8%')}{_sticky_th('解消期限', width='9%')}
+            {_sticky_th('AIサマリー（論点メモから生成）', width='29%')}{_sticky_th('', width='5%')}</tr>
+        {rows or '<tr><td colspan=8 class=muted>論点がまだありません</td></tr>'}
       </table>
       </div>
     </div>
@@ -8590,12 +8625,17 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
     is_edit = issue is not None
     it = issue or {}
     return_to_field = f'<input type="hidden" name="return_to" value="{_esc(return_to)}">' if return_to else ""
-    selected_members = set((it.get("members") or "").split(","))
+    selected_members = set(m.strip() for m in (it.get("members") or "").split(",") if m.strip())
     members_html = "".join(
         f'<label style="display:inline-flex;align-items:center;gap:4px;margin:0 14px 6px 0;font-weight:normal">'
         f'<input type="checkbox" name="members" value="{_esc(m)}"'
         f'{" checked" if m in selected_members else ""} style="width:auto">{_esc(m)}</label>'
-        for m in sfa_db.DEAL_ISSUE_MEMBERS
+        for m in sfa_db.OWNERS
+    )
+    _resp_cur = it.get("responsible") or ""
+    responsible_html = '<option value="">（未設定）</option>' + "".join(
+        f'<option value="{_esc(o)}"{" selected" if o == _resp_cur else ""}>{_esc(o)}</option>'
+        for o in sfa_db.OWNERS
     )
     delete_btn = ""
 
@@ -8648,8 +8688,12 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
         <label>議論メンバー</label>
         <div style="margin:4px 0 10px">{members_html}</div>
         <div class="grid">
+          <div><label>責任者</label><select name="responsible">{responsible_html}</select></div>
           <div><label>ステータス</label><select name="status">{_opt(sfa_db.DEAL_ISSUE_STATUSES, it.get('status') or '議論中')}</select></div>
+        </div>
+        <div class="grid">
           <div><label>解消期限</label><input type="date" name="due_date" value="{_esc(default_due_date)}"></div>
+          <div></div>
         </div>
         <div style="margin-top:16px">
           <button class="btn" type="submit">保存</button>
@@ -8678,12 +8722,17 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
     back_href = return_to or (f'/deal/{it["deal_id"]}' if it.get("deal_id") else "/deal-issues")
     deal_label = (f'{_esc(it.get("account_name"))} / {_esc(it.get("deal_name"))}'
                   if it.get("deal_id") else '商談共通（特定の商談に紐づかない論点）')
-    selected_members = set((it.get("members") or "").split(","))
+    selected_members = set(m.strip() for m in (it.get("members") or "").split(",") if m.strip())
     members_html = "".join(
         f'<label style="display:inline-flex;align-items:center;gap:4px;margin:0 14px 6px 0;font-weight:normal">'
         f'<input type="checkbox" name="members" value="{_esc(m)}"'
         f'{" checked" if m in selected_members else ""} style="width:auto">{_esc(m)}</label>'
-        for m in sfa_db.DEAL_ISSUE_MEMBERS
+        for m in sfa_db.OWNERS
+    )
+    _resp_cur = it.get("responsible") or ""
+    responsible_html = '<option value="">（未設定）</option>' + "".join(
+        f'<option value="{_esc(o)}"{" selected" if o == _resp_cur else ""}>{_esc(o)}</option>'
+        for o in sfa_db.OWNERS
     )
     # 左: 編集フォーム（保存先は既存の /deal-issue/{id}/edit。保存後はこの詳細へ戻る）
     left = f"""
@@ -8698,8 +8747,12 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
           <label>議論メンバー</label>
           <div style="margin:4px 0 10px">{members_html}</div>
           <div class="grid">
+            <div><label>責任者</label><select name="responsible">{responsible_html}</select></div>
             <div><label>ステータス</label><select name="status">{_opt(sfa_db.DEAL_ISSUE_STATUSES, it.get('status') or '議論中')}</select></div>
+          </div>
+          <div class="grid">
             <div><label>解消期限</label><input type="date" name="due_date" value="{_esc(it.get('due_date'))}"></div>
+            <div></div>
           </div>
           <div style="margin-top:16px">
             <button class="btn" type="submit">保存</button>
@@ -12320,6 +12373,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _status_default = "議論中" if "sort" not in qs else qs1("status")
                     self._send(render(deal_issues_list_page(
                         con, status=_status_default, member=qs1("member"),
+                        responsible=qs1("responsible"),
                         q=qs1("q"), sort=qs1("sort"), open_issue=qs1("open_issue"),
                     )))
                 elif path == "/deal-issue/new":
@@ -13752,6 +13806,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con, id=None, deal_id=deal_id_val,
                         issue=f.get("issue") or "(無題)",
                         members=",".join(f_list.get("members", [])),
+                        responsible=(f.get("responsible") or None),
                         status=f.get("status") or "議論中",
                         due_date=f.get("due_date") or None,
                     )
@@ -13773,6 +13828,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con, id=iid, deal_id=existing["deal_id"],
                         issue=f.get("issue") or "(無題)",
                         members=",".join(f_list.get("members", [])),
+                        responsible=(f.get("responsible") or None),
                         status=f.get("status") or "議論中",
                         due_date=f.get("due_date") or None,
                     )
@@ -13882,7 +13938,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                    else (f"/deal/{existing['deal_id']}" if existing else "/deal-issues"))
 
                 elif path.startswith("/deal-issue/") and path.endswith("/field"):
-                    _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "due_date"}
+                    _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "responsible", "due_date"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -13894,6 +13950,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _err = "不正なフィールド"
                         elif field == "status" and value and value not in sfa_db.DEAL_ISSUE_STATUSES:
                             _err = "不正なステータス値"
+                        elif field == "responsible" and value and value not in sfa_db.OWNERS:
+                            _err = "不正な責任者"
                         else:
                             con.execute(
                                 f"UPDATE deal_issues SET {field}=?, updated_at=datetime('now') WHERE id=?",
