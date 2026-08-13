@@ -409,6 +409,9 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  .theme-dot{{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin-right:4px}}
  .filter-row{{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center}}
  .filter-row select,.filter-row input{{width:auto}}
+ /* フィルタ適用中の項目を薄くハイライト（全SFA共通・markActiveFilters()が付与）。UIを崩さない控えめな配色 */
+ .filter-active,.filter-active:focus{{background:#eff6ff !important;border-color:#60a5fa !important;box-shadow:inset 0 0 0 1px #bfdbfe}}
+ summary.filter-active{{background:#eff6ff;border-color:#60a5fa;color:#1d4ed8;border-radius:6px}}
  pre{{overflow-x:auto;white-space:pre-wrap;font-size:11px;line-height:1.6}}
  .dash-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:20px}}
  .dash-card{{background:#fff;border-radius:10px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
@@ -445,6 +448,28 @@ function _deb(fn, ms) {{
   ms = ms || 250; clearTimeout(_debTimers[fn]);
   _debTimers[fn] = setTimeout(function() {{ var f = window[fn]; if (typeof f === 'function') f(); }}, ms);
 }}
+/* 全SFA共通: フィルタ適用中の項目に .filter-active を付けて薄くハイライトする。
+   対象は .filter-row 内のコントロール（js-nofilter を付けた入力/作成フォームは除外）。
+   select=先頭(既定)以外を選択中／text・search・date=値あり／details=チェックあり を「適用中」とみなす。
+   change/input を document で委譲監視し、サーバ再読込・クライアント絞り込みの双方で自動更新される。 */
+function markActiveFilters() {{
+  try {{
+    var base = '.filter-row:not(.js-nofilter) ';
+    document.querySelectorAll(base + 'select').forEach(function(s) {{
+      s.classList.toggle('filter-active', s.selectedIndex > 0);
+    }});
+    document.querySelectorAll(base + 'input[type=text],' + base + 'input[type=search],' + base + 'input[type=date]').forEach(function(i) {{
+      i.classList.toggle('filter-active', (i.value || '').trim() !== '');
+    }});
+    document.querySelectorAll(base + 'details').forEach(function(d) {{
+      var sm = d.querySelector('summary');
+      if (sm) sm.classList.toggle('filter-active', !!d.querySelector('input[type=checkbox]:checked'));
+    }});
+  }} catch (e) {{}}
+}}
+document.addEventListener('change', markActiveFilters);
+document.addEventListener('input', markActiveFilters);
+document.addEventListener('DOMContentLoaded', markActiveFilters);
 </script>
 </head><body>
 <header>
@@ -581,6 +606,7 @@ _CLOSE_MODAL_HTML = (
     ' var dc=document.getElementById("dealCount"); if(dc)dc.textContent=n;'
     ' var ca=document.getElementById("deal_chk_all"); if(ca)ca.checked=false;'
     ' _saveDealFilters();'
+    ' if(typeof markActiveFilters==="function")markActiveFilters();'
     '}'
     # クライアント側フィルタの保存/復元（タブ単位）。サーバ側フィルタ変更や編集からの復帰後も維持。
     # キーはパスのみ（tabクエリの有無で変わらないよう固定）。サーバ側フィルタ変更のリロードでも一致する。
@@ -601,6 +627,9 @@ _CLOSE_MODAL_HTML = (
     ' var l1=document.getElementById("l1Filter"); if(l1&&s.l1!=null){l1.value=s.l1; if(typeof onL1FilterChange==="function")onL1FilterChange();}'
     ' var l2=document.getElementById("l2Filter"); if(l2&&s.l2!=null)l2.value=s.l2;'
     ' return true;}catch(e){return false;}}'
+    # リセット: サーバ側フィルタ(URL)に加え、sessionStorageに保存したクライアント側フィルタも消してから遷移。
+    # これをしないと遷移先で _restoreDealFilters() が復元してしまい「リセットが効かない」ように見える。
+    'function resetDealFilters(h){try{sessionStorage.removeItem(_dealFilterKey());}catch(e){}location.href=h||"/deals";}'
     # 商談リンクの戻り先を現在の絞り込み状態（URL＝サーバ側フィルタ）にする。編集から同じ画面へ戻す用。
     'function _fixDealReturnTo(){try{var cur=encodeURIComponent(location.pathname+location.search);'
     ' document.querySelectorAll("a[href^=\\"/deal/\\"]").forEach(function(a){var h=a.getAttribute("href"); if(!h)return;'
@@ -4690,7 +4719,7 @@ def task_projects_page(con) -> str:
                     if _sum else f'<div id="pjsum-{p["id"]}"></div>')
         blocks += f"""
       <div class="card" style="margin-bottom:8px">
-        <form method="post" action="/task-projects/save" class="filter-row" style="margin:0">
+        <form method="post" action="/task-projects/save" class="filter-row js-nofilter" style="margin:0">
           <input type="hidden" name="id" value="{p['id']}">
           <input name="name" value="{_esc(p['name'])}" style="min-width:220px" title="プロジェクト名">
           <label style="font-size:12px">期限 <input type="date" name="deadline" value="{_esc(p.get('deadline') or '')}"></label>
@@ -4716,7 +4745,7 @@ def task_projects_page(con) -> str:
       <p class="muted" style="font-size:13px">プロジェクトに期限と状態を持たせると、看板上部の一覧に出て、
       タスクの期日はプロジェクト期限から逆算して推奨されます。「🧠PJサマリ生成」で配下タスクの
       議論・進捗をAIが俯瞰要約します。</p>
-      <form method="post" action="/task-projects/save" class="filter-row">
+      <form method="post" action="/task-projects/save" class="filter-row js-nofilter">
         <input name="name" placeholder="新しいプロジェクト名（例: セキュリティISO取得）" required style="min-width:260px">
         <label style="font-size:12px">期限 <input type="date" name="deadline"></label>
         <select name="status">{_opt(sfa_db.TASK_PROJECT_STATUSES, '進行中')}</select>
@@ -5814,7 +5843,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:6px">
         <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
           oninput="_deb('filterDealsByAccount')" style="max-width:260px">
-        <a class="btn sec" href="/deals?tab=active">リセット</a>
+        <a class="btn sec" href="/deals?tab=active" onclick="resetDealFilters('/deals?tab=active');return false;">リセット</a>
       </div>
     </form>"""
     # バルク編集用JSオブジェクト構築（選択肢を持つフィールド）。フリー入力系はJS側でinput化。
@@ -6055,7 +6084,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:6px">
         <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
           oninput="_deb('filterDealsByAccount')" style="max-width:260px">
-        <a class="btn sec" href="/deals?tab=byDate">リセット</a>
+        <a class="btn sec" href="/deals?tab=byDate" onclick="resetDealFilters('/deals?tab=byDate');return false;">リセット</a>
       </div>
     </form>"""
 
@@ -6124,7 +6153,7 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:6px">
         <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
           oninput="_deb('filterDealsByAccount')" style="max-width:260px">
-        <a class="btn sec" href="/deals?tab=overdue">リセット</a>
+        <a class="btn sec" href="/deals?tab=overdue" onclick="resetDealFilters('/deals?tab=overdue');return false;">リセット</a>
       </div>
     </form>"""
     _return_qs = urllib.parse.urlencode(
@@ -6366,7 +6395,7 @@ def exhibition_tagging_page(con) -> str:
       個別は入力欄で即保存。まとめて付けるときは行を選択→下の「一括設定」。</p>
       <datalist id="exNames">{_dl}</datalist>
       <form method="post" action="/exhibition-tagging/bulk">
-      <div class="filter-row" style="margin:0 0 10px">
+      <div class="filter-row js-nofilter" style="margin:0 0 10px">
         <input type="text" name="exhibition_name" list="exNames" placeholder="一括設定する展示会名"
           style="max-width:260px">
         <button class="btn" type="submit"
@@ -8971,7 +9000,7 @@ def _transcript_intake_form(*, action: str, cancel_href: str, inner_fields_html:
     return f"""
       <form method="post" action="{action}" enctype="multipart/form-data">
         {inner_fields_html}
-        <div class="filter-row" style="margin:6px 0 2px;gap:10px;align-items:center;flex-wrap:wrap">
+        <div class="filter-row js-nofilter" style="margin:6px 0 2px;gap:10px;align-items:center;flex-wrap:wrap">
           <label style="font-size:13px">📎 ファイルから取り込み
             <input type="file" name="transcript_file" accept="{accept}" style="font-size:12px"></label>
         </div>
@@ -9009,10 +9038,10 @@ def hearing_intake_page(con, deal: dict) -> str:
     _today = _today_jst().isoformat()
     _inner = f"""
         <input type="hidden" name="deal_id" value="{did}">
-        <div class="filter-row" style="margin:6px 0">
+        <div class="filter-row js-nofilter" style="margin:6px 0">
           <label style="font-size:13px">アカウント: <b>{_esc(_acc)}</b> ／ 案件: <b>{_esc(deal.get("deal_name") or "—")}</b></label>
         </div>
-        <div class="filter-row" style="margin:6px 0;gap:12px">
+        <div class="filter-row js-nofilter" style="margin:6px 0;gap:12px">
           <label style="font-size:13px">面談日 <input type="date" name="conducted_on" value="{_today}"></label>
           <label style="font-size:13px">ヒアリング項目 <select name="template_id"><option value="">（項目なし）</option>{_topt}</select></label>
         </div>"""
