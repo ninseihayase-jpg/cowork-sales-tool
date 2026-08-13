@@ -86,18 +86,21 @@ TranscriptSource（差し替え可能）
 | 1b| Jamie APIキー/プラン | 契約でAPIキー作成可か（Settings→Developers→API Keys） | ⏳ ユーザー確認待ち |
 | 2 | Webhook受信 | SFAに `/api/jamie/webhook`（署名検証・冪等）を実装しJamie処理完了を受信 | 未 |
 | 3 | REST取得 | `x-api-key`で meeting の transcript/summary/tasks を取得（薄いHTTPクライアント） | 未 |
-| 4 | データ/確定フロー | hearing_sessions 追加、確定→hearing_results＋活動履歴＋NextStep化 | 未 |
-| 5 | Claude整形 | 既存 `_call_claude_haiku` 拡張。項目別/全体像/NextStep/メール素案 | 未 |
-| 6 | 確認UI | 取り込み→整形結果を人が編集・確定する画面（既存hearing UIを拡張） | 未 |
+| 4 | データ/確定フロー | hearing_sessions 追加、確定→hearing_results＋活動履歴＋NextStep化 | ✅ P1 |
+| 5 | Claude整形 | 既存 `_call_claude_haiku` 拡張。項目別/全体像/NextStep/メール素案 | ✅ P1 |
+| 6 | 確認UI | 取り込み→整形結果を人が編集・確定する画面（既存hearing UIを拡張） | ✅ P1 |
 | 7 | メール素案→ドラフト | 生成メールをOutlookドラフト等へ（#65と連携余地） | 未 |
 | 8 | 秘匿/コンプラ | APIキーはRender秘匿、録音同意運用、EUデータresidency前提、公開リポジトリ配慮 | 継続 |
 
 ## 7. フェーズ計画（各フェーズで人の確認→確定）※2026-08-07 方針転換を反映
 - **P0**: 本設計書作成。方針・調査結果を記録。✅
-- **P1（新）**: **ソース非依存の取り込み＋整形＋確認＋確定**（ゲート4,5,6）。
-  文字起こしを**貼付/アップロード**→Claude整形（項目別/全体像/NextStep/メール素案）→人が確認→
-  hearing_sessions保存→確定でhearing_results＋活動履歴＋NextStep（次回MS/タスク）化。API費ゼロで最終形の価値を実証。
-  `TranscriptSource` は `PasteSource` から開始。
+- **P1（新）**: **ソース非依存の取り込み＋整形＋確認＋確定**（ゲート4,5,6）。✅ 2026-08-13 実装・本番反映（a47d527）。
+  文字起こしを**貼付**→Claude(Haiku)整形（項目別/全体像/NextStep/メール素案）→人が確認・編集→
+  hearing_sessions保存→確定でhearing_results＋活動履歴＋NextStep（任意でタスク起票）化。API費ゼロで最終形の価値を実証。
+  `TranscriptSource` は `PasteSource`（貼付）から開始。
+  - 実装: `sfa_db.hearing_sessions`（+CRUD）／`webapp._structure_hearing_transcript`・`hearing_intake_page`・`hearing_review_page`。
+  - ルート: `GET /hearing/intake`, `POST /hearing/intake/structure`, `POST /hearing/intake/commit`。商談ページに導線。
+  - 残: アップロード（.txt/.vtt）取り込み、未ヒア項目の可視化強化はP1.1で追補。
 - **P2**: メール素案→ドラフト（ゲート7）。
 - **P3（旧P1相当・保留）**: 自動取り込みアダプタ。費用に見合うソース確定後に `TranscriptSource` の裏へ薄く追加
   （Jamie webhook＝月¥9,000のため保留 / 他ツールAPI / Whisper等）。
