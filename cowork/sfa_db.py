@@ -528,6 +528,25 @@ CREATE TABLE IF NOT EXISTS hearing_drafts (
     UNIQUE(target_type, target_id, template_id)
 );
 
+-- ヒアリングAI(#29): 面談セッション。文字起こし(ソース非依存)→AI整形→人の確認→確定 の作業台。
+-- source は取り込み元('paste'|'jamie'|...)。structured_json はAI整形結果(項目別/全体像/NextStep/メール素案)。
+-- status: 'imported'(取込済) → 'structured'(AI整形済) → 'confirmed'(確定=hearing_resultsへ反映)。
+CREATE TABLE IF NOT EXISTS hearing_sessions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id        INTEGER REFERENCES deals(id) ON DELETE CASCADE,
+    template_id    INTEGER,
+    source         TEXT DEFAULT 'paste',       -- 'paste'|'jamie'|...（TranscriptSource）
+    external_id    TEXT,                        -- Jamie meeting id 等（自動取込の冪等キー）
+    conducted_on   TEXT,
+    transcript     TEXT,                        -- 生文字起こし
+    structured_json TEXT NOT NULL DEFAULT '{}', -- {items:[{label,answer}],overview,nextsteps:[..],email_draft}
+    status         TEXT DEFAULT 'imported',
+    result_id      INTEGER,                     -- 確定時に紐づく hearing_results.id
+    created_at     TEXT DEFAULT (datetime('now')),
+    updated_at     TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hearing_sessions_deal ON hearing_sessions(deal_id);
+
 -- 開発案件（商談に紐づく開発テーマ。1商談:N開発案件）
 CREATE TABLE IF NOT EXISTS dev_projects (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2254,6 +2273,62 @@ def get_hearing_result(con, id: int) -> dict | None:
         (int(id),),
     ).fetchone()
     return _hydrate_hearing_result(dict(r)) if r else None
+
+
+# ---- ヒアリングAI(#29): 面談セッション（文字起こし→AI整形→確認→確定の作業台） ----
+def _hydrate_hearing_session(r: dict) -> dict:
+    try:
+        r["structured"] = _json.loads(r.get("structured_json") or "{}")
+    except (ValueError, TypeError):
+        r["structured"] = {}
+    return r
+
+
+def create_hearing_session(con, *, deal_id, source="paste", external_id=None,
+                           template_id=None, conducted_on=None, transcript="",
+                           structured=None, status="imported") -> int:
+    cur = con.execute(
+        "INSERT INTO hearing_sessions "
+        "(deal_id, template_id, source, external_id, conducted_on, transcript, structured_json, status) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (int(deal_id), int(template_id) if template_id else None, source, external_id,
+         conducted_on, transcript or "", _json.dumps(structured or {}, ensure_ascii=False), status))
+    con.commit()
+    return cur.lastrowid
+
+
+def get_hearing_session(con, id: int) -> dict | None:
+    r = con.execute("SELECT * FROM hearing_sessions WHERE id=?", (int(id),)).fetchone()
+    return _hydrate_hearing_session(dict(r)) if r else None
+
+
+def update_hearing_session(con, id: int, *, structured=None, status=None,
+                           transcript=None, result_id=None, template_id=None) -> None:
+    sets, vals = [], []
+    if structured is not None:
+        sets.append("structured_json=?"); vals.append(_json.dumps(structured, ensure_ascii=False))
+    if status is not None:
+        sets.append("status=?"); vals.append(status)
+    if transcript is not None:
+        sets.append("transcript=?"); vals.append(transcript)
+    if result_id is not None:
+        sets.append("result_id=?"); vals.append(int(result_id))
+    if template_id is not None:
+        sets.append("template_id=?"); vals.append(int(template_id))
+    if not sets:
+        return
+    sets.append("updated_at=datetime('now')")
+    con.execute(f"UPDATE hearing_sessions SET {', '.join(sets)} WHERE id=?", (*vals, int(id)))
+    con.commit()
+
+
+def get_hearing_session_by_external(con, source: str, external_id: str) -> dict | None:
+    """自動取込の冪等化用。同一(source, external_id)の既存セッションを返す。"""
+    if not external_id:
+        return None
+    r = con.execute("SELECT * FROM hearing_sessions WHERE source=? AND external_id=? LIMIT 1",
+                    (source, external_id)).fetchone()
+    return _hydrate_hearing_session(dict(r)) if r else None
 
 
 def update_hearing_result(con, id: int, *, conducted_on=None, answers: list[dict]) -> None:
