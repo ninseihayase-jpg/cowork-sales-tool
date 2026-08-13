@@ -8705,7 +8705,11 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;
           border-top:1px solid #eef1f5;padding-top:12px">
           <h2 style="margin:0">論点メモ</h2>
-          {_rich_note_chip("issue", iid)}
+          <span style="display:flex;gap:6px;align-items:center">
+            <a class="btn sec" href="/deal-issue/{iid}/intake" style="font-size:12px"
+               title="議論の文字起こしを貼付→AIで整形して論点メモ化">🎙️ 議論を取り込む（AI整形）</a>
+            {_rich_note_chip("issue", iid)}
+          </span>
         </div>
         <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">{note_cards}</div>
       </div>"""
@@ -8948,6 +8952,134 @@ def hearing_review_page(con, deal: dict, session: dict) -> str:
           <button class="btn" type="submit">✓ 確定して保存</button>
           <a class="btn sec" href="/hearing/intake?deal={did}">やり直す</a>
           <a class="btn sec" href="/deal/{did}">キャンセル</a>
+        </div>
+      </form>
+    </div>""")
+
+
+# ── 論点(deal_issue)向け: 文字起こし → AI整形（#29のヒアリングAIを論点でトライ） ──
+
+def _structure_issue_transcript(issue_title: str, transcript: str) -> dict:
+    """議論の文字起こしを「全体像／論点別整理／決定事項／NextStep」に整形（Claude）。
+    失敗時も空の骨格を返す（人が手入力で確定できるようにする）。"""
+    prompt = (
+        "あなたは社内論点の議論整理担当です。以下の議論（会議/面談）の文字起こしを読み、"
+        f"論点「{issue_title or '（表題なし）'}」に沿って内容を整理してください。"
+        "JSONのみを厳密に出力し、前後の説明文は書かないでください。\n"
+        '出力形式: {"overview":"議論全体の要約(3〜5文)",'
+        '"points":[{"topic":"論点の見出し(名詞句・2〜12文字)","detail":"議論内容。結論が出ていなければ「未決」と明記"}],'
+        '"decisions":["合意/決定事項","..."],"nextsteps":["次にやること","..."]}\n'
+        f"議論の文字起こし:\n{(transcript or '')[:12000]}\n"
+    )
+    raw = _call_claude_haiku(prompt, timeout=40, max_wait=45)
+    data = {}
+    if raw:
+        m = re.search(r"\{.*\}", raw, re.S)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+            except Exception:
+                data = {}
+    points = []
+    for it in (data.get("points") if isinstance(data.get("points"), list) else []):
+        if isinstance(it, dict) and (it.get("topic") or it.get("detail")):
+            points.append({"topic": str(it.get("topic") or "").strip(),
+                           "detail": str(it.get("detail") or "").strip()})
+
+    def _slist(key):
+        v = data.get(key)
+        return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
+
+    return {"overview": str(data.get("overview") or "").strip(), "points": points,
+            "decisions": _slist("decisions"), "nextsteps": _slist("nextsteps"),
+            "_ai_ok": bool(data)}
+
+
+def _issue_structured_to_note_html(overview: str, points: list, decisions: list, nextsteps: list) -> str:
+    """整形結果を論点メモ(rich_note)の本文HTMLに組み立てる。出力はサニタイズ前提の許可タグのみ。"""
+    parts = []
+    if (overview or "").strip():
+        parts.append("<h3>全体像</h3><p>%s</p>" % _esc(overview).replace("\n", "<br>"))
+    _pl = "".join("<li><b>%s</b>：%s</li>" % (_esc(p.get("topic") or ""), _esc(p.get("detail") or ""))
+                  for p in (points or []) if (p.get("topic") or p.get("detail")))
+    if _pl:
+        parts.append("<h3>論点別整理</h3><ul>%s</ul>" % _pl)
+    _dl = "".join("<li>%s</li>" % _esc(d) for d in (decisions or []) if d.strip())
+    if _dl:
+        parts.append("<h3>決定事項</h3><ul>%s</ul>" % _dl)
+    _nl = "".join('<li data-checked="0">%s</li>' % _esc(n) for n in (nextsteps or []) if n.strip())
+    if _nl:
+        parts.append('<h3>NextStep</h3><ul class="cl">%s</ul>' % _nl)
+    return "".join(parts)
+
+
+def issue_intake_page(con, issue: dict) -> str:
+    """論点: 議論の文字起こしを貼付してAI整形の入口。"""
+    iid = issue["id"]
+    _label = (f'{_esc(issue.get("account_name"))} / {_esc(issue.get("deal_name"))}'
+              if issue.get("deal_id") else "商談共通（特定の商談に紐づかない論点）")
+    return render(f"""
+    <div class="card">
+      <h2>🎙️ 議論を取り込む（AI整形）</h2>
+      <p class="muted" style="font-size:13px">会議・面談の文字起こしを貼り付けて「AIで整形」すると、
+      <b>全体像・論点別の整理・決定事項・NextStep</b>に自動整理します。次の画面で確認・編集し、確定すると
+      <b>論点メモ</b>として保存し、論点サマリも再生成します。</p>
+      <form method="post" action="/deal-issue/{iid}/intake/structure">
+        <div class="filter-row" style="margin:6px 0">
+          <label style="font-size:13px">論点: <b>{_esc(issue.get("issue") or "—")}</b></label>
+        </div>
+        <div class="muted" style="font-size:12px;margin:2px 0 8px">{_label}</div>
+        <textarea name="transcript" rows="16" placeholder="ここに議論の文字起こしを貼り付け…"
+          style="width:100%;box-sizing:border-box;font-size:13px;padding:8px;line-height:1.6" required></textarea>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn" type="submit">🤖 AIで整形する</button>
+          <a class="btn sec" href="/deal-issue/{iid}">キャンセル</a>
+        </div>
+        <p class="muted" style="font-size:11px;margin-top:6px">※ 整形はClaude(Haiku)で実行。長い文字起こしは先頭約12,000文字を対象にします。</p>
+      </form>
+    </div>""")
+
+
+def issue_review_page(con, issue: dict, structured: dict) -> str:
+    """論点: AI整形結果を人が確認・編集し、論点メモとして確定する画面。"""
+    iid = issue["id"]
+    st = structured or {}
+    points = st.get("points") or []
+    _pt_rows = "".join(
+        f'<div style="display:flex;gap:8px;margin:6px 0;align-items:flex-start">'
+        f'<input name="topic_{i}" value="{_esc(p.get("topic") or "")}" placeholder="論点の見出し"'
+        f' style="flex:0 0 160px;font-size:13px;padding:6px">'
+        f'<textarea name="detail_{i}" rows="2" placeholder="内容・結論（未決なら「未決」）"'
+        f' style="flex:1;font-size:13px;padding:6px;box-sizing:border-box">{_esc(p.get("detail") or "")}</textarea>'
+        f'</div>' for i, p in enumerate(points)) or '<p class="muted">（論点別の整理はありません）</p>'
+    _dec_text = "\n".join(st.get("decisions") or [])
+    _ns_text = "\n".join(st.get("nextsteps") or [])
+    _title = f"議論整形メモ {_today_jst().isoformat()}"
+    _ai_warn = "" if st.get("_ai_ok") else ('<div style="background:#fef2f2;border-left:3px solid #dc2626;padding:6px 10px;'
+                                            'margin:6px 0;font-size:12px;color:#991b1b">⚠ AI整形に失敗（APIキー未設定/タイムアウト等）。'
+                                            '手動で編集して確定できます。</div>')
+    return render(f"""
+    <div class="card">
+      <h2>🎙️ 議論整形結果の確認</h2>
+      <p class="muted" style="font-size:13px">論点 <b>{_esc(issue.get("issue") or "—")}</b>。内容を確認・編集して「確定」すると、
+      論点メモとして保存し、論点サマリを再生成します。</p>
+      {_ai_warn}
+      <form method="post" action="/deal-issue/{iid}/intake/commit">
+        <input type="hidden" name="point_count" value="{len(points)}">
+        <label style="font-size:12px">メモの見出し
+          <input name="note_title" value="{_esc(_title)}" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px"></label>
+        <div style="font-weight:700;font-size:13px;margin:12px 0 2px">■ 全体像</div>
+        <textarea name="overview" rows="4" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(st.get("overview") or "")}</textarea>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 論点別の整理</div>
+        {_pt_rows}
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 決定事項（1行1件）</div>
+        <textarea name="decisions" rows="3" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(_dec_text)}</textarea>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ NextStep（1行1件）</div>
+        <textarea name="nextsteps" rows="3" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(_ns_text)}</textarea>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="btn" type="submit">✓ 確定して論点メモに保存</button>
+          <a class="btn sec" href="/deal-issue/{iid}/intake">やり直す</a>
+          <a class="btn sec" href="/deal-issue/{iid}">キャンセル</a>
         </div>
       </form>
     </div>""")
@@ -12069,6 +12201,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         did = None
                     return_to = qs.get("return_to", [None])[0]
                     self._send(render(deal_issue_form(con, deal_id=did, return_to=return_to)))
+                elif path.startswith("/deal-issue/") and path.endswith("/intake"):
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        iid = 0
+                    iss = sfa_db.get_deal_issue(con, iid) if iid else None
+                    self._send(issue_intake_page(con, iss) if iss
+                               else render("<div class=card>論点が見つかりません</div>", ), 200 if iss else 404)
                 elif path.startswith("/deal-issue/") and path.endswith("/edit"):
                     try:
                         iid = int(path.split("/")[2])
@@ -13549,6 +13689,52 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         sfa_db.delete_deal_issue_memo(con, mid)
                     _return_to = f.get("return_to") or ""
                     self._redirect(_return_to if _return_to.startswith("/") else "/deal-issues")
+
+                elif path.startswith("/deal-issue/") and path.endswith("/intake/structure"):
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        iid = 0
+                    iss = sfa_db.get_deal_issue(con, iid) if iid else None
+                    _transcript = (f.get("transcript") or "").strip()
+                    if not iss or not _transcript:
+                        self._send(render("<div class=card>論点または文字起こしがありません。"
+                                          f"<a href='/deal-issue/{iid}/intake'>戻る</a></div>"), 400)
+                    else:
+                        _structured = _structure_issue_transcript(iss.get("issue") or "", _transcript)
+                        self._send(issue_review_page(con, iss, _structured))
+
+                elif path.startswith("/deal-issue/") and path.endswith("/intake/commit"):
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        iid = 0
+                    iss = sfa_db.get_deal_issue(con, iid) if iid else None
+                    if not iss:
+                        self._redirect("/deal-issues")
+                        return
+                    try:
+                        _n = int(f.get("point_count", "0") or 0)
+                    except ValueError:
+                        _n = 0
+                    _points = []
+                    for _i in range(_n):
+                        _tp = (f.get("topic_%d" % _i) or "").strip()
+                        _dt = (f.get("detail_%d" % _i) or "").strip()
+                        if _tp or _dt:
+                            _points.append({"topic": _tp, "detail": _dt})
+                    _overview = (f.get("overview") or "").strip()
+                    _decisions = [ln.strip() for ln in (f.get("decisions") or "").splitlines() if ln.strip()]
+                    _nextsteps = [ln.strip() for ln in (f.get("nextsteps") or "").splitlines() if ln.strip()]
+                    _body = _sanitize_rich_html(
+                        _issue_structured_to_note_html(_overview, _points, _decisions, _nextsteps))
+                    _title = (f.get("note_title") or "").strip() or ("議論整形メモ " + _today_jst().isoformat())
+                    if _body:
+                        sfa_db.create_rich_note(con, kind="issue", entity_id=iid, title=_title, body=_body)
+                        _summary = _generate_issue_ai_summary(iss, _issue_notes_text(con, iid))
+                        if _summary:
+                            sfa_db.set_deal_issue_ai_summary(con, iid, _summary)
+                    self._redirect("/deal-issue/%d" % iid)
 
                 elif path.startswith("/deal-issue/") and path.endswith("/regenerate_summary"):
                     try:
