@@ -8883,6 +8883,106 @@ def _structure_hearing_transcript(transcript: str, item_labels: list) -> dict:
             "_ai_ok": bool(data)}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 【共有コンポーネント】文字起こしの取り込み（貼付＋ファイルアップロード）
+# すべてのヒアリング/議論サマリ整形機能で共通利用する。取り込み仕様の変更（対応拡張子の追加・
+# パース方法・UI等）は必ずここ（_transcript_intake_form / _resolve_transcript_input /
+# _extract_uploaded_transcript）を更新すること。1箇所直せば全整形機能（商談ヒアリング・論点・
+# 今後追加分）へ一括反映される前提を維持する。関連: OneNoteメモの _RICH_NOTE_ASSETS と同方針。
+# ══════════════════════════════════════════════════════════════════════════════
+
+# 取り込み対応拡張子（UIの accept 属性とサーバ側パースの両方で参照する単一の真実）
+TRANSCRIPT_UPLOAD_EXTS = ("txt", "text", "md", "markdown", "vtt", "srt", "docx")
+
+
+def _strip_subtitle_cues(text: str) -> str:
+    """字幕(.vtt/.srt)のヘッダ・キュー番号・タイムスタンプ行を除去して発話本文だけ残す。"""
+    out = []
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if s.upper().startswith("WEBVTT"):
+            continue
+        if "-->" in s:               # タイムスタンプ行
+            continue
+        if s.isdigit():              # SRTのキュー番号
+            continue
+        out.append(s)
+    return "\n".join(out)
+
+
+def _extract_uploaded_transcript(upload) -> str:
+    """アップロードされた (filename, bytes) から文字起こしテキストを抽出する。共有コンポーネント。
+    .docx はpython-docxで段落＋表を抽出、テキスト系は UTF-8→CP932 の順にデコード。失敗時は空文字。"""
+    if not (isinstance(upload, tuple) and len(upload) == 2):
+        return ""
+    filename, data = upload
+    if not data:
+        return ""
+    ext = (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
+    if ext == "docx":
+        try:
+            import io
+            from docx import Document
+            doc = Document(io.BytesIO(data))
+            lines = [p.text for p in doc.paragraphs]
+            for tbl in doc.tables:
+                for row in tbl.rows:
+                    cells = [c.text.strip() for c in row.cells]
+                    if any(cells):
+                        lines.append("\t".join(cells))
+            return "\n".join(lines).strip()
+        except Exception as _e:
+            print(f"[transcript/docx] parse error: {_e}", flush=True)
+            return ""
+    # テキスト系（.txt/.md/.vtt/.srt など、拡張子不明でもテキストとして試行）
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = data.decode("cp932")   # Windows日本語(Shift_JIS系)
+        except Exception:
+            text = data.decode("utf-8", errors="replace")
+    if ext in ("vtt", "srt"):
+        text = _strip_subtitle_cues(text)
+    return text.strip()
+
+
+def _resolve_transcript_input(f) -> str:
+    """取り込みフォームの入力から文字起こし本文を取り出す（アップロードファイル優先→貼付）。
+    共有コンポーネント。全整形ルート（/hearing/intake/structure, /deal-issue/*/intake/structure 等）
+    から共通で呼ぶ。フォームは multipart 前提（_form_multi でファイルは (filename, bytes) で届く）。"""
+    from_file = _extract_uploaded_transcript(f.get("transcript_file")) if isinstance(f, dict) else ""
+    if from_file.strip():
+        return from_file.strip()
+    return (f.get("transcript") or "").strip()
+
+
+def _transcript_intake_form(*, action: str, cancel_href: str, inner_fields_html: str = "",
+                            submit_label: str = "🤖 AIで整形する") -> str:
+    """文字起こし取り込みフォーム（貼付＋ファイルアップロード）の共有UI。全整形機能で共通利用する。
+    inner_fields_html には各機能固有の隠しフィールド/選択欄を渡す（フォーム冒頭に差し込む）。"""
+    accept = ",".join("." + e for e in TRANSCRIPT_UPLOAD_EXTS)
+    return f"""
+      <form method="post" action="{action}" enctype="multipart/form-data">
+        {inner_fields_html}
+        <div class="filter-row" style="margin:6px 0 2px;gap:10px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:13px">📎 ファイルから取り込み
+            <input type="file" name="transcript_file" accept="{accept}" style="font-size:12px"></label>
+        </div>
+        <p class="muted" style="font-size:11px;margin:0 0 6px">対応: .txt / .md / .vtt / .srt / .docx（Word）。
+          ファイルを選ぶと貼付欄より優先します。</p>
+        <textarea name="transcript" rows="16" placeholder="ここに文字起こしを貼り付け…（またはファイルを選択）"
+          style="width:100%;box-sizing:border-box;font-size:13px;padding:8px;line-height:1.6"></textarea>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn" type="submit">{submit_label}</button>
+          <a class="btn sec" href="{cancel_href}">キャンセル</a>
+        </div>
+        <p class="muted" style="font-size:11px;margin-top:6px">※ 整形はClaude(Haiku)で実行。長い文字起こしは先頭約12,000文字を対象にします。</p>
+      </form>"""
+
+
 def hearing_intake_page(con, deal: dict) -> str:
     """P1: 面談の文字起こしを貼付/アップロードして取り込む入口（ソース非依存）。"""
     did = deal["id"]
@@ -8890,12 +8990,7 @@ def hearing_intake_page(con, deal: dict) -> str:
     _tmpls = sfa_db.list_hearing_templates(con)
     _topt = "".join(f'<option value="{t["id"]}">{_esc(t["name"])}</option>' for t in _tmpls)
     _today = _today_jst().isoformat()
-    return render(f"""
-    <div class="card">
-      <h2>🎙️ 面談を取り込む（AI整形）</h2>
-      <p class="muted" style="font-size:13px">面談の文字起こし（Jamie等でコピー）を貼り付けて「AIで整形」すると、
-      ヒアリング項目別・全体像・NextStep・メール素案に自動整理します。内容は次の画面で確認・編集して確定します。</p>
-      <form method="post" action="/hearing/intake/structure">
+    _inner = f"""
         <input type="hidden" name="deal_id" value="{did}">
         <div class="filter-row" style="margin:6px 0">
           <label style="font-size:13px">アカウント: <b>{_esc(_acc)}</b> ／ 案件: <b>{_esc(deal.get("deal_name") or "—")}</b></label>
@@ -8903,15 +8998,13 @@ def hearing_intake_page(con, deal: dict) -> str:
         <div class="filter-row" style="margin:6px 0;gap:12px">
           <label style="font-size:13px">面談日 <input type="date" name="conducted_on" value="{_today}"></label>
           <label style="font-size:13px">ヒアリング項目 <select name="template_id"><option value="">（項目なし）</option>{_topt}</select></label>
-        </div>
-        <textarea name="transcript" rows="16" placeholder="ここに面談の文字起こしを貼り付け…"
-          style="width:100%;box-sizing:border-box;font-size:13px;padding:8px;line-height:1.6" required></textarea>
-        <div style="margin-top:10px;display:flex;gap:8px">
-          <button class="btn" type="submit">🤖 AIで整形する</button>
-          <a class="btn sec" href="/deal/{did}">キャンセル</a>
-        </div>
-        <p class="muted" style="font-size:11px;margin-top:6px">※ 整形はClaude(Haiku)で実行。長い文字起こしは先頭約12,000文字を対象にします。</p>
-      </form>
+        </div>"""
+    return render(f"""
+    <div class="card">
+      <h2>🎙️ 面談を取り込む（AI整形）</h2>
+      <p class="muted" style="font-size:13px">面談の文字起こし（Jamie等でコピー、またはテキスト/Wordファイル）を取り込んで「AIで整形」すると、
+      ヒアリング項目別・全体像・NextStep・メール素案に自動整理します。内容は次の画面で確認・編集して確定します。</p>
+      {_transcript_intake_form(action="/hearing/intake/structure", cancel_href=f"/deal/{did}", inner_fields_html=_inner)}
     </div>""")
 
 
@@ -9018,25 +9111,18 @@ def issue_intake_page(con, issue: dict) -> str:
     iid = issue["id"]
     _label = (f'{_esc(issue.get("account_name"))} / {_esc(issue.get("deal_name"))}'
               if issue.get("deal_id") else "商談共通（特定の商談に紐づかない論点）")
-    return render(f"""
-    <div class="card">
-      <h2>🎙️ 議論を取り込む（AI整形）</h2>
-      <p class="muted" style="font-size:13px">会議・面談の文字起こしを貼り付けて「AIで整形」すると、
-      <b>全体像・論点別の整理・決定事項・NextStep</b>に自動整理します。次の画面で確認・編集し、確定すると
-      <b>論点メモ</b>として保存し、論点サマリも再生成します。</p>
-      <form method="post" action="/deal-issue/{iid}/intake/structure">
+    _inner = f"""
         <div class="filter-row" style="margin:6px 0">
           <label style="font-size:13px">論点: <b>{_esc(issue.get("issue") or "—")}</b></label>
         </div>
-        <div class="muted" style="font-size:12px;margin:2px 0 8px">{_label}</div>
-        <textarea name="transcript" rows="16" placeholder="ここに議論の文字起こしを貼り付け…"
-          style="width:100%;box-sizing:border-box;font-size:13px;padding:8px;line-height:1.6" required></textarea>
-        <div style="margin-top:10px;display:flex;gap:8px">
-          <button class="btn" type="submit">🤖 AIで整形する</button>
-          <a class="btn sec" href="/deal-issue/{iid}">キャンセル</a>
-        </div>
-        <p class="muted" style="font-size:11px;margin-top:6px">※ 整形はClaude(Haiku)で実行。長い文字起こしは先頭約12,000文字を対象にします。</p>
-      </form>
+        <div class="muted" style="font-size:12px;margin:2px 0 8px">{_label}</div>"""
+    return render(f"""
+    <div class="card">
+      <h2>🎙️ 議論を取り込む（AI整形）</h2>
+      <p class="muted" style="font-size:13px">会議・面談の文字起こし（貼付、またはテキスト/Wordファイル）を取り込んで「AIで整形」すると、
+      <b>全体像・論点別の整理・決定事項・NextStep</b>に自動整理します。次の画面で確認・編集し、確定すると
+      <b>論点メモ</b>として保存し、論点サマリも再生成します。</p>
+      {_transcript_intake_form(action=f"/deal-issue/{iid}/intake/structure", cancel_href=f"/deal-issue/{iid}", inner_fields_html=_inner)}
     </div>""")
 
 
@@ -13696,7 +13782,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     except (ValueError, IndexError):
                         iid = 0
                     iss = sfa_db.get_deal_issue(con, iid) if iid else None
-                    _transcript = (f.get("transcript") or "").strip()
+                    _transcript = _resolve_transcript_input(f)
                     if not iss or not _transcript:
                         self._send(render("<div class=card>論点または文字起こしがありません。"
                                           f"<a href='/deal-issue/{iid}/intake'>戻る</a></div>"), 400)
@@ -14199,7 +14285,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _row = con.execute(
                         "SELECT d.id, d.deal_name, a.name account_name FROM deals d "
                         "LEFT JOIN accounts a ON a.id=d.account_id WHERE d.id=?", (_did,)).fetchone() if _did else None
-                    _transcript = (f.get("transcript") or "").strip()
+                    _transcript = _resolve_transcript_input(f)
                     if not _row or not _transcript:
                         self._send(render("<div class=card>商談または文字起こしがありません。"
                                           "<a href='/hearing/intake?deal=%d'>戻る</a></div>" % _did), 400)
