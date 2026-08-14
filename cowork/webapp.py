@@ -9284,6 +9284,7 @@ def _inbox_target_options(deals: list, issues: list) -> str:
 _INBOX_ASSIGN_JS = """
 // 割り当て: 種別(商談/論点)＋検索語で target セレクトの選択肢を絞り込む
 function assignFilter(form){
+  if(!form)return;
   var tt=(form.querySelector('[name=ttype]')||{}).value||'';
   var qi=form.querySelector('.assign-q'); var q=(qi?qi.value:'').toLowerCase().trim();
   var sel=form.querySelector('[name=target]'); if(!sel)return;
@@ -9294,6 +9295,17 @@ function assignFilter(form){
     var show=okT&&okQ; o.hidden=!show;
     if(!show&&o.selected){sel.value='';}
   }
+}
+// 候補チップのクリック: 同じカード内のフォームの割り当て先を即セット（候補はフォーム外にあるためカード起点で辿る）
+function pickCandidate(btn,val){
+  var card=btn.closest('.inbox-card'); if(!card)return;
+  var form=card.querySelector('form'); if(!form)return;
+  var tt=form.querySelector('[name=ttype]'); if(tt){tt.value=(val.split(':')[0]||'');}
+  var qi=form.querySelector('.assign-q'); if(qi){qi.value='';}
+  assignFilter(form);
+  var sel=form.querySelector('[name=target]'); if(sel){sel.value=val;}
+  card.querySelectorAll('.cand-btn').forEach(function(b){b.classList.remove('on');});
+  btn.classList.add('on');
 }
 """
 
@@ -9334,12 +9346,13 @@ def intake_inbox_page(con) -> str:
             _cand_html = ""
             if _cands:
                 _cand_btns = "".join(
-                    f'<button type="button" class="btn sec" style="font-size:11px;padding:2px 8px" '
-                    f'onclick="this.closest(\'form\').querySelector(\'[name=target]\').value=\'{v}\'">{_esc(lbl)}</button>'
+                    f'<button type="button" class="btn sec cand-btn" style="font-size:11px;padding:2px 8px" '
+                    f'onclick="pickCandidate(this,\'{v}\')">{_esc(lbl)}</button>'
                     for v, lbl in _cands)
-                _cand_html = f'<div style="margin:6px 0"><span class="muted" style="font-size:11px">候補: </span>{_cand_btns}</div>'
+                _cand_html = (f'<div style="margin:6px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+                              f'<span class="muted" style="font-size:11px">候補（クリックで選択）: </span>{_cand_btns}</div>')
             cards.append(
-                f'<div style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#fff">'
+                f'<div class="inbox-card" style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#fff">'
                 f'<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">'
                 f'<div style="font-weight:600;font-size:14px">🎙️ {_esc(t.get("title") or "（無題）")}</div>'
                 f'<div class="muted" style="font-size:12px">{_esc(t.get("external_source") or "")} ・ '
@@ -9369,6 +9382,7 @@ def intake_inbox_page(con) -> str:
         'font-size:12px;color:#991b1b">⚠ Jamie Webhookの受信シークレットが未設定です（Render環境変数 '
         'JAMIE_WEBHOOK_SECRET または JAMIE_WEBHOOK_API_KEY）。設定するまで自動受信は拒否されます。</div>')
     return render(f"""
+    <style>.cand-btn.on{{background:#eff6ff;border-color:#60a5fa;color:#1d4ed8;font-weight:600}}</style>
     <div class="card">
       <h2 style="margin-top:0">📥 取り込みインボックス（自動連携）</h2>
       <p class="muted" style="font-size:13px">Jamie/Zoom等から自動受信した会議の文字起こしです。
