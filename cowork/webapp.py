@@ -6984,7 +6984,7 @@ var _rnT=null,_rnDirty=false,_rnKind=null,_rnId=null,_rnNotes=[],_rnCur=0;
 function _rnEl(){return document.getElementById('rnEdit');}
 function _rnTitleEl(){return document.getElementById('rnNoteTitle');}
 function _rnEsc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function rnOpen(kind,id){
+function rnOpen(kind,id,noteId){
   _rnKind=kind; _rnId=id; _rnDirty=false; _rnNotes=[]; _rnCur=0;
   var m=document.getElementById('rnModal'),b=document.getElementById('rnBackdrop');
   document.getElementById('rnRail').innerHTML=''; _rnEl().innerHTML=''; _rnTitleEl().value='';
@@ -6994,7 +6994,9 @@ function rnOpen(kind,id){
     var t=document.getElementById('rnTitle'); if(t)t.textContent='📝 '+((d&&d.title)||'メモ');
     _rnNotes=(d&&d.notes)?d.notes.slice():[];
     if(!_rnNotes.length)_rnNotes.push({id:null,title:'',body:''});
-    _rnCur=0; rnRenderRail(); rnLoadCur(); _rnTitleEl().focus();
+    _rnCur=0;
+    if(noteId!=null){ for(var i=0;i<_rnNotes.length;i++){ if(String(_rnNotes[i].id)===String(noteId)){_rnCur=i;break;} } }
+    rnRenderRail(); rnLoadCur(); _rnTitleEl().focus();
   }).catch(function(){ _rnNotes=[{id:null,title:'',body:''}]; _rnCur=0; rnRenderRail(); rnLoadCur(); });
 }
 function _rnLabel(n){ var tt=(n.title||'').trim(); if(tt)return tt;
@@ -7314,6 +7316,10 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           </h2>
           <p class="muted" style="margin:0">ヒアリング未実施</p>
         </div>"""
+        # 取り込み原本（文字起こし/原本ファイル）を商談側にも表示（論点と同仕様）
+        _dintake = _intake_originals_html(con, "deal", deal["id"], f"/deal/{deal['id']}")
+        if _dintake:
+            hearing_html += f'<div class="card">{_dintake}</div>'
 
     dev_projects_html = ""
     if deal.get("id"):
@@ -8782,7 +8788,7 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
     notes = sfa_db.list_rich_notes(con, "issue", iid)
     if notes:
         note_cards = "".join(
-            f'<div class="di-note-card" onclick="rnOpen(&#39;issue&#39;,{iid})" '
+            f'<div class="di-note-card" onclick="rnOpen(&#39;issue&#39;,{iid},{n["id"]})" '
             f'title="クリックで大きく編集">'
             f'<div class="di-note-ttl">{_esc((n.get("title") or "無題"))}</div>'
             f'<div class="di-note-pv">{_rich_note_preview(n.get("body") or "", 120) or "（空）"}</div></div>'
@@ -8790,37 +8796,7 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
         )
     else:
         note_cards = '<div class="muted">論点メモはまだありません。「📝 論点メモ」から追加してください。</div>'
-    # 取り込み原本（文字起こしローデータ＋アップロード原本）の一覧
-    _intakes = sfa_db.list_intake_transcripts(con, "issue", iid)
-    if _intakes:
-        def _fkb(n):
-            return f"{round((n or 0)/1024):,}KB" if n else ""
-        _intake_rows = "".join(
-            f'<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid #e2e8f0;'
-            f'border-radius:8px;background:#fff;font-size:12px">'
-            f'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-            f'{"📎 " if t.get("source")=="file" else "📝 "}{_esc(t.get("filename") or "貼り付けテキスト")}'
-            f'<span class="muted"> ・ {_esc((t.get("created_at") or "")[:16])}'
-            f'{(" ・ " + _fkb(t.get("file_size"))) if t.get("file_size") else ""}</span></span>'
-            f'<a class="btn sec" style="font-size:11px;padding:2px 8px" href="/intake-transcript/{t["id"]}/view" '
-            f'target="_blank" title="文字起こし本文を表示">本文</a>'
-            + (f'<a class="btn sec" style="font-size:11px;padding:2px 8px" href="/intake-transcript/{t["id"]}/file" '
-               f'title="原本ファイルをダウンロード">原本DL</a>' if t.get("file_size") else "")
-            + f'<form method="post" action="/intake-transcript/{t["id"]}/delete" style="margin:0" '
-              f'onsubmit="return confirm(\'この取り込み原本を削除しますか？\')">'
-              f'<input type="hidden" name="return_to" value="{_esc(self_url)}">'
-              f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer;font-size:12px" '
-              f'title="削除">✕</button></form>'
-            f'</div>'
-            for t in _intakes
-        )
-        intake_html = (
-            '<div style="border-top:1px solid #eef1f5;padding-top:12px;margin-top:14px">'
-            '<h2 style="margin:0 0 8px">🎙️ 取り込み原本（文字起こし）</h2>'
-            '<div style="display:flex;flex-direction:column;gap:6px">' + _intake_rows + '</div></div>'
-        )
-    else:
-        intake_html = ""
+    intake_html = _intake_originals_html(con, "issue", iid, self_url)
     right = f"""
       <div class="card" style="flex:1;min-width:320px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -9133,6 +9109,42 @@ def _intake_ai_warn_html(ai_ok: bool) -> str:
             'margin:6px 0;font-size:12px;color:#991b1b">⚠ ' + msg + '</div>')
 
 
+def _intake_originals_html(con, kind: str, entity_id: int, back_url: str) -> str:
+    """取り込み原本（文字起こしローデータ＋アップロード原本ファイル）の一覧セクション。論点・商談で共通。
+    無ければ空文字。本文表示 /intake-transcript/{id}/view・原本DL /…/file・削除 /…/delete を提供する。"""
+    intakes = sfa_db.list_intake_transcripts(con, kind, entity_id)
+    if not intakes:
+        return ""
+
+    def _fkb(n):
+        return f"{round((n or 0) / 1024):,}KB" if n else ""
+
+    rows = "".join(
+        '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid #e2e8f0;'
+        'border-radius:8px;background:#fff;font-size:12px">'
+        '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+        f'{"📎 " if t.get("source") == "file" else "📝 "}{_esc(t.get("filename") or "貼り付けテキスト")}'
+        f'<span class="muted"> ・ {_esc((t.get("created_at") or "")[:16])}'
+        f'{(" ・ " + _fkb(t.get("file_size"))) if t.get("file_size") else ""}</span></span>'
+        f'<a class="btn sec" style="font-size:11px;padding:2px 8px" href="/intake-transcript/{t["id"]}/view" '
+        f'target="_blank" title="文字起こし本文を表示">本文</a>'
+        + (f'<a class="btn sec" style="font-size:11px;padding:2px 8px" href="/intake-transcript/{t["id"]}/file" '
+           f'title="原本ファイルをダウンロード">原本DL</a>' if t.get("file_size") else "")
+        + f'<form method="post" action="/intake-transcript/{t["id"]}/delete" style="margin:0" '
+          f'onsubmit="return confirm(\'この取り込み原本を削除しますか？\')">'
+          f'<input type="hidden" name="return_to" value="{_esc(back_url)}">'
+          f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer;font-size:12px" '
+          f'title="削除">✕</button></form>'
+        '</div>'
+        for t in intakes
+    )
+    return (
+        '<div style="border-top:1px solid #eef1f5;padding-top:12px;margin-top:14px">'
+        '<h2 style="margin:0 0 8px">🎙️ 取り込み原本（文字起こし）</h2>'
+        '<div style="display:flex;flex-direction:column;gap:6px">' + rows + '</div></div>'
+    )
+
+
 def hearing_intake_page(con, deal: dict) -> str:
     """P1: 面談の文字起こしを貼付/アップロードして取り込む入口（ソース非依存）。"""
     did = deal["id"]
@@ -9177,7 +9189,8 @@ def hearing_review_page(con, deal: dict, session: dict) -> str:
       <p class="muted" style="font-size:13px">アカウント <b>{_esc(deal.get("account_name") or "—")}</b> ／ 案件 <b>{_esc(deal.get("deal_name") or "—")}</b>。
       内容を確認・編集して「確定」すると、ヒアリング結果＋活動履歴に保存されます。</p>
       {_ai_warn}
-      <form method="post" action="/hearing/intake/commit">
+      <form method="post" action="/hearing/intake/commit"
+        onsubmit="if(this.dataset.sent){{return false;}}this.dataset.sent='1';var b=this.querySelector('button[type=submit]');setTimeout(function(){{if(b){{b.disabled=true;b.textContent='保存中…';}}}},0);return true;">
         <input type="hidden" name="session_id" value="{session["id"]}">
         <input type="hidden" name="item_count" value="{len(items)}">
         <div style="font-weight:700;font-size:13px;margin:10px 0 2px">■ 面談全体像</div>
@@ -9245,6 +9258,12 @@ def _resolve_note_date(ai_date: str | None, filename: str | None, upload_date: s
     """メモ日付の決定順: ①本文からAIが読んだ日付 ②ファイル名の日付 ③アップロード日。"""
     return (_norm_ymd(ai_date) or _date_from_filename(filename)
             or _norm_ymd(upload_date) or _today_jst().isoformat())
+
+
+def _yymmdd(iso_date: str | None) -> str:
+    """'2026-08-13' → '260813'（メモ見出しの日付表記はYYMMDDで統一）。不正時は today のYYMMDD。"""
+    d = _norm_ymd(iso_date) or _today_jst().isoformat()
+    return d[2:].replace("-", "")
 
 
 def _structure_issue_transcript(issue_title: str, transcript: str, *,
@@ -9438,10 +9457,9 @@ def issue_review_page(con, issue: dict, structured: dict) -> str:
     _points_md = _points_md_from_list(st.get("points") or [])
     _dec_text = "\n".join(st.get("decisions") or [])
     _ns_text = "\n".join(st.get("nextsteps") or [])
-    # メモ見出し = 日付_タイトル（日付=本文/ファイル名/Upload日, タイトル=内容からAI推定）
-    _date = st.get("date") or _today_jst().isoformat()
+    # メモ見出し = YYMMDD_タイトル（日付=本文/ファイル名/Upload日, タイトル=内容からAI推定）
     _ttl = (st.get("title") or "").strip() or (issue.get("issue") or "議論メモ")
-    _title = f"{_date}_{_ttl}"
+    _title = f"{_yymmdd(st.get('date'))}_{_ttl}"
     _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
     _ta = "width:100%;box-sizing:border-box;font-size:13px;padding:6px"
     return render(f"""
@@ -9454,7 +9472,8 @@ def issue_review_page(con, issue: dict, structured: dict) -> str:
       <p class="muted" style="font-size:13px">論点 <b>{_esc(issue.get("issue") or "—")}</b>。内容を確認・編集して「確定」すると、
       論点メモとして保存し、論点サマリを再生成します。</p>
       {_ai_warn}
-      <form method="post" action="/deal-issue/{iid}/intake/commit" id="issueReviewForm">
+      <form method="post" action="/deal-issue/{iid}/intake/commit" id="issueReviewForm"
+        onsubmit="if(this.dataset.sent){{return false;}}this.dataset.sent='1';var b=this.querySelector('button[type=submit]');setTimeout(function(){{if(b){{b.disabled=true;b.textContent='保存中…';}}}},0);return true;">
         <label style="font-size:12px">メモの見出し（日付_タイトル）
           <input name="note_title" value="{_esc(_title)}" style="{_ta}"></label>
         <div style="font-weight:700;font-size:13px;margin:12px 0 2px">■ 全体像</div>
@@ -14678,6 +14697,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _tid = None
                         _tmpl = sfa_db.get_hearing_template(con, _tid) if _tid else None
                         _labels = [it.get("label") for it in (_tmpl.get("items") or [])] if _tmpl else []
+                        # 取り込み原本（文字起こしローデータ＋アップロード原本）を保存（論点と同仕様）
+                        _up = f.get("transcript_file")
+                        _is_file = isinstance(_up, tuple) and len(_up) == 2 and _up[1]
+                        try:
+                            sfa_db.add_intake_transcript(
+                                con, kind="deal", entity_id=_did,
+                                source=("file" if _is_file else "paste"),
+                                filename=(_up[0] if _is_file else None),
+                                transcript=_transcript, file_blob=(_up[1] if _is_file else None))
+                        except Exception as _e:  # noqa: BLE001
+                            print(f"[intake_transcript] save failed: {_e}", flush=True)
                         _structured = _structure_hearing_transcript(_transcript, _labels)
                         _sid = sfa_db.create_hearing_session(
                             con, deal_id=_did, source="paste", template_id=_tid,
