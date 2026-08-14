@@ -550,15 +550,23 @@ CREATE INDEX IF NOT EXISTS idx_hearing_sessions_deal ON hearing_sessions(deal_id
 -- AI整形の取り込み原本（文字起こしローデータ＋アップロード原本ファイル）。整形メモとは別に保存・参照する。
 CREATE TABLE IF NOT EXISTS intake_transcripts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind        TEXT NOT NULL,               -- 'issue'|'deal'（取り込み対象の種別）
-    entity_id   INTEGER NOT NULL,            -- 論点id/商談id
-    source      TEXT DEFAULT 'paste',        -- 'paste'|'file'
+    kind        TEXT NOT NULL,               -- 'issue'|'deal'|'inbox'（inbox=自動受信の未割り当て）
+    entity_id   INTEGER NOT NULL,            -- 論点id/商談id（inboxは0）
+    source      TEXT DEFAULT 'paste',        -- 'paste'|'file'|'jamie'|'zoom'
     filename    TEXT,                        -- アップロード時の元ファイル名
     transcript  TEXT,                        -- 抽出した文字起こし本文（生データ）
     file_blob   BLOB,                        -- 原本バイト（ファイルアップロード時のみ）
+    external_source TEXT,                     -- 自動連携元 'jamie'|'zoom'
+    external_id TEXT,                         -- 会議ID（冪等キー: external_source+external_id）
+    title       TEXT,                         -- 会議タイトル
+    occurred_on TEXT,                         -- 会議日 YYYY-MM-DD
+    attendees_json TEXT,                      -- 参加者/招待者 [{name,email}] のJSON
+    raw_summary TEXT,                         -- ソース側の要約（あれば）
+    status      TEXT,                         -- NULL/'saved'=割当済, 'inbox'=未割当, 'assigned'=割当済(自動由来)
     created_at  TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_intake_transcripts_ent ON intake_transcripts(kind, entity_id);
+CREATE INDEX IF NOT EXISTS idx_intake_transcripts_ext ON intake_transcripts(external_source, external_id);
 
 -- 開発案件（商談に紐づく開発テーマ。1商談:N開発案件）
 CREATE TABLE IF NOT EXISTS dev_projects (
@@ -1214,6 +1222,17 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             _toks = [t.strip() for t in (_mem or "").split(",") if t.strip()]
             if _toks and all(t in _legacy_member_tokens for t in _toks):
                 con.execute("UPDATE deal_issues SET members=NULL WHERE id=?", (_rid,))
+        # 取り込み原本テーブルに自動連携(インボックス)用カラムを後方互換で追加。
+        _it_cols = {c[1] for c in con.execute("PRAGMA table_info(intake_transcripts)")}
+        for _col, _decl in (
+            ("external_source", "TEXT"), ("external_id", "TEXT"), ("title", "TEXT"),
+            ("occurred_on", "TEXT"), ("attendees_json", "TEXT"), ("raw_summary", "TEXT"),
+            ("status", "TEXT"),
+        ):
+            if _col not in _it_cols:
+                con.execute(f"ALTER TABLE intake_transcripts ADD COLUMN {_col} {_decl}")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_intake_transcripts_ext "
+                    "ON intake_transcripts(external_source, external_id)")
         con.commit()
     finally:
         con.close()
@@ -2393,6 +2412,61 @@ def get_intake_transcript(con, id: int) -> dict | None:
 
 def delete_intake_transcript(con, id: int) -> None:
     con.execute("DELETE FROM intake_transcripts WHERE id=?", (int(id),))
+    con.commit()
+
+
+# ---- 自動連携（Jamie/Zoom）: 受信インボックス ----
+
+def get_intake_by_external(con, external_source: str, external_id: str) -> dict | None:
+    """冪等化用: 同一(external_source, external_id)の既存受信を返す。"""
+    if not external_id:
+        return None
+    r = con.execute(
+        "SELECT id, kind, entity_id, status FROM intake_transcripts "
+        "WHERE external_source=? AND external_id=? LIMIT 1",
+        (external_source, external_id)).fetchone()
+    return dict(r) if r else None
+
+
+def add_inbox_transcript(con, *, external_source: str, external_id: str | None,
+                         title: str | None = None, occurred_on: str | None = None,
+                         transcript: str | None = None, attendees_json: str | None = None,
+                         raw_summary: str | None = None) -> int:
+    """自動受信した文字起こしを未割り当て(inbox)として保存。冪等: 既存があればそのidを返す。"""
+    ex = get_intake_by_external(con, external_source, external_id) if external_id else None
+    if ex:
+        return ex["id"]
+    cur = con.execute(
+        "INSERT INTO intake_transcripts "
+        "(kind, entity_id, source, transcript, external_source, external_id, title, "
+        " occurred_on, attendees_json, raw_summary, status) "
+        "VALUES ('inbox', 0, ?, ?, ?, ?, ?, ?, ?, ?, 'inbox')",
+        (external_source, transcript, external_source, external_id, title,
+         occurred_on, attendees_json, raw_summary),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+def list_inbox_transcripts(con) -> list[dict]:
+    """未割り当て(inbox)の受信一覧（blobは載せない）。新しい順。"""
+    rows = con.execute(
+        "SELECT id, source, external_source, external_id, title, occurred_on, "
+        "attendees_json, LENGTH(transcript) AS text_len, created_at "
+        "FROM intake_transcripts WHERE status='inbox' ORDER BY id DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_inbox_transcripts(con) -> int:
+    return con.execute(
+        "SELECT COUNT(*) FROM intake_transcripts WHERE status='inbox'").fetchone()[0]
+
+
+def assign_inbox_transcript(con, id: int, *, kind: str, entity_id: int) -> None:
+    """インボックスの受信を商談/論点へ割り当て（以後その対象の取り込み原本として表示される）。"""
+    con.execute(
+        "UPDATE intake_transcripts SET kind=?, entity_id=?, status='assigned' WHERE id=?",
+        (kind, int(entity_id), int(id)))
     con.commit()
 
 

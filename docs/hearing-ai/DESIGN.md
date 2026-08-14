@@ -154,8 +154,12 @@ TranscriptSource（差し替え可能）
 - 秘匿情報（APIキー/Webhookシークレット）は Render 環境変数。公開リポジトリにコミットしない。
 
 ### 9.5 段階計画（P3）
-- **P3.0**: Webhook受信＋署名検証＋`intake_transcripts`保存＋「取り込みインボックス」一覧（未割り当て表示・生データ本文/原本参照は既存UI流用）。
-- **P3.1**: インボックスから商談/論点へ割り当て → 既存P1整形フローへ。候補サジェスト（attendeeメール/題名）。
+- **P3.0＋P3.1**: ✅ 2026-08-14 実装・本番反映。Jamie `meeting.completed` 受信（`POST /api/jamie/webhook`・署名/APIキー検証・冪等）
+  → `intake_transcripts`（status='inbox'）保存 → `/intake-inbox` 未割り当て一覧（本文参照/破棄）→ 商談/論点へ**割り当て**→既存P1整形（確認→確定）へ合流。題名一致の候補サジェスト付き。ナビに「📥 取り込み」。
+  - 実装: `sfa_db.add_inbox_transcript/list_inbox_transcripts/get_intake_by_external/assign_inbox_transcript`／
+    `webapp._handle_jamie_webhook・_verify_jamie_request・_jamie_transcript_text・_jamie_attendees・intake_inbox_page`。
+  - 秘匿: `JAMIE_WEBHOOK_SECRET`（署名HMAC）または `JAMIE_WEBHOOK_API_KEY`（x-jamie-api-keyヘッダ）。両未設定は fail-closed（503）。render.yaml に sync:false で宣言。
+  - 受信URL（本番）: `https://sfa-crm.onrender.com/api/jamie/webhook`（basic認証は /api/* 除外で通過）。
 - **P3.2**: 高信頼オートマッチ（プリセットのみ・確定は人）。REST backfill（取りこぼし補完）。
 - **P3.3（任意）**: Zoom-native アダプタを同じ受信層の裏に追加（Jamie未使用会議の補完）。
 

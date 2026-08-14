@@ -40,6 +40,10 @@ services:
         sync: false          # 事務Botの署名シークレット（/slack/desk-events 検証）
       - key: SLACK_OPS_CHANNEL_ID
         sync: false          # #オペレータ全体チャネルID。事務タスク完了通知で起票元スレッドが無い時の投稿先
+      - key: JAMIE_WEBHOOK_SECRET
+        sync: false          # Jamie webhook署名検証シークレット(#29 P3)。署名(HMAC)方式を使う場合に設定
+      - key: JAMIE_WEBHOOK_API_KEY
+        sync: false          # Jamie webhook APIキーヘッダ方式(#29 P3)。x-jamie-api-key と照合。どちらか片方でも可
     disk:
       name: sfa-db
       mountPath: /data

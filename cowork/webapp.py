@@ -35,6 +35,10 @@ from . import dev_project_link
 
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# Jamie Webhook検証用（#29 P3）。署名(HMAC)方式=JAMIE_WEBHOOK_SECRET / APIキーヘッダ方式=JAMIE_WEBHOOK_API_KEY。
+# どちらも未設定なら受信を拒否（fail-closed）。値はRender秘匿設定に格納しコミットしない。
+JAMIE_WEBHOOK_SECRET = os.environ.get("JAMIE_WEBHOOK_SECRET", "")
+JAMIE_WEBHOOK_API_KEY = os.environ.get("JAMIE_WEBHOOK_API_KEY", "")
 # ブラウザ向け全ページの認証（未設定時はfail-closed=全拒否）。
 # フォームログイン(Cookieセッション)＋従来のBasic認証の両方を受け付ける（#54: モバイルのBasic認証
 # ダイアログでループする問題への対応。ネイティブダイアログを出さずログイン画面へ誘導する）。
@@ -482,6 +486,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <!-- 次: ヒアリング・論点 -->
   <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
   <a href="/deal-issues" style="opacity:.85;font-size:13px">論点</a>
+  <a href="/intake-inbox" style="opacity:.85;font-size:13px" title="Jamie/Zoom等から自動受信した会議の取り込み">📥 取り込み</a>
   <span class="nav-sep"></span>
   <!-- クライアント管理: リード・アカウント -->
   <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
@@ -9145,6 +9150,209 @@ def _intake_originals_html(con, kind: str, entity_id: int, back_url: str) -> str
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 自動連携（#29 P3）: Jamie webhook 受信 → 取り込みインボックス保存
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _jamie_transcript_text(segments) -> str:
+    """Jamieのtranscript[]（{speakerName,text}のセグメント配列）を平文に連結。"""
+    if not isinstance(segments, list):
+        return str(segments or "")
+    lines = []
+    for s in segments:
+        if isinstance(s, dict):
+            name = (s.get("speakerName") or s.get("speaker") or "").strip()
+            txt = (s.get("text") or "").strip()
+            if txt:
+                lines.append((name + ": " if name else "") + txt)
+        elif isinstance(s, str) and s.strip():
+            lines.append(s.strip())
+    return "\n".join(lines)
+
+
+def _jamie_attendees(data: dict) -> list:
+    """カレンダー招待者(event.attendees)優先、無ければparticipantsから [{name,email}] を抽出。"""
+    out, seen = [], set()
+
+    def _add(name, email):
+        email = (email or "").strip().lower()
+        key = email or (name or "").strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append({"name": (name or "").strip(), "email": email})
+
+    ev = data.get("event") or {}
+    for a in (ev.get("attendees") or []):
+        if isinstance(a, dict):
+            _add(a.get("name") or a.get("displayName"), a.get("email"))
+    for p in (data.get("participants") or []):
+        if isinstance(p, dict):
+            _add(p.get("name") or p.get("speakerName"), p.get("email"))
+    return out
+
+
+def _verify_jamie_request(headers, raw_bytes: bytes) -> bool:
+    """Jamie webhookの正当性を検証。署名(HMAC)方式 または APIキーヘッダ方式。両未設定なら拒否。"""
+    import hmac as _hmac
+    import hashlib as _hashlib
+    import time as _time
+    # APIキーヘッダ方式（簡易）
+    if JAMIE_WEBHOOK_API_KEY:
+        got = headers.get("x-jamie-api-key") or headers.get("X-Jamie-Api-Key") or ""
+        if got and _hmac.compare_digest(got, JAMIE_WEBHOOK_API_KEY):
+            return True
+    # 署名方式: x-jamie-signature: t=<ts>,v0=<hexsig>, HMAC-SHA256("{t}.{body}")
+    if JAMIE_WEBHOOK_SECRET:
+        sig = headers.get("x-jamie-signature") or headers.get("X-Jamie-Signature") or ""
+        parts = dict(p.split("=", 1) for p in sig.split(",") if "=" in p)
+        t, v0 = parts.get("t", ""), parts.get("v0", "")
+        if t and v0:
+            try:
+                if abs(_time.time() - int(t)) > 300:
+                    return False
+            except ValueError:
+                return False
+            mac = _hmac.new(JAMIE_WEBHOOK_SECRET.encode(), f"{t}.".encode() + raw_bytes,
+                            _hashlib.sha256).hexdigest()
+            if _hmac.compare_digest(mac, v0):
+                return True
+    return False
+
+
+def _handle_jamie_webhook(handler, con, raw_bytes: bytes) -> None:
+    """Jamie meeting.completed を受信し、取り込みインボックスへ保存（冪等）。認証失敗は401。"""
+    def _reply(code, obj):
+        body = json.dumps(obj).encode("utf-8")
+        handler.send_response(code)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    if not (JAMIE_WEBHOOK_SECRET or JAMIE_WEBHOOK_API_KEY):
+        print("[jamie webhook] no secret configured; rejecting", flush=True)
+        _reply(503, {"ok": False, "error": "not configured"})
+        return
+    if not _verify_jamie_request(handler.headers, raw_bytes):
+        _reply(401, {"ok": False, "error": "unauthorized"})
+        return
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8"))
+    except Exception:
+        _reply(400, {"ok": False, "error": "bad json"})
+        return
+    event = payload.get("event") or ""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    ext_id = str(payload.get("id") or data.get("id") or "").strip() or None
+    if event and event != "meeting.completed":
+        _reply(200, {"ok": True, "ignored": event})   # 想定外イベントはackのみ
+        return
+    title = (data.get("title") or data.get("generatedTitle") or "").strip() or "（無題の会議）"
+    occurred_on = _norm_ymd((data.get("startTime") or "")[:10]) or _today_jst().isoformat()
+    transcript = _jamie_transcript_text(data.get("transcript"))
+    summary = ((data.get("summary") or {}) if isinstance(data.get("summary"), dict) else {})
+    raw_summary = (summary.get("markdown") or summary.get("short") or "").strip()
+    attendees = _jamie_attendees(data)
+    try:
+        _iid = sfa_db.add_inbox_transcript(
+            con, external_source="jamie", external_id=ext_id, title=title,
+            occurred_on=occurred_on, transcript=transcript,
+            attendees_json=json.dumps(attendees, ensure_ascii=False), raw_summary=raw_summary)
+        print(f"[jamie webhook] saved inbox id={_iid} ext={ext_id} title={title!r}", flush=True)
+        _reply(200, {"ok": True, "id": _iid})
+    except Exception as e:  # noqa: BLE001
+        print(f"[jamie webhook] save failed: {e}", flush=True)
+        _reply(500, {"ok": False, "error": "save failed"})
+
+
+def _inbox_target_options(deals: list, issues: list) -> str:
+    """割り当て先セレクトの<option>（商談＝deal:id / 論点＝issue:id、optgroup分け）。"""
+    dopt = "".join(
+        f'<option value="deal:{d["id"]}">{_esc(d.get("account_name") or "—")} / {_esc(d.get("deal_name") or "—")}</option>'
+        for d in deals)
+    iopt = "".join(
+        f'<option value="issue:{it["id"]}">{_esc(it.get("issue") or "—")}'
+        f'{("（" + _esc(it.get("account_name")) + "）") if it.get("account_name") else "（商談共通）"}</option>'
+        for it in issues)
+    return (f'<optgroup label="商談（進行中）">{dopt}</optgroup>'
+            f'<optgroup label="論点（議論中）">{iopt}</optgroup>')
+
+
+def _inbox_candidates(title: str, attendees: list, deals: list, issues: list) -> list:
+    """会議タイトル/参加者から割り当て候補を推定（題名にアカウント名/案件名/論点名を含むもの）。"""
+    t = (title or "").lower()
+    out = []
+    for d in deals:
+        an, dn = (d.get("account_name") or ""), (d.get("deal_name") or "")
+        if (an and an.lower() in t) or (dn and dn.lower() in t):
+            out.append((f"deal:{d['id']}", f'商談: {an} / {dn}'))
+    for it in issues:
+        nm = it.get("issue") or ""
+        if nm and nm.lower() in t:
+            out.append((f"issue:{it['id']}", f'論点: {nm}'))
+    return out[:5]
+
+
+def intake_inbox_page(con) -> str:
+    """自動連携（Jamie等）で受信した未割り当ての文字起こしインボックス。人が商談/論点へ割り当てる。"""
+    items = sfa_db.list_inbox_transcripts(con)
+    deals = sfa_db.list_deals(con, status="open")
+    issues = sfa_db.list_deal_issues(con, status="議論中")
+    _tgt_opts = _inbox_target_options(deals, issues)
+    if not items:
+        rows = ('<p class="muted" style="margin:0">未割り当ての取り込みはありません。'
+                'Jamie/Zoomの会議が処理完了するとここに届きます。</p>')
+    else:
+        cards = []
+        for t in items:
+            try:
+                _att = json.loads(t.get("attendees_json") or "[]")
+            except Exception:
+                _att = []
+            _att_txt = "、".join(a.get("email") or a.get("name") or "" for a in _att if (a.get("email") or a.get("name")))[:200]
+            _cands = _inbox_candidates(t.get("title"), _att, deals, issues)
+            _cand_html = ""
+            if _cands:
+                _cand_btns = "".join(
+                    f'<button type="button" class="btn sec" style="font-size:11px;padding:2px 8px" '
+                    f'onclick="this.closest(\'form\').querySelector(\'[name=target]\').value=\'{v}\'">{_esc(lbl)}</button>'
+                    for v, lbl in _cands)
+                _cand_html = f'<div style="margin:6px 0"><span class="muted" style="font-size:11px">候補: </span>{_cand_btns}</div>'
+            cards.append(
+                f'<div style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#fff">'
+                f'<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">'
+                f'<div style="font-weight:600;font-size:14px">🎙️ {_esc(t.get("title") or "（無題）")}</div>'
+                f'<div class="muted" style="font-size:12px">{_esc(t.get("external_source") or "")} ・ '
+                f'{_esc(t.get("occurred_on") or (t.get("created_at") or "")[:10])} ・ 文字数 {t.get("text_len") or 0:,}</div></div>'
+                + (f'<div class="muted" style="font-size:12px;margin-top:4px">参加者: {_esc(_att_txt)}</div>' if _att_txt else "")
+                + _cand_html
+                + f'<form method="post" action="/intake-inbox/{t["id"]}/assign" '
+                  f'style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px" '
+                  f'onsubmit="var b=this.querySelector(\'button[type=submit]\');setTimeout(function(){{if(b){{b.disabled=true;b.textContent=\'整形中…\';}}}},0);">'
+                  f'<select name="target" required style="max-width:360px"><option value="">割り当て先を選択…</option>{_tgt_opts}</select>'
+                  f'<button class="btn" type="submit">この会議を割り当てて整形</button>'
+                  f'<a class="btn sec" href="/intake-transcript/{t["id"]}/view" target="_blank" style="font-size:12px">本文</a>'
+                  f'</form>'
+                  f'<form method="post" action="/intake-transcript/{t["id"]}/delete" style="margin:6px 0 0" '
+                  f'onsubmit="return confirm(\'この取り込みを破棄しますか？\')">'
+                  f'<input type="hidden" name="return_to" value="/intake-inbox">'
+                  f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer;font-size:11px">破棄</button></form>'
+                f'</div>')
+        rows = '<div style="display:flex;flex-direction:column;gap:10px">' + "".join(cards) + '</div>'
+    _cfg_warn = "" if (JAMIE_WEBHOOK_SECRET or JAMIE_WEBHOOK_API_KEY) else (
+        '<div style="background:#fef2f2;border-left:3px solid #dc2626;padding:6px 10px;margin:0 0 10px;'
+        'font-size:12px;color:#991b1b">⚠ Jamie Webhookの受信シークレットが未設定です（Render環境変数 '
+        'JAMIE_WEBHOOK_SECRET または JAMIE_WEBHOOK_API_KEY）。設定するまで自動受信は拒否されます。</div>')
+    return render(f"""
+    <div class="card">
+      <h2 style="margin-top:0">📥 取り込みインボックス（自動連携）</h2>
+      <p class="muted" style="font-size:13px">Jamie/Zoom等から自動受信した会議の文字起こしです。
+      内容を確認し、<b>商談または論点へ割り当て</b>るとAI整形の確認画面へ進みます（割り当てないと確定されません）。</p>
+      {_cfg_warn}
+      {rows}
+    </div>""")
+
+
 def hearing_intake_page(con, deal: dict) -> str:
     """P1: 面談の文字起こしを貼付/アップロードして取り込む入口（ソース非依存）。"""
     did = deal["id"]
@@ -12631,6 +12839,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     iss = sfa_db.get_deal_issue(con, iid) if iid else None
                     self._send(issue_intake_page(con, iss) if iss
                                else render("<div class=card>論点が見つかりません</div>", ), 200 if iss else 404)
+                elif path == "/intake-inbox":
+                    self._send(render(intake_inbox_page(con)))
                 elif path.startswith("/intake-transcript/") and path.endswith("/view"):
                     try:
                         _tid = int(path.split("/")[2])
@@ -12807,6 +13017,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             con = sfa_db.connect(db_path)
             ctype = self.headers.get("Content-Type", "")
             try:
+                # 自動連携Webhookは生ボディで署名検証するため、汎用パースより前に処理する（#29 P3）。
+                if path == "/api/jamie/webhook":
+                    _n = int(self.headers.get("Content-Length", 0) or 0)
+                    _raw = self.rfile.read(_n)
+                    _handle_jamie_webhook(self, con, _raw)
+                    return
                 if "multipart/form-data" in ctype:
                     f = self._form_multi()
                     f_list = {}  # multipart returns single values; list values handled separately
@@ -14207,6 +14423,50 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         if _summary:
                             sfa_db.set_deal_issue_ai_summary(con, iid, _summary)
                     self._redirect("/deal-issue/%d" % iid)
+
+                elif path.startswith("/intake-inbox/") and path.endswith("/assign"):
+                    try:
+                        _tid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        _tid = 0
+                    _t = sfa_db.get_intake_transcript(con, _tid) if _tid else None
+                    _target = (f.get("target") or "").strip()
+                    if not _t or ":" not in _target:
+                        self._redirect("/intake-inbox")
+                        return
+                    _tk, _teid = _target.split(":", 1)
+                    try:
+                        _teid = int(_teid)
+                    except ValueError:
+                        _teid = 0
+                    _transcript = _t.get("transcript") or ""
+                    _occ = _t.get("occurred_on") or _today_jst().isoformat()
+                    if _tk == "issue":
+                        _iss = sfa_db.get_deal_issue(con, _teid)
+                        if not _iss:
+                            self._redirect("/intake-inbox")
+                            return
+                        sfa_db.assign_inbox_transcript(con, _tid, kind="issue", entity_id=_teid)
+                        _structured = _structure_issue_transcript(
+                            _iss.get("issue") or "", _transcript,
+                            filename=_t.get("title"), upload_date=_occ)
+                        self._send(issue_review_page(con, _iss, _structured))
+                    elif _tk == "deal":
+                        _row = con.execute(
+                            "SELECT d.id, d.deal_name, a.name account_name FROM deals d "
+                            "LEFT JOIN accounts a ON a.id=d.account_id WHERE d.id=?", (_teid,)).fetchone()
+                        if not _row:
+                            self._redirect("/intake-inbox")
+                            return
+                        sfa_db.assign_inbox_transcript(con, _tid, kind="deal", entity_id=_teid)
+                        _structured = _structure_hearing_transcript(_transcript, [])
+                        _sid = sfa_db.create_hearing_session(
+                            con, deal_id=_teid, source="jamie", template_id=None,
+                            conducted_on=_occ, transcript=_transcript,
+                            structured=_structured, status="structured")
+                        self._send(hearing_review_page(con, dict(_row), sfa_db.get_hearing_session(con, _sid)))
+                    else:
+                        self._redirect("/intake-inbox")
 
                 elif path.startswith("/intake-transcript/") and path.endswith("/delete"):
                     try:
