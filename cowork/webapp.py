@@ -8954,6 +8954,7 @@ def _structure_hearing_transcript(transcript: str, item_labels: list) -> dict:
     prompt = (
         "あなたは法人営業のヒアリング整理担当です。以下の面談文字起こしを読み、指定のヒアリング項目に沿って"
         "内容を割り当て、面談全体像・NextStep・相手宛メール素案を作成してください。"
+        + _TRANSCRIPT_CORRECTION_HINT +
         "JSONのみを厳密に出力し、前後の説明文は書かないでください。\n"
         '出力形式: {"items":[{"label":"項目名","answer":"該当内容。無ければ空文字"}],'
         '"overview":"面談全体像の要約(3〜5文)","nextsteps":["次にやること","..."],'
@@ -9167,14 +9168,65 @@ def hearing_review_page(con, deal: dict, session: dict) -> str:
 
 # ── 論点(deal_issue)向け: 文字起こし → AI整形（#29のヒアリングAIを論点でトライ） ──
 
-def _structure_issue_transcript(issue_title: str, transcript: str) -> dict:
-    """議論の文字起こしを「全体像／論点別整理／決定事項／NextStep」に整形（Claude）。
+# AI整形プロンプト共通: 音声認識由来の誤変換を文脈で訂正させる指示（全整形機能で使う）。
+_TRANSCRIPT_CORRECTION_HINT = (
+    "文字起こしには音声認識由来の誤変換・誤認識が含まれることがあります。"
+    "文脈から明らかな誤り（同音・近音の取り違え、専門用語の誤変換など。"
+    "例: 『食材/管財』が文脈上『直材/間材』のような調達用語である等）は、"
+    "正しいと判断できる語に訂正した上で整理してください。推測が難しい箇所は原文を尊重します。"
+)
+
+
+def _norm_ymd(s: str | None) -> str:
+    """'2026-08-11' / '2026/8/11' 等を YYYY-MM-DD へ正規化。妥当でなければ空文字。"""
+    if not s:
+        return ""
+    m = re.search(r"(20\d{2})[-/年.](\d{1,2})[-/月.](\d{1,2})", str(s))
+    if not m:
+        return ""
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    try:
+        return date(y, mo, d).isoformat()
+    except ValueError:
+        return ""
+
+
+def _date_from_filename(filename: str | None) -> str:
+    """ファイル名から日付を推定して YYYY-MM-DD で返す。YYYYMMDD / YYMMDD / YYYY-MM-DD 等に対応。"""
+    if not filename:
+        return ""
+    name = filename
+    # YYYY-MM-DD / YYYY_MM_DD / YYYY/MM/DD
+    d = _norm_ymd(name)
+    if d:
+        return d
+    m = re.search(r"(20\d{2})(\d{2})(\d{2})", name)          # YYYYMMDD
+    if m:
+        return _norm_ymd(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
+    m = re.search(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)", name)  # YYMMDD（例: 260811→2026-08-11）
+    if m:
+        return _norm_ymd(f"20{m.group(1)}-{m.group(2)}-{m.group(3)}")
+    return ""
+
+
+def _resolve_note_date(ai_date: str | None, filename: str | None, upload_date: str | None) -> str:
+    """メモ日付の決定順: ①本文からAIが読んだ日付 ②ファイル名の日付 ③アップロード日。"""
+    return (_norm_ymd(ai_date) or _date_from_filename(filename)
+            or _norm_ymd(upload_date) or _today_jst().isoformat())
+
+
+def _structure_issue_transcript(issue_title: str, transcript: str, *,
+                                filename: str | None = None, upload_date: str | None = None) -> dict:
+    """議論の文字起こしを「タイトル／日付／全体像／論点別整理／決定事項／NextStep」に整形（Claude）。
     失敗時も空の骨格を返す（人が手入力で確定できるようにする）。"""
     prompt = (
         "あなたは社内論点の議論整理担当です。以下の議論（会議/面談）の文字起こしを読み、"
         f"論点「{issue_title or '（表題なし）'}」に沿って内容を整理してください。"
+        + _TRANSCRIPT_CORRECTION_HINT +
         "JSONのみを厳密に出力し、前後の説明文は書かないでください。\n"
-        '出力形式: {"overview":"議論全体の要約(3〜5文)",'
+        '出力形式: {"title":"内容から推定した簡潔なタイトル(10〜20文字程度・体言止め可)",'
+        '"date":"議論が行われた日付。本文から読み取れれば YYYY-MM-DD、読み取れなければ空文字",'
+        '"overview":"議論全体の要約(3〜5文)",'
         '"points":[{"topic":"論点の見出し(名詞句・2〜12文字)","detail":"議論内容。結論が出ていなければ「未決」と明記"}],'
         '"decisions":["合意/決定事項","..."],"nextsteps":["次にやること","..."]}\n'
         f"議論の文字起こし:\n{(transcript or '')[:12000]}\n"
@@ -9200,20 +9252,64 @@ def _structure_issue_transcript(issue_title: str, transcript: str) -> dict:
         v = data.get(key)
         return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
 
-    return {"overview": str(data.get("overview") or "").strip(), "points": points,
+    return {"title": str(data.get("title") or "").strip(),
+            "date": _resolve_note_date(data.get("date"), filename, upload_date),
+            "overview": str(data.get("overview") or "").strip(), "points": points,
             "decisions": _slist("decisions"), "nextsteps": _slist("nextsteps"),
             "_ai_ok": bool(data)}
 
 
-def _issue_structured_to_note_html(overview: str, points: list, decisions: list, nextsteps: list) -> str:
-    """整形結果を論点メモ(rich_note)の本文HTMLに組み立てる。出力はサニタイズ前提の許可タグのみ。"""
+def _points_md_from_list(points: list) -> str:
+    """[{topic,detail}] を「- 見出し / （インデント）- 内容」のブレット＋インデントmarkdownに変換。"""
+    lines = []
+    for p in (points or []):
+        tp = (p.get("topic") or "").strip()
+        dt = (p.get("detail") or "").strip()
+        if tp:
+            lines.append(f"- {tp}")
+            if dt:
+                lines.append(f"    - {dt}")
+        elif dt:
+            lines.append(f"- {dt}")
+    return "\n".join(lines)
+
+
+def _md_points_to_html(md: str) -> str:
+    """ブレット＋インデント(2レベル)のテキストを入れ子<ul>へ変換。トップ=見出し(太字)、子=内容。"""
+    top = []  # [{text, children:[...]}]
+    for raw in (md or "").splitlines():
+        if not raw.strip():
+            continue
+        indent = len(raw) - len(raw.lstrip(" \t　"))
+        text = raw.strip().lstrip("-*・●○◦–").strip()
+        if not text:
+            continue
+        if indent >= 2 and top:
+            top[-1]["children"].append(text)
+        else:
+            top.append({"text": text, "children": []})
+    if not top:
+        return ""
+    lis = []
+    for node in top:
+        head = "<b>%s</b>" % _esc(node["text"]) if node["children"] else _esc(node["text"])
+        if node["children"]:
+            ch = "".join("<li>%s</li>" % _esc(c) for c in node["children"])
+            lis.append("<li>%s<ul>%s</ul></li>" % (head, ch))
+        else:
+            lis.append("<li>%s</li>" % head)
+    return "<ul>%s</ul>" % "".join(lis)
+
+
+def _issue_structured_to_note_html(overview: str, points_md: str, decisions: list, nextsteps: list) -> str:
+    """整形結果を論点メモ(rich_note)の本文HTMLに組み立てる。出力はサニタイズ前提の許可タグのみ。
+    points_md は「- 見出し / インデント- 内容」形式のブレット＋インデントテキスト。"""
     parts = []
     if (overview or "").strip():
         parts.append("<h3>全体像</h3><p>%s</p>" % _esc(overview).replace("\n", "<br>"))
-    _pl = "".join("<li><b>%s</b>：%s</li>" % (_esc(p.get("topic") or ""), _esc(p.get("detail") or ""))
-                  for p in (points or []) if (p.get("topic") or p.get("detail")))
+    _pl = _md_points_to_html(points_md)
     if _pl:
-        parts.append("<h3>論点別整理</h3><ul>%s</ul>" % _pl)
+        parts.append("<h3>論点別整理</h3>%s" % _pl)
     _dl = "".join("<li>%s</li>" % _esc(d) for d in (decisions or []) if d.strip())
     if _dl:
         parts.append("<h3>決定事項</h3><ul>%s</ul>" % _dl)
@@ -9221,6 +9317,66 @@ def _issue_structured_to_note_html(overview: str, points: list, decisions: list,
     if _nl:
         parts.append('<h3>NextStep</h3><ul class="cl">%s</ul>' % _nl)
     return "".join(parts)
+
+
+# 論点整形結果を Markdown / Slack / プレーン のいずれかの書式で組み立ててコピーする（他ツールへ転記用）。
+_ISSUE_COPY_JS = """
+function _icGather(){
+  var form=document.getElementById('issueReviewForm');
+  function v(n){var el=form?form.querySelector('[name="'+n+'"]'):null;return el?el.value:'';}
+  return {
+    title:v('note_title').trim(), overview:v('overview').trim(),
+    points:v('points_md').replace(/\\s+$/,''),
+    decisions:v('decisions').split('\\n').map(function(s){return s.trim();}).filter(Boolean),
+    nextsteps:v('nextsteps').split('\\n').map(function(s){return s.trim();}).filter(Boolean)
+  };
+}
+function _icPoints(fmt,points){
+  return points.split('\\n').map(function(line){
+    if(!line.trim())return '';
+    var indent=line.length-line.replace(/^[\\s　]+/,'').length;
+    var text=line.replace(/^[\\s　]*[-*・●○◦–]\\s?/,'').trim();
+    var child=indent>=2;
+    if(fmt==='slack')return (child?'        ◦ ':'• ')+text;
+    if(fmt==='plain')return (child?'    ・':'・')+text;
+    return (child?'    - ':'- ')+text;
+  }).filter(function(x){return x!=='';}).join('\\n');
+}
+function icBuild(fmt){
+  var g=_icGather(), L=[];
+  if(fmt==='markdown'){
+    if(g.title)L.push('# '+g.title,'');
+    if(g.overview)L.push('## 全体像',g.overview,'');
+    if(g.points.trim())L.push('## 論点別整理',_icPoints('markdown',g.points),'');
+    if(g.decisions.length)L.push('## 決定事項',g.decisions.map(function(d){return '- '+d;}).join('\\n'),'');
+    if(g.nextsteps.length)L.push('## NextStep',g.nextsteps.map(function(n){return '- [ ] '+n;}).join('\\n'),'');
+  }else if(fmt==='slack'){
+    if(g.title)L.push('*'+g.title+'*','');
+    if(g.overview)L.push('*全体像*',g.overview,'');
+    if(g.points.trim())L.push('*論点別整理*',_icPoints('slack',g.points),'');
+    if(g.decisions.length)L.push('*決定事項*',g.decisions.map(function(d){return '• '+d;}).join('\\n'),'');
+    if(g.nextsteps.length)L.push('*NextStep*',g.nextsteps.map(function(n){return '☐ '+n;}).join('\\n'),'');
+  }else{
+    if(g.title)L.push(g.title,'');
+    if(g.overview)L.push('【全体像】',g.overview,'');
+    if(g.points.trim())L.push('【論点別整理】',_icPoints('plain',g.points),'');
+    if(g.decisions.length)L.push('【決定事項】',g.decisions.map(function(d){return '・'+d;}).join('\\n'),'');
+    if(g.nextsteps.length)L.push('【NextStep】',g.nextsteps.map(function(n){return '・'+n;}).join('\\n'),'');
+  }
+  return L.join('\\n').replace(/\\n{3,}/g,'\\n\\n').trim();
+}
+function icSetFormat(fmt){
+  var out=document.getElementById('issueCopyOut'); if(out)out.value=icBuild(fmt);
+  document.querySelectorAll('.icopy-btn').forEach(function(b){b.classList.toggle('on',b.dataset.fmt===fmt);});
+}
+function icCopy(){
+  var t=document.getElementById('issueCopyOut'); if(!t)return; t.select();
+  var done=function(){var b=document.getElementById('issueCopyBtn');if(!b)return;var o=b.textContent;b.textContent='✓ コピーしました';setTimeout(function(){b.textContent=o;},1500);};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t.value).then(done).catch(function(){try{document.execCommand('copy');done();}catch(e){}});}
+  else{try{document.execCommand('copy');done();}catch(e){}}
+}
+document.addEventListener('DOMContentLoaded',function(){if(document.getElementById('issueCopyOut'))icSetFormat('markdown');});
+"""
 
 
 def issue_intake_page(con, issue: dict) -> str:
@@ -9247,43 +9403,56 @@ def issue_review_page(con, issue: dict, structured: dict) -> str:
     """論点: AI整形結果を人が確認・編集し、論点メモとして確定する画面。"""
     iid = issue["id"]
     st = structured or {}
-    points = st.get("points") or []
-    _pt_rows = "".join(
-        f'<div style="display:flex;gap:8px;margin:6px 0;align-items:flex-start">'
-        f'<input name="topic_{i}" value="{_esc(p.get("topic") or "")}" placeholder="論点の見出し"'
-        f' style="flex:0 0 160px;font-size:13px;padding:6px">'
-        f'<textarea name="detail_{i}" rows="2" placeholder="内容・結論（未決なら「未決」）"'
-        f' style="flex:1;font-size:13px;padding:6px;box-sizing:border-box">{_esc(p.get("detail") or "")}</textarea>'
-        f'</div>' for i, p in enumerate(points)) or '<p class="muted">（論点別の整理はありません）</p>'
+    _points_md = _points_md_from_list(st.get("points") or [])
     _dec_text = "\n".join(st.get("decisions") or [])
     _ns_text = "\n".join(st.get("nextsteps") or [])
-    _title = f"議論整形メモ {_today_jst().isoformat()}"
+    # メモ見出し = 日付_タイトル（日付=本文/ファイル名/Upload日, タイトル=内容からAI推定）
+    _date = st.get("date") or _today_jst().isoformat()
+    _ttl = (st.get("title") or "").strip() or (issue.get("issue") or "議論メモ")
+    _title = f"{_date}_{_ttl}"
     _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
+    _ta = "width:100%;box-sizing:border-box;font-size:13px;padding:6px"
     return render(f"""
+    <style>
+    .icopy-btn{{font-size:12px;padding:3px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer}}
+    .icopy-btn.on{{background:#eff6ff;border-color:#60a5fa;color:#1d4ed8;font-weight:600}}
+    </style>
     <div class="card">
       <h2>🎙️ 議論整形結果の確認</h2>
       <p class="muted" style="font-size:13px">論点 <b>{_esc(issue.get("issue") or "—")}</b>。内容を確認・編集して「確定」すると、
       論点メモとして保存し、論点サマリを再生成します。</p>
       {_ai_warn}
-      <form method="post" action="/deal-issue/{iid}/intake/commit">
-        <input type="hidden" name="point_count" value="{len(points)}">
-        <label style="font-size:12px">メモの見出し
-          <input name="note_title" value="{_esc(_title)}" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px"></label>
+      <form method="post" action="/deal-issue/{iid}/intake/commit" id="issueReviewForm">
+        <label style="font-size:12px">メモの見出し（日付_タイトル）
+          <input name="note_title" value="{_esc(_title)}" style="{_ta}"></label>
         <div style="font-weight:700;font-size:13px;margin:12px 0 2px">■ 全体像</div>
-        <textarea name="overview" rows="4" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(st.get("overview") or "")}</textarea>
-        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 論点別の整理</div>
-        {_pt_rows}
+        <textarea name="overview" rows="4" style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(st.get("overview") or "")}</textarea>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 論点別の整理
+          <span class="muted" style="font-weight:normal;font-size:11px">（「- 見出し」＋インデント「- 内容」のブレット。行頭スペースでインデント）</span></div>
+        <textarea name="points_md" rows="10" placeholder="- 見出し&#10;    - 内容" style="{_ta};font-family:ui-monospace,Menlo,Consolas,monospace" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_points_md)}</textarea>
         <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 決定事項（1行1件）</div>
-        <textarea name="decisions" rows="3" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(_dec_text)}</textarea>
+        <textarea name="decisions" rows="3" style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_dec_text)}</textarea>
         <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ NextStep（1行1件）</div>
-        <textarea name="nextsteps" rows="3" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(_ns_text)}</textarea>
+        <textarea name="nextsteps" rows="3" style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_ns_text)}</textarea>
         <div style="margin-top:12px;display:flex;gap:8px">
           <button class="btn" type="submit">✓ 確定して論点メモに保存</button>
           <a class="btn sec" href="/deal-issue/{iid}/intake">やり直す</a>
           <a class="btn sec" href="/deal-issue/{iid}">キャンセル</a>
         </div>
       </form>
-    </div>""")
+      <div style="margin-top:16px;border-top:1px solid #eef1f5;padding-top:12px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-weight:700;font-size:13px">📋 他ツールへコピー</span>
+          <button type="button" class="icopy-btn on" data-fmt="markdown" onclick="icSetFormat('markdown')">Markdown</button>
+          <button type="button" class="icopy-btn" data-fmt="slack" onclick="icSetFormat('slack')">Slack</button>
+          <button type="button" class="icopy-btn" data-fmt="plain" onclick="icSetFormat('plain')">プレーン</button>
+          <button type="button" class="btn sec" id="issueCopyBtn" style="font-size:12px" onclick="icCopy()">コピー</button>
+          <span class="muted" style="font-size:11px">OneNote/Slack等へ貼り付け（編集内容が即反映）</span>
+        </div>
+        <textarea id="issueCopyOut" rows="8" readonly style="{_ta};margin-top:8px;background:#f8fafc;font-family:ui-monospace,Menlo,Consolas,monospace"></textarea>
+      </div>
+    </div>
+    <script>{_ISSUE_COPY_JS}</script>""")
 
 
 def hearing_templates_page(con) -> str:
@@ -13905,7 +14074,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render("<div class=card>論点または文字起こしがありません。"
                                           f"<a href='/deal-issue/{iid}/intake'>戻る</a></div>"), 400)
                     else:
-                        _structured = _structure_issue_transcript(iss.get("issue") or "", _transcript)
+                        _up = f.get("transcript_file")
+                        _fname = _up[0] if isinstance(_up, tuple) and len(_up) == 2 else None
+                        _structured = _structure_issue_transcript(
+                            iss.get("issue") or "", _transcript,
+                            filename=_fname, upload_date=_today_jst().isoformat())
                         self._send(issue_review_page(con, iss, _structured))
 
                 elif path.startswith("/deal-issue/") and path.endswith("/intake/commit"):
@@ -13917,21 +14090,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if not iss:
                         self._redirect("/deal-issues")
                         return
-                    try:
-                        _n = int(f.get("point_count", "0") or 0)
-                    except ValueError:
-                        _n = 0
-                    _points = []
-                    for _i in range(_n):
-                        _tp = (f.get("topic_%d" % _i) or "").strip()
-                        _dt = (f.get("detail_%d" % _i) or "").strip()
-                        if _tp or _dt:
-                            _points.append({"topic": _tp, "detail": _dt})
+                    _points_md = (f.get("points_md") or "").strip()
                     _overview = (f.get("overview") or "").strip()
                     _decisions = [ln.strip() for ln in (f.get("decisions") or "").splitlines() if ln.strip()]
                     _nextsteps = [ln.strip() for ln in (f.get("nextsteps") or "").splitlines() if ln.strip()]
                     _body = _sanitize_rich_html(
-                        _issue_structured_to_note_html(_overview, _points, _decisions, _nextsteps))
+                        _issue_structured_to_note_html(_overview, _points_md, _decisions, _nextsteps))
                     _title = (f.get("note_title") or "").strip() or ("議論整形メモ " + _today_jst().isoformat())
                     if _body:
                         sfa_db.create_rich_note(con, kind="issue", entity_id=iid, title=_title, body=_body)
