@@ -116,6 +116,36 @@ def test_webhook_rejects_bad_signature_and_unconfigured(monkeypatch):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_init_db_migrates_legacy_intake_table():
+    """本番再現: 新列の無い旧 intake_transcripts に対し init_db が失敗せず列＋索引を追加する。
+    （SCHEMAのCREATE INDEXが未追加列を参照して落ちた回帰の防止）。"""
+    import sqlite3
+    d = tempfile.mkdtemp(prefix="sfa_iw_")
+    try:
+        path = str(Path(d) / "t.db")
+        con = sqlite3.connect(path)
+        con.execute(
+            "CREATE TABLE intake_transcripts(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "kind TEXT NOT NULL, entity_id INTEGER NOT NULL, source TEXT DEFAULT 'paste', "
+            "filename TEXT, transcript TEXT, file_blob BLOB, "
+            "created_at TEXT DEFAULT (datetime('now')))")
+        con.execute("INSERT INTO intake_transcripts(kind,entity_id,transcript) VALUES('issue',1,'旧')")
+        con.commit()
+        con.close()
+        sfa_db.init_db(path)   # 例外なく完了すること
+        sfa_db.init_db(path)   # 冪等
+        con = sfa_db.connect(path)
+        cols = {r[1] for r in con.execute("PRAGMA table_info(intake_transcripts)")}
+        assert {"external_source", "external_id", "title", "occurred_on",
+                "attendees_json", "raw_summary", "status"} <= cols
+        idx = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        assert "idx_intake_transcripts_ext" in idx
+        assert con.execute("SELECT transcript FROM intake_transcripts WHERE id=1").fetchone()[0] == "旧"
+        con.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_assign_inbox_moves_into_entity_originals():
     d, con = _fresh_db()
     try:

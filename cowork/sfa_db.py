@@ -566,7 +566,8 @@ CREATE TABLE IF NOT EXISTS intake_transcripts (
     created_at  TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_intake_transcripts_ent ON intake_transcripts(kind, entity_id);
-CREATE INDEX IF NOT EXISTS idx_intake_transcripts_ext ON intake_transcripts(external_source, external_id);
+-- 注: external_source/external_id はマイグレーションで追加する列のため、その複合インデックスは
+-- SCHEMA(executescript)では作らない（既存DBは列未追加でここが失敗する）。init_db()のALTER後に作成する。
 
 -- 開発案件（商談に紐づく開発テーマ。1商談:N開発案件）
 CREATE TABLE IF NOT EXISTS dev_projects (
