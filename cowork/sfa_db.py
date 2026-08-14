@@ -547,6 +547,19 @@ CREATE TABLE IF NOT EXISTS hearing_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_hearing_sessions_deal ON hearing_sessions(deal_id);
 
+-- AI整形の取り込み原本（文字起こしローデータ＋アップロード原本ファイル）。整形メモとは別に保存・参照する。
+CREATE TABLE IF NOT EXISTS intake_transcripts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,               -- 'issue'|'deal'（取り込み対象の種別）
+    entity_id   INTEGER NOT NULL,            -- 論点id/商談id
+    source      TEXT DEFAULT 'paste',        -- 'paste'|'file'
+    filename    TEXT,                        -- アップロード時の元ファイル名
+    transcript  TEXT,                        -- 抽出した文字起こし本文（生データ）
+    file_blob   BLOB,                        -- 原本バイト（ファイルアップロード時のみ）
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_intake_transcripts_ent ON intake_transcripts(kind, entity_id);
+
 -- 開発案件（商談に紐づく開発テーマ。1商談:N開発案件）
 CREATE TABLE IF NOT EXISTS dev_projects (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2344,6 +2357,43 @@ def get_hearing_session_by_external(con, source: str, external_id: str) -> dict 
     r = con.execute("SELECT * FROM hearing_sessions WHERE source=? AND external_id=? LIMIT 1",
                     (source, external_id)).fetchone()
     return _hydrate_hearing_session(dict(r)) if r else None
+
+
+# ---- AI整形の取り込み原本（文字起こしローデータ＋原本ファイル） ----
+
+def add_intake_transcript(con, *, kind: str, entity_id: int, source: str = "paste",
+                          filename: str | None = None, transcript: str | None = None,
+                          file_blob: bytes | None = None) -> int:
+    cur = con.execute(
+        "INSERT INTO intake_transcripts (kind, entity_id, source, filename, transcript, file_blob) "
+        "VALUES (?,?,?,?,?,?)",
+        (kind, int(entity_id), source, filename, transcript,
+         sqlite3.Binary(file_blob) if file_blob else None),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+def list_intake_transcripts(con, kind: str, entity_id: int) -> list[dict]:
+    """一覧用（file_blobは載せない。サイズと転送量の節約）。新しい順。"""
+    rows = con.execute(
+        "SELECT id, kind, entity_id, source, filename, "
+        "LENGTH(file_blob) AS file_size, LENGTH(transcript) AS text_len, created_at "
+        "FROM intake_transcripts WHERE kind=? AND entity_id=? ORDER BY id DESC",
+        (kind, int(entity_id)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_intake_transcript(con, id: int) -> dict | None:
+    """本文表示/原本DL用（file_blob込み）。"""
+    r = con.execute("SELECT * FROM intake_transcripts WHERE id=?", (int(id),)).fetchone()
+    return dict(r) if r else None
+
+
+def delete_intake_transcript(con, id: int) -> None:
+    con.execute("DELETE FROM intake_transcripts WHERE id=?", (int(id),))
+    con.commit()
 
 
 def update_hearing_result(con, id: int, *, conducted_on=None, answers: list[dict]) -> None:

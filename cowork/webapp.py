@@ -8790,6 +8790,37 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
         )
     else:
         note_cards = '<div class="muted">論点メモはまだありません。「📝 論点メモ」から追加してください。</div>'
+    # 取り込み原本（文字起こしローデータ＋アップロード原本）の一覧
+    _intakes = sfa_db.list_intake_transcripts(con, "issue", iid)
+    if _intakes:
+        def _fkb(n):
+            return f"{round((n or 0)/1024):,}KB" if n else ""
+        _intake_rows = "".join(
+            f'<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid #e2e8f0;'
+            f'border-radius:8px;background:#fff;font-size:12px">'
+            f'<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+            f'{"📎 " if t.get("source")=="file" else "📝 "}{_esc(t.get("filename") or "貼り付けテキスト")}'
+            f'<span class="muted"> ・ {_esc((t.get("created_at") or "")[:16])}'
+            f'{(" ・ " + _fkb(t.get("file_size"))) if t.get("file_size") else ""}</span></span>'
+            f'<a class="btn sec" style="font-size:11px;padding:2px 8px" href="/intake-transcript/{t["id"]}/view" '
+            f'target="_blank" title="文字起こし本文を表示">本文</a>'
+            + (f'<a class="btn sec" style="font-size:11px;padding:2px 8px" href="/intake-transcript/{t["id"]}/file" '
+               f'title="原本ファイルをダウンロード">原本DL</a>' if t.get("file_size") else "")
+            + f'<form method="post" action="/intake-transcript/{t["id"]}/delete" style="margin:0" '
+              f'onsubmit="return confirm(\'この取り込み原本を削除しますか？\')">'
+              f'<input type="hidden" name="return_to" value="{_esc(self_url)}">'
+              f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer;font-size:12px" '
+              f'title="削除">✕</button></form>'
+            f'</div>'
+            for t in _intakes
+        )
+        intake_html = (
+            '<div style="border-top:1px solid #eef1f5;padding-top:12px;margin-top:14px">'
+            '<h2 style="margin:0 0 8px">🎙️ 取り込み原本（文字起こし）</h2>'
+            '<div style="display:flex;flex-direction:column;gap:6px">' + _intake_rows + '</div></div>'
+        )
+    else:
+        intake_html = ""
     right = f"""
       <div class="card" style="flex:1;min-width:320px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -8799,7 +8830,7 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
             <button type="submit" class="btn sec" style="font-size:12px" title="論点メモから再生成">🔄 サマリ再生成</button>
           </form>
         </div>
-        <div class="ai-summary-text" style="margin:8px 0 16px">{summary_html}</div>
+        <div class="ai-summary-text" style="margin:8px 0 16px;display:block;-webkit-line-clamp:unset;max-height:none;overflow:visible">{summary_html}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;
           border-top:1px solid #eef1f5;padding-top:12px">
           <h2 style="margin:0">論点メモ</h2>
@@ -8810,6 +8841,7 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
           </span>
         </div>
         <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">{note_cards}</div>
+        {intake_html}
       </div>"""
     return f"""
     <style>
@@ -12580,6 +12612,49 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     iss = sfa_db.get_deal_issue(con, iid) if iid else None
                     self._send(issue_intake_page(con, iss) if iss
                                else render("<div class=card>論点が見つかりません</div>", ), 200 if iss else 404)
+                elif path.startswith("/intake-transcript/") and path.endswith("/view"):
+                    try:
+                        _tid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        _tid = 0
+                    _t = sfa_db.get_intake_transcript(con, _tid) if _tid else None
+                    if not _t:
+                        self._send(render("<div class=card>取り込み原本が見つかりません</div>"), 404)
+                    else:
+                        _back = (f"/deal-issue/{_t['entity_id']}" if _t.get("kind") == "issue"
+                                 else f"/deal/{_t['entity_id']}")
+                        _meta = (f"{_esc(_t.get('filename') or '貼り付けテキスト')} ／ "
+                                 f"{_esc((_t.get('created_at') or '')[:16])}")
+                        self._send(render(
+                            f'<div class="card"><p style="margin:0 0 10px">'
+                            f'<a class="btn sec" href="{_back}">← 戻る</a></p>'
+                            f'<h2 style="margin-top:0">🎙️ 文字起こし原本</h2>'
+                            f'<p class="muted" style="font-size:12px">{_meta}</p>'
+                            f'<pre style="white-space:pre-wrap;font-size:13px;line-height:1.7;background:#f8fafc;'
+                            f'padding:12px;border-radius:8px">{_esc(_t.get("transcript") or "")}</pre></div>'))
+                elif path.startswith("/intake-transcript/") and path.endswith("/file"):
+                    try:
+                        _tid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        _tid = 0
+                    _t = sfa_db.get_intake_transcript(con, _tid) if _tid else None
+                    if not _t or not _t.get("file_blob"):
+                        self._send(render("<div class=card>原本ファイルがありません</div>"), 404)
+                    else:
+                        _fn = _t.get("filename") or "transcript.txt"
+                        _ext = _fn.rsplit(".", 1)[-1].lower() if "." in _fn else ""
+                        _mime = {
+                            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "txt": "text/plain; charset=utf-8", "md": "text/markdown; charset=utf-8",
+                            "vtt": "text/vtt; charset=utf-8", "srt": "text/plain; charset=utf-8",
+                        }.get(_ext, "application/octet-stream")
+                        _data = bytes(_t["file_blob"])
+                        self.send_response(200)
+                        self.send_header("Content-Type", _mime)
+                        self.send_header("Content-Disposition", _content_disposition(_fn))
+                        self.send_header("Content-Length", str(len(_data)))
+                        self.end_headers()
+                        self.wfile.write(_data)
                 elif path.startswith("/deal-issue/") and path.endswith("/edit"):
                     try:
                         iid = int(path.split("/")[2])
@@ -14075,7 +14150,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                           f"<a href='/deal-issue/{iid}/intake'>戻る</a></div>"), 400)
                     else:
                         _up = f.get("transcript_file")
-                        _fname = _up[0] if isinstance(_up, tuple) and len(_up) == 2 else None
+                        _is_file = isinstance(_up, tuple) and len(_up) == 2 and _up[1]
+                        _fname = _up[0] if _is_file else None
+                        _blob = _up[1] if _is_file else None
+                        # 取り込み原本（文字起こしローデータ＋アップロード原本）を保存（整形メモとは別に参照可）
+                        try:
+                            sfa_db.add_intake_transcript(
+                                con, kind="issue", entity_id=iid,
+                                source=("file" if _is_file else "paste"),
+                                filename=_fname, transcript=_transcript, file_blob=_blob)
+                        except Exception as _e:  # noqa: BLE001
+                            print(f"[intake_transcript] save failed: {_e}", flush=True)
                         _structured = _structure_issue_transcript(
                             iss.get("issue") or "", _transcript,
                             filename=_fname, upload_date=_today_jst().isoformat())
@@ -14103,6 +14188,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         if _summary:
                             sfa_db.set_deal_issue_ai_summary(con, iid, _summary)
                     self._redirect("/deal-issue/%d" % iid)
+
+                elif path.startswith("/intake-transcript/") and path.endswith("/delete"):
+                    try:
+                        _tid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        _tid = 0
+                    _t = sfa_db.get_intake_transcript(con, _tid) if _tid else None
+                    if _t:
+                        sfa_db.delete_intake_transcript(con, _tid)
+                    _rt = f.get("return_to") or ""
+                    self._redirect(_rt if _rt.startswith("/")
+                                   else (f"/deal-issue/{_t['entity_id']}" if _t else "/deal-issues"))
 
                 elif path.startswith("/deal-issue/") and path.endswith("/regenerate_summary"):
                     try:
