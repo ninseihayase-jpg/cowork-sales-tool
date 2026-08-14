@@ -9266,16 +9266,36 @@ def _handle_jamie_webhook(handler, con, raw_bytes: bytes) -> None:
 
 
 def _inbox_target_options(deals: list, issues: list) -> str:
-    """割り当て先セレクトの<option>（商談＝deal:id / 論点＝issue:id、optgroup分け）。"""
-    dopt = "".join(
-        f'<option value="deal:{d["id"]}">{_esc(d.get("account_name") or "—")} / {_esc(d.get("deal_name") or "—")}</option>'
-        for d in deals)
-    iopt = "".join(
-        f'<option value="issue:{it["id"]}">{_esc(it.get("issue") or "—")}'
-        f'{("（" + _esc(it.get("account_name")) + "）") if it.get("account_name") else "（商談共通）"}</option>'
-        for it in issues)
-    return (f'<optgroup label="商談（進行中）">{dopt}</optgroup>'
-            f'<optgroup label="論点（議論中）">{iopt}</optgroup>')
+    """割り当て先セレクトの<option>（商談＝deal:id / 論点＝issue:id）。
+    種別(data-type)と検索キー(data-s=小文字ラベル)を持たせ、クライアント側で種別＋語で絞り込む。"""
+    def _o(value, label, typ):
+        return (f'<option value="{value}" data-type="{typ}" data-s="{_esc(label.lower())}">'
+                f'{_esc(label)}</option>')
+    dopt = "".join(_o(f'deal:{d["id"]}',
+                      f'{d.get("account_name") or "—"} / {d.get("deal_name") or "—"}', "deal")
+                   for d in deals)
+    iopt = "".join(_o(f'issue:{it["id"]}',
+                      (it.get("issue") or "—") + (f'（{it.get("account_name")}）'
+                                                  if it.get("account_name") else "（商談共通）"), "issue")
+                   for it in issues)
+    return dopt + iopt
+
+
+_INBOX_ASSIGN_JS = """
+// 割り当て: 種別(商談/論点)＋検索語で target セレクトの選択肢を絞り込む
+function assignFilter(form){
+  var tt=(form.querySelector('[name=ttype]')||{}).value||'';
+  var qi=form.querySelector('.assign-q'); var q=(qi?qi.value:'').toLowerCase().trim();
+  var sel=form.querySelector('[name=target]'); if(!sel)return;
+  for(var i=0;i<sel.options.length;i++){ var o=sel.options[i];
+    if(!o.value){continue;}
+    var okT=(!tt||o.getAttribute('data-type')===tt);
+    var okQ=(!q||(o.getAttribute('data-s')||'').indexOf(q)>=0);
+    var show=okT&&okQ; o.hidden=!show;
+    if(!show&&o.selected){sel.value='';}
+  }
+}
+"""
 
 
 def _inbox_candidates(title: str, attendees: list, deals: list, issues: list) -> list:
@@ -9329,7 +9349,12 @@ def intake_inbox_page(con) -> str:
                 + f'<form method="post" action="/intake-inbox/{t["id"]}/assign" '
                   f'style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px" '
                   f'onsubmit="var b=this.querySelector(\'button[type=submit]\');setTimeout(function(){{if(b){{b.disabled=true;b.textContent=\'整形中…\';}}}},0);">'
-                  f'<select name="target" required style="max-width:360px"><option value="">割り当て先を選択…</option>{_tgt_opts}</select>'
+                  f'<select name="ttype" onchange="assignFilter(this.form)" style="width:auto">'
+                  f'<option value="">種別</option><option value="deal">商談</option><option value="issue">論点</option></select>'
+                  f'<input type="text" class="assign-q" placeholder="🔍 会社/案件/論点で絞り込み" '
+                  f'oninput="assignFilter(this.form)" style="width:auto;max-width:220px">'
+                  f'<select name="target" required style="max-width:360px">'
+                  f'<option value="">割り当て先を選択…</option>{_tgt_opts}</select>'
                   f'<button class="btn" type="submit">この会議を割り当てて整形</button>'
                   f'<a class="btn sec" href="/intake-transcript/{t["id"]}/view" target="_blank" style="font-size:12px">本文</a>'
                   f'</form>'
@@ -9350,7 +9375,8 @@ def intake_inbox_page(con) -> str:
       内容を確認し、<b>商談または論点へ割り当て</b>るとAI整形の確認画面へ進みます（割り当てないと確定されません）。</p>
       {_cfg_warn}
       {rows}
-    </div>""")
+    </div>
+    <script>{_INBOX_ASSIGN_JS}</script>""")
 
 
 def hearing_intake_page(con, deal: dict) -> str:
@@ -9378,16 +9404,37 @@ def hearing_intake_page(con, deal: dict) -> str:
     </div>""")
 
 
+_HEARING_COMMIT_JS = """
+// 確定時: 二重送信を防ぎつつ、メール素案があればmailtoで既定メーラー(Outlook等)を起動する
+function hearingCommitSubmit(form){
+  if(form.dataset.sent){return false;}
+  form.dataset.sent='1';
+  try{
+    var em=form.querySelector('[name=email_draft]');
+    if(em && em.value.trim()){
+      var subj=encodeURIComponent('面談のお礼'+(form.dataset.acct?(' '+form.dataset.acct):''));
+      var body=encodeURIComponent(em.value);
+      window.open('mailto:?subject='+subj+'&body='+body,'_blank');
+    }
+  }catch(e){}
+  var b=form.querySelector('button[type=submit]');
+  setTimeout(function(){ if(b){ b.disabled=true; b.textContent='保存中…'; } },0);
+  return true;
+}
+"""
+
+
 def hearing_review_page(con, deal: dict, session: dict) -> str:
     """P1: AI整形結果を人が確認・編集して確定する画面。"""
     did = deal["id"]
     st = session.get("structured") or {}
     items = st.get("items") or []
+    _ta_x = 'class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)"'  # クリックで拡大(#55共通)
     _item_rows = "".join(
         f'<div style="margin:8px 0">'
         f'<div style="font-weight:600;font-size:13px;color:#334155">{_esc(it.get("label"))}</div>'
         f'<input type="hidden" name="label_{i}" value="{_esc(it.get("label"))}">'
-        f'<textarea name="answer_{i}" rows="2" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(it.get("answer") or "")}</textarea>'
+        f'<textarea name="answer_{i}" rows="2" {_ta_x} style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(it.get("answer") or "")}</textarea>'
         f'</div>' for i, it in enumerate(items)) or '<p class="muted">（項目なし。全体像・NextStepのみ）</p>'
     _ns_text = "\n".join(st.get("nextsteps") or [])
     _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
@@ -9397,26 +9444,29 @@ def hearing_review_page(con, deal: dict, session: dict) -> str:
       <p class="muted" style="font-size:13px">アカウント <b>{_esc(deal.get("account_name") or "—")}</b> ／ 案件 <b>{_esc(deal.get("deal_name") or "—")}</b>。
       内容を確認・編集して「確定」すると、ヒアリング結果＋活動履歴に保存されます。</p>
       {_ai_warn}
-      <form method="post" action="/hearing/intake/commit"
-        onsubmit="if(this.dataset.sent){{return false;}}this.dataset.sent='1';var b=this.querySelector('button[type=submit]');setTimeout(function(){{if(b){{b.disabled=true;b.textContent='保存中…';}}}},0);return true;">
+      <form method="post" action="/hearing/intake/commit" data-acct="{_esc(deal.get("account_name") or "")}"
+        onsubmit="return hearingCommitSubmit(this)">
         <input type="hidden" name="session_id" value="{session["id"]}">
         <input type="hidden" name="item_count" value="{len(items)}">
         <div style="font-weight:700;font-size:13px;margin:10px 0 2px">■ 面談全体像</div>
-        <textarea name="overview" rows="4" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(st.get("overview") or "")}</textarea>
+        <textarea name="overview" rows="4" {_ta_x} style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(st.get("overview") or "")}</textarea>
         <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ ヒアリング項目</div>
         {_item_rows}
         <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ NextStep（1行1件）</div>
-        <textarea name="nextsteps" rows="4" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(_ns_text)}</textarea>
-        <label style="font-size:12px;display:block;margin-top:4px"><input type="checkbox" name="make_tasks" value="1"> 各NextStepをタスクとして起票する</label>
-        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ メール素案（相手宛）</div>
-        <textarea name="email_draft" rows="6" style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(st.get("email_draft") or "")}</textarea>
+        <textarea name="nextsteps" rows="4" {_ta_x} style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(_ns_text)}</textarea>
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-top:6px">
+          <input type="checkbox" name="make_tasks" value="1" style="width:auto"> 各NextStepをSFAのタスクとして起票する</label>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ メール素案（相手宛）
+          <span class="muted" style="font-weight:normal;font-size:11px">※「確定して保存」でメーラー(Outlook等)が本文入りで起動します</span></div>
+        <textarea name="email_draft" rows="6" {_ta_x} style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(st.get("email_draft") or "")}</textarea>
         <div style="margin-top:12px;display:flex;gap:8px">
-          <button class="btn" type="submit">✓ 確定して保存</button>
+          <button class="btn" type="submit">✓ 確定して保存＋メール作成</button>
           <a class="btn sec" href="/hearing/intake?deal={did}">やり直す</a>
           <a class="btn sec" href="/deal/{did}">キャンセル</a>
         </div>
       </form>
-    </div>""")
+    </div>
+    <script>{_HEARING_COMMIT_JS}</script>""")
 
 
 # ── 論点(deal_issue)向け: 文字起こし → AI整形（#29のヒアリングAIを論点でトライ） ──
@@ -9670,6 +9720,7 @@ def issue_review_page(con, issue: dict, structured: dict) -> str:
     _title = f"{_yymmdd(st.get('date'))}_{_ttl}"
     _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
     _ta = "width:100%;box-sizing:border-box;font-size:13px;padding:6px"
+    _ta_x = 'class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)"'  # クリックで拡大(#55共通)
     return render(f"""
     <style>
     .icopy-btn{{font-size:12px;padding:3px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer}}
@@ -9685,14 +9736,14 @@ def issue_review_page(con, issue: dict, structured: dict) -> str:
         <label style="font-size:12px">メモの見出し（日付_タイトル）
           <input name="note_title" value="{_esc(_title)}" style="{_ta}"></label>
         <div style="font-weight:700;font-size:13px;margin:12px 0 2px">■ 全体像</div>
-        <textarea name="overview" rows="4" style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(st.get("overview") or "")}</textarea>
+        <textarea name="overview" rows="4" {_ta_x} style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(st.get("overview") or "")}</textarea>
         <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 論点別の整理
           <span class="muted" style="font-weight:normal;font-size:11px">（「- 見出し」＋インデント「- 内容」のブレット。行頭スペースでインデント）</span></div>
         <textarea name="points_md" rows="10" placeholder="- 見出し&#10;    - 内容" style="{_ta};font-family:ui-monospace,Menlo,Consolas,monospace" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_points_md)}</textarea>
         <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 決定事項（1行1件）</div>
-        <textarea name="decisions" rows="3" style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_dec_text)}</textarea>
+        <textarea name="decisions" rows="3" {_ta_x} style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_dec_text)}</textarea>
         <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ NextStep（1行1件）</div>
-        <textarea name="nextsteps" rows="3" style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_ns_text)}</textarea>
+        <textarea name="nextsteps" rows="3" {_ta_x} style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_ns_text)}</textarea>
         <div style="margin-top:12px;display:flex;gap:8px">
           <button class="btn" type="submit">✓ 確定して論点メモに保存</button>
           <a class="btn sec" href="/deal-issue/{iid}/intake">やり直す</a>
