@@ -159,8 +159,13 @@ TranscriptSource（差し替え可能）
 - **P3.2**: 高信頼オートマッチ（プリセットのみ・確定は人）。REST backfill（取りこぼし補完）。
 - **P3.3（任意）**: Zoom-native アダプタを同じ受信層の裏に追加（Jamie未使用会議の補完）。
 
-### 9.6 確認ポイント（ユーザー判断）
-- [ ] 第一候補=**Jamie webhook**で進める（Zoomは将来補完）で良いか。
-- [ ] Jamie側で **Proプラン＋API/Webhook** が使える状態か（Settings→Developers→API Keys、Settings→Integrations→Webhooks）。
-- [ ] **EUデータ保管**（フランクフルト）を許容できるか（クライアント音声/文字起こしが独に保存）。
-- [ ] マッチングは**「候補提示＋人が割り当て」から開始**で良いか（自動確定はしない）。
+### 9.6 決定事項（2026-08-14 ユーザー確定）
+- **連携先=両方対応**。受信層を共通化し、**Jamieを先に実装 → 後からZoom-nativeを追加**（同じ受信/インボックス/整形の下流を共有）。
+- **マッチング=インボックス＋候補提示**（自動確定はしない。招待メール→アカウント→進行中商談／題名あいまい一致で候補提示、人が割り当て）。
+- 残確認（ユーザー作業）: Jamie Pro＋API/Webhook有効化、EUデータ保管の許容、Render秘匿設定への鍵/シークレット格納。
+
+### 9.7 受信層の共通設計（両ソース共通）
+- 抽象境界: `TranscriptSource` の実体として **JamieSource / ZoomSource** を受信アダプタとして追加。両者は差異を吸収し、共通の正規化オブジェクト `{source, external_id, title, occurred_on, transcript, raw_summary?, attendees[], calendar_event_id?}` を出力。
+- 保存: `intake_transcripts` を受信インボックスとして拡張（`external_source`,`external_id`,`title`,`occurred_on`,`attendees_json`,`status`（inbox/assigned/done）,`kind`/`entity_id`はNULL可＝未割り当て）。冪等キー=(external_source, external_id)。
+- ルート（共通/個別）: `POST /api/jamie/webhook`（署名: x-jamie-signature or x-jamie-api-key）／将来 `POST /api/zoom/webhook`（CRC＋x-zm-signature、transcript_completedでVTT取得）。受信後の処理（正規化→インボックス保存→候補算出）は共通関数へ。
+- インボックスUI: `/intake-inbox`（未割り当て一覧＋候補サジェスト＋「商談/論点へ割り当て」）。割り当て後は既存P1整形（/…/intake/structure 相当）へ合流。
