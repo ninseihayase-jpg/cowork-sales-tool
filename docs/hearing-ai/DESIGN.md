@@ -107,6 +107,60 @@ TranscriptSource（差し替え可能）
 - **P4**: リアルタイム化の再検討（案R）。ストリーミングSTT/会議ボットAPIの技術検証→可能なら StreamingSTTSource を追加。
 
 ## 8. 未確定・次アクション
-- [ ] **ユーザー**: Jamie の Settings→Developers→API Keys でキー作成可否＆プランを確認（ゲート1b）。
-- [ ] キー確保後、Render(sfa-crm)の秘匿設定に `JAMIE_API_KEY` を格納（値は非コミット）。
-- [ ] Webhook受信URL（`/api/jamie/webhook`）と署名検証仕様をDocsで確認しP1着手。
+- [ ] **ユーザー**: Jamie の Settings→Developers→API Keys でキー作成可否＆プランを確認（ゲート1b）。→ §9で更新：**Proプランで可**。
+- [ ] キー確保後、Render(sfa-crm)の秘匿設定に `JAMIE_API_KEY`（またはWebhook用シークレット）を格納（値は非コミット）。
+- [ ] Webhook受信URL（`/api/jamie/webhook`）と署名検証仕様をDocsで確認しP3着手。
+
+## 9. 自動連携（P3）設計 — 2026-08-14 調査反映（Zoom / Jamie）
+
+「Zoom or Jamie の文字起こしから自動連携」を検討。結論: **Jamie webhook を第一候補**、Zoom-native は将来の代替/補完。
+
+### 9.1 Jamie（第一候補・調査結果）
+- **Webhook `meeting.completed`**（会議処理完了時に発火）。ペイロードに **文字起こし全文・summary・tasks・participants・カレンダー情報（event.attendees=招待メール, event.externalId）が inline** で載る → **追加GET不要**でSFAだけで完結。
+- 検証: `x-jamie-signature`（HMAC-SHA256, `{ts}.{body}`, 5分以内）または `x-jamie-api-key` ヘッダ。リトライ5回（即時/+10s/+60s/+10m/+1h）、30sタイムアウト、失敗はDLQ＋管理者メール。
+- REST（バックフィル用）: base `https://beta-api.meetjamie.ai`、`x-api-key`、`GET /v1/{workspace|me}/meetings.list|.get`。OpenAPI: `docs.meetjamie.ai/api-reference/openapi.json`（実装前にスキーマ確定）。
+- **プラン: Pro（~€47 ≈ ¥7,500-8,000/月）でAPI/Webhook可**（Enterprise専用ではない）。当初「¥9,000でEnterprise相当＝非現実的」としていた前提を**訂正**（§1決定ログの保留理由は解消）。
+- 精度: 端末音声を取得しZoom/Teams/Meet横断で動作。日本語精度は本ツール選定の主因（Zoomより良好）。
+- データ所在: 独=フランクフルト保存（GDPR、学習非利用、音声は処理後削除）。**日本/APAC residencyは無し**（EU保管を許容できるか要確認）。ストリーミングAPIは無し（post-meetingのみ）。レート100req/分。
+
+### 9.2 Zoom（代替・調査結果）
+- `recording.completed` では**文字起こしが未生成のことが多い** → `recording.transcript_completed`（発火が遅延/不安定との報告）で `file_type:"TRANSCRIPT"` のVTTを `download_url`＋`download_token` で取得。フォールバックにポーリング。
+- 前提: **Pro+ でクラウド録画＋「音声トランスクリプト」設定ON**（会議前に）。ホストがクラウド録画すること。
+- アプリ: **Server-to-Server OAuth の内部アプリ（Marketplace審査不要）**、scope `recording:read`（/ `cloud_recording:read:...:admin`）。Webhookは CRC検証（3秒以内, plainTokenのHMAC）＋`x-zm-signature`。
+- **日本語精度が弱く、カスタム辞書も無い**（固有名詞・専門用語で誤変換増）→ 精度優先の本用途では難点。
+- マッチングは host+start_time+topic が主（参加者メールは欠落しがち）。AI Companion要約APIは `meeting:read:summary:master` 等のscope取得に難あり（不確実）。
+
+### 9.3 比較と推奨
+| 観点 | Jamie | Zoom |
+|---|---|---|
+| 取得容易性 | ◎ Webhookに全文inline | △ transcript_completed待ち＋DL |
+| 日本語精度 | ◎（選定理由） | △ 弱い・辞書なし |
+| 会議横断 | ◎ Zoom/Teams/Meet | ✕ Zoom限定 |
+| マッチング材料 | ◎ 招待メール/カレンダーID | △ host+時刻+題名 |
+| 費用 | Pro ¥7.5-8k/月（契約済枠内） | 既存Zoom+録画/文字起こし前提 |
+| データ所在 | EU(独) | 契約リージョン |
+→ **Jamie webhook 採用を推奨**。ZoomはJamieがボット参加で録るため実質カバーされ、Zoom-nativeは「Jamie未使用の会議も拾う」補完として将来検討。
+
+### 9.4 SFA側アーキテクチャ（ベンダー非依存の核）
+```
+[Jamie] meeting.completed webhook → [SFA] POST /api/jamie/webhook（署名検証・冪等: external_id=jamie meeting id）
+      → intake_transcripts に生データ保存（kind='inbox' で未割り当て）＋ 会議メタ(タイトル/日時/attendees)を保持
+      → [取り込みインボックス] 画面に「未割り当ての取り込み」として表示。候補（attendeeメール→アカウント→進行中商談 / 題名あいまい一致）を提示
+      → 人が 商談 or 論点 を選択（＝割り当て）
+      → 既存の整形→確認→確定（P1）へ合流（下流は完全再利用）
+```
+- 冪等化: `intake_transcripts` に `external_source`/`external_id` 列を追加（同一 meeting id の二重受信を無視）。既存の Slack `_mark_event_processed` と同方式。
+- **マッチングは自動確定せず「候補提示＋人が割り当て」**から開始（誤紐づけ事故を避ける）。高信頼（単一の明確な商談）時のみ既定選択をプリセット。
+- 秘匿情報（APIキー/Webhookシークレット）は Render 環境変数。公開リポジトリにコミットしない。
+
+### 9.5 段階計画（P3）
+- **P3.0**: Webhook受信＋署名検証＋`intake_transcripts`保存＋「取り込みインボックス」一覧（未割り当て表示・生データ本文/原本参照は既存UI流用）。
+- **P3.1**: インボックスから商談/論点へ割り当て → 既存P1整形フローへ。候補サジェスト（attendeeメール/題名）。
+- **P3.2**: 高信頼オートマッチ（プリセットのみ・確定は人）。REST backfill（取りこぼし補完）。
+- **P3.3（任意）**: Zoom-native アダプタを同じ受信層の裏に追加（Jamie未使用会議の補完）。
+
+### 9.6 確認ポイント（ユーザー判断）
+- [ ] 第一候補=**Jamie webhook**で進める（Zoomは将来補完）で良いか。
+- [ ] Jamie側で **Proプラン＋API/Webhook** が使える状態か（Settings→Developers→API Keys、Settings→Integrations→Webhooks）。
+- [ ] **EUデータ保管**（フランクフルト）を許容できるか（クライアント音声/文字起こしが独に保存）。
+- [ ] マッチングは**「候補提示＋人が割り当て」から開始**で良いか（自動確定はしない）。
