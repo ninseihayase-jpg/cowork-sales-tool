@@ -12840,7 +12840,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(issue_intake_page(con, iss) if iss
                                else render("<div class=card>論点が見つかりません</div>", ), 200 if iss else 404)
                 elif path == "/intake-inbox":
-                    self._send(render(intake_inbox_page(con)))
+                    self._send(intake_inbox_page(con))  # intake_inbox_page は内部で render 済み(bytes)
                 elif path.startswith("/intake-transcript/") and path.endswith("/view"):
                     try:
                         _tid = int(path.split("/")[2])
