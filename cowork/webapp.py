@@ -9196,11 +9196,22 @@ def _verify_jamie_request(headers, raw_bytes: bytes) -> bool:
     import hmac as _hmac
     import hashlib as _hashlib
     import time as _time
-    # APIキーヘッダ方式（簡易）
+    # APIキーヘッダ方式: x-jamie-api-key の値が JAMIE_WEBHOOK_API_KEY と一致すれば可。
+    # 同名ヘッダが複数飛ぶ場合（Jamie生成キー＋カスタムヘッダ併存など）にも対応し、
+    # 全ての値・カンマ区切りの各要素のいずれかが一致すれば認証成立とする。
     if JAMIE_WEBHOOK_API_KEY:
-        got = headers.get("x-jamie-api-key") or headers.get("X-Jamie-Api-Key") or ""
-        if got and _hmac.compare_digest(got, JAMIE_WEBHOOK_API_KEY):
-            return True
+        _vals = []
+        try:
+            _vals.extend(headers.get_all("x-jamie-api-key") or [])
+        except Exception:
+            pass
+        _one = headers.get("x-jamie-api-key") or headers.get("X-Jamie-Api-Key")
+        if _one:
+            _vals.append(_one)
+        for _v in _vals:
+            for _c in str(_v).split(","):
+                if _c.strip() and _hmac.compare_digest(_c.strip(), JAMIE_WEBHOOK_API_KEY):
+                    return True
     # 署名方式: x-jamie-signature: t=<ts>,v0=<hexsig>, HMAC-SHA256("{t}.{body}")
     if JAMIE_WEBHOOK_SECRET:
         sig = headers.get("x-jamie-signature") or headers.get("X-Jamie-Signature") or ""
