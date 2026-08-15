@@ -180,3 +180,38 @@ TranscriptSource（差し替え可能）
 - 保存: `intake_transcripts` を受信インボックスとして拡張（`external_source`,`external_id`,`title`,`occurred_on`,`attendees_json`,`status`（inbox/assigned/done）,`kind`/`entity_id`はNULL可＝未割り当て）。冪等キー=(external_source, external_id)。
 - ルート（共通/個別）: `POST /api/jamie/webhook`（署名: x-jamie-signature or x-jamie-api-key）／将来 `POST /api/zoom/webhook`（CRC＋x-zm-signature、transcript_completedでVTT取得）。受信後の処理（正規化→インボックス保存→候補算出）は共通関数へ。
 - インボックスUI: `/intake-inbox`（未割り当て一覧＋候補サジェスト＋「商談/論点へ割り当て」）。割り当て後は既存P1整形（/…/intake/structure 相当）へ合流。
+
+## 10. Slackメモ×Jamie取り込みの並行運用（P4設計・2026-08-15）
+
+### 10.1 現状（実コード）
+- **商談取り込み（Web, #29再設計・実装済み）**: 文字起こし→オプション選択（活動種別/相手・ヒアリング起票+テンプレ・現状更新[ステージ/次回MS/現状メモ]・メール要否）→AI整形→確認→**セット記録**（活動履歴が土台＋任意でヒアリング/現状更新/メール）。Jamie自動連携は `/intake-inbox` 経由でこの確認画面に合流。
+- **Slack NegoCollection（既存）**: #salesスレッドにメモ→`@NegoCollection`→商談推定（deal_name/account部分一致＋人手フォールバック）→Claude Haikuで**更新ドラフト**（activity_date/type, contact, content, stage_update, next_MS, memo_addition）をスレッド投稿→人が「フィールド:値」で修正→**「確定」返信でSFA書き込み**（`activities`追加＋`deals`更新 or 新規商談作成）→Hisho同期。状態は `slack_threads`（identifying→pending→completed）。**activity/deal更新は生SQL**（Web経路と二重化）。
+- 両者とも出力は「正しい商談記録＝1活動履歴（±ステージ/次回MS/現状メモ）」で**同型**。ただし別経路・別実装。
+
+### 10.2 並行運用の問題
+同一面談で「Jamie文字起こし」と「Slackメモ」が高頻度で同時発生する。素朴に両方処理すると:
+1. **活動履歴が二重**に作られる（Jamie取り込み＋Slack確定）。
+2. **ステージ/次回MS/現状メモが二重更新・競合**（後勝ちで上書き）。
+3. **人が2回確認**する二度手間。
+4. 実際は**相補的**（Jamie=全文の記録、Slackメモ=人が強調した要点/決定）で、捨てるのは惜しい。
+
+### 10.3 設計原則
+**1面談 = 1商談記録（活動履歴が土台）。Jamie文字起こしとSlackメモは、その1記録に収束する2つの入力。人の最終確認は1回。**
+
+### 10.4 収束のキー（重複判定）
+- **(deal_id, occurred_on[面談日])** を「同一面談」の突合キーとする（＋任意でJamie attendees/title と Slackスレッドの近接時刻）。
+- 同一キーの記録が既にあれば**新規作成せず統合**（Jamie=全文→活動内容・ヒアリング、Slackメモ=人の強調→上書き/追記）。
+
+### 10.5 収束アーキテクチャ案（要ユーザー決定）
+- **案A（Web集約・推奨）**: 最終確認は**Web確認画面（#29再設計で実装済み）に一本化**。Slackメモは「入力＋トリガー」に役割変更＝Botは商談推定後、SFA直書きをやめ「記録候補を作成→[SFAで仕上げる]リンク」を返す。Web確認画面は **Jamie全文＋Slackメモ** を両方入力としてAI整形→人がオプション選択→1回で確定。利点: 確認UIとロジックが1本化（Slackの生SQL二重実装を解消）、リッチなオプション（ヒアリングテンプレ/現状更新/メール）が使える。欠点: Slackで完結せずWebへ遷移。
+- **案B（Slack集約・現行維持）**: Slack確認ループは維持。「確定」時に**同キーのJamie取り込みがあれば文脈として取り込み**、活動を1件だけ書く＋inbox項目を「統合済み」にマーク。利点: 変更小・Slackで完結。欠点: 生SQL二重実装が残る、リッチUIは使えない。
+- **案C（ハイブリッド）**: 通常はSlackで軽く確定（案B）。ヒアリング起票やステージ大更新など「丁寧に残したい」時だけWebへ（案A）。
+
+### 10.6 統合受信レイヤー
+- Slackメモも `intake_transcripts`（受信インボックス）に「source='slack'」で載せられるようにし、Jamieと同じ「未確定の記録候補」として一元表示・突合できるようにする（案Aで自然）。
+- 冪等/状態は既存の `slack_threads`・`slack_processed_events`・`intake_transcripts.status` を流用。
+
+### 10.7 決定待ち
+- [ ] 最終確認の主導面＝**案A(Web集約)／案B(Slack集約)／案C(ハイブリッド)** のどれか。
+- [ ] 同一面談の突合キー＝**(deal_id, 面談日)** で良いか（＋時刻/参加者の近接を条件に加えるか）。
+- [ ] 統合時の優先＝**Jamie全文を本文、Slackメモを人の強調として上書き/追記**、で良いか。
