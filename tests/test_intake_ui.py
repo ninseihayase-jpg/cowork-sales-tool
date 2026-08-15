@@ -122,6 +122,49 @@ def test_hearing_review_is_options_aware():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_deal_memo_review_saves_to_deal_memo_not_activity():
+    """社内議論(record_kind=memo)の確認画面は論点メモ同仕様で、活動履歴ではなく商談メモへ導く(#29)。"""
+    d, con = _fresh()
+    try:
+        acc = sfa_db.upsert_account(con, name="ソラスト")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案")
+        deal = {"id": did, "deal_name": "D", "account_name": "ソラスト"}
+        st = {"title": "方針すり合わせ", "date": "2026-08-15", "overview": "社内で方針を議論",
+              "points": [{"topic": "調達", "detail": "直材優先"}], "decisions": ["A方針"],
+              "nextsteps": ["見積更新"], "_ai_ok": True, "_opts": {"record_kind": "memo"}}
+        sid = sfa_db.create_hearing_session(con, deal_id=did, source="jamie", template_id=None,
+                                            conducted_on="2026-08-15", transcript="x",
+                                            structured=st, status="structured")
+        html = _s(webapp.deal_memo_review_page(con, deal, sfa_db.get_hearing_session(con, sid)))
+        # 論点メモ同仕様の欄（見出し=YYMMDD_タイトル・論点別・決定事項・NextStep）＋商談メモ保存の明示
+        assert 'name="note_title"' in html and 'name="points_md"' in html
+        assert 'name="decisions"' in html and 'name="nextsteps"' in html
+        assert "260815_方針すり合わせ" in html
+        assert "商談メモに保存" in html and "活動履歴には記録しません" in html
+        assert 'action="/hearing/intake/commit"' in html
+        # 論点と同じコピーウィジェット
+        assert 'id="issueCopyOut"' in html
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_intake_page_has_record_kind_classification():
+    """取り込み入口で「顧客面談/社内議論」を選べ、面談オプションはトグルで隠せる(#29)。"""
+    d, con = _fresh()
+    try:
+        acc = sfa_db.upsert_account(con, name="ソラスト")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案")
+        deal = {"id": did, "deal_name": "D", "account_name": "ソラスト"}
+        html = _s(webapp.hearing_intake_page(con, deal))
+        assert 'name="record_kind"' in html
+        assert 'value="meeting"' in html and 'value="memo"' in html
+        assert 'id="meetingOpts"' in html   # 面談オプションはトグル対象
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_inbox_assign_js_is_syntactically_present():
     """割り当て絞り込みJSと確定JSが定義され、想定の関数名を含む（HTMLに埋め込まれる前提）。"""
     assert "function assignFilter" in webapp._INBOX_ASSIGN_JS

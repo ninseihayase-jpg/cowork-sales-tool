@@ -9452,25 +9452,38 @@ def hearing_intake_page(con, deal: dict, inbox_id: int | None = None) -> str:
         </div>
         <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin:8px 0;background:#f8fafc">
           <div style="font-weight:700;font-size:12px;color:#334155;margin-bottom:6px">この文字起こしをどう記録するか（取り込み時に選択）</div>
-          <div class="filter-row js-nofilter" style="gap:14px;flex-wrap:wrap;margin:2px 0">
-            <label style="font-size:13px">面談日 <input type="date" name="conducted_on" value="{_today}"></label>
-            <label style="font-size:13px">活動種別 <select name="act_type">{_aopt}</select></label>
-            <label style="font-size:13px">相手（任意） <input name="contact_name" placeholder="先方氏名" style="max-width:150px"></label>
-            <span class="muted" style="font-size:11px">※活動履歴は必ず記録します</span>
+          <div class="filter-row js-nofilter" style="gap:16px;flex-wrap:wrap;margin:2px 0 8px">
+            <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
+              <input type="radio" name="record_kind" value="meeting" checked style="width:auto"
+                onchange="document.getElementById('meetingOpts').style.display=this.checked?'':'none'">
+              <b>顧客面談</b>として記録（活動履歴）</label>
+            <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
+              <input type="radio" name="record_kind" value="memo" style="width:auto"
+                onchange="document.getElementById('meetingOpts').style.display='none'">
+              <b>社内議論</b>として記録（商談メモ）</label>
+            <span class="muted" style="font-size:11px">※社内議論は活動履歴ではなく商談メモ（論点メモと同仕様）に整理保存します</span>
           </div>
-          <div class="filter-row js-nofilter" style="gap:16px;flex-wrap:wrap;margin:6px 0 0">
-            <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
-              <input type="checkbox" name="make_hearing" value="1" style="width:auto"
-                onchange="var w=document.getElementById('tmplWrap');if(w)w.style.display=this.checked?'inline':'none'">
-              ヒアリングとして起票</label>
-            <span id="tmplWrap" style="display:none;font-size:13px">テンプレ
-              <select name="template_id"><option value="">（選択）</option>{_topt}</select></span>
-            <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
-              <input type="checkbox" name="update_state" value="1" checked style="width:auto">
-              商談の現状を更新（ステージ/次回MS/現状メモ）</label>
-            <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
-              <input type="checkbox" name="make_mail" value="1" style="width:auto">
-              お礼メール素案を作成（Outlook起動）</label>
+          <div id="meetingOpts">
+            <div class="filter-row js-nofilter" style="gap:14px;flex-wrap:wrap;margin:2px 0">
+              <label style="font-size:13px">面談日 <input type="date" name="conducted_on" value="{_today}"></label>
+              <label style="font-size:13px">活動種別 <select name="act_type">{_aopt}</select></label>
+              <label style="font-size:13px">相手（任意） <input name="contact_name" placeholder="先方氏名" style="max-width:150px"></label>
+              <span class="muted" style="font-size:11px">※活動履歴は必ず記録します</span>
+            </div>
+            <div class="filter-row js-nofilter" style="gap:16px;flex-wrap:wrap;margin:6px 0 0">
+              <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
+                <input type="checkbox" name="make_hearing" value="1" style="width:auto"
+                  onchange="var w=document.getElementById('tmplWrap');if(w)w.style.display=this.checked?'inline':'none'">
+                ヒアリングとして起票</label>
+              <span id="tmplWrap" style="display:none;font-size:13px">テンプレ
+                <select name="template_id"><option value="">（選択）</option>{_topt}</select></span>
+              <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
+                <input type="checkbox" name="update_state" value="1" checked style="width:auto">
+                商談の現状を更新（ステージ/次回MS/現状メモ）</label>
+              <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
+                <input type="checkbox" name="make_mail" value="1" style="width:auto">
+                お礼メール素案を作成（Outlook起動）</label>
+            </div>
           </div>
         </div>"""
     if inbox_id:
@@ -9900,6 +9913,64 @@ def issue_review_page(con, issue: dict, structured: dict) -> str:
           <button type="button" class="icopy-btn" data-fmt="plain" onclick="icSetFormat('plain')">プレーン</button>
           <button type="button" class="btn sec" id="issueCopyBtn" style="font-size:12px" onclick="icCopy()">コピー</button>
           <span class="muted" style="font-size:11px">OneNote/Slack等へ貼り付け（編集内容が即反映）</span>
+        </div>
+        <textarea id="issueCopyOut" rows="8" readonly style="{_ta};margin-top:8px;background:#f8fafc;font-family:ui-monospace,Menlo,Consolas,monospace"></textarea>
+      </div>
+    </div>
+    <script>{_ISSUE_COPY_JS}</script>""")
+
+
+def deal_memo_review_page(con, deal: dict, session: dict) -> str:
+    """商談: 社内議論の文字起こしを整形→確認→商談メモ(rich_note kind='deal')として保存する画面。
+    論点メモと同仕様（全体像/論点別/決定事項/NextStep＋他ツールコピー）。確定は /hearing/intake/commit。"""
+    did = deal["id"]
+    st = session.get("structured") or {}
+    _points_md = _points_md_from_list(st.get("points") or [])
+    _dec_text = "\n".join(st.get("decisions") or [])
+    _ns_text = "\n".join(st.get("nextsteps") or [])
+    _ttl = (st.get("title") or "").strip() or (deal.get("deal_name") or "社内議論メモ")
+    _title = f"{_yymmdd(st.get('date'))}_{_ttl}"
+    _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
+    _ta = "width:100%;box-sizing:border-box;font-size:13px;padding:6px"
+    _ta_x = 'class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)"'
+    _oninput = "oninput=\"icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')\""
+    return render(f"""
+    <style>
+    .icopy-btn{{font-size:12px;padding:3px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer}}
+    .icopy-btn.on{{background:#eff6ff;border-color:#60a5fa;color:#1d4ed8;font-weight:600}}
+    </style>
+    <div class="card">
+      <h2>🎙️ 社内議論の整形結果を確認（商談メモに保存）</h2>
+      <p class="muted" style="font-size:13px">アカウント <b>{_esc(deal.get("account_name") or "—")}</b> ／ 案件 <b>{_esc(deal.get("deal_name") or "—")}</b>。
+      「確定」で <b>商談メモ</b>（論点メモと同じ場所）に保存します。活動履歴には記録しません。</p>
+      {_ai_warn}
+      <form method="post" action="/hearing/intake/commit" id="issueReviewForm"
+        onsubmit="if(this.dataset.sent){{return false;}}this.dataset.sent='1';var b=this.querySelector('button[type=submit]');setTimeout(function(){{if(b){{b.disabled=true;b.textContent='保存中…';}}}},0);return true;">
+        <input type="hidden" name="session_id" value="{session["id"]}">
+        <label style="font-size:12px">メモの見出し（日付_タイトル）
+          <input name="note_title" value="{_esc(_title)}" style="{_ta}"></label>
+        <div style="font-weight:700;font-size:13px;margin:12px 0 2px">■ 全体像</div>
+        <textarea name="overview" rows="4" {_ta_x} style="{_ta}" {_oninput}>{_esc(st.get("overview") or "")}</textarea>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 論点別の整理
+          <span class="muted" style="font-weight:normal;font-size:11px">（「- 見出し」＋インデント「- 内容」）</span></div>
+        <textarea name="points_md" rows="10" placeholder="- 見出し&#10;    - 内容" style="{_ta};font-family:ui-monospace,Menlo,Consolas,monospace" {_oninput}>{_esc(_points_md)}</textarea>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 決定事項（1行1件）</div>
+        <textarea name="decisions" rows="3" {_ta_x} style="{_ta}" {_oninput}>{_esc(_dec_text)}</textarea>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ NextStep（1行1件）</div>
+        <textarea name="nextsteps" rows="3" {_ta_x} style="{_ta}" {_oninput}>{_esc(_ns_text)}</textarea>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="btn" type="submit">✓ 確定して商談メモに保存</button>
+          <a class="btn sec" href="/hearing/intake?deal={did}">やり直す</a>
+          <a class="btn sec" href="/deal/{did}">キャンセル</a>
+        </div>
+      </form>
+      <div style="margin-top:16px;border-top:1px solid #eef1f5;padding-top:12px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-weight:700;font-size:13px">📋 他ツールへコピー</span>
+          <button type="button" class="icopy-btn on" data-fmt="markdown" onclick="icSetFormat('markdown')">Markdown</button>
+          <button type="button" class="icopy-btn" data-fmt="slack" onclick="icSetFormat('slack')">Slack</button>
+          <button type="button" class="icopy-btn" data-fmt="plain" onclick="icSetFormat('plain')">プレーン</button>
+          <button type="button" class="btn sec" id="issueCopyBtn" style="font-size:12px" onclick="icCopy()">コピー</button>
         </div>
         <textarea id="issueCopyOut" rows="8" readonly style="{_ta};margin-top:8px;background:#f8fafc;font-family:ui-monospace,Menlo,Consolas,monospace"></textarea>
       </div>
@@ -15149,18 +15220,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render("<div class=card>商談または文字起こしがありません。"
                                           "<a href='/hearing/intake?deal=%d'>戻る</a></div>" % _did), 400)
                     else:
-                        # 取り込みオプション（この面談をどう記録するか）
-                        _make_hearing = f.get("make_hearing") == "1"
-                        _update_state = f.get("update_state") == "1"
-                        _make_mail = f.get("make_mail") == "1"
-                        _act_type = (f.get("act_type") or "面談").strip()
-                        _contact = (f.get("contact_name") or "").strip()
-                        try:
-                            _tid = (int(f.get("template_id", "0") or 0) or None) if _make_hearing else None
-                        except ValueError:
-                            _tid = None
-                        _tmpl = sfa_db.get_hearing_template(con, _tid) if _tid else None
-                        _labels = [it.get("label") for it in (_tmpl.get("items") or [])] if _tmpl else []
+                        _record_kind = (f.get("record_kind") or "meeting").strip()
+                        _conducted = f.get("conducted_on") or _today_jst().isoformat()
                         # 取り込み原本の保存（貼付/アップロード時のみ。inboxは受信時に保存済み）
                         _up = f.get("transcript_file")
                         _is_file = isinstance(_up, tuple) and len(_up) == 2 and _up[1]
@@ -15173,17 +15234,41 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     transcript=_transcript, file_blob=(_up[1] if _is_file else None))
                             except Exception as _e:  # noqa: BLE001
                                 print(f"[intake_transcript] save failed: {_e}", flush=True)
-                        _structured = _structure_hearing_transcript(_transcript, _labels, want_email=_make_mail)
-                        _structured["_opts"] = {
-                            "make_hearing": _make_hearing, "template_id": _tid,
-                            "update_state": _update_state, "make_mail": _make_mail,
-                            "act_type": _act_type, "contact_name": _contact}
-                        _sid = sfa_db.create_hearing_session(
-                            con, deal_id=_did, source=("jamie" if _inbox_id else "paste"), template_id=_tid,
-                            conducted_on=(f.get("conducted_on") or None),
-                            transcript=_transcript, structured=_structured, status="structured")
-                        _sess = sfa_db.get_hearing_session(con, _sid)
-                        self._send(hearing_review_page(con, dict(_row), _sess))
+                        _src = "jamie" if _inbox_id else "paste"
+                        if _record_kind == "memo":
+                            # 社内議論 → 商談メモ（rich_note kind='deal'。論点メモと同仕様で整形）
+                            _structured = _structure_issue_transcript(
+                                (_row["deal_name"] or ""), _transcript,
+                                filename=(_up[0] if _is_file else None), upload_date=_conducted)
+                            _structured["_opts"] = {"record_kind": "memo"}
+                            _sid = sfa_db.create_hearing_session(
+                                con, deal_id=_did, source=_src, template_id=None,
+                                conducted_on=_conducted, transcript=_transcript,
+                                structured=_structured, status="structured")
+                            self._send(deal_memo_review_page(con, dict(_row), sfa_db.get_hearing_session(con, _sid)))
+                        else:
+                            # 顧客面談 → 活動履歴（＋任意でヒアリング/現状更新/メール）
+                            _make_hearing = f.get("make_hearing") == "1"
+                            _update_state = f.get("update_state") == "1"
+                            _make_mail = f.get("make_mail") == "1"
+                            _act_type = (f.get("act_type") or "面談").strip()
+                            _contact = (f.get("contact_name") or "").strip()
+                            try:
+                                _tid = (int(f.get("template_id", "0") or 0) or None) if _make_hearing else None
+                            except ValueError:
+                                _tid = None
+                            _tmpl = sfa_db.get_hearing_template(con, _tid) if _tid else None
+                            _labels = [it.get("label") for it in (_tmpl.get("items") or [])] if _tmpl else []
+                            _structured = _structure_hearing_transcript(_transcript, _labels, want_email=_make_mail)
+                            _structured["_opts"] = {
+                                "record_kind": "meeting", "make_hearing": _make_hearing, "template_id": _tid,
+                                "update_state": _update_state, "make_mail": _make_mail,
+                                "act_type": _act_type, "contact_name": _contact}
+                            _sid = sfa_db.create_hearing_session(
+                                con, deal_id=_did, source=_src, template_id=_tid,
+                                conducted_on=_conducted, transcript=_transcript,
+                                structured=_structured, status="structured")
+                            self._send(hearing_review_page(con, dict(_row), sfa_db.get_hearing_session(con, _sid)))
 
                 elif path == "/hearing/intake/commit":
                     try:
@@ -15197,6 +15282,24 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     else:
                         _did = _sess.get("deal_id")
                         _opts = (_sess.get("structured") or {}).get("_opts") or {}
+                        if _opts.get("record_kind") == "memo":
+                            # 社内議論 → 商談メモ（rich_note kind='deal'）に保存。活動履歴等は作らない。
+                            _m_points_md = (f.get("points_md") or "").strip()
+                            _m_overview = (f.get("overview") or "").strip()
+                            _m_decisions = [ln.strip() for ln in (f.get("decisions") or "").splitlines() if ln.strip()]
+                            _m_nextsteps = [ln.strip() for ln in (f.get("nextsteps") or "").splitlines() if ln.strip()]
+                            _m_body = _sanitize_rich_html(
+                                _issue_structured_to_note_html(_m_overview, _m_points_md, _m_decisions, _m_nextsteps))
+                            _m_title = (f.get("note_title") or "").strip() or (
+                                (_sess.get("deal_name") or "社内議論メモ ") + _today_jst().isoformat())
+                            if _m_body:
+                                sfa_db.create_rich_note(con, kind="deal", entity_id=_did, title=_m_title, body=_m_body)
+                            _m_structured = dict(_sess.get("structured") or {})
+                            _m_structured.update({"overview": _m_overview, "points_md": _m_points_md,
+                                                  "decisions": _m_decisions, "nextsteps": _m_nextsteps})
+                            sfa_db.update_hearing_session(con, _sid, structured=_m_structured, status="confirmed")
+                            self._redirect("/deal/%d" % _did)
+                            return
                         _make_hearing = bool(_opts.get("make_hearing"))
                         _update_state = bool(_opts.get("update_state"))
                         try:
