@@ -8959,19 +8959,22 @@ def lead_convert_choice_page(con, lead: dict, past_deals: list[dict]) -> str:
 # ── 初回ヒアリング ───────────────────────────────────────────────────────────────
 
 # ── ヒアリングAI(#29): 文字起こし→AI整形→確認→確定（ソース非依存の中核。P1） ──
-def _structure_hearing_transcript(transcript: str, item_labels: list) -> dict:
-    """面談文字起こしを「ヒアリング項目別／全体像／NextStep／メール素案」に整形（Claude）。
-    失敗時も空の骨格を返す（人が手入力で確定できるようにする）。"""
+def _structure_hearing_transcript(transcript: str, item_labels: list, *, want_email: bool = True) -> dict:
+    """面談文字起こしを「ヒアリング項目別／全体像／NextStep／(任意)メール素案」に整形（Claude）。
+    失敗時も空の骨格を返す（人が手入力で確定できるようにする）。want_email=False でメール素案は生成しない。"""
     labels = [str(l).strip() for l in (item_labels or []) if str(l).strip()]
     labels_txt = "\n".join(f"- {l}" for l in labels) or "-（ヒアリング項目は未定義。overview/nextstepsのみ作成）"
+    _email_task = "・相手宛メール素案" if want_email else ""
+    _email_fmt = ('"email_draft":"相手宛のお礼＋次アクション確認メールの本文(署名不要・簡潔に)"'
+                  if want_email else '"email_draft":""')
     prompt = (
         "あなたは法人営業のヒアリング整理担当です。以下の面談文字起こしを読み、指定のヒアリング項目に沿って"
-        "内容を割り当て、面談全体像・NextStep・相手宛メール素案を作成してください。"
+        f"内容を割り当て、面談全体像・NextStep{_email_task}を作成してください。"
         + _TRANSCRIPT_CORRECTION_HINT +
         "JSONのみを厳密に出力し、前後の説明文は書かないでください。\n"
         '出力形式: {"items":[{"label":"項目名","answer":"該当内容。無ければ空文字"}],'
         '"overview":"面談全体像の要約(3〜5文)","nextsteps":["次にやること","..."],'
-        '"email_draft":"相手宛のお礼＋次アクション確認メールの本文(署名不要・簡潔に)"}\n'
+        + _email_fmt + "}\n"
         f"ヒアリング項目:\n{labels_txt}\n\n文字起こし:\n{(transcript or '')[:12000]}\n"
     )
     raw = _call_claude_haiku(prompt, timeout=60, max_wait=65, max_tokens=3000)
@@ -9430,28 +9433,58 @@ def intake_inbox_page(con) -> str:
     <script>{_INBOX_ASSIGN_JS}</script>""")
 
 
-def hearing_intake_page(con, deal: dict) -> str:
-    """P1: 面談の文字起こしを貼付/アップロードして取り込む入口（ソース非依存）。"""
+def hearing_intake_page(con, deal: dict, inbox_id: int | None = None) -> str:
+    """商談への面談取り込み入口。取り込み時に「記録オプション」を選び、それに従いAI整形する（#29再設計）。
+    inbox_id 指定時は自動連携で受信済みの文字起こしを使う（貼付欄は不要）。"""
     did = deal["id"]
     _acc = deal.get("account_name") or "—"
     _tmpls = sfa_db.list_hearing_templates(con)
     _topt = "".join(f'<option value="{t["id"]}">{_esc(t["name"])}</option>' for t in _tmpls)
+    _acts = sfa_db.get_master_list(con, "activity_types") or ["面談", "電話", "メール", "メモ"]
+    _aopt = _opt(_acts, "面談")
     _today = _today_jst().isoformat()
-    _inner = f"""
+    _inbox_hidden = f'<input type="hidden" name="inbox_id" value="{inbox_id}">' if inbox_id else ""
+    _opts_block = f"""
         <input type="hidden" name="deal_id" value="{did}">
+        {_inbox_hidden}
         <div class="filter-row js-nofilter" style="margin:6px 0">
           <label style="font-size:13px">アカウント: <b>{_esc(_acc)}</b> ／ 案件: <b>{_esc(deal.get("deal_name") or "—")}</b></label>
         </div>
-        <div class="filter-row js-nofilter" style="margin:6px 0;gap:12px">
-          <label style="font-size:13px">面談日 <input type="date" name="conducted_on" value="{_today}"></label>
-          <label style="font-size:13px">ヒアリング項目 <select name="template_id"><option value="">（項目なし）</option>{_topt}</select></label>
+        <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin:8px 0;background:#f8fafc">
+          <div style="font-weight:700;font-size:12px;color:#334155;margin-bottom:6px">この文字起こしをどう記録するか（取り込み時に選択）</div>
+          <div class="filter-row js-nofilter" style="gap:14px;flex-wrap:wrap;margin:2px 0">
+            <label style="font-size:13px">面談日 <input type="date" name="conducted_on" value="{_today}"></label>
+            <label style="font-size:13px">活動種別 <select name="act_type">{_aopt}</select></label>
+            <label style="font-size:13px">相手（任意） <input name="contact_name" placeholder="先方氏名" style="max-width:150px"></label>
+            <span class="muted" style="font-size:11px">※活動履歴は必ず記録します</span>
+          </div>
+          <div class="filter-row js-nofilter" style="gap:16px;flex-wrap:wrap;margin:6px 0 0">
+            <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
+              <input type="checkbox" name="make_hearing" value="1" style="width:auto"
+                onchange="var w=document.getElementById('tmplWrap');if(w)w.style.display=this.checked?'inline':'none'">
+              ヒアリングとして起票</label>
+            <span id="tmplWrap" style="display:none;font-size:13px">テンプレ
+              <select name="template_id"><option value="">（選択）</option>{_topt}</select></span>
+            <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
+              <input type="checkbox" name="update_state" value="1" checked style="width:auto">
+              商談の現状を更新（ステージ/次回MS/現状メモ）</label>
+            <label style="font-size:13px;display:inline-flex;gap:5px;align-items:center">
+              <input type="checkbox" name="make_mail" value="1" style="width:auto">
+              お礼メール素案を作成（Outlook起動）</label>
+          </div>
         </div>"""
+    if inbox_id:
+        _body = (f'<p class="muted" style="font-size:13px">自動受信した会議の文字起こしを取り込みます。'
+                 f'上のオプションを選んで「AIで整形」してください（貼付欄は空でOK）。</p>'
+                 f'{_transcript_intake_form(action="/hearing/intake/structure", cancel_href="/intake-inbox", inner_fields_html=_opts_block)}')
+    else:
+        _body = (f'<p class="muted" style="font-size:13px">面談の文字起こし（Jamie等でコピー、またはテキスト/Wordファイル）と'
+                 f'記録オプションを選んで「AIで整形」すると、選んだ内容に沿って整理します。次の画面で確認・確定します。</p>'
+                 f'{_transcript_intake_form(action="/hearing/intake/structure", cancel_href=f"/deal/{did}", inner_fields_html=_opts_block)}')
     return render(f"""
     <div class="card">
       <h2>🎙️ 面談を取り込む（AI整形）</h2>
-      <p class="muted" style="font-size:13px">面談の文字起こし（Jamie等でコピー、またはテキスト/Wordファイル）を取り込んで「AIで整形」すると、
-      ヒアリング項目別・全体像・NextStep・メール素案に自動整理します。内容は次の画面で確認・編集して確定します。</p>
-      {_transcript_intake_form(action="/hearing/intake/structure", cancel_href=f"/deal/{did}", inner_fields_html=_inner)}
+      {_body}
     </div>""")
 
 
@@ -9476,42 +9509,100 @@ function hearingCommitSubmit(form){
 
 
 def hearing_review_page(con, deal: dict, session: dict) -> str:
-    """P1: AI整形結果を人が確認・編集して確定する画面。"""
+    """商談: 取り込みオプションに沿ったAI整形結果を確認・編集して確定する画面（#29再設計）。
+    確定で「活動履歴＋（任意でヒアリング/現状更新/メール）」をセット記録する。"""
     did = deal["id"]
     st = session.get("structured") or {}
+    opts = st.get("_opts") or {}
+    _make_hearing = bool(opts.get("make_hearing"))
+    _update_state = bool(opts.get("update_state"))
+    _make_mail = bool(opts.get("make_mail"))
+    _act_type = opts.get("act_type") or "面談"
+    _contact = opts.get("contact_name") or ""
     items = st.get("items") or []
     _ta_x = 'class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)"'  # クリックで拡大(#55共通)
-    _item_rows = "".join(
-        f'<div style="margin:8px 0">'
-        f'<div style="font-weight:600;font-size:13px;color:#334155">{_esc(it.get("label"))}</div>'
-        f'<input type="hidden" name="label_{i}" value="{_esc(it.get("label"))}">'
-        f'<textarea name="answer_{i}" rows="2" {_ta_x} style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(it.get("answer") or "")}</textarea>'
-        f'</div>' for i, it in enumerate(items)) or '<p class="muted">（項目なし。全体像・NextStepのみ）</p>'
-    _ns_text = "\n".join(st.get("nextsteps") or [])
+    _ta = "width:100%;box-sizing:border-box;font-size:13px;padding:6px"
+    _acts = sfa_db.get_master_list(con, "activity_types") or ["面談", "電話", "メール", "メモ"]
+    _dealrow = sfa_db.get_deal(con, did) or {}
+    _cur_stage = _dealrow.get("stage") or ""
+    _stages = sfa_db.get_master_list(con, "deal_stages") or list(sfa_db.DEAL_STAGES)
+    _ns_list = st.get("nextsteps") or []
+    _ns_text = "\n".join(_ns_list)
     _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
+
+    # ヒアリング項目（起票ONの時だけ）
+    _hearing_html = ""
+    if _make_hearing:
+        _item_rows = "".join(
+            f'<div style="margin:8px 0">'
+            f'<div style="font-weight:600;font-size:13px;color:#334155">{_esc(it.get("label"))}</div>'
+            f'<input type="hidden" name="label_{i}" value="{_esc(it.get("label"))}">'
+            f'<textarea name="answer_{i}" rows="2" {_ta_x} style="{_ta}">{_esc(it.get("answer") or "")}</textarea>'
+            f'</div>' for i, it in enumerate(items)) or '<p class="muted">（テンプレ項目なし）</p>'
+        _hearing_html = (f'<div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ ヒアリング項目（テンプレ）</div>{_item_rows}')
+
+    # 現状更新ブロック（ONの時だけ）: ステージ / 次回MS / 現状メモ
+    _state_html = ""
+    if _update_state:
+        _stage_opts = _opt(_stages, _cur_stage)
+        _ms_label_default = _ns_list[0] if _ns_list else ""
+        _state_html = f"""
+        <div style="border:1px solid #dbeafe;border-radius:8px;padding:10px 12px;margin:14px 0;background:#f0f7ff">
+          <div style="font-weight:700;font-size:13px;margin-bottom:6px">■ 商談の現状を更新</div>
+          <div class="filter-row js-nofilter" style="gap:14px;flex-wrap:wrap;margin:2px 0">
+            <label style="font-size:13px">ステージ <select name="stage">{_stage_opts}</select></label>
+          </div>
+          <div class="filter-row js-nofilter" style="gap:10px;flex-wrap:wrap;margin:6px 0">
+            <label style="font-size:13px">次回MS 日付 <input type="date" name="ms_date"></label>
+            <label style="font-size:13px">種別 <select name="ms_type">{_opt(sfa_db.NEXT_MS_TYPES, "アポ")}</select></label>
+            <label style="font-size:13px;flex:1;min-width:220px">内容
+              <input name="ms_label" value="{_esc(_ms_label_default)}" style="width:100%;box-sizing:border-box"></label>
+          </div>
+          <div style="font-size:13px;margin-top:4px">現状メモ（商談の現状欄を更新）
+            <textarea name="state_note" rows="3" {_ta_x} style="{_ta}">{_esc(st.get("overview") or "")}</textarea></div>
+        </div>"""
+
+    # メール素案（ONの時だけ）
+    _mail_html = ""
+    if _make_mail:
+        _mail_html = (
+            f'<div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ メール素案（相手宛）'
+            f'<span class="muted" style="font-weight:normal;font-size:11px">※「確定」でメーラー(Outlook等)が本文入りで起動</span></div>'
+            f'<textarea name="email_draft" rows="6" {_ta_x} style="{_ta}">{_esc(st.get("email_draft") or "")}</textarea>')
+
+    _summary_labels = ["活動履歴"]
+    if _make_hearing:
+        _summary_labels.append("ヒアリング")
+    if _update_state:
+        _summary_labels.append("現状更新")
+    if _make_mail:
+        _summary_labels.append("メール")
+    _summary = "＋".join(_summary_labels)
     return render(f"""
     <div class="card">
-      <h2>🎙️ ヒアリング整形結果の確認</h2>
+      <h2>🎙️ 面談整形結果の確認</h2>
       <p class="muted" style="font-size:13px">アカウント <b>{_esc(deal.get("account_name") or "—")}</b> ／ 案件 <b>{_esc(deal.get("deal_name") or "—")}</b>。
-      内容を確認・編集して「確定」すると、ヒアリング結果＋活動履歴に保存されます。</p>
+      「確定」で <b>{_summary}</b> をまとめて記録します。</p>
       {_ai_warn}
       <form method="post" action="/hearing/intake/commit" data-acct="{_esc(deal.get("account_name") or "")}"
         onsubmit="return hearingCommitSubmit(this)">
         <input type="hidden" name="session_id" value="{session["id"]}">
         <input type="hidden" name="item_count" value="{len(items)}">
-        <div style="font-weight:700;font-size:13px;margin:10px 0 2px">■ 面談全体像</div>
-        <textarea name="overview" rows="4" {_ta_x} style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(st.get("overview") or "")}</textarea>
-        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ ヒアリング項目</div>
-        {_item_rows}
+        <div class="filter-row js-nofilter" style="gap:14px;flex-wrap:wrap;margin:6px 0">
+          <label style="font-size:13px">活動種別 <select name="act_type">{_opt(_acts, _act_type)}</select></label>
+          <label style="font-size:13px">相手 <input name="contact_name" value="{_esc(_contact)}" placeholder="先方氏名" style="max-width:150px"></label>
+        </div>
+        <div style="font-weight:700;font-size:13px;margin:10px 0 2px">■ 面談全体像（活動履歴の内容に記録）</div>
+        <textarea name="overview" rows="4" {_ta_x} style="{_ta}">{_esc(st.get("overview") or "")}</textarea>
+        {_hearing_html}
         <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ NextStep（1行1件）</div>
-        <textarea name="nextsteps" rows="4" {_ta_x} style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(_ns_text)}</textarea>
+        <textarea name="nextsteps" rows="4" {_ta_x} style="{_ta}">{_esc(_ns_text)}</textarea>
         <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-top:6px">
           <input type="checkbox" name="make_tasks" value="1" style="width:auto"> 各NextStepをSFAのタスクとして起票する</label>
-        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ メール素案（相手宛）
-          <span class="muted" style="font-weight:normal;font-size:11px">※「確定して保存」でメーラー(Outlook等)が本文入りで起動します</span></div>
-        <textarea name="email_draft" rows="6" {_ta_x} style="width:100%;box-sizing:border-box;font-size:13px;padding:6px">{_esc(st.get("email_draft") or "")}</textarea>
+        {_state_html}
+        {_mail_html}
         <div style="margin-top:12px;display:flex;gap:8px">
-          <button class="btn" type="submit">✓ 確定して保存＋メール作成</button>
+          <button class="btn" type="submit">✓ 確定して記録</button>
           <a class="btn sec" href="/hearing/intake?deal={did}">やり直す</a>
           <a class="btn sec" href="/deal/{did}">キャンセル</a>
         </div>
@@ -14560,13 +14651,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         if not _row:
                             self._redirect("/intake-inbox")
                             return
+                        # 割り当て（取り込み原本を商談に紐付け）→ 取り込みオプション画面へ（inbox由来の文字起こしを使用）
                         sfa_db.assign_inbox_transcript(con, _tid, kind="deal", entity_id=_teid)
-                        _structured = _structure_hearing_transcript(_transcript, [])
-                        _sid = sfa_db.create_hearing_session(
-                            con, deal_id=_teid, source="jamie", template_id=None,
-                            conducted_on=_occ, transcript=_transcript,
-                            structured=_structured, status="structured")
-                        self._send(hearing_review_page(con, dict(_row), sfa_db.get_hearing_session(con, _sid)))
+                        self._send(hearing_intake_page(con, dict(_row), inbox_id=_tid))
                     else:
                         self._redirect("/intake-inbox")
 
@@ -15048,31 +15135,51 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _row = con.execute(
                         "SELECT d.id, d.deal_name, a.name account_name FROM deals d "
                         "LEFT JOIN accounts a ON a.id=d.account_id WHERE d.id=?", (_did,)).fetchone() if _did else None
-                    _transcript = _resolve_transcript_input(f)
+                    # 文字起こしの入手元: 自動連携(inbox_id)なら保存済みを使う。無ければ貼付/アップロード。
+                    try:
+                        _inbox_id = int(f.get("inbox_id", "0") or 0)
+                    except ValueError:
+                        _inbox_id = 0
+                    if _inbox_id:
+                        _it = sfa_db.get_intake_transcript(con, _inbox_id)
+                        _transcript = (_it.get("transcript") if _it else "") or ""
+                    else:
+                        _transcript = _resolve_transcript_input(f)
                     if not _row or not _transcript:
                         self._send(render("<div class=card>商談または文字起こしがありません。"
                                           "<a href='/hearing/intake?deal=%d'>戻る</a></div>" % _did), 400)
                     else:
+                        # 取り込みオプション（この面談をどう記録するか）
+                        _make_hearing = f.get("make_hearing") == "1"
+                        _update_state = f.get("update_state") == "1"
+                        _make_mail = f.get("make_mail") == "1"
+                        _act_type = (f.get("act_type") or "面談").strip()
+                        _contact = (f.get("contact_name") or "").strip()
                         try:
-                            _tid = int(f.get("template_id", "0") or 0) or None
+                            _tid = (int(f.get("template_id", "0") or 0) or None) if _make_hearing else None
                         except ValueError:
                             _tid = None
                         _tmpl = sfa_db.get_hearing_template(con, _tid) if _tid else None
                         _labels = [it.get("label") for it in (_tmpl.get("items") or [])] if _tmpl else []
-                        # 取り込み原本（文字起こしローデータ＋アップロード原本）を保存（論点と同仕様）
+                        # 取り込み原本の保存（貼付/アップロード時のみ。inboxは受信時に保存済み）
                         _up = f.get("transcript_file")
                         _is_file = isinstance(_up, tuple) and len(_up) == 2 and _up[1]
-                        try:
-                            sfa_db.add_intake_transcript(
-                                con, kind="deal", entity_id=_did,
-                                source=("file" if _is_file else "paste"),
-                                filename=(_up[0] if _is_file else None),
-                                transcript=_transcript, file_blob=(_up[1] if _is_file else None))
-                        except Exception as _e:  # noqa: BLE001
-                            print(f"[intake_transcript] save failed: {_e}", flush=True)
-                        _structured = _structure_hearing_transcript(_transcript, _labels)
+                        if not _inbox_id:
+                            try:
+                                sfa_db.add_intake_transcript(
+                                    con, kind="deal", entity_id=_did,
+                                    source=("file" if _is_file else "paste"),
+                                    filename=(_up[0] if _is_file else None),
+                                    transcript=_transcript, file_blob=(_up[1] if _is_file else None))
+                            except Exception as _e:  # noqa: BLE001
+                                print(f"[intake_transcript] save failed: {_e}", flush=True)
+                        _structured = _structure_hearing_transcript(_transcript, _labels, want_email=_make_mail)
+                        _structured["_opts"] = {
+                            "make_hearing": _make_hearing, "template_id": _tid,
+                            "update_state": _update_state, "make_mail": _make_mail,
+                            "act_type": _act_type, "contact_name": _contact}
                         _sid = sfa_db.create_hearing_session(
-                            con, deal_id=_did, source="paste", template_id=_tid,
+                            con, deal_id=_did, source=("jamie" if _inbox_id else "paste"), template_id=_tid,
                             conducted_on=(f.get("conducted_on") or None),
                             transcript=_transcript, structured=_structured, status="structured")
                         _sess = sfa_db.get_hearing_session(con, _sid)
@@ -15089,6 +15196,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                           "<a href='/hearings'>戻る</a></div>"), 404)
                     else:
                         _did = _sess.get("deal_id")
+                        _opts = (_sess.get("structured") or {}).get("_opts") or {}
+                        _make_hearing = bool(_opts.get("make_hearing"))
+                        _update_state = bool(_opts.get("update_state"))
                         try:
                             _n = int(f.get("item_count", "0") or 0)
                         except ValueError:
@@ -15103,24 +15213,62 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _nextsteps = [ln.strip() for ln in (f.get("nextsteps") or "").splitlines() if ln.strip()]
                         _email = (f.get("email_draft") or "").strip()
                         _conducted = _sess.get("conducted_on") or _today_jst().isoformat()
-                        _tmpl = sfa_db.get_hearing_template(con, _sess.get("template_id")) if _sess.get("template_id") else None
-                        _act = sfa_db.add_activity(con, deal_id=_did, type="ヒアリング",
-                                                   occurred_on=_conducted, body=(_overview or None))
-                        _rid = sfa_db.add_hearing_result(
-                            con, deal_id=_did, template_id=_sess.get("template_id"),
-                            template_name=(_tmpl.get("name") if _tmpl else None),
-                            conducted_on=_conducted, answers=_answers, activity_id=_act)
+                        _act_type = (f.get("act_type") or _opts.get("act_type") or "面談").strip()
+                        _contact = (f.get("contact_name") or "").strip() or None
+                        # ① 活動履歴（記録の土台・常に作成）
+                        _act = sfa_db.add_activity(con, deal_id=_did, type=_act_type,
+                                                   occurred_on=_conducted, contact_name=_contact,
+                                                   body=(_overview or None))
+                        # ② ヒアリング結果（起票ON時のみ・活動履歴に紐付け）
+                        _rid = None
+                        if _make_hearing:
+                            _tmpl = sfa_db.get_hearing_template(con, _sess.get("template_id")) if _sess.get("template_id") else None
+                            _rid = sfa_db.add_hearing_result(
+                                con, deal_id=_did, template_id=_sess.get("template_id"),
+                                template_name=(_tmpl.get("name") if _tmpl else None),
+                                conducted_on=_conducted, answers=_answers, activity_id=_act)
+                        # ③ NextStep→タスク（任意）
                         if f.get("make_tasks") == "1":
                             for _ns in _nextsteps:
                                 sfa_db.upsert_task(con, title=_ns, status="受信箱", category="営業",
                                                    source="hearing", link_type="deal", link_id=_did)
+                        # ④ 商談の現状を更新（ON時のみ）: ステージ / 現状メモ / 次回MS
+                        if _update_state:
+                            _new_stage = (f.get("stage") or "").strip()
+                            if _new_stage and _new_stage in sfa_db.DEAL_STAGES:
+                                con.execute("UPDATE deals SET stage=?, updated_at=datetime('now') WHERE id=?",
+                                            (_new_stage, _did))
+                                con.commit()
+                                if _new_stage == "受注":
+                                    try:
+                                        sfa_db.close_won_if_needed(con, _did, commit=True)
+                                    except Exception as _e:  # noqa: BLE001
+                                        print(f"[intake] close_won failed: {_e}", flush=True)
+                                try:
+                                    sfa_db.ensure_delivery_on_stage(con, _did, _new_stage)
+                                except Exception as _e:  # noqa: BLE001
+                                    print(f"[intake] ensure_delivery failed: {_e}", flush=True)
+                            if "state_note" in f:
+                                con.execute("UPDATE deals SET note=?, updated_at=datetime('now') WHERE id=?",
+                                            ((f.get("state_note") or "").strip() or None, _did))
+                                con.commit()
+                            _ms_date = (f.get("ms_date") or "").strip()
+                            _ms_label = (f.get("ms_label") or "").strip()
+                            if _ms_date or _ms_label:
+                                sfa_db.add_deal_milestone(con, _did, date=_ms_date, label=_ms_label,
+                                                          ms_type=(f.get("ms_type") or "アポ"))
+                            if theme_client is not None:
+                                try:
+                                    theme_link.sync_deal(theme_client, con, _did)
+                                except Exception as _e:  # noqa: BLE001
+                                    print(f"[intake] theme sync failed: {_e}", flush=True)
                         _structured = dict(_sess.get("structured") or {})
                         _structured.update({
                             "items": [{"label": a["label"], "answer": a["answer"]} for a in _answers],
                             "overview": _overview, "nextsteps": _nextsteps, "email_draft": _email})
                         sfa_db.update_hearing_session(con, _sid, structured=_structured,
                                                       status="confirmed", result_id=_rid)
-                        self._redirect("/hearing/result/%d" % _rid)
+                        self._redirect("/deal/%d" % _did)
 
                 elif path == "/hearing/autosave":
                     try:

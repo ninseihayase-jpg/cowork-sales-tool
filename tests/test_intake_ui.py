@@ -88,6 +88,40 @@ def test_issue_review_prose_fields_expand():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_hearing_review_is_options_aware():
+    """商談取り込みの確認画面が取り込みオプション(_opts)に従い、必要な欄だけ出す（#29再設計）。"""
+    d, con = _fresh()
+    try:
+        acc = sfa_db.upsert_account(con, name="ソラスト")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="要件詰め")
+        deal = {"id": did, "deal_name": "D", "account_name": "ソラスト"}
+        base = {"items": [{"label": "予算", "answer": "x"}], "overview": "o",
+                "nextsteps": ["n1"], "email_draft": "メール本文", "_ai_ok": True}
+        # 現状更新ON / ヒアリングOFF / メールOFF
+        st1 = dict(base, _opts={"make_hearing": False, "update_state": True,
+                                "make_mail": False, "act_type": "面談", "contact_name": "岩崎"})
+        sid1 = sfa_db.create_hearing_session(con, deal_id=did, source="jamie", template_id=None,
+                                             conducted_on="2026-08-15", transcript="x",
+                                             structured=st1, status="structured")
+        h1 = _s(webapp.hearing_review_page(con, deal, sfa_db.get_hearing_session(con, sid1)))
+        assert 'name="act_type"' in h1 and 'name="stage"' in h1 and 'name="ms_label"' in h1 and 'name="state_note"' in h1
+        assert 'name="email_draft"' not in h1        # メールOFF
+        assert "ヒアリング項目" not in h1              # ヒアリングOFF
+        assert "活動履歴＋現状更新" in h1
+        # 全部ON
+        st2 = dict(base, _opts={"make_hearing": True, "update_state": True,
+                                "make_mail": True, "act_type": "面談", "contact_name": ""})
+        sid2 = sfa_db.create_hearing_session(con, deal_id=did, source="jamie", template_id=None,
+                                             conducted_on="2026-08-15", transcript="x",
+                                             structured=st2, status="structured")
+        h2 = _s(webapp.hearing_review_page(con, deal, sfa_db.get_hearing_session(con, sid2)))
+        assert "ヒアリング項目" in h2 and 'name="email_draft"' in h2 and 'name="stage"' in h2
+        assert "活動履歴＋ヒアリング＋現状更新＋メール" in h2
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_inbox_assign_js_is_syntactically_present():
     """割り当て絞り込みJSと確定JSが定義され、想定の関数名を含む（HTMLに埋め込まれる前提）。"""
     assert "function assignFilter" in webapp._INBOX_ASSIGN_JS
