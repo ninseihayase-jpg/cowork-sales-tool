@@ -160,6 +160,13 @@ TranscriptSource（差し替え可能）
     `webapp._handle_jamie_webhook・_verify_jamie_request・_jamie_transcript_text・_jamie_attendees・intake_inbox_page`。
   - 秘匿: `JAMIE_WEBHOOK_SECRET`（署名HMAC）または `JAMIE_WEBHOOK_API_KEY`（x-jamie-api-keyヘッダ）。両未設定は fail-closed（503）。render.yaml に sync:false で宣言。
   - 受信URL（本番）: `https://sfa-crm.onrender.com/api/jamie/webhook`（basic認証は /api/* 除外で通過）。
+  - **2026-08-15 本番疎通OK**（Jamie Send Test → `saved inbox`）。ハマりどころ＝**認証キーの不一致**:
+    JamieのWebhook作成時に付けた**カスタムヘッダ `x-jamie-api-key`（手入力値）が優先**して送られ、
+    Jamie自動生成の `sk_…` は送られなかった。→ Render `JAMIE_WEBHOOK_API_KEY` は
+    **「Jamieが実際に送っている値」**（カスタムヘッダ値 or Manage API Keyの`sk_`のどちらか実送信される方）に一致させること。
+    切り分けは 401ログの `incoming ... fingerprint=[…]` と `Render ... fingerprint=…`（先頭4/末尾2/len）で判定。
+    受信/401/400は必ずログに出る（`_handle_jamie_webhook`）。
+  - 注意: Jamieの Send Test ペイロードは `id` を持たないため external_id=None（冪等キー無し）。実会議はidありで冪等。
 - **P3.2**: 高信頼オートマッチ（プリセットのみ・確定は人）。REST backfill（取りこぼし補完）。
 - **P3.3（任意）**: Zoom-native アダプタを同じ受信層の裏に追加（Jamie未使用会議の補完）。
 
