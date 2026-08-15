@@ -239,5 +239,14 @@ Slack有無×Jamie先攻/後攻の全パターンを検証した結果、**唯�
 - [x] 突合キー＝**(deal_id, 面談日)**。識別①完了時に即座に同キーの確定済み活動をチェックする。
 - [x] 統合時の優先＝**Jamie全文を本文、Slackメモを人の強調として上書き/追記**。
 - [x] スコープ外混入対策＝候補提示に**「対象外（論点/社内議論など）」ボタン**を用意し、押下時/無反応時は`status='inbox'`のままWebの既存フローに委ねる（論点・内部議論のコードは無改修で共存）。
-- [ ] Slackへの候補提示メッセージの文面・ボタンUI詳細、および「Jamie全文をどう見せるか（要約 or 全文リンク）」＝次回実装着手時に詰める。
-- [ ] Web格上げの判定＝Botの自動判定／人の明示指示、どちらを主とするか＝次回実装着手時に詰める。
+
+### 10.10 実装状況（2026-08-15）
+コア部分（識別①のSlack移設＋突合・統合）を実装・テスト済み（`tests/test_jamie_slack_identify.py`）。
+- `slack_bot.post_jamie_candidate_prompt` — Jamie webhook到着時、商談候補（`webapp._inbox_candidates`を流用、論点は除外）があれば`#sales`（`SALES_CHANNEL_ID`）に候補ボタン＋「対象外」ボタンを投稿。候補ゼロなら投稿自体をスキップ（Web `/intake-inbox` に委ねる）。
+- `slack_bot.handle_interactive` — `jamie_pick_deal`（割当→既存活動チェック→無ければ確定待ち／あれば追記提案）・`jamie_skip`・`jamie_append_yes`・`jamie_append_no`を処理。`webapp.py`の`/slack/interactive`はaction_idが`jamie_`始まりならこちらへ、それ以外は従来通り`slack_tasks.handle_interactive`へ振り分け。
+- `slack_bot.apply_to_db` — `@NegoCollection`確定時、割当済み・未消化のJamie全文（`sfa_db.find_assigned_jamie_transcript`）があれば本文に採用しSlack入力を強調として追記、消化済み(`status='saved'`)にマーク。
+- `render.yaml`の`sfa-crm`サービスに`SALES_CHANNEL_ID`を追加（従来cronのみに設定されていた）。
+
+**未実装（次回以降のフォローアップ）**:
+- [ ] Web格上げ（ヒアリングテンプレ起票／重いステージ変更時に「[SFAで仕上げる]」を提示する導線）は今回未実装。現状はSlack確定 or 従来のWeb `/intake-inbox` 経由手動遷移のいずれかで代替可能。
+- [ ] Jamie全文の見せ方（候補提示メッセージ自体には全文を出していない。要約表示や全文プレビューが要るかは運用してから判断）。

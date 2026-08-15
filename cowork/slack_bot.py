@@ -37,6 +37,8 @@ SLACK_DESK_TOKEN = os.environ.get("SLACK_DESK_BOT_TOKEN", "")
 SLACK_DESK_SIGNING_SECRET = os.environ.get("SLACK_DESK_SIGNING_SECRET", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "http://localhost:8787")
+# #98: Jamie文字起こし到着時の商談候補提示を投稿する先（#sales）。未設定なら投稿をスキップ。
+SALES_CHANNEL_ID = os.environ.get("SALES_CHANNEL_ID", "")
 
 _bot_user_id: str | None = None
 
@@ -168,6 +170,124 @@ def find_deal(con: sqlite3.Connection, text: str) -> dict | None:
         if acct and acct in text_l:
             return d
     return None
+
+
+# ── #98: Jamie文字起こし×Slack識別 ─────────────────────────────────────────
+# Jamie webhook到着時点では商談との紐付けが無い（識別ステップが#97のWeb inboxでしか
+# 発生せず、Slack先攻の運用実態と噛み合わず放置されるバグを設計で特定）。この識別を
+# Slackに引き取らせ、候補ボタンの選択で即座に割り当てる。候補が1件も無い（＝論点/
+# 社内議論など商談名に一致しない）場合は投稿自体を行わず、従来通りWeb inboxに委ねる
+# （スコープ外＝論点/内部議論の既存コードは無改修のまま共存）。
+
+def post_jamie_candidate_prompt(con: sqlite3.Connection, *, inbox_id: int, title: str,
+                                occurred_on: str, candidates: list) -> str | None:
+    """Jamie webhook到着時、商談候補（[(value,label),...] 例: [("deal:12","A社/案件X")]）を
+    #salesに投稿する。candidatesが空なら何もしない（Web inboxに委ねる）。"""
+    if not candidates or not SALES_CHANNEL_ID:
+        return None
+    buttons = [{
+        "type": "button", "action_id": "jamie_pick_deal", "value": f"{inbox_id}:{v.split(':', 1)[1]}",
+        "text": {"type": "plain_text", "text": lbl[:75]},
+    } for v, lbl in candidates[:5]]
+    buttons.append({
+        "type": "button", "action_id": "jamie_skip", "value": str(inbox_id),
+        "text": {"type": "plain_text", "text": "対象外（論点/社内議論など）"},
+    })
+    text = f"🎙️ Jamie文字起こし到着：*{title}*（{occurred_on}）\nどの商談ですか？"
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {"type": "actions", "elements": buttons},
+    ]
+    r = _slack_post("chat.postMessage", channel=SALES_CHANNEL_ID, text=text, blocks=blocks)
+    if r.get("ok"):
+        return r.get("ts")
+    print(f"[SlackBot] post_jamie_candidate_prompt failed: {r.get('error')}")
+    return None
+
+
+def _jamie_update_message(channel: str, ts: str, text: str) -> None:
+    r = _slack_post("chat.update", channel=channel, ts=ts, text=text, blocks=[])
+    if not r.get("ok"):
+        print(f"[SlackBot] jamie chat.update failed: {r.get('error')}")
+
+
+def handle_interactive(con: sqlite3.Connection, payload: dict) -> None:
+    """#98: Jamie候補ボタン（jamie_pick_deal/jamie_skip/jamie_append_yes/jamie_append_no）を処理する。"""
+    from cowork import sfa_db as _sfa_db
+    actions = payload.get("actions") or []
+    if not actions:
+        return
+    action_id = actions[0].get("action_id") or ""
+    value = actions[0].get("value") or ""
+    channel = (payload.get("channel") or {}).get("id") or ""
+    msg_ts = (payload.get("message") or {}).get("ts") or ""
+
+    if action_id == "jamie_pick_deal":
+        try:
+            inbox_id_s, deal_id_s = value.split(":", 1)
+            inbox_id, deal_id = int(inbox_id_s), int(deal_id_s)
+        except ValueError:
+            return
+        t = _sfa_db.get_intake_transcript(con, inbox_id)
+        deal = con.execute(
+            "SELECT d.*, a.name as account_name FROM deals d "
+            "LEFT JOIN accounts a ON d.account_id=a.id WHERE d.id=?", (deal_id,)).fetchone()
+        if not t or not deal:
+            _jamie_update_message(channel, msg_ts, "割り当てに失敗しました（対象が見つかりません）。")
+            return
+        deal = dict(deal)
+        occurred_on = t.get("occurred_on") or ""
+        _sfa_db.assign_inbox_transcript(con, inbox_id, kind="deal", entity_id=deal_id)
+        existing = _sfa_db.find_activity_by_deal_and_date(con, deal_id, occurred_on)
+        deal_label = f'{deal.get("account_name") or "—"} / {deal.get("deal_name") or "—"}'
+        if existing:
+            text = (f"「{deal_label}」に割り当てました。{occurred_on}の活動記録が既にあります。"
+                    "Jamie全文をその記録に追記しますか？")
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+                {"type": "actions", "elements": [
+                    {"type": "button", "action_id": "jamie_append_yes",
+                     "value": f"{inbox_id}:{existing['id']}",
+                     "text": {"type": "plain_text", "text": "追記する"}},
+                    {"type": "button", "action_id": "jamie_append_no", "value": str(inbox_id),
+                     "text": {"type": "plain_text", "text": "追記しない"}},
+                ]},
+            ]
+            r = _slack_post("chat.update", channel=channel, ts=msg_ts, text=text, blocks=blocks)
+            if not r.get("ok"):
+                print(f"[SlackBot] jamie append-prompt failed: {r.get('error')}")
+        else:
+            _jamie_update_message(
+                channel, msg_ts,
+                f"✅「{deal_label}」に割り当てました。この面談をSlackで確定する際にJamie全文を取り込みます。")
+
+    elif action_id == "jamie_skip":
+        _jamie_update_message(channel, msg_ts, "対象外として保留しました（Webの取り込みインボックスに残ります）。")
+
+    elif action_id == "jamie_append_yes":
+        try:
+            inbox_id_s, activity_id_s = value.split(":", 1)
+            inbox_id, activity_id = int(inbox_id_s), int(activity_id_s)
+        except ValueError:
+            return
+        t = _sfa_db.get_intake_transcript(con, inbox_id)
+        tx = (t.get("transcript") or "").strip() if t else ""
+        if tx:
+            cur = con.execute("SELECT body FROM activities WHERE id=?", (activity_id,)).fetchone()
+            body = (dict(cur).get("body") or "") if cur else ""
+            new_body = (body + "\n\n---\n【Jamie全文】\n" + tx).strip() if body else ("【Jamie全文】\n" + tx)
+            con.execute("UPDATE activities SET body=? WHERE id=?", (new_body, activity_id))
+            con.commit()
+        _sfa_db.mark_intake_transcript_status(con, inbox_id, "saved")
+        _jamie_update_message(channel, msg_ts, "✅ 活動履歴にJamie全文を追記しました。")
+
+    elif action_id == "jamie_append_no":
+        try:
+            inbox_id = int(value)
+        except ValueError:
+            return
+        _sfa_db.mark_intake_transcript_status(con, inbox_id, "saved")
+        _jamie_update_message(channel, msg_ts, "追記せず保留しました。")
 
 
 # ── Claude helpers ─────────────────────────────────────────────────────────
@@ -519,6 +639,11 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None,
         activity_type = fields.get("種別") or "メモ"
         if activity_type not in valid_atypes:
             activity_type = "メモ"
+        # #98: 同一(deal_id,面談日)で割当済み・未消化のJamie全文があれば統合
+        # （Jamie全文を本文、Slackで人が入力した内容を強調点として追記）。
+        _jamie = _sfa_db.find_assigned_jamie_transcript(con, deal_id, date_str)
+        if _jamie and (_jamie.get("transcript") or "").strip():
+            content = _jamie["transcript"].strip() + "\n\n---\n【Slack強調】\n" + content.strip()
         con.execute("""
             INSERT INTO activities (deal_id, type, occurred_on, contact_name, body)
             VALUES (?, ?, ?, ?, ?)
@@ -529,6 +654,8 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None,
             fields.get("相手") or "",
             content,
         ))
+        if _jamie:
+            _sfa_db.mark_intake_transcript_status(con, _jamie["id"], "saved")
 
     # 商談フィールド更新（既存商談のみ）
     if deal_id and not create_mode:

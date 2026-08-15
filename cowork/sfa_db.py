@@ -2471,6 +2471,28 @@ def assign_inbox_transcript(con, id: int, *, kind: str, entity_id: int) -> None:
     con.commit()
 
 
+def find_activity_by_deal_and_date(con, deal_id: int, occurred_on: str) -> dict | None:
+    """#98: Slack確定済み活動の有無チェック（同一(deal_id,面談日)の突合キー）。最新1件。"""
+    r = con.execute(
+        "SELECT * FROM activities WHERE deal_id=? AND occurred_on=? ORDER BY id DESC LIMIT 1",
+        (deal_id, occurred_on)).fetchone()
+    return dict(r) if r else None
+
+
+def find_assigned_jamie_transcript(con, deal_id: int, occurred_on: str) -> dict | None:
+    """#98: 同一(deal_id,面談日)で割当済み・未消化のJamie全文があれば返す（Slack確定時の統合用）。"""
+    r = con.execute(
+        "SELECT * FROM intake_transcripts WHERE kind='deal' AND entity_id=? AND occurred_on=? "
+        "AND source='jamie' AND status='assigned' ORDER BY id DESC LIMIT 1",
+        (deal_id, occurred_on)).fetchone()
+    return dict(r) if r else None
+
+
+def mark_intake_transcript_status(con, id: int, status: str) -> None:
+    con.execute("UPDATE intake_transcripts SET status=? WHERE id=?", (status, int(id)))
+    con.commit()
+
+
 def update_hearing_result(con, id: int, *, conducted_on=None, answers: list[dict]) -> None:
     """既存ヒアリング結果の内容を修正する（新規行は作らず上書き）。"""
     con.execute(

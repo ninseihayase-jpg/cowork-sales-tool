@@ -9233,6 +9233,21 @@ def _verify_jamie_request(headers, raw_bytes: bytes) -> bool:
     return False
 
 
+def _post_jamie_slack_candidates(con, *, inbox_id: int, title: str, occurred_on: str) -> None:
+    """#98: Jamie webhook到着時、商談候補があればSlackに識別を委ねる（識別①）。
+    候補が無ければ何もしない＝#97のWeb `/intake-inbox` に委ねる（論点/内部議論は無改修で共存）。"""
+    try:
+        deals = sfa_db.list_deals(con, status="open")
+        cands = _inbox_candidates(title, [], deals, [])
+        if not cands:
+            return
+        from cowork import slack_bot as _sb
+        _sb.post_jamie_candidate_prompt(con, inbox_id=inbox_id, title=title,
+                                        occurred_on=occurred_on, candidates=cands)
+    except Exception as _e:  # noqa: BLE001
+        print(f"[jamie webhook] slack candidate post failed: {_e}", flush=True)
+
+
 def _handle_jamie_webhook(handler, con, raw_bytes: bytes) -> None:
     """Jamie meeting.completed を受信し、取り込みインボックスへ保存（冪等）。認証失敗は401。"""
     def _reply(code, obj):
@@ -9299,6 +9314,7 @@ def _handle_jamie_webhook(handler, con, raw_bytes: bytes) -> None:
             occurred_on=occurred_on, transcript=transcript,
             attendees_json=json.dumps(attendees, ensure_ascii=False), raw_summary=raw_summary)
         print(f"[jamie webhook] saved inbox id={_iid} ext={ext_id} title={title!r}", flush=True)
+        _post_jamie_slack_candidates(con, inbox_id=_iid, title=title, occurred_on=occurred_on)
         _reply(200, {"ok": True, "id": _iid})
     except Exception as e:  # noqa: BLE001
         print(f"[jamie webhook] save failed: {e}", flush=True)
@@ -16277,10 +16293,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self.end_headers()
                         self.wfile.write(b"")
 
+                        _actions = _payload.get("actions") or []
+                        _aid = (_actions[0].get("action_id") if _actions else "") or ""
+
                         def _proc_iv():
                             _con = sfa_db.connect(db_path)
                             try:
-                                _st.handle_interactive(_con, _payload)
+                                if _aid.startswith("jamie_"):
+                                    # #98: Jamie候補ボタン（NegoCollection Bot経由）
+                                    _sb.handle_interactive(_con, _payload)
+                                else:
+                                    _st.handle_interactive(_con, _payload)
                             except Exception as _e:  # noqa: BLE001
                                 print(f"[slack_interactive] error: {_e}", flush=True)
                             finally:

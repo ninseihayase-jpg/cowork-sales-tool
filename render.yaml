@@ -44,6 +44,8 @@ services:
         sync: false          # Jamie webhook署名検証シークレット(#29 P3)。署名(HMAC)方式を使う場合に設定
       - key: JAMIE_WEBHOOK_API_KEY
         sync: false          # Jamie webhook APIキーヘッダ方式(#29 P3)。x-jamie-api-key と照合。どちらか片方でも可
+      - key: SALES_CHANNEL_ID
+        sync: false          # #sales チャンネルID。Jamie文字起こし到着時の商談候補提示の投稿先(#98)
     disk:
       name: sfa-db
       mountPath: /data
