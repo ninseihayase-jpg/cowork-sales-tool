@@ -9240,16 +9240,29 @@ def _handle_jamie_webhook(handler, con, raw_bytes: bytes) -> None:
         handler.end_headers()
         handler.wfile.write(body)
 
+    # 受信の事実を必ずログに残す（届いたか/認証/本文長を切り分けるため）。値そのものは出さない。
+    _has_key_hdr = bool(handler.headers.get("x-jamie-api-key") or handler.headers.get("X-Jamie-Api-Key"))
+    _has_sig_hdr = bool(handler.headers.get("x-jamie-signature") or handler.headers.get("X-Jamie-Signature"))
+    _clen = handler.headers.get("Content-Length")
+    _tenc = handler.headers.get("Transfer-Encoding")
+    print(f"[jamie webhook] received: bytes={len(raw_bytes)} content_length={_clen} "
+          f"transfer_encoding={_tenc} has_apikey_header={_has_key_hdr} has_sig_header={_has_sig_hdr}",
+          flush=True)
+
     if not (JAMIE_WEBHOOK_SECRET or JAMIE_WEBHOOK_API_KEY):
-        print("[jamie webhook] no secret configured; rejecting", flush=True)
+        print("[jamie webhook] 503 no secret configured; rejecting", flush=True)
         _reply(503, {"ok": False, "error": "not configured"})
         return
     if not _verify_jamie_request(handler.headers, raw_bytes):
+        print(f"[jamie webhook] 401 unauthorized (key_header={_has_key_hdr}, sig_header={_has_sig_hdr}) "
+              "— RenderのJAMIE_WEBHOOK_API_KEYがJamie送信キーと一致しているか確認", flush=True)
         _reply(401, {"ok": False, "error": "unauthorized"})
         return
     try:
         payload = json.loads(raw_bytes.decode("utf-8"))
-    except Exception:
+    except Exception as _je:
+        print(f"[jamie webhook] 400 bad json ({_je}); bytes={len(raw_bytes)} "
+              f"head={raw_bytes[:120]!r}", flush=True)
         _reply(400, {"ok": False, "error": "bad json"})
         return
     event = payload.get("event") or ""
