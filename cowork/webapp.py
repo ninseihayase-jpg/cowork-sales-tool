@@ -9254,8 +9254,21 @@ def _handle_jamie_webhook(handler, con, raw_bytes: bytes) -> None:
         _reply(503, {"ok": False, "error": "not configured"})
         return
     if not _verify_jamie_request(handler.headers, raw_bytes):
-        print(f"[jamie webhook] 401 unauthorized (key_header={_has_key_hdr}, sig_header={_has_sig_hdr}) "
-              "— RenderのJAMIE_WEBHOOK_API_KEYがJamie送信キーと一致しているか確認", flush=True)
+        # 診断: 受信キーと設定キーの「マスク指紋」だけ出す（先頭4・末尾2・長さ。秘密値は出さない）。
+        def _fp(v):
+            v = str(v or "")
+            return f"{v[:4]}…{v[-2:]}(len={len(v)})" if v else "(empty)"
+        try:
+            _incoming = handler.headers.get_all("x-jamie-api-key") or []
+        except Exception:
+            _incoming = []
+        _one = handler.headers.get("x-jamie-api-key")
+        if _one and _one not in _incoming:
+            _incoming.append(_one)
+        _in_fp = ", ".join(_fp(v) for v in _incoming) or "(none)"
+        print(f"[jamie webhook] 401 unauthorized. incoming x-jamie-api-key fingerprint=[{_in_fp}] "
+              f"vs Render JAMIE_WEBHOOK_API_KEY fingerprint={_fp(JAMIE_WEBHOOK_API_KEY)}. "
+              "両者の先頭4・末尾2・lenが一致するようRender側を合わせてください。", flush=True)
         _reply(401, {"ok": False, "error": "unauthorized"})
         return
     try:
