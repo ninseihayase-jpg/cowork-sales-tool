@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import urllib.error
 import urllib.request
+from datetime import timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -65,25 +66,32 @@ def test_unauthorized_without_token(server):
 
 
 def test_only_returns_items_from_before_today(server, db_path):
+    # 実行時点の実日付を基準にする（ハードコード日付だと後日カレンダーが進むと壊れるため）。
+    today = webapp._today_jst().isoformat()
+    yesterday = (webapp._today_jst() - timedelta(days=6)).isoformat()
     con = sfa_db.connect(db_path)
     try:
         # 前日以前(inbox放置) — created_atを直接過去日付に書き換えて模擬
         iid_old = sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="a1",
-                                              title="旧い未処理", occurred_on="2026-08-10",
+                                              title="旧い未処理", occurred_on=yesterday,
                                               transcript="x", attendees_json="[]")
-        con.execute("UPDATE intake_transcripts SET created_at='2026-08-10 09:00:00' WHERE id=?", (iid_old,))
-        # 当日分(inbox) — 今日作成なので対象外のはず
-        sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="a2",
-                                    title="今日届いた分", occurred_on="2026-08-16",
-                                    transcript="y", attendees_json="[]")
+        con.execute("UPDATE intake_transcripts SET created_at=? WHERE id=?",
+                    (f"{yesterday} 09:00:00", iid_old))
+        # 当日分(inbox) — 今日作成なので対象外のはず（created_atも明示的に今日に固定）
+        iid_today = sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="a2",
+                                                title="今日届いた分", occurred_on=today,
+                                                transcript="y", attendees_json="[]")
+        con.execute("UPDATE intake_transcripts SET created_at=? WHERE id=?",
+                    (f"{today} 09:00:00", iid_today))
         # assigned放置(jamie, 前日以前)
         acc = sfa_db.upsert_account(con, name="ソラスト")
         did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案")
         iid_assigned = sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="a3",
-                                                   title="割当済み放置", occurred_on="2026-08-10",
+                                                   title="割当済み放置", occurred_on=yesterday,
                                                    transcript="z", attendees_json="[]")
         sfa_db.assign_inbox_transcript(con, iid_assigned, kind="deal", entity_id=did)
-        con.execute("UPDATE intake_transcripts SET created_at='2026-08-10 09:00:00' WHERE id=?", (iid_assigned,))
+        con.execute("UPDATE intake_transcripts SET created_at=? WHERE id=?",
+                    (f"{yesterday} 09:00:00", iid_assigned))
         con.commit()
     finally:
         con.close()
