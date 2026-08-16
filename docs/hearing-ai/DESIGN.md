@@ -259,3 +259,32 @@ Slack有無×Jamie先攻/後攻の全パターンを検証した結果、**唯�
 対策: `scripts/intake_inbox_stale_slack_reminder.py`（新規cron `sfa-daily-intake-stale-reminder`、日次09:15 JST）が `/api/intake_inbox_stale` を叩き、「前日以前から`status='inbox'`のまま」＋「前日以前から`status='assigned' source='jamie'`のまま未消化」の件数・タイトルを検知して通知する。両方0件なら何も送らない。
 
 **投稿先は当面、早瀬個人へのSlack DM固定**（`INTAKE_STALE_NOTIFY_MODE=dm`、既定値）。運用してみて機能することを確認できたら、Renderの環境変数を`INTAKE_STALE_NOTIFY_MODE=channel`に変更するだけで`#sales`（`SALES_CHANNEL_ID`）への投稿に切り替えられる（コード変更不要）。
+
+## 11. 一時停止（2026-08-16）— 再開ポイント
+
+**ユーザー指示によりここで作業を一時停止。** コードはすべてmainにpush済み・テストは全件パス。
+再開時はまず下記「要ユーザー対応」を済ませて実運用で1往復試すところから。
+
+### 実装済み・push済み（コミット順）
+1. `0d65a43` 商談取り込みを正しいSFA運用に再設計（取り込み時オプション→活動履歴＋任意でヒアリング/現状更新/メールのセット記録）
+2. `64269bf` Jamie社内議論を商談メモに分類（活動履歴でなくrich_note kind='deal'、論点メモと同仕様）
+3. `6da034d`/`9fafaa5` #98設計確定（Slackに識別を移設・スコープは商談×顧客面談のみ・論点/内部議論は無改修で共存）
+4. `afbec42` #98本体実装（`slack_bot.post_jamie_candidate_prompt`／`handle_interactive`／`apply_to_db`統合、`/slack/interactive`のjamie_振り分け、`render.yaml`に`SALES_CHANNEL_ID`追加）
+5. `9b774b0` 見逃し検知の日次リマインド（`/api/intake_inbox_stale`＋`scripts/intake_inbox_stale_slack_reminder.py`、当面は早瀬個人DM）
+
+### 要ユーザー対応（再開時に必ず先にやること）
+- [ ] Renderダッシュボードの`sfa-crm`サービスに`SALES_CHANNEL_ID`（`#sales`のチャンネルID）を設定（`sync:false`のため自動反映されない）。
+- [ ] Render側で新規cron `sfa-daily-intake-stale-reminder`が実際にデプロイ・稼働しているか確認（`render.yaml`をpushしただけではRenderダッシュボード側の承認/初回デプロイが要る場合がある）。
+- [ ] Slack App設定の「Interactivity & Shortcuts」で`/slack/interactive`のRequest URLが有効か確認（既存の事務Bot用に設定済みのはずだが、jamie_系ボタンも同じエンドポイントを使うため一応確認）。
+- [ ] 実際にJamieで会議を1件回し、①候補提示→ボタンで割当→②Slack確定 or 追記提案、の一連を本番で通し確認する（コード実装後、本番動作確認はまだ実施していない）。
+
+### 既知の未実装・残課題（§10.10/10.11で記録済み、再開時の候補）
+- Web格上げ導線（ヒアリングテンプレ起票／重いステージ変更時に「SFAで仕上げる」への遷移）は未実装。今は代替手段（Slack確定 or 手動でWeb `/intake-inbox` 経由）で回避可能。
+- 候補マッチングは会議タイトルの文字列一致のみ（`_inbox_candidates`）。精度改善の余地はあるが、見逃し検知（10.11）で当面カバー。
+- Jamie全文をSlack候補提示メッセージ自体には出していない（要約/プレビュー表示が要るかは運用してから判断）。
+- 見逃し検知リマインドの投稿先は早瀬DM固定中。運用確認後、`INTAKE_STALE_NOTIFY_MODE=channel`への切替をユーザーが判断。
+
+### 次に着手すべきこと（再開時の入口）
+1. 上記「要ユーザー対応」を消化し、本番で1往復動作確認。
+2. 問題なければ、投稿先をDM→channelへ切替するかどうかの判断。
+3. その後、Web格上げ導線 or マッチング精度改善のどちらを次に詰めるかをユーザーと相談。
