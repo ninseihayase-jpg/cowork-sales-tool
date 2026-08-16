@@ -1991,11 +1991,31 @@ def upsert_earliest_milestone(con, deal_id: int, *, date, label, ms_type, commit
         con.commit()
 
 
+def complete_past_milestones(con, deal_id: int, as_of_date: str, commit: bool = True) -> int:
+    """次回MSライフサイクル是正（新規）: as_of_date以前の未完了MSを全件完了(done=1)にする。
+    活動履歴が記録された＝その日までのMSは実施済みとみなせる、という前提の自動安全網。
+    完了件数を返す（0なら何もしていない）。"""
+    if not as_of_date:
+        return 0
+    cur = con.execute(
+        "UPDATE deal_milestones SET done=1 WHERE deal_id=? AND done=0 "
+        "AND ms_date IS NOT NULL AND ms_date != '' AND ms_date <= ?",
+        (int(deal_id), as_of_date))
+    n = cur.rowcount or 0
+    if n:
+        recompute_deal_next_milestone(con, deal_id, commit=False)
+    if commit:
+        con.commit()
+    return n
+
+
 def add_activity(con, *, deal_id, type=None, occurred_on=None, contact_name=None, body=None) -> int:
     cur = con.execute(
         "INSERT INTO activities (deal_id, type, occurred_on, contact_name, body) VALUES (?,?,?,?,?)",
         (deal_id, type, occurred_on, contact_name, body),
     )
+    if occurred_on:
+        complete_past_milestones(con, deal_id, occurred_on, commit=False)
     con.commit()
     return cur.lastrowid
 

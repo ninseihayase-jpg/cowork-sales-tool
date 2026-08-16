@@ -644,16 +644,10 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None,
         _jamie = _sfa_db.find_assigned_jamie_transcript(con, deal_id, date_str)
         if _jamie and (_jamie.get("transcript") or "").strip():
             content = _jamie["transcript"].strip() + "\n\n---\n【Slack強調】\n" + content.strip()
-        con.execute("""
-            INSERT INTO activities (deal_id, type, occurred_on, contact_name, body)
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            deal_id,
-            activity_type,
-            date_str,
-            fields.get("相手") or "",
-            content,
-        ))
+        # 次回MSライフサイクル是正（新規）: add_activityが内部でdate_str以前の未完了MSを
+        # 自動完了にする（生SQL直INSERTだとこの安全網が効かず、旧MSがMS超過に残り続けていた）。
+        _sfa_db.add_activity(con, deal_id=deal_id, type=activity_type, occurred_on=date_str,
+                             contact_name=(fields.get("相手") or None), body=content)
         if _jamie:
             _sfa_db.mark_intake_transcript_status(con, _jamie["id"], "saved")
 
@@ -662,12 +656,13 @@ def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None,
         updates: dict = {}
         if fields.get("ステージ") and fields["ステージ"] in valid_stages:
             updates["stage"] = fields["ステージ"]
-        if fields.get("次回MS日"):
-            updates["next_milestone_date"] = fields["次回MS日"]
-        if fields.get("次回MSラベル"):
-            updates["next_milestone_label"] = fields["次回MSラベル"]
-        if fields.get("次回MS種別") and fields["次回MS種別"] in _sfa_db.NEXT_MS_TYPES:
-            updates["next_milestone_type"] = fields["次回MS種別"]
+        # 次回MSライフサイクル是正（新規）: deals.next_milestone_*への直接書き込みは
+        # deal_milestones(正本)とキャッシュを乖離させるため廃止。add_deal_milestoneで
+        # 正本テーブルに追加し、recompute経由でキャッシュへ反映させる。
+        if fields.get("次回MS日") or fields.get("次回MSラベル"):
+            _ms_type = fields.get("次回MS種別") if fields.get("次回MS種別") in _sfa_db.NEXT_MS_TYPES else None
+            _sfa_db.add_deal_milestone(con, deal_id, date=fields.get("次回MS日"),
+                                       label=fields.get("次回MSラベル"), ms_type=_ms_type)
         if fields.get("追記メモ"):
             cur = con.execute("SELECT note FROM deals WHERE id=?", (deal_id,)).fetchone()
             existing = (dict(cur).get("note") or "") if cur else ""
