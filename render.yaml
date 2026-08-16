@@ -92,6 +92,14 @@ services:
         value: https://sfa-crm.onrender.com
       - key: SFA_API_TOKEN
         sync: false
+      # #64 カレンダー突合（GOOGLE_CALENDAR_SA_JSON未設定の間は丸ごとスキップ・fail-open）
+      - key: GOOGLE_CALENDAR_SA_JSON
+        sync: false          # ドメイン全体委任サービスアカウントの鍵JSON。セットアップ手順:
+                              # docs/calendar-crosscheck/02_Googleカレンダー委任セットアップ手順.md
+      - key: GOOGLE_WORKSPACE_DOMAIN
+        value: inproc.org
+      - key: CALENDAR_CROSSCHECK_NOTIFY_MODE
+        value: dm            # "dm"（早瀬個人へDM）｜ "channel" に変えるとSALES_CHANNEL_IDへ投稿
 
   # ── 繰り返し事務タスクの複製（日次 07:00 JST）────────────────────────
   # 「繰り返し発生」テンプレの複製タイミングを判定し、期間分のカードを複製する（冪等）。

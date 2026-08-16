@@ -34,6 +34,23 @@
 冪等性:
   投稿済みの商談は deals.slack_notified_date（= 投稿対象日）に記録し、
   同じ対象日で再実行しても二重投稿しない（/api/deals/mark_notified で更新）。
+
+カレンダー突合（#64・2026-08-16追加）:
+  GOOGLE_CALENDAR_SA_JSON が設定されている場合のみ、担当者のGoogleカレンダー（ドメイン全体の
+  委任で取得）と突合する。未設定の間は従来通りカレンダーチェックをスキップする（fail-open、
+  投稿動作は変えない）。詳細設計: docs/calendar-crosscheck/DESIGN.md。
+  - 順方向: 対象商談のownerに翌日の外部会議が見当たらない場合、投稿はするが
+    「⚠️カレンダー未確認」を付記する（消さない）。
+  - 逆方向: 対象メンバー全員の翌日の外部会議のうち、SFA側に対応する商談日付が無いものを
+    検知し、当面は早瀬個人へのSlack DMで通知する
+    （CALENDAR_CROSSCHECK_NOTIFY_MODE=channel で#salesへ切替可能）。
+
+環境変数（カレンダー突合、任意）:
+  GOOGLE_CALENDAR_SA_JSON            - ドメイン全体委任サービスアカウントの鍵JSON（ファイルパス
+                                        or JSON文字列）。未設定ならカレンダー突合は無効。
+  GOOGLE_WORKSPACE_DOMAIN            - 自社ドメイン（既定 inproc.org）
+  CALENDAR_CROSSCHECK_NOTIFY_MODE    - "dm"（既定・早瀬個人へDM）| "channel"（SALES_CHANNEL_IDへ）
+  CALENDAR_CROSSCHECK_DM_OWNER       - dmモードの宛先（owner_slack_map.jsonのキー。既定: 早瀬）
 """
 
 from __future__ import annotations
@@ -45,13 +62,76 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import date as _date_cls
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 CHANNEL_ID = os.environ.get("SALES_CHANNEL_ID", "")
 TOOL_URL = os.environ.get("SFA_TOOL_URL", "https://sfa-crm.onrender.com")
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
 JST = timezone(timedelta(hours=9))
+
+ROOT = Path(__file__).resolve().parent.parent
+OWNER_MAP_PATH = ROOT / "config" / "owner_slack_map.json"
+GOOGLE_CALENDAR_SA_JSON = os.environ.get("GOOGLE_CALENDAR_SA_JSON", "").strip()
+GOOGLE_WORKSPACE_DOMAIN = os.environ.get("GOOGLE_WORKSPACE_DOMAIN", "inproc.org").strip()
+CALENDAR_NOTIFY_MODE = os.environ.get("CALENDAR_CROSSCHECK_NOTIFY_MODE", "dm").strip().lower()
+CALENDAR_DM_OWNER = os.environ.get("CALENDAR_CROSSCHECK_DM_OWNER", "早瀬").strip()
+
+
+def load_owner_map() -> dict:
+    if OWNER_MAP_PATH.exists():
+        with open(OWNER_MAP_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return {k: v for k, v in data.items() if not k.startswith("_")}
+    return {}
+
+
+def build_calendar_client():
+    """GOOGLE_CALENDAR_SA_JSON が設定されていればWorkspaceCalendarClientを返す。未設定はNone。"""
+    if not GOOGLE_CALENDAR_SA_JSON:
+        return None
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT))
+    from cowork import workspace_calendar as wc
+    sa_info = wc.load_service_account_info(GOOGLE_CALENDAR_SA_JSON)
+    return wc.WorkspaceCalendarClient(sa_info, JST)
+
+
+def check_owner_has_external_meeting(calendar_client, owner_email: str, target_date: _date_cls) -> bool:
+    """対象日にownerの外部会議候補が1件でもあればTrue（#64順方向チェック）。"""
+    from cowork import workspace_calendar as wc
+    events = calendar_client.list_events_for_date(owner_email, target_date)
+    return any(wc.is_external_meeting(e, self_email=owner_email, own_domain=GOOGLE_WORKSPACE_DOMAIN)
+               for e in events)
+
+
+def find_unmatched_calendar_meetings(calendar_client, owner_map: dict, deals: list[dict],
+                                      target_date: _date_cls, target_date_str: str) -> list[dict]:
+    """#64逆方向チェック: 各メンバーの外部会議候補のうち、SFA側に対応する次回MS登録が
+    足りていない分を検知する（1メンバーの会議数 > SFA登録数の超過分をまとめて返す）。"""
+    from cowork import workspace_calendar as wc
+    deals_by_owner: dict[str, int] = {}
+    for d in deals:
+        if d.get("next_milestone_date") == target_date_str and (d.get("next_milestone_type") or "") != "タスク":
+            owner = (d.get("owner") or "").strip()
+            deals_by_owner[owner] = deals_by_owner.get(owner, 0) + 1
+
+    unmatched: list[dict] = []
+    for owner, email in owner_map.items():
+        try:
+            events = calendar_client.list_events_for_date(email, target_date)
+        except Exception as e:  # noqa: BLE001
+            print(f"[WARN] カレンダー取得失敗（{owner}）: {e}")
+            continue
+        ext_events = [e for e in events
+                     if wc.is_external_meeting(e, self_email=email, own_domain=GOOGLE_WORKSPACE_DOMAIN)]
+        n_deals = deals_by_owner.get(owner, 0)
+        for e in ext_events[n_deals:]:
+            unmatched.append({"owner": owner, "title": e.summary,
+                              "start": e.start.strftime("%H:%M") if not e.all_day else "終日"})
+    return unmatched
 
 
 def slack_api(method: str, **kwargs) -> dict:
@@ -119,8 +199,10 @@ def format_title(deal: dict, date_str: str) -> str:
     return title
 
 
-def build_parent_text(deal: dict, date_str: str) -> str:
+def build_parent_text(deal: dict, date_str: str, *, calendar_unconfirmed: bool = False) -> str:
     title = format_title(deal, date_str)
+    if calendar_unconfirmed:
+        title += "\n⚠️カレンダー未確認（担当者の予定に外部会議が見当たりませんでした）"
     link = f"{TOOL_URL}/deal/{deal['id']}"
     return f"{title}\n{link}"
 
@@ -189,9 +271,35 @@ def main():
 
     targets.sort(key=time_sort_key)
 
+    # #64: カレンダー突合（GOOGLE_CALENDAR_SA_JSON未設定なら丸ごとスキップ＝現行動作を維持）
+    calendar_client = None
+    owner_map: dict = {}
+    if not deal_id_override:
+        try:
+            calendar_client = build_calendar_client()
+        except Exception as e:  # noqa: BLE001
+            print(f"[WARN] カレンダークライアント初期化失敗（突合をスキップ）: {e}")
+            calendar_client = None
+        if calendar_client is not None:
+            owner_map = load_owner_map()
+            print(f"[INFO] カレンダー突合: 有効（対象メンバー{len(owner_map)}名）")
+
+    target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+
     posted = 0
     for deal in targets:
-        parent_text = build_parent_text(deal, date_str)
+        calendar_unconfirmed = False
+        if calendar_client is not None:
+            owner = (deal.get("owner") or "").strip()
+            email = owner_map.get(owner)
+            if email:
+                try:
+                    found = check_owner_has_external_meeting(calendar_client, email, target_date)
+                    calendar_unconfirmed = not found
+                except Exception as e:  # noqa: BLE001
+                    print(f"[WARN] カレンダー確認失敗（deal_id={deal['id']} owner={owner}）: {e}")
+
+        parent_text = build_parent_text(deal, date_str, calendar_unconfirmed=calendar_unconfirmed)
         result = slack_api("chat.postMessage", channel=CHANNEL_ID, text=parent_text)
         if not result.get("ok"):
             print(f"[ERROR] 親メッセージ投稿失敗（deal_id={deal['id']}）: {result.get('error')}")
@@ -207,10 +315,69 @@ def main():
             continue
 
         mark_notified(deal["id"], date_str)
-        print(f"[OK] deal_id={deal['id']} {deal.get('account_name')} を投稿しました")
+        print(f"[OK] deal_id={deal['id']} {deal.get('account_name')} を投稿しました"
+              f"{'（⚠️カレンダー未確認）' if calendar_unconfirmed else ''}")
         posted += 1
 
     print(f"\n完了: {posted}/{len(targets)}件を投稿。")
+
+    if calendar_client is not None and owner_map:
+        unmatched = find_unmatched_calendar_meetings(calendar_client, owner_map, deals, target_date, date_str)
+        notify_unmatched_calendar_meetings(unmatched, date_str)
+
+
+def notify_unmatched_calendar_meetings(unmatched: list, date_str: str) -> None:
+    """#64逆方向: SFA未登録の外部会議候補をSlackで通知する（0件なら何もしない）。"""
+    if not unmatched:
+        print("[INFO] カレンダー逆方向チェック: 未登録の会議候補なし。")
+        return
+
+    lines = [f"🔔 {date_str} の担当者カレンダーに、SFA未登録の外部会議候補があります。"]
+    for m in unmatched[:10]:
+        lines.append(f"   - {m['owner']} {m['start']} {m['title']}")
+    if len(unmatched) > 10:
+        lines.append(f"   …他{len(unmatched) - 10}件")
+    lines.append(f"\n🔗 {TOOL_URL}/deals")
+    text = "\n".join(lines)
+
+    if CALENDAR_NOTIFY_MODE == "channel":
+        channel_id = CHANNEL_ID
+    else:
+        channel_id = _resolve_dm_channel(CALENDAR_DM_OWNER)
+        if not channel_id:
+            print(f"[ERROR] {CALENDAR_DM_OWNER} のDMチャネルを開けなかったため通知を送れませんでした。")
+            return
+
+    result = slack_api("chat.postMessage", channel=channel_id, text=text)
+    if result.get("ok"):
+        print(f"[OK] カレンダー逆方向チェック通知を送信しました（{len(unmatched)}件）。")
+    else:
+        print(f"[ERROR] カレンダー逆方向チェック通知の送信に失敗: {result.get('error')}")
+
+
+def _resolve_dm_channel(owner: str) -> str | None:
+    email = load_owner_map().get(owner)
+    if not email:
+        print(f"[ERROR] 「{owner}」のSlackメールがowner_slack_map.jsonに未登録です。")
+        return None
+    r = slack_get_users_lookup(email)
+    if not r.get("ok"):
+        print(f"[ERROR] {owner}({email}) のSlackユーザーが見つかりません: {r.get('error')}")
+        return None
+    user_id = r["user"]["id"]
+    r2 = slack_api("conversations.open", users=user_id)
+    if not r2.get("ok"):
+        print(f"[ERROR] {owner} のDMチャネルを開けませんでした: {r2.get('error')}")
+        return None
+    return r2["channel"]["id"]
+
+
+def slack_get_users_lookup(email: str) -> dict:
+    qs = urllib.parse.urlencode({"email": email})
+    url = f"https://slack.com/api/users.lookupByEmail?{qs}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {SLACK_TOKEN}"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
 
 
 if __name__ == "__main__":
