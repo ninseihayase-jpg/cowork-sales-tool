@@ -177,4 +177,35 @@ Hisho（秘書Bot）の既存`google_calendar.py`は**早瀬個人のOAuthリフ
 ## 9. 未確定・残課題
 - [ ] マッチング精度（アカウント名と会議の紐付け）は当面「有無チェック」のみ。必要なら次段で強化。
 - [ ] 除外ワードリスト（休暇表記等）は運用しながら拡充。
+
+## 10. 一時停止（2026-08-17）— 再開ポイント
+
+**ユーザー指示によりここで作業を一時停止。** コードは全てmainにpush済み（最新 commit
+`616a345`）・テスト全件パス（237件）。ここから先は**Google Workspace管理コンソールでの
+設定作業（P2）がユーザー側の作業であり、それが完了するまで実装側でできることは無い**。
+
+### 実装済み・push済み（コミット順）
+1. `abdc5fe` P1: `cowork/workspace_calendar.py`（判定ロジック・カレンダークライアント）＋
+   `daily_appt_slack_notify.py`への順方向/逆方向チェック組み込み。fail-open設計。
+2. `d62f790` P1.5: 対象を顧客面談担当6名に限定＋shadowモード（既定）を追加。
+3. `616a345` P2.5: 直近2週間の一括バックフィル分析ツール
+   （`scripts/calendar_crosscheck_backfill_report.py`）を追加。
+
+### 要ユーザー対応（再開時に先にやること・P2）
+- [ ] GCPで専用サービスアカウントを新規作成（Sheets用とは別、`calendar.readonly`のみ）。
+- [ ] Google Workspace管理コンソール（要 Super Admin）で、そのサービスアカウントに
+      ドメイン全体の委任を設定（スコープ `calendar.readonly` のみ）。
+      手順: [`02_Googleカレンダー委任セットアップ手順.md`](./02_Googleカレンダー委任セットアップ手順.md)。
+- [ ] 鍵JSONができたら、**Renderに設定する前に**まず`scripts/calendar_crosscheck_backfill_report.py`
+      をローカルで実行し、6名の直近2週間の癖を確認する（P2.5・ステップ0）。
+- [ ] 問題なければRenderの`sfa-daily-appt-notify`に`GOOGLE_CALENDAR_SA_JSON`を設定
+      （`CALENDAR_CROSSCHECK_MODE`は**必ず`shadow`のまま**）。
+
+### 次に着手すべきこと（再開時の入口）
+1. 上記P2（Google Workspace設定）を完了させる。
+2. バックフィル分析（P2.5）で6名の癖を確認 → 見つかった癖を`is_external_meeting`や
+   メンバー個別ルールに反映。
+3. 日次shadow運用（P3）でさらに数日〜1-2週間、早瀬DMの診断レポートを見ながら精度確認。
+4. 精度に納得できたら`CALENDAR_CROSSCHECK_MODE=live`に切替（P4）。ここで初めて
+   #sales投稿への注記・逆方向通知が実際に有効化される。
 </content>
