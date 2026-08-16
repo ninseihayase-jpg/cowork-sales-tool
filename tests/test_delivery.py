@@ -157,6 +157,38 @@ def test_delivery_fee_total_to_monthly():
     assert sfa_db.compute_delivery_fee("monthly", "", "", 3) == (None, None)
 
 
+def test_delivery_fee_both_present_is_trusted_as_is_manual_override():
+    """新規タスク: 両方に値がある場合は再計算せずそのまま尊重する（自動換算後の手修正を保存で
+    上書きしないため）。mode='monthly'でも、総額側に自動換算値と異なる手修正値が入っていれば
+    その値のまま返る。"""
+    # 通常の自動換算のまま(整合済み)なら当然そのまま
+    mo, to = sfa_db.compute_delivery_fee("monthly", 100, 300, 3)
+    assert (mo, to) == (100, 300)
+    # 手修正: 月額100・月数3なら本来総額300のはずだが、人間が総額を850に手修正した場合
+    mo, to = sfa_db.compute_delivery_fee("monthly", 100, 850, 3)
+    assert (mo, to) == (100, 850), "手修正した総額が保存時に自動換算で上書きされてはいけない"
+    # 逆方向(mode='total'でも同様に、月額側の手修正が尊重される)
+    mo, to = sfa_db.compute_delivery_fee("total", 999, 300, 3)
+    assert (mo, to) == (999, 300)
+
+
+def test_delivery_form_fee_fields_allow_manual_edit_via_shared_js(con):
+    """新規タスク: 灰色側(自動算出側)がreadOnlyでなくなり、手修正用のJSに委譲していること。"""
+    from cowork import webapp
+    acc = con.execute("INSERT INTO accounts(name) VALUES('A社')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="受注", status="open")
+    con.commit()
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="納品X",
+                                  start_week="2026-07-06", end_week="2026-09-14")
+    con.commit()
+    html = webapp.delivery_form(con, dvid)
+    assert "readOnly=true" not in html and "readOnly=false" not in html
+    assert 'oninput="dvFeeFieldInput(this)"' in html
+    assert 'onchange="dvFeeModeChanged()"' in html
+    assert "function dvFeeFieldInput(" in html and "function dvFeeModeChanged(" in html
+
+
 def test_delivery_fee_persist_and_xlsx(con):
     import io
     import openpyxl

@@ -3510,7 +3510,10 @@ def delivery_display_fees(dv: dict) -> tuple:
 
 def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
     """(fee_monthly, fee_total) を返す。mode='monthly'なら月額を正とし総額=月額×月数、
-    mode='total'なら総額を正とし月額=総額÷月数。月数は合計週数÷4（小数可）。空/不正は None。"""
+    mode='total'なら総額を正とし月額=総額÷月数。月数は合計週数÷4（小数可）。空/不正は None。
+    両方に値がある場合は再計算せずそのまま返す（新規タスク: 自動換算後に人間が灰色側を
+    手修正できる仕様。クライアント側で既に自動換算済み・または手修正済みの値を尊重する。
+    片方が空の場合のみ、もう一方から補完する）。"""
     def _f(v):
         try:
             return float(v) if v not in (None, "") else None
@@ -3523,6 +3526,8 @@ def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
     if m <= 0:
         m = 1.0
     mo, to = _f(monthly), _f(total)
+    if mo is not None and to is not None:
+        return (mo, to)
     if (mode or "monthly") == "total":
         return (round(to / m, 2) if to is not None else None, to)
     return (mo, round(mo * m, 2) if mo is not None else None)

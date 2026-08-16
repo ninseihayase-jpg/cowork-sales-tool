@@ -452,6 +452,21 @@ function _deb(fn, ms) {{
   ms = ms || 250; clearTimeout(_debTimers[fn]);
   _debTimers[fn] = setTimeout(function() {{ var f = window[fn]; if (typeof f === 'function') f(); }}, ms);
 }}
+/* 全SFA共通: 長大なselect（数十件以上）の隣に置いた検索inputで絞り込む（新規タスク・長大リスト対応）。
+   selectIdのselect内の各optionを、inputIdの入力値を含むかどうかで表示/非表示する
+   （空値のプレースホルダ行は常に表示）。呼び出し側は、専用のinputとラッパー関数を1つ用意し
+   oninputでデバウンス呼び出しする（既存のdpFilterDeals/diFilterDeals等はこの共通関数に委譲する）。*/
+function filterSelectOptions(selectId, inputId) {{
+  var input = document.getElementById(inputId);
+  var sel = document.getElementById(selectId);
+  if (!input || !sel) return;
+  var q = (input.value || '').trim().toLowerCase();
+  for (var i = 0; i < sel.options.length; i++) {{
+    var o = sel.options[i];
+    if (!o.value) continue;
+    o.style.display = (!q || o.text.toLowerCase().indexOf(q) >= 0) ? '' : 'none';
+  }}
+}}
 /* 全SFA共通: フィルタ適用中の項目に .filter-active を付けて薄くハイライトする。
    対象は .filter-row 内のコントロール（js-nofilter を付けた入力/作成フォームは除外）。
    select=先頭(既定)以外を選択中／text・search・date=値あり／details=チェックあり を「適用中」とみなす。
@@ -1639,11 +1654,14 @@ def deliveries_page(con) -> str:
       {_empty_cleanup}
       <form method="post" action="/deliveries/new" style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid #eee;padding-top:12px">
         <span class="muted" style="font-size:12px">手動で追加:</span>
-        <select name="deal_id" required style="font-size:12px;max-width:420px"><option value="">商談を選択（提案以降）</option>{_cand_opts}</select>
+        <input type="text" id="dvNewDealFilter" placeholder="🔍 会社名・案件名で絞り込み" autocomplete="off"
+          oninput="_deb('dvNewDealFilterFn')" style="font-size:12px;max-width:220px">
+        <select name="deal_id" id="dvNewDealSelect" required style="font-size:12px;max-width:420px"><option value="">商談を選択（提案以降）</option>{_cand_opts}</select>
         <button class="btn sec" style="font-size:12px">＋Delivery追加</button>
       </form>
     </div>
     <script>
+    function dvNewDealFilterFn() {{ filterSelectOptions('dvNewDealSelect', 'dvNewDealFilter'); }}
     function dvField(id, field, value){{
       fetch('/delivery/'+id+'/field',{{method:'POST',
         headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
@@ -1817,16 +1835,16 @@ def delivery_form(con, delivery_id: int) -> str:
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">報酬形態<br>
-                <select id="dvFeeMode" name="fee_mode" onchange="dvFeeRecalc()">
+                <select id="dvFeeMode" name="fee_mode" onchange="dvFeeModeChanged()">
                   <option value="monthly"{" selected" if (dv.get("fee_mode") or "monthly") != "total" else ""}>月額報酬</option>
                   <option value="total"{" selected" if (dv.get("fee_mode") or "monthly") == "total" else ""}>総額報酬</option>
                 </select></label>
               <label style="font-size:12px">報酬額/月額(万)<br>
                 <input type="number" step="0.1" id="dvFeeMonthly" name="fee_monthly" style="width:110px"
-                       value="{"" if dv.get("fee_monthly") is None else dv.get("fee_monthly")}" oninput="dvFeeRecalc()"></label>
+                       value="{"" if dv.get("fee_monthly") is None else dv.get("fee_monthly")}" oninput="dvFeeFieldInput(this)"></label>
               <label style="font-size:12px">報酬額/総額(万)<br>
                 <input type="number" step="0.1" id="dvFeeTotal" name="fee_total" style="width:110px"
-                       value="{"" if dv.get("fee_total") is None else dv.get("fee_total")}" oninput="dvFeeRecalc()"></label>
+                       value="{"" if dv.get("fee_total") is None else dv.get("fee_total")}" oninput="dvFeeFieldInput(this)"></label>
               <span class="muted" style="font-size:11px;align-self:center" id="dvFeeMonths"></span>
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:8px">
@@ -1837,7 +1855,8 @@ def delivery_form(con, delivery_id: int) -> str:
             </div>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
-            <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は体制「複製」で生成する行の初期値（ガイド）です。</p>
+            <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は体制「複製」で生成する行の初期値（ガイド）です。
+              月額/総額は自動換算されますが、灰色側を直接編集すると手修正として保持されます（報酬形態を切り替えると自動換算に戻ります）。</p>
           </form>
         </div>
         <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
@@ -1883,6 +1902,9 @@ def delivery_form(con, delivery_id: int) -> str:
       var sd=new Date(s), ed=new Date(e); var days=Math.round((ed-sd)/86400000);
       if(isNaN(days)||days<0) return 0;
       var weeks=Math.floor(days/7)+1; return weeks/4; }}  /* 月数=合計週数÷4(≒1ヶ月)で統一 */
+    /* 月額/総額の自動換算＋手修正（新規タスク）: 従来はreadOnlyで灰色側を編集不可にしていたが、
+       灰色側（自動算出される方）を直接編集した場合はdata-manual='1'を立てて手修正として保持する
+       （以後、報酬形態を切り替えるまで自動換算で上書きしない）。 */
     function dvFeeRecalc(){{
       var modeEl=document.getElementById('dvFeeMode'); if(!modeEl) return;
       var mode=modeEl.value, m=_dvFeeMonths();
@@ -1891,11 +1913,13 @@ def delivery_form(con, delivery_id: int) -> str:
       if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（合計週数÷4）') : '開始/終了週を入れると換算';
       var ro='#f1f5f9';
       if(mode==='total'){{
-        to.readOnly=false; to.style.background=''; mo.readOnly=true; mo.style.background=ro;
-        if(m && to.value!=='') mo.value=Math.round((parseFloat(to.value)/m)*100)/100;
+        to.style.background='';
+        mo.style.background = (mo.dataset.manual==='1') ? '' : ro;
+        if(m && to.value!=='' && mo.dataset.manual!=='1') mo.value=Math.round((parseFloat(to.value)/m)*100)/100;
       }} else {{
-        mo.readOnly=false; mo.style.background=''; to.readOnly=true; to.style.background=ro;
-        if(m && mo.value!=='') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
+        mo.style.background='';
+        to.style.background = (to.dataset.manual==='1') ? '' : ro;
+        if(m && mo.value!=='' && to.dataset.manual!=='1') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
       }}
       // 平均単価(月額)＝月額報酬(円)÷(工数÷100)。工数は請求ベース優先、請求0%(成果物ベース)なら実想定。
       // 表示は万円単位・10万円未満を四捨五入（例: 月額244万・請求120%/月→200万／請求0%は実想定80で試算）。
@@ -1907,6 +1931,18 @@ def delivery_form(con, delivery_id: int) -> str:
         upEl.textContent = (effP>0 && mon>0)
           ? (Math.round(mon*10000*100/effP/100000)*10).toLocaleString() : '—';
       }}
+    }}
+    function dvFeeFieldInput(el){{
+      var modeEl=document.getElementById('dvFeeMode');
+      var mode=modeEl?modeEl.value:'monthly';
+      var isMaster=(mode==='monthly' && el.id==='dvFeeMonthly')||(mode==='total' && el.id==='dvFeeTotal');
+      if(!isMaster){{ el.dataset.manual='1'; }}
+      dvFeeRecalc();
+    }}
+    function dvFeeModeChanged(){{
+      var mo=document.getElementById('dvFeeMonthly'), to=document.getElementById('dvFeeTotal');
+      mo.dataset.manual=''; to.dataset.manual='';
+      dvFeeRecalc();
     }}
     dvFeeRecalc();
     function tglMember(sel){{ var f=sel.closest('form'); if(!f) return;
@@ -7253,11 +7289,14 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         lead_picker_html = f"""
         <div style="background:#f0f6ff;border-radius:8px;padding:12px 14px;margin-bottom:14px">
           <label style="color:#2f6fed;font-weight:600;font-size:13px">リードから引用</label>
-          <select id="lead_ref" onchange="applyLead()" style="margin-top:6px">{lead_opts}</select>
+          <input type="text" id="lead_ref_q" placeholder="🔍 会社名・氏名で絞り込み" autocomplete="off"
+            oninput="_deb('leadRefFilter')" style="margin-top:6px">
+          <select id="lead_ref" onchange="applyLead()" size="6" style="margin-top:6px;height:auto">{lead_opts}</select>
           <p class="muted" style="margin-top:4px">選ぶとアカウント・担当・経路・メモが自動入力されます</p>
         </div>
         <script>
         const _LEADS = {leads_data};
+        function leadRefFilter() {{ filterSelectOptions('lead_ref', 'lead_ref_q'); }}
         function applyLead() {{
           const lid = parseInt(document.getElementById('lead_ref').value);
           if (!lid) return;
@@ -7679,7 +7718,10 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
       <hr style="border:none;border-top:1px solid #e6e9f0;margin:16px 0 18px">
       <div class="grid">
         <div><label>アカウント{"" if not deal.get("id") else " *"}</label>
-          <select name="account_id" id="acc_id_sel" {acc_req}>{''.join(acc_opts)}</select>
+          <input type="text" id="acc_id_sel_q" placeholder="🔍 会社名で絞り込み" autocomplete="off"
+            oninput="_deb('accIdFilter')">
+          <select name="account_id" id="acc_id_sel" size="6" style="height:auto;margin-top:4px" {acc_req}>{''.join(acc_opts)}</select>
+          <script>function accIdFilter() {{ filterSelectOptions('acc_id_sel', 'acc_id_sel_q'); }}</script>
           {new_acc_html}</div>
         <div><label>案件名 *</label>
           <input name="deal_name" required value="{_esc(deal.get('deal_name'))}"></div>
@@ -8316,14 +8358,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
       </form>
     </div>
     <script>
-    function dpFilterDeals() {{
-      const q = document.getElementById('dpDealFilter').value.trim();
-      const sel = document.getElementById('dpDealSelect');
-      for (const o of sel.options) {{
-        if (!o.value) continue;
-        o.style.display = (!q || o.text.includes(q)) ? '' : 'none';
-      }}
-    }}
+    function dpFilterDeals() {{ filterSelectOptions('dpDealSelect', 'dpDealFilter'); }}
     function dpShowSalesOwner() {{
       const sel = document.getElementById('dpDealSelect');
       const o = sel.options[sel.selectedIndex];
@@ -8725,14 +8760,7 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
       </form>
     </div>
     <script>
-    function diFilterDeals() {{
-      const q = document.getElementById('diDealFilter').value.trim();
-      const sel = document.getElementById('diDealSelect');
-      for (const o of sel.options) {{
-        if (!o.value) continue;
-        o.style.display = (!q || o.text.includes(q)) ? '' : 'none';
-      }}
-    }}
+    function diFilterDeals() {{ filterSelectOptions('diDealSelect', 'diDealFilter'); }}
     </script>"""
 
 
@@ -10462,11 +10490,14 @@ def hearing_new_page(con, preselect: str | None = None) -> str:
       <p class="muted" style="margin-bottom:14px">対象とテンプレートを選んでください。リードを選んだ場合は、保存時に自動で商談化されます。</p>
       <form method="get" action="/hearing/start">
         <label>対象（商談 / リード）</label>
-        <select name="target" required>
+        <input type="text" id="hnTargetFilter" placeholder="🔍 会社名・案件名・氏名で絞り込み" autocomplete="off"
+          oninput="_deb('hnTargetFilterFn')">
+        <select name="target" id="hnTargetSelect" required size="8" style="height:auto">
           <option value="">— 選択 —</option>
           <optgroup label="商談">{deal_opts or '<option disabled>なし</option>'}</optgroup>
           <optgroup label="リード（未商談化）">{lead_opts or '<option disabled>なし</option>'}</optgroup>
         </select>
+        <script>function hnTargetFilterFn() {{ filterSelectOptions('hnTargetSelect', 'hnTargetFilter'); }}</script>
         <label>ヒアリングテンプレート</label>
         <select name="template_id" required>{tmpl_opts}</select>
         <div style="margin-top:16px"><button class="btn" type="submit">ヒアリング入力へ →</button>
