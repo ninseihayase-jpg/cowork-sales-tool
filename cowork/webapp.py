@@ -12490,6 +12490,29 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         if status_q != "all":
                             projects = [p for p in projects if p.get("status") != "中止"]
                         self._send(json.dumps(projects, ensure_ascii=False, default=str).encode(), ctype="application/json")
+                elif path == "/api/intake_inbox_stale":
+                    # #98: 取り込みインボックスの見逃し検知（前日以前から残っている未処理）。
+                    # (1) status='inbox' のまま放置＝#97のWeb割当を誰もしていない
+                    # (2) status='assigned' source='jamie' のまま放置＝Slackで割当はしたがSlack確定が
+                    #     一度も無く、統合されずに眠っている（apply_to_dbで拾われるのを待ったまま）。
+                    # 日次Slackリマインド（scripts/intake_inbox_stale_slack_reminder.py）から利用。トークン認証。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send(b'{"error":"unauthorized"}', status=401, ctype="application/json")
+                    else:
+                        _today_s = _today_jst().isoformat()
+                        _inbox_rows = con.execute(
+                            "SELECT id, title, occurred_on, created_at FROM intake_transcripts "
+                            "WHERE status='inbox' AND date(created_at) < ? ORDER BY id", (_today_s,)).fetchall()
+                        _assigned_rows = con.execute(
+                            "SELECT id, kind, entity_id, title, occurred_on, created_at FROM intake_transcripts "
+                            "WHERE status='assigned' AND source='jamie' AND date(created_at) < ? ORDER BY id",
+                            (_today_s,)).fetchall()
+                        self._send(json.dumps({
+                            "inbox": [dict(r) for r in _inbox_rows],
+                            "assigned_unconsumed": [dict(r) for r in _assigned_rows],
+                        }, ensure_ascii=False, default=str).encode(), ctype="application/json")
                 elif path == "/api/memo/list":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")

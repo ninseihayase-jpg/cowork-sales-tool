@@ -250,3 +250,12 @@ Slack有無×Jamie先攻/後攻の全パターンを検証した結果、**唯�
 **未実装（次回以降のフォローアップ）**:
 - [ ] Web格上げ（ヒアリングテンプレ起票／重いステージ変更時に「[SFAで仕上げる]」を提示する導線）は今回未実装。現状はSlack確定 or 従来のWeb `/intake-inbox` 経由手動遷移のいずれかで代替可能。
 - [ ] Jamie全文の見せ方（候補提示メッセージ自体には全文を出していない。要約表示や全文プレビューが要るかは運用してから判断）。
+
+### 10.11 見逃し検知の安全網（2026-08-16 追加）
+運用開始後に判明した2つの見逃しケースへの対策として、日次リマインドを追加した。
+- **ケースA（Jamie先攻・Slack確定が来ない）**: Slackで割当（`jamie_pick_deal`）した後、その面談についてSlackで一度も`@NegoCollection`確定をしなければ、Jamie全文は`status='assigned'`のまま統合されず眠り続ける。しかも`/intake-inbox`（`status='inbox'`のみ表示）からは消えているため、Web側からも気づけない。
+- **ケースB（候補一致なし）**: 会議タイトルが商談名/アカウント名を含まない場合、10.7の対象外対策以前に**候補が1件も無くSlack投稿自体が発生しない**。この場合は#98着手前と同じ「Slackで確定して満足し誰も`/intake-inbox`を見に行かない」という元の問題にそのまま戻る。
+
+対策: `scripts/intake_inbox_stale_slack_reminder.py`（新規cron `sfa-daily-intake-stale-reminder`、日次09:15 JST）が `/api/intake_inbox_stale` を叩き、「前日以前から`status='inbox'`のまま」＋「前日以前から`status='assigned' source='jamie'`のまま未消化」の件数・タイトルを検知して通知する。両方0件なら何も送らない。
+
+**投稿先は当面、早瀬個人へのSlack DM固定**（`INTAKE_STALE_NOTIFY_MODE=dm`、既定値）。運用してみて機能することを確認できたら、Renderの環境変数を`INTAKE_STALE_NOTIFY_MODE=channel`に変更するだけで`#sales`（`SALES_CHANNEL_ID`）への投稿に切り替えられる（コード変更不要）。
