@@ -113,6 +113,22 @@ Hisho（秘書Bot）の既存`google_calendar.py`は**早瀬個人のOAuthリフ
   現時点では**具体的な癖の内容が未共有**のため、まずは診断レポートで実データから発見する
   アプローチを取る。
 
+### 5.5 直近2週間の一括バックフィル分析（2026-08-17 追加）
+日次shadow運用（§5.4）は1日ずつしか判定結果が溜まらず、癖の発見に1-2週間かかる。
+**日次運用の前に、まず直近2週間分をまとめてテスト判定し、癖を素早く読み解くステップを挟む**
+（ユーザー指示）。
+
+- `scripts/calendar_crosscheck_backfill_report.py`: 一回限りの手動実行スクリプト。
+  Slackには一切投稿せず、標準出力にレポートを出す（`> report.txt`で保存して読む想定）。
+  対象6名それぞれについて、指定期間（既定: 直近14日、今日は未確定のため昨日まで）の
+  **全予定**（除外扱いになったものも含む）を`is_external_meeting`判定タグ付きで、
+  日付順に通しで列挙する。**人物ごとにまとめて出す**のは、同一人物の2週間分を続けて読むことで
+  「この人はいつも参加者を招待しない」等のパターンに気づきやすくするため。
+- 使い方はP2完了後、Google認証情報さえあればRenderへの本設定前でもローカルで実行可能
+  （`GOOGLE_CALENDAR_SA_JSON=path/to/key.json python scripts/calendar_crosscheck_backfill_report.py`）。
+- ここで見つかった癖は、本書§5.4の「個別の癖が判明した場合の対応方針」に沿って
+  `is_external_meeting`やメンバー個別ルールへ反映してから、P3（日次shadow運用）に進む。
+
 ## 6. 設定・秘匿情報
 - `GOOGLE_CALENDAR_SA_JSON`: 新規サービスアカウントの鍵JSON（ファイルパス or JSON文字列、
   `GOOGLE_SERVICE_ACCOUNT_JSON`と同じ二方式対応）。Renderは`sync:false`。
@@ -140,9 +156,15 @@ Hisho（秘書Bot）の既存`google_calendar.py`は**早瀬個人のOAuthリフ
   ドメイン全体の委任を設定（`calendar.readonly`スコープ）→Renderに`GOOGLE_CALENDAR_SA_JSON`設定。
   `CALENDAR_CROSSCHECK_MODE`は**必ず`shadow`のまま**設定完了する。
   手順は[`02_Googleカレンダー委任セットアップ手順.md`](./02_Googleカレンダー委任セットアップ手順.md)。
-- **P3（P2完了後・shadow運用）**: 数日〜1-2週間、早瀬DMの診断レポートと実際の顧客面談を
-  突き合わせ、6名それぞれの登録の癖による誤判定（特に見逃し）が無いか確認。必要なら
-  `is_external_meeting`やメンバー個別ルールを調整。
+- **P2.5（2026-08-17 追加・実装済み・P2完了後にまず実施）**: 日次shadow運用で1日ずつ蓄積するのを
+  待たず、**直近2週間分の予定を一括でテスト判定**し、6名それぞれの「癖」を素早く読み解く。
+  `scripts/calendar_crosscheck_backfill_report.py`（一回限りの手動実行スクリプト、Slack投稿なし・
+  標準出力のみ）で、対象6名×直近14日（既定）の全予定を`is_external_meeting`で判定し、
+  人物ごとに通しで一覧化する（同一人物の2週間分を続けて読むことで、その人特有の登録パターンに
+  気づきやすくする設計）。詳細は§5.5。テスト: `tests/test_calendar_backfill_report.py`（3件）。
+- **P3（P2.5完了後・shadow日次運用）**: バックフィル分析で見つかった既知の癖を踏まえた上で、
+  さらに数日〜1-2週間、早瀬DMの日次診断レポートと実際の顧客面談を突き合わせ、
+  誤判定（特に見逃し）が無いか継続確認。必要なら`is_external_meeting`やメンバー個別ルールを調整。
 - **P4（精度確認後）**: `CALENDAR_CROSSCHECK_MODE=live`に切替。#sales投稿への注記・
   逆方向通知が実際に有効化される。運用しながらさらに判定基準（5.1）を改善していく。
 
