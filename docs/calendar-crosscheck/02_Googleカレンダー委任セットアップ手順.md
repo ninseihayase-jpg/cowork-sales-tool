@@ -57,12 +57,27 @@
      と同じ二方式対応）。
    - `GOOGLE_WORKSPACE_DOMAIN`（既定`inproc.org`のままでよければ変更不要）
    - `CALENDAR_CROSSCHECK_NOTIFY_MODE`（既定`dm`のままでよければ変更不要。運用を見て`channel`へ）
+   - `CALENDAR_CROSSCHECK_OWNERS`（既定=顧客面談担当6名。増減があれば変更）
+   - `CALENDAR_CROSSCHECK_MODE`（**必ず`shadow`のまま設定完了する**。§5.4のキャリブレーション参照）
 3. `config/owner_slack_map.json` に、対象メンバー全員の**Google Workspaceのメールアドレス**が
    正しく入っていることを確認する（Slack通知先の逆引きと共用。既に大半は登録済み）。
 
 ---
 
-## 動作確認
+## 動作確認・キャリブレーション（§5.4）
+
+設定直後は`CALENDAR_CROSSCHECK_MODE=shadow`のまま数日〜1-2週間運用し、**#salesへの投稿文面は
+一切変わらない**まま、毎朝早瀬個人のSlack DMに「診断レポート」（6名それぞれのその日の全予定＋
+判定タグ）が届く。これを実際の顧客面談と突き合わせ、判定漏れ（本当は顧客面談なのに
+「・対象外」タグになっている）が無いかを確認する。
+
+- 6名それぞれの顧客面談登録の「癖」（例: 先方をGoogleカレンダーの参加者に招待しない、
+  タイトルのみに社名を書く等）によって`is_external_meeting`が正しく判定できないケースが
+  見つかった場合は、判定基準（`cowork/workspace_calendar.py`の`is_external_meeting`）の
+  見直し、またはメンバー個別の判定ルール追加を検討する（DESIGN.md §5.4に追記していくこと）。
+- 数日分の診断レポートで大きな誤判定が無いことを確認できたら、
+  `CALENDAR_CROSSCHECK_MODE=live` に切り替える。この時点で初めて#salesへの
+  「⚠️カレンダー未確認」注記・逆方向の未登録会議通知が実際に有効になる。
 
 ```bash
 # ローカルでファイルパス指定してテスト（本番環境変数は使わない）
@@ -74,8 +89,5 @@ python scripts/daily_appt_slack_notify.py
 - `DEAL_ID`指定時は日付条件を無視して1件だけ投稿するが、カレンダー突合ロジック自体は
   `deal_id_override`指定時はスキップする実装のため、突合の動作確認は本番の日次実行
   （またはコードの`deal_id_override`分岐を一時的に外したローカル実行）で行うこと。
-- ログに `[INFO] カレンダー突合: 有効（対象メンバー○名）` が出れば設定成功。
-- 「⚠️カレンダー未確認」が付いた投稿が出た場合、担当者のカレンダーに実際に外部会議が
-  無いかを確認し、精度に問題があれば `is_external_meeting`（`cowork/workspace_calendar.py`）の
-  判定基準を見直す。
+- ログに `[INFO] カレンダー突合: 有効（mode=shadow、対象メンバー○名/6名中）` が出れば設定成功。
 </content>

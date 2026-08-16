@@ -24,6 +24,11 @@
   **投稿はする（消さない）が「⚠️カレンダー未確認」を付記**（false negative悪化を避ける、ユーザー決定）。
 - **逆方向の検知**: カレンダーに外部会議があるがSFAに次回MS未登録の場合も、
   **今回まとめて検知・通知する**（ユーザー決定）。
+- **2026-08-17 追記（ユーザー補足）**: 顧客面談に参加するのは**吉江・中島・岩崎・早瀬・高橋・土屋の
+  6名のみ**（`sfa_db.OWNERS`の11〜12名より狭い）。全員Googleカレンダー使用。
+  **各メンバーの顧客面談登録の仕方に癖があり、「どれが顧客面談か」の特定は慎重な設計が必要**との
+  指摘を受け、v1の単一ヒューリスティック（外部ドメイン参加者の有無）を**本番投稿にいきなり
+  使わない**方針に変更。詳細は §5.4（キャリブレーション期間）。
 
 ## 2. ゴール・非スコープ
 **ゴール**: 翌朝の#sales投稿を、SFA単独の入力ミスに引きずられず、実態（カレンダー）に近づける。
@@ -81,32 +86,65 @@ Hisho（秘書Bot）の既存`google_calendar.py`は**早瀬個人のOAuthリフ
   （「その日に外部会議が存在するか」の有無チェックに留める。精度向上は運用を見てから)。
 
 ### 5.3 逆方向（カレンダー→SFA）
+- 対象は**顧客面談に参加する6名（吉江・中島・岩崎・早瀬・高橋・土屋）のみ**を横断する
+  （`owner_slack_map.json`の全メンバーではない。2026-08-17変更）。
 - 各メンバーの翌日の外部会議候補ごとに、そのownerのopen商談でnext_milestone_date=翌日のものが
   SFA側に1件でもあるかを確認。無ければ「未登録の可能性がある会議」として通知。
 - 1メンバーが同日に複数の外部会議を持ち、SFA側の登録数より多い場合も、超過分をまとめて通知する
   （個々の会議とSFA商談の1:1紐付けはv1では行わない）。
 
+### 5.4 キャリブレーション期間（2026-08-17 追加・要ユーザー確認）
+**6名それぞれに顧客面談の登録の仕方の癖がある**との指摘を受け、5.1のヒューリスティック
+（外部ドメイン参加者の有無）を**いきなり本番の#sales投稿や通知に使わない**。
+
+- 新設定 `CALENDAR_CROSSCHECK_MODE`（既定 `shadow`）:
+  - **`shadow`（既定・P2完了直後はこのモード）**: 判定は実行するが、**#salesの投稿文面は一切変えず**
+    （「⚠️カレンダー未確認」を付けない）、代わりに**早瀬個人へのSlack DM**で「診断レポート」を送る。
+    診断レポートは6名それぞれの**その日の全予定**（除外ワード等でスコープ外にしたものも含む）を、
+    「外部会議と判定/非該当」のタグ付きでそのまま列挙する（`is_external_meeting`が拾えなかった
+    実際の顧客面談が無いか、人の目で1件ずつ確認できるようにするため）。
+  - **`live`**: 5.2/5.3の通り、#sales投稿への注記・逆方向のDM/チャンネル通知を実際に有効化する。
+- 運用フロー: P2（Google設定）完了 → **shadowモードのまま数日〜1-2週間、6名分の診断レポートと
+  実際の予定を突き合わせて精度を確認** → 誤判定があれば`is_external_meeting`の基準や、
+  メンバー個別の除外/追加ルール（要追加設計）を調整 → 十分な精度になってから`live`へ切替。
+- 個別の「癖」が判明した場合の対応方針（例）: 特定ワード除外だけでなく、メンバー単位で
+  判定ルールを上書きできる仕組み（例: `config/calendar_crosscheck_overrides.json` に
+  `{"早瀬": {"title_include_keywords": ["商談","MTG"]}}` のような追加ヒント）を次段で検討する。
+  現時点では**具体的な癖の内容が未共有**のため、まずは診断レポートで実データから発見する
+  アプローチを取る。
+
 ## 6. 設定・秘匿情報
 - `GOOGLE_CALENDAR_SA_JSON`: 新規サービスアカウントの鍵JSON（ファイルパス or JSON文字列、
   `GOOGLE_SERVICE_ACCOUNT_JSON`と同じ二方式対応）。Renderは`sync:false`。
 - `GOOGLE_WORKSPACE_DOMAIN`: 自社ドメイン（既定`inproc.org`）。
+- `CALENDAR_CROSSCHECK_OWNERS`: 顧客面談に参加するメンバー（既定
+  `吉江,中島,岩崎,早瀬,高橋,土屋`）。カンマ区切り。逆方向チェック・shadowモード診断レポートの対象。
+- `CALENDAR_CROSSCHECK_MODE`: `shadow`（既定）| `live`。
 - 既存`config/owner_slack_map.json`（担当者名→email）をそのまま流用。
 
 ## 7. フェーズ計画
 - **P1（2026-08-16 実装済み）**: `cowork/workspace_calendar.py`（`CalendarEvent`・
   `is_external_meeting`・`WorkspaceCalendarClient`）＋`daily_appt_slack_notify.py`への
-  順方向（`check_owner_has_external_meeting`→注記）/逆方向（`find_unmatched_calendar_meetings`
-  →DM通知）組み込み。`GOOGLE_CALENDAR_SA_JSON`未設定（＝P2未着手）の間はカレンダーチェック
-  自体を丸ごとスキップし、**現行通りの投稿動作を維持する**（fail-open）。
-  テスト: `tests/test_workspace_calendar.py`（判定ロジック7件）・
-  `tests/test_calendar_crosscheck_logic.py`（フェイクカレンダークライアントでの突合ロジック5件）。
+  順方向（`check_owner_has_external_meeting`）/逆方向（`find_unmatched_calendar_meetings`）
+  ロジック組み込み。`GOOGLE_CALENDAR_SA_JSON`未設定の間はカレンダーチェック自体を丸ごと
+  スキップし、**現行通りの投稿動作を維持する**（fail-open）。
   `requirements.txt`に`google-api-python-client`追加。`render.yaml`の`sfa-daily-appt-notify`に
   関連環境変数を追加（値はまだ未設定＝P2待ち）。
+- **P1.5（2026-08-17 追加実装・実装済み）**: 対象を顧客面談担当6名に限定
+  （`CALENDAR_CROSSCHECK_OWNERS`）＋shadowモード（`build_shadow_diagnostic`）を追加。
+  `CALENDAR_CROSSCHECK_MODE`既定は`shadow`＝#salesの文面・逆方向通知は変えず、早瀬DMへ
+  6名分の全予定＋判定タグの診断レポートのみ送る。詳細は§5.4。
+  テスト: `tests/test_workspace_calendar.py`（判定ロジック7件）・
+  `tests/test_calendar_crosscheck_logic.py`（突合ロジック9件、shadow診断含む）。
 - **P2（要ユーザー作業・未着手）**: GCPでサービスアカウント作成→Google Workspace管理コンソールで
   ドメイン全体の委任を設定（`calendar.readonly`スコープ）→Renderに`GOOGLE_CALENDAR_SA_JSON`設定。
+  `CALENDAR_CROSSCHECK_MODE`は**必ず`shadow`のまま**設定完了する。
   手順は[`02_Googleカレンダー委任セットアップ手順.md`](./02_Googleカレンダー委任セットアップ手順.md)。
-- **P3（P2完了後）**: 本番で数日運用し、誤検知/見逃しの実績を見て、判定基準（5.1）やv1で見送った
-  アカウント単位のマッチング精度改善を検討。
+- **P3（P2完了後・shadow運用）**: 数日〜1-2週間、早瀬DMの診断レポートと実際の顧客面談を
+  突き合わせ、6名それぞれの登録の癖による誤判定（特に見逃し）が無いか確認。必要なら
+  `is_external_meeting`やメンバー個別ルールを調整。
+- **P4（精度確認後）**: `CALENDAR_CROSSCHECK_MODE=live`に切替。#sales投稿への注記・
+  逆方向通知が実際に有効化される。運用しながらさらに判定基準（5.1）を改善していく。
 
 ## 8. 決定事項（追加）
 - **逆方向通知の投稿先**: #98の見逃し検知リマインドと同じ考え方で、**当面は早瀬個人へのDM固定**

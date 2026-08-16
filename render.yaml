@@ -100,6 +100,10 @@ services:
         value: inproc.org
       - key: CALENDAR_CROSSCHECK_NOTIFY_MODE
         value: dm            # "dm"（早瀬個人へDM）｜ "channel" に変えるとSALES_CHANNEL_IDへ投稿
+      - key: CALENDAR_CROSSCHECK_OWNERS
+        value: "吉江,中島,岩崎,早瀬,高橋,土屋"   # 顧客面談に参加するメンバーのみ（2026-08-17確定）
+      - key: CALENDAR_CROSSCHECK_MODE
+        value: shadow        # P2完了後もまずshadowのまま精度確認。確認後liveへ切替（§5.4）
 
   # ── 繰り返し事務タスクの複製（日次 07:00 JST）────────────────────────
   # 「繰り返し発生」テンプレの複製タイミングを判定し、期間分のカードを複製する（冪等）。

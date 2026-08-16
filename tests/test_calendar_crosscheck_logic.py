@@ -93,3 +93,33 @@ def test_find_unmatched_calendar_meetings_ignores_internal_only_events(notify_mo
     unmatched = notify_mod.find_unmatched_calendar_meetings(
         client, owner_map, deals, date(2026, 8, 17), "2026-08-17")
     assert unmatched == []
+
+
+def test_shadow_mode_is_default(notify_mod):
+    """#64 §5.4: CALENDAR_CROSSCHECK_MODE未設定時はshadow（本番投稿・通知に影響しない）が既定。"""
+    assert notify_mod.CALENDAR_CROSSCHECK_MODE == "shadow"
+
+
+def test_default_crosscheck_owners_is_the_six_customer_facing_members(notify_mod):
+    """#64 2026-08-17: 顧客面談対応は6名のみ（owner_slack_map.json全体ではない）。"""
+    assert notify_mod.CALENDAR_CROSSCHECK_OWNERS == ["吉江", "中島", "岩崎", "早瀬", "高橋", "土屋"]
+
+
+def test_build_shadow_diagnostic_lists_all_events_with_tags(notify_mod):
+    """診断レポートは除外された予定も含め全件を判定タグ付きで列挙する（癖の発見用）。"""
+    from cowork import workspace_calendar as wc
+    events = {
+        "hayase@inproc.org": [
+            _ev(wc, "A社商談", ["hayase@inproc.org", "tanaka@acme.co.jp"]),
+            _ev(wc, "社内定例", ["hayase@inproc.org", "iwasaki@inproc.org"]),
+        ],
+        "iwasaki@inproc.org": [],
+    }
+    client = _FakeCalendarClient(events)
+    owner_map = {"早瀬": "hayase@inproc.org", "岩崎": "iwasaki@inproc.org"}
+    report = notify_mod.build_shadow_diagnostic(client, owner_map, date(2026, 8, 17), "2026-08-17")
+    assert "shadowモード" in report
+    assert "早瀬" in report and "岩崎" in report
+    assert "A社商談" in report and "社内定例" in report
+    assert "🌐外部候補" in report  # A社商談側
+    assert "（予定なし）" in report  # 岩崎

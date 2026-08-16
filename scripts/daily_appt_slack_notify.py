@@ -78,6 +78,13 @@ GOOGLE_CALENDAR_SA_JSON = os.environ.get("GOOGLE_CALENDAR_SA_JSON", "").strip()
 GOOGLE_WORKSPACE_DOMAIN = os.environ.get("GOOGLE_WORKSPACE_DOMAIN", "inproc.org").strip()
 CALENDAR_NOTIFY_MODE = os.environ.get("CALENDAR_CROSSCHECK_NOTIFY_MODE", "dm").strip().lower()
 CALENDAR_DM_OWNER = os.environ.get("CALENDAR_CROSSCHECK_DM_OWNER", "早瀬").strip()
+# #64: 顧客面談に参加するメンバーのみ対象（owner_slack_map.json全体ではない、2026-08-17）。
+CALENDAR_CROSSCHECK_OWNERS = [s.strip() for s in
+                             os.environ.get("CALENDAR_CROSSCHECK_OWNERS", "吉江,中島,岩崎,早瀬,高橋,土屋").split(",")
+                             if s.strip()]
+# shadow: #salesの投稿文面・逆方向通知は変えず、早瀬DMへ診断レポートのみ送る（キャリブレーション用）。
+# live: 5.2/5.3の通り実際に注記・通知を有効化する。
+CALENDAR_CROSSCHECK_MODE = os.environ.get("CALENDAR_CROSSCHECK_MODE", "shadow").strip().lower()
 
 
 def load_owner_map() -> dict:
@@ -132,6 +139,32 @@ def find_unmatched_calendar_meetings(calendar_client, owner_map: dict, deals: li
             unmatched.append({"owner": owner, "title": e.summary,
                               "start": e.start.strftime("%H:%M") if not e.all_day else "終日"})
     return unmatched
+
+
+def build_shadow_diagnostic(calendar_client, owner_map: dict, target_date: _date_cls,
+                            target_date_str: str) -> str:
+    """#64 §5.4 キャリブレーション用診断レポート。6名それぞれのその日の全予定を、
+    is_external_meetingの判定タグ付きでそのまま列挙する（#salesには一切影響しない）。
+    人が実際の顧客面談と突き合わせ、癖による誤判定（見逃し/誤検知）を発見するためのもの。"""
+    from cowork import workspace_calendar as wc
+    lines = [f"🔍 カレンダー突合キャリブレーション診断（{target_date_str}）",
+             "※このメッセージは診断用です。#salesへの投稿・通知には反映されていません（shadowモード）。"]
+    for owner, email in owner_map.items():
+        lines.append(f"\n▼ {owner}")
+        try:
+            events = calendar_client.list_events_for_date(email, target_date)
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"   取得失敗: {e}")
+            continue
+        if not events:
+            lines.append("   （予定なし）")
+            continue
+        for e in events:
+            tag = ("🌐外部候補" if wc.is_external_meeting(
+                       e, self_email=email, own_domain=GOOGLE_WORKSPACE_DOMAIN) else "・対象外")
+            when = "終日" if e.all_day else e.start.strftime("%H:%M")
+            lines.append(f"   [{tag}] {when} {e.summary}")
+    return "\n".join(lines)
 
 
 def slack_api(method: str, **kwargs) -> dict:
@@ -271,9 +304,12 @@ def main():
 
     targets.sort(key=time_sort_key)
 
-    # #64: カレンダー突合（GOOGLE_CALENDAR_SA_JSON未設定なら丸ごとスキップ＝現行動作を維持）
+    # #64: カレンダー突合（GOOGLE_CALENDAR_SA_JSON未設定なら丸ごとスキップ＝現行動作を維持）。
+    # shadowモード（既定）では判定はするが#salesの文面は変えず、早瀬DMへ診断レポートのみ送る
+    # （§5.4: 6名それぞれの顧客面談登録の癖を確認してからliveへ切替える運用）。
     calendar_client = None
     owner_map: dict = {}
+    shadow_mode = CALENDAR_CROSSCHECK_MODE != "live"
     if not deal_id_override:
         try:
             calendar_client = build_calendar_client()
@@ -281,8 +317,10 @@ def main():
             print(f"[WARN] カレンダークライアント初期化失敗（突合をスキップ）: {e}")
             calendar_client = None
         if calendar_client is not None:
-            owner_map = load_owner_map()
-            print(f"[INFO] カレンダー突合: 有効（対象メンバー{len(owner_map)}名）")
+            full_map = load_owner_map()
+            owner_map = {k: v for k, v in full_map.items() if k in CALENDAR_CROSSCHECK_OWNERS}
+            print(f"[INFO] カレンダー突合: 有効（mode={CALENDAR_CROSSCHECK_MODE}、"
+                  f"対象メンバー{len(owner_map)}名/{len(CALENDAR_CROSSCHECK_OWNERS)}名中）")
 
     target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
 
@@ -295,7 +333,11 @@ def main():
             if email:
                 try:
                     found = check_owner_has_external_meeting(calendar_client, email, target_date)
-                    calendar_unconfirmed = not found
+                    if shadow_mode:
+                        print(f"[SHADOW] deal_id={deal['id']} owner={owner} 外部会議あり={found}"
+                              "（#salesの文面には反映していません）")
+                    else:
+                        calendar_unconfirmed = not found
                 except Exception as e:  # noqa: BLE001
                     print(f"[WARN] カレンダー確認失敗（deal_id={deal['id']} owner={owner}）: {e}")
 
@@ -322,8 +364,17 @@ def main():
     print(f"\n完了: {posted}/{len(targets)}件を投稿。")
 
     if calendar_client is not None and owner_map:
-        unmatched = find_unmatched_calendar_meetings(calendar_client, owner_map, deals, target_date, date_str)
-        notify_unmatched_calendar_meetings(unmatched, date_str)
+        if shadow_mode:
+            report = build_shadow_diagnostic(calendar_client, owner_map, target_date, date_str)
+            dm_channel = _resolve_dm_channel(CALENDAR_DM_OWNER)
+            if dm_channel:
+                result = slack_api("chat.postMessage", channel=dm_channel, text=report)
+                print(f"[SHADOW] 診断レポート送信: {'OK' if result.get('ok') else result.get('error')}")
+            else:
+                print(f"[ERROR] {CALENDAR_DM_OWNER} のDMチャネルを開けず診断レポートを送れませんでした。")
+        else:
+            unmatched = find_unmatched_calendar_meetings(calendar_client, owner_map, deals, target_date, date_str)
+            notify_unmatched_calendar_meetings(unmatched, date_str)
 
 
 def notify_unmatched_calendar_meetings(unmatched: list, date_str: str) -> None:
