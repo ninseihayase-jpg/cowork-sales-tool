@@ -6,13 +6,14 @@
 """
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from cowork import sfa_db
+from cowork import sfa_db, webapp
 
 
 @pytest.fixture
@@ -146,6 +147,35 @@ def test_compute_load_excludes_completed_hold_cancelled_deliveries(con, acc_id):
     assert cell["actual"]["proposal"] == 40   # 進行中案件のみ
     assert len(load["items"]) == 1
     assert load["items"][0]["delivery_id"] == dv_active
+
+
+def test_deliveries_page_sort_order(con, acc_id):
+    """一覧の並び順: 確定→見込み(クロージング)→見込み(提案中)（進行中のみ・開始週の早い順）
+    →保留→完了→中止→無効(終了)（確度=無効(終了)は状態に関わらず最下位）。"""
+    def mkdeal(stage, status="open"):
+        return sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage=stage, status=status)
+
+    d_prop_late = mkdeal("提案")
+    sfa_db.create_delivery(con, deal_id=d_prop_late, title="提案-遅", start_week="2026-09-01")
+    d_prop_early = mkdeal("提案")
+    sfa_db.create_delivery(con, deal_id=d_prop_early, title="提案-早", start_week="2026-08-01")
+    d_closing = mkdeal("クロージング")
+    sfa_db.create_delivery(con, deal_id=d_closing, title="クロージング", start_week="2026-08-15")
+    d_won = mkdeal("受注")
+    sfa_db.create_delivery(con, deal_id=d_won, title="確定", start_week="2026-08-20")
+    d_hold = mkdeal("提案")
+    sfa_db.create_delivery(con, deal_id=d_hold, title="保留", status="保留", start_week="2026-07-01")
+    d_done = mkdeal("提案")
+    sfa_db.create_delivery(con, deal_id=d_done, title="完了", status="完了", start_week="2026-07-01")
+    d_stop = mkdeal("提案")
+    sfa_db.create_delivery(con, deal_id=d_stop, title="中止", status="中止", start_week="2026-07-01")
+    d_lost = mkdeal("提案")
+    sfa_db.create_delivery(con, deal_id=d_lost, title="無効", start_week="2026-06-01")
+    sfa_db.close_deal_to_lead(con, d_lost, "失注")   # status=中止になるが確度=無効(終了)が優先で最下位
+
+    html = webapp.deliveries_page(con)
+    order = re.findall(r'<input type="text" value="([^"]*)"', html)
+    assert order == ["確定", "クロージング", "提案-早", "提案-遅", "保留", "完了", "中止", "無効"]
 
 
 def test_base_workload_sum_and_upsert(con):

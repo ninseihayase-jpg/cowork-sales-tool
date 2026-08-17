@@ -1228,6 +1228,29 @@ def _delivery_confidence(deal_stage: str, deal_status: str, override: str | None
     return (label, _DELIVERY_CONFIDENCE_COLORS.get(label, "#6b7280"))
 
 
+_DELIVERY_ACTIVE_CONF_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2}
+
+
+def _delivery_sort_key(dv: dict, lbl: str) -> tuple:
+    """Delivery一覧の並び順（確度×開始週の早い順。確定から始まり、完了系は下に沈める）。
+    確度=無効(終了)が最優先で最下位（状態に関わらず）。それ以外は状態で分岐:
+    進行中=確度順(確定→見込み(クロージング)→見込み(提案中))が最上位グループ、
+    以下、状態=保留→完了→中止の順に下段へ。同グループ内は開始週の早い順（未設定は最後）。"""
+    status = dv.get("status") or "進行中"
+    if lbl == "無効(終了)":
+        bucket = 6
+    elif status == "保留":
+        bucket = 3
+    elif status == "完了":
+        bucket = 4
+    elif status == "中止":
+        bucket = 5
+    else:  # 進行中
+        bucket = _DELIVERY_ACTIVE_CONF_RANK.get(lbl, 2)
+    start = dv.get("start_week") or "9999-99-99"   # 未設定は同グループ内で最後
+    return (bucket, start, dv.get("id") or 0)
+
+
 def _heat_style(pct: float) -> str:
     """総合負荷率%→背景色（100/150閾値。#75）。"""
     t = sfa_db.DELIVERY_HEAT_THRESHOLDS
@@ -1565,10 +1588,14 @@ def build_deals_full_xlsx(con) -> bytes:
 def deliveries_page(con) -> str:
     """Delivery案件一覧（検索/フィルタ・インライン編集・一括削除・平均FTE）。#75。"""
     _statuses = sfa_db.DELIVERY_STATUSES
-    rows = ""
+    _dvs_with_lbl = []
     for dv in sfa_db.list_deliveries(con):
-        _id = dv["id"]
         lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open", dv.get("confidence_override"))
+        _dvs_with_lbl.append((dv, lbl, col))
+    _dvs_with_lbl.sort(key=lambda t: _delivery_sort_key(t[0], t[1]))
+    rows = ""
+    for dv, lbl, col in _dvs_with_lbl:
+        _id = dv["id"]
         blocks = sfa_db.list_delivery_assignments(con, _id)
         who = "、".join(sorted({b["owner"] for b in blocks})) or "—"
         # 総アサイン工数と同じロジック（期間平均の合計稼働率）: 実想定＋純粋請求（請求0%は「-」）。
