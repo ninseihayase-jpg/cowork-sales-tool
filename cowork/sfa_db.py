@@ -513,6 +513,8 @@ CREATE TABLE IF NOT EXISTS slack_threads (
     bot_message_ts TEXT,
     state          TEXT DEFAULT 'pending',
     meta           TEXT,
+    first_seen_at  TEXT,      -- このスレッドを最初に検知した時刻（INSERT OR REPLACEでも不変。放置検知用）
+    reminded_at    TEXT,      -- 放置リマインドを送った時刻（state変更のたびNULLに戻り再送可能になる）
     created_at     TEXT DEFAULT (datetime('now'))
 );
 
@@ -1102,6 +1104,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         thread_cols = {r[1] for r in con.execute("PRAGMA table_info(slack_threads)")}
         if "meta" not in thread_cols:
             con.execute("ALTER TABLE slack_threads ADD COLUMN meta TEXT")
+        if "first_seen_at" not in thread_cols:
+            con.execute("ALTER TABLE slack_threads ADD COLUMN first_seen_at TEXT")
+            con.execute("UPDATE slack_threads SET first_seen_at=created_at WHERE first_seen_at IS NULL")
+        if "reminded_at" not in thread_cols:
+            con.execute("ALTER TABLE slack_threads ADD COLUMN reminded_at TEXT")
         note_cols = {r[1] for r in con.execute("PRAGMA table_info(meeting_notes)")}
         if "theme_id" not in note_cols:
             con.execute("ALTER TABLE meeting_notes ADD COLUMN theme_id INTEGER")
@@ -2549,6 +2556,23 @@ def find_assigned_jamie_transcript(con, deal_id: int, occurred_on: str) -> dict 
 
 def mark_intake_transcript_status(con, id: int, status: str) -> None:
     con.execute("UPDATE intake_transcripts SET status=? WHERE id=?", (status, int(id)))
+    con.commit()
+
+
+def list_stale_nego_threads(con, hours: float = 3.0) -> list[dict]:
+    """#新規: SlackのNegoCollectionスレッドのうち、completedではなく、first_seen_atからhours時間
+    以上経過し、まだ放置リマインドを送っていない(reminded_at IS NULL)ものを返す（放置検知）。"""
+    rows = con.execute(
+        "SELECT * FROM slack_threads WHERE state != 'completed' AND reminded_at IS NULL "
+        "AND first_seen_at IS NOT NULL AND first_seen_at <= datetime('now', ?) "
+        "ORDER BY first_seen_at ASC",
+        (f"-{float(hours)} hours",),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_nego_thread_reminded(con, thread_ts: str) -> None:
+    con.execute("UPDATE slack_threads SET reminded_at=datetime('now') WHERE thread_ts=?", (thread_ts,))
     con.commit()
 
 

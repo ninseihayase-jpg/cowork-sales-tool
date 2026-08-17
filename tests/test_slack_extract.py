@@ -41,3 +41,17 @@ def test_memo_stops_at_next_label():
     t = "追記メモ: 一行目\n続き\n担当: 早瀬\n"
     assert sb._extract_field(t, "追記メモ") == "一行目\n続き"   # 次ラベル(担当:)で停止
     assert sb._extract_field(t, "担当") == "早瀬"
+
+
+def test_extract_field_accepts_fullwidth_colon():
+    """全角コロン「：」で入力しても半角「:」と同様に認識する（サイレント無視バグの修正）。"""
+    t = "活動日：2026-08-17\n次回MS日：2026-08-24\n"
+    assert sb._extract_field(t, "活動日") == "2026-08-17"
+    assert sb._extract_field(t, "次回MS日") == "2026-08-24"
+
+
+def test_memo_stops_at_next_label_fullwidth_colon():
+    """自由記述欄の終端判定（他ラベル検出）も全角コロンに対応していること。"""
+    t = "追記メモ：一行目\n続き\n担当：早瀬\n"
+    assert sb._extract_field(t, "追記メモ") == "一行目\n続き"
+    assert sb._extract_field(t, "担当") == "早瀬"

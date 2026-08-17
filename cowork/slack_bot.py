@@ -128,11 +128,18 @@ def get_pending_thread(con: sqlite3.Connection, thread_ts: str) -> dict | None:
 def save_pending_thread(con: sqlite3.Connection, thread_ts: str, channel_id: str,
                         deal_id: int | None, bot_message_ts: str | None,
                         state: str = "pending", meta: str | None = None):
+    """#新規: 放置検知用にfirst_seen_atを保持する。INSERT OR REPLACEは行を作り直すため、
+    既存行のfirst_seen_atを引いてそのまま引き継ぐ（無ければ今回が初回として今の時刻を採用）。
+    reminded_atは指定しない＝REPLACEで毎回NULLに戻り、状態が変わるたびリマインドが再送可能になる。"""
+    existing = con.execute(
+        "SELECT first_seen_at FROM slack_threads WHERE thread_ts=?", (thread_ts,)
+    ).fetchone()
+    first_seen_at = existing["first_seen_at"] if existing and existing["first_seen_at"] else None
     con.execute("""
         INSERT OR REPLACE INTO slack_threads
-            (thread_ts, channel_id, deal_id, bot_message_ts, state, meta)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (thread_ts, channel_id, deal_id, bot_message_ts, state, meta))
+            (thread_ts, channel_id, deal_id, bot_message_ts, state, meta, first_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
+    """, (thread_ts, channel_id, deal_id, bot_message_ts, state, meta, first_seen_at))
     con.commit()
 
 
@@ -519,9 +526,11 @@ def _extract_field(text: str, label: str) -> str | None:
     Slackの太字 *...*（行頭の*・ラベル直後の*・値末尾の*）に対応。
     内容/追記メモ 等のフリーテキストは、次のラベル行や区切り/フッタまで複数行を取り込む。"""
     lines = text.split("\n")
-    label_pat = re.compile(rf"^\*?{re.escape(label)}:\*? *(.*)$")
+    # コロンは全角「：」で入力する人が多いため半角「:」と両対応（#新規: 全角コロンで認識されず
+    # サイレントに無視される不具合の修正）。
+    label_pat = re.compile(rf"^\*?{re.escape(label)}[:：]\*? *(.*)$")
     _others = [l for l in _FIELD_LABELS_ALL if l != label]
-    other_label_pat = re.compile(r"^\*?(?:" + "|".join(re.escape(l) for l in _others) + r"):")
+    other_label_pat = re.compile(r"^\*?(?:" + "|".join(re.escape(l) for l in _others) + r")[:：]")
     for i, line in enumerate(lines):
         m = label_pat.match(line)
         if not m:
@@ -1245,7 +1254,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
     if text_l not in ("確定", "ok", "yes", "はい"):
         # 上書き返信（「フィールド: 値」）を検知したら短く応答して"無言"を防ぐ
         if any(_extract_field(text, lb) for lb in
-               ("種別", "相手", "内容", "活動日", "ステージ", "次回MS日", "次回MSラベル", "追記メモ")):
+               ("種別", "相手", "内容", "活動日", "ステージ", "次回MS日", "次回MSラベル", "次回MS種別", "追記メモ")):
             post_message(channel, thread_ts,
                 "✍️ 上書きを受け付けました。反映するには「確定」または「ok」と返信してください。")
         return

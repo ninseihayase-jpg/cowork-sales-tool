@@ -159,6 +159,27 @@ services:
       - key: INTAKE_STALE_NOTIFY_MODE
         value: dm            # "dm"（早瀬個人へDM）｜ "channel" に変えるとSALES_CHANNEL_IDへ投稿
 
+  # ── Slack NegoCollection放置検知リマインド（営業時間中2時間おき: JST 9/11/13/15/17/19時）──
+  # #salesスレッドで@NegoCollectionの下書きに対し「確定」/「ok」されずに放置されているスレッドへ、
+  # そのスレッド自体に直接「まだ保存されていません」とアナウンスする。無反応（無言）で
+  # 完了と誤解される事故の防止。1回送ったら状態が変わるまで再送しない。
+  - type: cron
+    name: sfa-nego-thread-stale-reminder
+    env: python
+    region: singapore
+    schedule: "0 0-10/2 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scripts/nego_thread_reminder.py
+    envVars:
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SFA_TOOL_URL
+        value: https://sfa-crm.onrender.com
+      - key: SFA_API_TOKEN
+        sync: false
+      - key: HOURS
+        value: "3"
+
   # ── 商談スプシエクスポート（日次 09:00 JST） ────────────────────────
   - type: cron
     name: sfa-daily-export

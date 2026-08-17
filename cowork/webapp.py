@@ -12586,6 +12586,21 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             "inbox": [dict(r) for r in _inbox_rows],
                             "assigned_unconsumed": [dict(r) for r in _assigned_rows],
                         }, ensure_ascii=False, default=str).encode(), ctype="application/json")
+                elif path == "/api/nego_threads_stale":
+                    # SlackのNegoCollectionスレッドが「確定」/「ok」されずに放置されている見逃し検知。
+                    # scripts/nego_thread_reminder.py から利用。トークン認証。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send(b'{"error":"unauthorized"}', status=401, ctype="application/json")
+                    else:
+                        try:
+                            _hours = float(qs.get("hours", ["3"])[0])
+                        except (ValueError, TypeError):
+                            _hours = 3.0
+                        _stale = sfa_db.list_stale_nego_threads(con, hours=_hours)
+                        self._send(json.dumps({"threads": _stale}, ensure_ascii=False, default=str).encode(),
+                                  ctype="application/json")
                 elif path == "/api/memo/list":
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
@@ -16132,6 +16147,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         ).lastrowid
                         con.commit()
                         self._send_cors_json(json.dumps({"ok": True, "id": note_id}, ensure_ascii=False).encode())
+
+                elif path == "/api/nego_threads_stale/ack":
+                    # 放置リマインドをSlackへ投稿できたら呼ぶ（reminded_atを記録し、次回以降の再送を抑止）。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            data = f
+                        _tts = data.get("thread_ts") or ""
+                        if _tts:
+                            sfa_db.mark_nego_thread_reminded(con, _tts)
+                        self._send_cors_json(b'{"ok":true}')
 
                 # ── メモ削除 ──
                 elif path == "/api/memo/delete":
