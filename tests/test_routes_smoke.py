@@ -123,6 +123,36 @@ def test_close_requires_reason(server, db_path):
     con.close()
 
 
+def test_close_to_lead_stops_linked_delivery(server, db_path):
+    """商談をリードに戻す(=クローズ)と、紐づく進行中のDeliveryも連動して止まる。
+    終了理由=保留・時期尚早は「保留」、それ以外(失注等)は「中止」。既に完了のDeliveryは上書きしない。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('D社')").lastrowid
+    con.commit()
+
+    deal_lost = sfa_db.upsert_deal(con, account_id=acc, deal_name="D1", stage="提案", status="open")
+    dv_lost = sfa_db.create_delivery(con, deal_id=deal_lost, title="Delivery1")
+    deal_hold = sfa_db.upsert_deal(con, account_id=acc, deal_name="D2", stage="提案", status="open")
+    dv_hold = sfa_db.create_delivery(con, deal_id=deal_hold, title="Delivery2")
+    deal_done = sfa_db.upsert_deal(con, account_id=acc, deal_name="D3", stage="提案", status="open")
+    dv_done = sfa_db.create_delivery(con, deal_id=deal_done, title="Delivery3", status="完了")
+    con.commit()
+
+    _post(server + f"/deal/{deal_lost}/revert_to_lead",
+          {"close_reason": "失注", "memo": "x"}, headers=_auth_header())
+    _post(server + f"/deal/{deal_hold}/revert_to_lead",
+          {"close_reason": "保留・時期尚早", "memo": "x"}, headers=_auth_header())
+    _post(server + f"/deal/{deal_done}/revert_to_lead",
+          {"close_reason": "失注", "memo": "x"}, headers=_auth_header())
+
+    con2 = sfa_db.connect(db_path)
+    assert sfa_db.get_delivery(con2, dv_lost)["status"] == "中止"
+    assert sfa_db.get_delivery(con2, dv_hold)["status"] == "保留"
+    assert sfa_db.get_delivery(con2, dv_done)["status"] == "完了"   # 既に完了は上書きしない
+    con2.close()
+    con.close()
+
+
 def test_dev_project_tool_add_via_http(server, db_path):
     """開発案件一覧のモーダルからの追加リンク登録（/tools/add）が実HTTPで保存される。"""
     con = sfa_db.connect(db_path)

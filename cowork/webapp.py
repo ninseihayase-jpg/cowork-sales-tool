@@ -16051,6 +16051,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 "updated_at=datetime('now') WHERE id=?",
                                 (_new_note, _cr, _cr, _did),
                             )
+                            # 商談を受注に至らずクローズしたら、紐づくDeliveryのうち進行中のものも連動して止める
+                            # （終了理由=保留・時期尚早は「保留」、それ以外は「中止」）。
+                            sfa_db.close_deliveries_on_deal_lost(con, _did, _cr)
 
                             _lid = None
                             # 既存リード検索（deal_id が紐付いているもの）

@@ -115,7 +115,7 @@ MASTER_LABELS = {
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
 # Delivery（受注後・納品）アサイン計画（#75）。デモ開発とは別系統。
-DELIVERY_STATUSES = ["進行中", "完了", "保留"]
+DELIVERY_STATUSES = ["進行中", "完了", "保留", "中止"]
 DELIVERY_VIEW_WEEKS = 16              # 全社稼働テーブルの初期表示週数（今週〜。調整可）
 POINTS_PER_FTE = 20                   # デモ開発点数→FTE%換算の基準（20点≒100%FTE）※デモ負荷率自体は個人上限基準
 # Delivery案件を自動起票するステージ（「提案」到達以降）。
@@ -801,7 +801,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
     title       TEXT,                      -- 納品案件名（既定=商談名）
     start_week  TEXT,                      -- 開始週の月曜(YYYY-MM-DD)
     end_week    TEXT,                      -- 終了週の月曜(YYYY-MM-DD)
-    status      TEXT DEFAULT '進行中',      -- 進行中/完了/保留
+    status      TEXT DEFAULT '進行中',      -- 進行中/完了/保留/中止
     overview    TEXT,                      -- 概要・納品方針（自由記述）
     fee_mode    TEXT DEFAULT 'monthly',    -- 報酬形態: monthly=月額報酬 / total=総額報酬（どちらを入力するか）
     fee_monthly REAL,                      -- 報酬額/月額（万円）
@@ -3584,6 +3584,20 @@ def close_won_if_needed(con, deal_id: int, *, commit: bool = False) -> bool:
     if commit:
         con.commit()
     return True
+
+
+def close_deliveries_on_deal_lost(con, deal_id: int, close_reason: str | None) -> int:
+    """商談をリードに戻す（＝受注に至らずクローズ）際、紐づくDeliveryのうち進行中のものを
+    連動して止める。終了理由が「保留・時期尚早」ならDelivery側も「保留」、それ以外
+    （失注/ニーズなし/キャンセル/自社都合で撤退）は「中止」にする。既に完了・保留・中止
+    済みのDeliveryは上書きしない（手動で状態管理されている前提を尊重）。更新件数を返す。"""
+    new_status = "保留" if close_reason == "保留・時期尚早" else "中止"
+    rows = con.execute(
+        "SELECT id FROM deliveries WHERE deal_id=? AND status='進行中'", (int(deal_id),)
+    ).fetchall()
+    for r in rows:
+        update_delivery(con, r["id"], status=new_status)
+    return len(rows)
 
 
 def list_delivery_assignments(con, delivery_id: int) -> list[dict]:
