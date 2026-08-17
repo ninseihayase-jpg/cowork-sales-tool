@@ -7041,6 +7041,8 @@ _RICH_NOTE_ASSETS = """
       <button type="button" class="rn-b" title="画像を挿入（貼付・ドラッグでリサイズ）" onmousedown="return rnPickImage(event)">🖼</button>
     </span>
     <input type="file" id="rnImgFile" accept="image/*" style="display:none" onchange="rnImgFileChosen(this)">
+    <a id="rnSrcLink" href="#" target="_blank" title="このメモの元になった文字起こしを表示"
+       style="display:none;font-size:11px;color:#4338ca;text-decoration:none;white-space:nowrap">🎙️ 元の文字起こし</a>
     <span class="rn-status" id="rnStatus"></span>
     <button type="button" class="rn-x" title="閉じる (Esc)" onclick="rnClose()">×</button>
   </div>
@@ -7093,7 +7095,10 @@ function rnRenderRail(){ var rail=document.getElementById('rnRail'); if(!rail)re
 function rnStash(){ if(_rnCur<0||_rnCur>=_rnNotes.length)return;
   _rnNotes[_rnCur].title=_rnTitleEl().value; _rnNotes[_rnCur].body=_rnEl().innerHTML; }
 function rnLoadCur(){ if(typeof rnDeselectImg==='function')rnDeselectImg(); var n=_rnNotes[_rnCur]||{title:'',body:''};
-  _rnTitleEl().value=n.title||''; _rnEl().innerHTML=n.body||''; }
+  _rnTitleEl().value=n.title||''; _rnEl().innerHTML=n.body||'';
+  var sl=document.getElementById('rnSrcLink');
+  if(sl){ if(n.intake_transcript_id){ sl.href='/intake-transcript/'+n.intake_transcript_id+'/view'; sl.style.display='inline'; }
+    else { sl.style.display='none'; } } }
 function rnSelect(i){ if(i===_rnCur)return; if(_rnDirty){rnStash();rnSave();} _rnCur=i; rnRenderRail(); rnLoadCur(); }
 function rnNew(){ if(_rnDirty){rnStash();rnSave();} _rnNotes.push({id:null,title:'',body:''}); _rnCur=_rnNotes.length-1; rnRenderRail(); rnLoadCur(); _rnTitleEl().focus(); }
 function rnDel(i){ var n=_rnNotes[i]; if(!n)return; if(!confirm('このメモを削除しますか？（元に戻せません）'))return;
@@ -7588,7 +7593,10 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             f'onfocus="taExpand(this)" onblur="taShrink(this)" '
             f'onchange="actField({a["id"]},&#39;body&#39;,this.value)">{_esc(a.get("body"))}</textarea></td>'
             f'<td style="width:1%;white-space:nowrap">'
-            f'<button type="button" class="btn sec act-editbtn" style="font-size:10px;padding:2px 8px" '
+            + (f'<a href="/intake-transcript/{a["intake_transcript_id"]}/view" target="_blank" '
+               f'title="元の文字起こしを表示" style="font-size:10px;margin-right:4px;text-decoration:none">🎙️</a>'
+               if a.get("intake_transcript_id") else "")
+            + f'<button type="button" class="btn sec act-editbtn" style="font-size:10px;padding:2px 8px" '
             f'onclick="actEdit({a["id"]})">編集</button> '
             f'<button type="button" class="btn sec ae" style="font-size:10px;padding:2px 6px;color:#c53030" '
             f'onclick="actDelete({a["id"]})">削除</button></td></tr>'
@@ -9195,9 +9203,26 @@ def _intake_originals_html(con, kind: str, entity_id: int, back_url: str) -> str
     def _fkb(n):
         return f"{round((n or 0) / 1024):,}KB" if n else ""
 
+    def _usage_html(t):
+        usages = sfa_db.find_intake_transcript_usages(con, t["id"])
+        if not usages:
+            return ''
+        links = []
+        for u in usages:
+            if u["type"] == "rich_note":
+                links.append(f'<a href="javascript:void(0)" onclick="rnOpen(\'{kind}\',{entity_id},{u["id"]})" '
+                            f'style="font-size:11px">{_esc(u["label"])}</a>')
+            elif u["type"] == "hearing_result":
+                links.append(f'<a href="/hearing/result/{u["id"]}" style="font-size:11px">{_esc(u["label"])}</a>')
+            else:
+                links.append(f'<a href="/deal/{entity_id}#act-{u["id"]}" style="font-size:11px">{_esc(u["label"])}</a>')
+        return ('<div class="muted" style="font-size:11px;margin-top:2px">→ 使用済み: '
+                + '　'.join(links) + '</div>')
+
     rows = "".join(
-        '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid #e2e8f0;'
+        '<div style="display:flex;flex-direction:column;gap:2px;padding:6px 8px;border:1px solid #e2e8f0;'
         'border-radius:8px;background:#fff;font-size:12px">'
+        '<div style="display:flex;align-items:center;gap:8px">'
         '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
         f'{"📎 " if t.get("source") == "file" else "📝 "}{_esc(t.get("filename") or "貼り付けテキスト")}'
         f'<span class="muted"> ・ {_esc((t.get("created_at") or "")[:16])}'
@@ -9212,6 +9237,8 @@ def _intake_originals_html(con, kind: str, entity_id: int, back_url: str) -> str
           f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer;font-size:12px" '
           f'title="削除">✕</button></form>'
         '</div>'
+        + _usage_html(t)
+        + '</div>'
         for t in intakes
     )
     return (
@@ -9949,7 +9976,7 @@ def issue_intake_page(con, issue: dict) -> str:
     </div>""")
 
 
-def issue_review_page(con, issue: dict, structured: dict) -> str:
+def issue_review_page(con, issue: dict, structured: dict, intake_transcript_id: int | None = None) -> str:
     """論点: AI整形結果を人が確認・編集し、論点メモとして確定する画面。"""
     iid = issue["id"]
     st = structured or {}
@@ -9974,6 +10001,7 @@ def issue_review_page(con, issue: dict, structured: dict) -> str:
       {_ai_warn}
       <form method="post" action="/deal-issue/{iid}/intake/commit" id="issueReviewForm"
         onsubmit="if(this.dataset.sent){{return false;}}this.dataset.sent='1';var b=this.querySelector('button[type=submit]');setTimeout(function(){{if(b){{b.disabled=true;b.textContent='保存中…';}}}},0);return true;">
+        <input type="hidden" name="intake_transcript_id" value="{intake_transcript_id or ''}">
         <label style="font-size:12px">メモの見出し（日付_タイトル）
           <input name="note_title" value="{_esc(_title)}" style="{_ta}"></label>
         <div style="font-weight:700;font-size:13px;margin:12px 0 2px">■ 全体像</div>
@@ -11527,6 +11555,7 @@ def hearing_result_page(con, result: dict) -> str:
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>ヒアリング結果</span>
         <span style="display:flex;gap:8px;flex-wrap:wrap">
+          {f'<a class="btn sec" href="/intake-transcript/{result["intake_transcript_id"]}/view" target="_blank">🎙️ 元の文字起こし</a>' if result.get('intake_transcript_id') else ''}
           <a class="btn sec" href="/hearing/result/{result['id']}/export.xlsx">📥 xlsxダウンロード</a>
           <a class="btn sec" href="/hearing/result/{result['id']}/export.docx">📥 docxダウンロード</a>
         </span>
@@ -12484,7 +12513,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if _kind in sfa_db.RICH_NOTE_KINDS and _eids.isdigit():
                         _eid = int(_eids)
                         _notes = [{"id": r["id"], "title": r.get("title") or "",
-                                   "body": _sanitize_rich_html(r.get("body") or "")}
+                                   "body": _sanitize_rich_html(r.get("body") or ""),
+                                   "intake_transcript_id": r.get("intake_transcript_id")}
                                   for r in sfa_db.list_rich_notes(con, _kind, _eid)]
                         self._send(json.dumps({"ok": True, "title": _rich_note_entity_title(con, _kind, _eid),
                                                "notes": _notes}, ensure_ascii=False).encode(),
@@ -14791,8 +14821,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _fname = _up[0] if _is_file else None
                         _blob = _up[1] if _is_file else None
                         # 取り込み原本（文字起こしローデータ＋アップロード原本）を保存（整形メモとは別に参照可）
+                        _new_itid = None
                         try:
-                            sfa_db.add_intake_transcript(
+                            _new_itid = sfa_db.add_intake_transcript(
                                 con, kind="issue", entity_id=iid,
                                 source=("file" if _is_file else "paste"),
                                 filename=_fname, transcript=_transcript, file_blob=_blob)
@@ -14801,7 +14832,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _structured = _structure_issue_transcript(
                             iss.get("issue") or "", _transcript,
                             filename=_fname, upload_date=_today_jst().isoformat())
-                        self._send(issue_review_page(con, iss, _structured))
+                        self._send(issue_review_page(con, iss, _structured, intake_transcript_id=_new_itid))
 
                 elif path.startswith("/deal-issue/") and path.endswith("/intake/commit"):
                     try:
@@ -14819,8 +14850,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _body = _sanitize_rich_html(
                         _issue_structured_to_note_html(_overview, _points_md, _decisions, _nextsteps))
                     _title = (f.get("note_title") or "").strip() or ("議論整形メモ " + _today_jst().isoformat())
+                    try:
+                        _itid_ref = int(f.get("intake_transcript_id") or 0) or None
+                    except ValueError:
+                        _itid_ref = None
                     if _body:
-                        sfa_db.create_rich_note(con, kind="issue", entity_id=iid, title=_title, body=_body)
+                        sfa_db.create_rich_note(con, kind="issue", entity_id=iid, title=_title, body=_body,
+                                                intake_transcript_id=_itid_ref)
                         _summary = _generate_issue_ai_summary(iss, _issue_notes_text(con, iid))
                         if _summary:
                             sfa_db.set_deal_issue_ai_summary(con, iid, _summary)
@@ -14852,7 +14888,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _structured = _structure_issue_transcript(
                             _iss.get("issue") or "", _transcript,
                             filename=_t.get("title"), upload_date=_occ)
-                        self._send(issue_review_page(con, _iss, _structured))
+                        self._send(issue_review_page(con, _iss, _structured, intake_transcript_id=_tid))
                     elif _tk == "deal":
                         _row = con.execute(
                             "SELECT d.id, d.deal_name, a.name account_name FROM deals d "
@@ -15367,15 +15403,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         # 取り込み原本の保存（貼付/アップロード時のみ。inboxは受信時に保存済み）
                         _up = f.get("transcript_file")
                         _is_file = isinstance(_up, tuple) and len(_up) == 2 and _up[1]
+                        _new_itid = None
                         if not _inbox_id:
                             try:
-                                sfa_db.add_intake_transcript(
+                                _new_itid = sfa_db.add_intake_transcript(
                                     con, kind="deal", entity_id=_did,
                                     source=("file" if _is_file else "paste"),
                                     filename=(_up[0] if _is_file else None),
                                     transcript=_transcript, file_blob=(_up[1] if _is_file else None))
                             except Exception as _e:  # noqa: BLE001
                                 print(f"[intake_transcript] save failed: {_e}", flush=True)
+                        # 出典（intake_transcripts.id）: 自動連携ならinbox_id、貼付/アップロードなら今回保存したid。
+                        _itid_ref = _inbox_id or _new_itid
                         _src = "jamie" if _inbox_id else "paste"
                         if _record_kind == "memo":
                             # 社内議論 → 商談メモ（rich_note kind='deal'。論点メモと同仕様で整形）
@@ -15386,7 +15425,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _sid = sfa_db.create_hearing_session(
                                 con, deal_id=_did, source=_src, template_id=None,
                                 conducted_on=_conducted, transcript=_transcript,
-                                structured=_structured, status="structured")
+                                structured=_structured, status="structured",
+                                intake_transcript_id=_itid_ref)
                             self._send(deal_memo_review_page(con, dict(_row), sfa_db.get_hearing_session(con, _sid)))
                         else:
                             # 顧客面談 → 活動履歴（＋任意でヒアリング/現状更新/メール）
@@ -15409,7 +15449,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _sid = sfa_db.create_hearing_session(
                                 con, deal_id=_did, source=_src, template_id=_tid,
                                 conducted_on=_conducted, transcript=_transcript,
-                                structured=_structured, status="structured")
+                                structured=_structured, status="structured",
+                                intake_transcript_id=_itid_ref)
                             self._send(hearing_review_page(con, dict(_row), sfa_db.get_hearing_session(con, _sid)))
 
                 elif path == "/hearing/intake/commit":
@@ -15424,6 +15465,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     else:
                         _did = _sess.get("deal_id")
                         _opts = (_sess.get("structured") or {}).get("_opts") or {}
+                        _itid_ref = _sess.get("intake_transcript_id")
                         if _opts.get("record_kind") == "memo":
                             # 社内議論 → 商談メモ（rich_note kind='deal'）に保存。活動履歴等は作らない。
                             _m_points_md = (f.get("points_md") or "").strip()
@@ -15435,7 +15477,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _m_title = (f.get("note_title") or "").strip() or (
                                 (_sess.get("deal_name") or "社内議論メモ ") + _today_jst().isoformat())
                             if _m_body:
-                                sfa_db.create_rich_note(con, kind="deal", entity_id=_did, title=_m_title, body=_m_body)
+                                sfa_db.create_rich_note(con, kind="deal", entity_id=_did, title=_m_title, body=_m_body,
+                                                        intake_transcript_id=_itid_ref)
                             _m_structured = dict(_sess.get("structured") or {})
                             _m_structured.update({"overview": _m_overview, "points_md": _m_points_md,
                                                   "decisions": _m_decisions, "nextsteps": _m_nextsteps})
@@ -15463,7 +15506,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         # ① 活動履歴（記録の土台・常に作成）
                         _act = sfa_db.add_activity(con, deal_id=_did, type=_act_type,
                                                    occurred_on=_conducted, contact_name=_contact,
-                                                   body=(_overview or None))
+                                                   body=(_overview or None), intake_transcript_id=_itid_ref)
                         # ② ヒアリング結果（起票ON時のみ・活動履歴に紐付け）
                         _rid = None
                         if _make_hearing:
@@ -15471,7 +15514,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _rid = sfa_db.add_hearing_result(
                                 con, deal_id=_did, template_id=_sess.get("template_id"),
                                 template_name=(_tmpl.get("name") if _tmpl else None),
-                                conducted_on=_conducted, answers=_answers, activity_id=_act)
+                                conducted_on=_conducted, answers=_answers, activity_id=_act,
+                                intake_transcript_id=_itid_ref)
                         # ③ NextStep→タスク（任意）
                         if f.get("make_tasks") == "1":
                             for _ns in _nextsteps:

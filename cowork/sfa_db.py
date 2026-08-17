@@ -437,6 +437,7 @@ CREATE TABLE IF NOT EXISTS activities (
     occurred_on TEXT,                 -- YYYY-MM-DD
     contact_name TEXT,                -- 相手（誰と話したか）
     body TEXT,
+    intake_transcript_id INTEGER,     -- 取り込み(intake_transcripts.id)経由で作成された場合の出典（無ければNULL）
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -549,6 +550,7 @@ CREATE TABLE IF NOT EXISTS hearing_results (
     conducted_on  TEXT,                        -- ヒアリング日（バージョン識別）
     answers_json  TEXT NOT NULL DEFAULT '[]',  -- [{label,type,answer:str|[str]}]
     activity_id   INTEGER,                     -- 紐づく活動履歴
+    intake_transcript_id INTEGER,              -- 取り込み(intake_transcripts.id)経由の場合の出典
     created_at    TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_hearing_results_deal ON hearing_results(deal_id);
@@ -578,6 +580,7 @@ CREATE TABLE IF NOT EXISTS hearing_sessions (
     structured_json TEXT NOT NULL DEFAULT '{}', -- {items:[{label,answer}],overview,nextsteps:[..],email_draft}
     status         TEXT DEFAULT 'imported',
     result_id      INTEGER,                     -- 確定時に紐づく hearing_results.id
+    intake_transcript_id INTEGER,               -- 元になったintake_transcripts.id（structure時に確定・不変）
     created_at     TEXT DEFAULT (datetime('now')),
     updated_at     TEXT DEFAULT (datetime('now'))
 );
@@ -674,6 +677,7 @@ CREATE TABLE IF NOT EXISTS rich_notes (
     title      TEXT,
     body       TEXT,
     sort_order INTEGER DEFAULT 0,
+    intake_transcript_id INTEGER,  -- 取り込み(intake_transcripts.id)経由で作成された場合の出典
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -1109,6 +1113,20 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("UPDATE slack_threads SET first_seen_at=created_at WHERE first_seen_at IS NULL")
         if "reminded_at" not in thread_cols:
             con.execute("ALTER TABLE slack_threads ADD COLUMN reminded_at TEXT")
+        # 取り込み文字起こしの出典を各生成物（活動履歴/ヒアリング結果/セッション/リッチメモ）から
+        # 追える紐づけ列（intake_transcript_id）。無ければ後付けで追加。
+        act_cols = {r[1] for r in con.execute("PRAGMA table_info(activities)")}
+        if "intake_transcript_id" not in act_cols:
+            con.execute("ALTER TABLE activities ADD COLUMN intake_transcript_id INTEGER")
+        hr_cols = {r[1] for r in con.execute("PRAGMA table_info(hearing_results)")}
+        if "intake_transcript_id" not in hr_cols:
+            con.execute("ALTER TABLE hearing_results ADD COLUMN intake_transcript_id INTEGER")
+        hs_cols = {r[1] for r in con.execute("PRAGMA table_info(hearing_sessions)")}
+        if "intake_transcript_id" not in hs_cols:
+            con.execute("ALTER TABLE hearing_sessions ADD COLUMN intake_transcript_id INTEGER")
+        rn_cols = {r[1] for r in con.execute("PRAGMA table_info(rich_notes)")}
+        if "intake_transcript_id" not in rn_cols:
+            con.execute("ALTER TABLE rich_notes ADD COLUMN intake_transcript_id INTEGER")
         note_cols = {r[1] for r in con.execute("PRAGMA table_info(meeting_notes)")}
         if "theme_id" not in note_cols:
             con.execute("ALTER TABLE meeting_notes ADD COLUMN theme_id INTEGER")
@@ -2055,10 +2073,13 @@ def complete_past_milestones(con, deal_id: int, as_of_date: str, commit: bool = 
     return n
 
 
-def add_activity(con, *, deal_id, type=None, occurred_on=None, contact_name=None, body=None) -> int:
+def add_activity(con, *, deal_id, type=None, occurred_on=None, contact_name=None, body=None,
+                 intake_transcript_id=None) -> int:
     cur = con.execute(
-        "INSERT INTO activities (deal_id, type, occurred_on, contact_name, body) VALUES (?,?,?,?,?)",
-        (deal_id, type, occurred_on, contact_name, body),
+        "INSERT INTO activities (deal_id, type, occurred_on, contact_name, body, intake_transcript_id) "
+        "VALUES (?,?,?,?,?,?)",
+        (deal_id, type, occurred_on, contact_name, body,
+         int(intake_transcript_id) if intake_transcript_id else None),
     )
     if occurred_on:
         complete_past_milestones(con, deal_id, occurred_on, commit=False)
@@ -2312,14 +2333,16 @@ def delete_hearing_template(con, id: int) -> None:
 # ---- 初回ヒアリング: 結果 ----
 
 def add_hearing_result(con, *, deal_id, template_id=None, template_name=None,
-                       conducted_on=None, answers: list[dict], activity_id=None) -> int:
+                       conducted_on=None, answers: list[dict], activity_id=None,
+                       intake_transcript_id=None) -> int:
     cur = con.execute(
         "INSERT INTO hearing_results "
-        "(deal_id, template_id, template_name, conducted_on, answers_json, activity_id) "
-        "VALUES (?,?,?,?,?,?)",
+        "(deal_id, template_id, template_name, conducted_on, answers_json, activity_id, intake_transcript_id) "
+        "VALUES (?,?,?,?,?,?,?)",
         (int(deal_id), int(template_id) if template_id else None, template_name,
          conducted_on, _json.dumps(answers or [], ensure_ascii=False),
-         int(activity_id) if activity_id else None),
+         int(activity_id) if activity_id else None,
+         int(intake_transcript_id) if intake_transcript_id else None),
     )
     con.commit()
     return cur.lastrowid
@@ -2400,13 +2423,14 @@ def _hydrate_hearing_session(r: dict) -> dict:
 
 def create_hearing_session(con, *, deal_id, source="paste", external_id=None,
                            template_id=None, conducted_on=None, transcript="",
-                           structured=None, status="imported") -> int:
+                           structured=None, status="imported", intake_transcript_id=None) -> int:
     cur = con.execute(
         "INSERT INTO hearing_sessions "
-        "(deal_id, template_id, source, external_id, conducted_on, transcript, structured_json, status) "
-        "VALUES (?,?,?,?,?,?,?,?)",
+        "(deal_id, template_id, source, external_id, conducted_on, transcript, structured_json, status, "
+        "intake_transcript_id) VALUES (?,?,?,?,?,?,?,?,?)",
         (int(deal_id), int(template_id) if template_id else None, source, external_id,
-         conducted_on, transcript or "", _json.dumps(structured or {}, ensure_ascii=False), status))
+         conducted_on, transcript or "", _json.dumps(structured or {}, ensure_ascii=False), status,
+         int(intake_transcript_id) if intake_transcript_id else None))
     con.commit()
     return cur.lastrowid
 
@@ -2469,6 +2493,29 @@ def list_intake_transcripts(con, kind: str, entity_id: int) -> list[dict]:
         (kind, int(entity_id)),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def find_intake_transcript_usages(con, transcript_id: int) -> list[dict]:
+    """指定の取り込み原本(intake_transcripts.id)を出典として作られた生成物を逆引きする
+    （原本一覧側に「→どのノート/活動履歴になったか」を明示するため）。
+    [{type:'activity'|'hearing_result'|'rich_note', id, label}] を返す。"""
+    out = []
+    for r in con.execute(
+        "SELECT id, occurred_on, type FROM activities WHERE intake_transcript_id=?", (int(transcript_id),)
+    ):
+        out.append({"type": "activity", "id": r["id"],
+                    "label": f"活動履歴（{r['occurred_on'] or '—'}・{r['type'] or ''}）"})
+    for r in con.execute(
+        "SELECT id, conducted_on, template_name FROM hearing_results WHERE intake_transcript_id=?",
+        (int(transcript_id),)
+    ):
+        out.append({"type": "hearing_result", "id": r["id"],
+                    "label": f"ヒアリング結果（{r['template_name'] or ''} ・{r['conducted_on'] or '—'}）"})
+    for r in con.execute(
+        "SELECT id, title FROM rich_notes WHERE intake_transcript_id=?", (int(transcript_id),)
+    ):
+        out.append({"type": "rich_note", "id": r["id"], "label": f"ノート「{r['title'] or '無題'}」"})
+    return out
 
 
 def get_intake_transcript(con, id: int) -> dict | None:
@@ -3434,13 +3481,15 @@ def get_rich_note(con, note_id: int) -> dict | None:
 
 
 def create_rich_note(con, *, kind: str, entity_id: int, title: str | None = None,
-                     body: str | None = None) -> int:
+                     body: str | None = None, intake_transcript_id=None) -> int:
     """新規ノートを作成し idを返す。sort_orderは末尾。"""
     nx = con.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM rich_notes WHERE kind=? AND entity_id=?",
                      (kind, int(entity_id))).fetchone()[0]
     cur = con.execute(
-        "INSERT INTO rich_notes (kind, entity_id, title, body, sort_order) VALUES (?,?,?,?,?)",
-        (kind, int(entity_id), (title or None), (body or None), nx))
+        "INSERT INTO rich_notes (kind, entity_id, title, body, sort_order, intake_transcript_id) "
+        "VALUES (?,?,?,?,?,?)",
+        (kind, int(entity_id), (title or None), (body or None), nx,
+         int(intake_transcript_id) if intake_transcript_id else None))
     con.commit()
     return cur.lastrowid
 
