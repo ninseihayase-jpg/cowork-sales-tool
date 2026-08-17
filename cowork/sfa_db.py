@@ -2518,6 +2518,63 @@ def find_intake_transcript_usages(con, transcript_id: int) -> list[dict]:
     return out
 
 
+# intake_transcript_id導入（2026-08-17）より前に作られた既存データは出典が未記録（NULL）のまま。
+# 「そのエンティティの文字起こしが1件・かつ未紐づけの対象行も1件」の場合のみ、確実な1:1と
+# みなして自動で紐づける（両方1件でなければ、当時どちらがどれの出典か復元できないため何もしない）。
+_BACKFILL_DEAL_TABLES = ("activities", "hearing_results", "hearing_sessions")
+
+
+def find_intake_transcript_backfill_candidates(con) -> dict:
+    """既存データのintake_transcript_idバックフィル候補を検出する（読み取り専用）。
+    戻り値: {"apply": [{table,row_id,intake_transcript_id,kind,entity_id}],
+             "ambiguous": [{kind,entity_id,reason}]}（曖昧で自動判定できないもの）。"""
+    apply_list, ambiguous = [], []
+    entities = con.execute(
+        "SELECT DISTINCT kind, entity_id FROM intake_transcripts WHERE kind IN ('deal','issue')"
+    ).fetchall()
+    for e in entities:
+        kind, eid = e["kind"], e["entity_id"]
+        trs = con.execute(
+            "SELECT id FROM intake_transcripts WHERE kind=? AND entity_id=?", (kind, eid)
+        ).fetchall()
+        if len(trs) != 1:
+            ambiguous.append({"kind": kind, "entity_id": eid,
+                              "reason": f"文字起こしが{len(trs)}件あり一意に決められない"})
+            continue
+        itid = trs[0]["id"]
+        rn = con.execute(
+            "SELECT id FROM rich_notes WHERE kind=? AND entity_id=? AND intake_transcript_id IS NULL",
+            (kind, eid)
+        ).fetchall()
+        if len(rn) == 1:
+            apply_list.append({"table": "rich_notes", "row_id": rn[0]["id"],
+                               "intake_transcript_id": itid, "kind": kind, "entity_id": eid})
+        elif len(rn) > 1:
+            ambiguous.append({"kind": kind, "entity_id": eid,
+                              "reason": f"未紐づけのrich_notesが{len(rn)}件あり一意に決められない"})
+        if kind == "deal":
+            for table in _BACKFILL_DEAL_TABLES:
+                rows = con.execute(
+                    f"SELECT id FROM {table} WHERE deal_id=? AND intake_transcript_id IS NULL", (eid,)
+                ).fetchall()
+                if len(rows) == 1:
+                    apply_list.append({"table": table, "row_id": rows[0]["id"],
+                                       "intake_transcript_id": itid, "kind": kind, "entity_id": eid})
+                elif len(rows) > 1:
+                    ambiguous.append({"kind": kind, "entity_id": eid,
+                                      "reason": f"未紐づけの{table}が{len(rows)}件あり一意に決められない"})
+    return {"apply": apply_list, "ambiguous": ambiguous}
+
+
+def apply_intake_transcript_backfill(con, apply_list: list[dict]) -> int:
+    """find_intake_transcript_backfill_candidates()のapply分をDBへ反映する。反映件数を返す。"""
+    for item in apply_list:
+        con.execute(f"UPDATE {item['table']} SET intake_transcript_id=? WHERE id=?",
+                    (item["intake_transcript_id"], item["row_id"]))
+    con.commit()
+    return len(apply_list)
+
+
 def get_intake_transcript(con, id: int) -> dict | None:
     """本文表示/原本DL用（file_blob込み）。"""
     r = con.execute("SELECT * FROM intake_transcripts WHERE id=?", (int(id),)).fetchone()
