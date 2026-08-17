@@ -14266,6 +14266,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 if field == "stage" and value == "受注":
                                     for did in ids:
                                         sfa_db.close_won_if_needed(con, did)
+                                # 失注→自動クローズ＋リードに戻す（一括でも#67のリードに戻す処理と統一）
+                                elif field == "stage" and value == "失注":
+                                    for did in ids:
+                                        sfa_db.close_deal_to_lead(con, did, "失注")
                                 con.commit()
                                 if field == "stage":
                                     for did in ids:
@@ -14359,6 +14363,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 受注→自動クローズ（フォームで受注ステージ保存時。stageは受注のままstatus=closed）
                     if (f.get("stage") or "") == "受注":
                         sfa_db.close_won_if_needed(con, did, commit=True)
+                    # 失注→自動クローズ＋リードに戻す（フォームでステージを直接「失注」に保存した場合も
+                    # #67の「リードに戻す」と同一処理を通す）
+                    elif (f.get("stage") or "") == "失注":
+                        sfa_db.close_deal_to_lead(con, did, "失注")
                     # #75: 提案以降ステージで保存されたらDeliveryを自動起票（未作成時のみ）
                     try:
                         sfa_db.ensure_delivery_on_stage(con, did, f.get("stage") or "")
@@ -14996,6 +15004,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 # 受注→自動クローズ（stageを受注にした瞬間に完了扱い）
                                 if value == "受注":
                                     sfa_db.close_won_if_needed(con, deal_id)
+                                # 失注→自動クローズ＋リードに戻す（インラインでステージを直接「失注」に
+                                # 変更した場合も#67の「リードに戻す」と同一処理を通す）
+                                elif value == "失注":
+                                    sfa_db.close_deal_to_lead(con, deal_id, "失注")
                                 con.commit()
                                 _ok = True
                                 # #75: 提案以降に到達したらDeliveryを自動起票（未作成時のみ）
@@ -15408,7 +15420,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         # ④ 商談の現状を更新（ON時のみ）: ステージ / 現状メモ / 次回MS
                         if _update_state:
                             _new_stage = (f.get("stage") or "").strip()
-                            if _new_stage and _new_stage in sfa_db.DEAL_STAGES:
+                            # 選択肢はマスタ管理のdeal_stages（フォーム上のドロップダウンと同一ソース。
+                            # 「失注」もここに含まれ得るため、旧DEAL_STAGES固定リストでは弾かれてしまっていた）
+                            _valid_stages = sfa_db.get_master_list(con, "deal_stages") or list(sfa_db.DEAL_STAGES)
+                            if _new_stage and _new_stage in _valid_stages:
                                 con.execute("UPDATE deals SET stage=?, updated_at=datetime('now') WHERE id=?",
                                             (_new_stage, _did))
                                 con.commit()
@@ -15417,6 +15432,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                         sfa_db.close_won_if_needed(con, _did, commit=True)
                                     except Exception as _e:  # noqa: BLE001
                                         print(f"[intake] close_won failed: {_e}", flush=True)
+                                # 失注→自動クローズ＋リードに戻す（#67の「リードに戻す」と同一処理を通す）
+                                elif _new_stage == "失注":
+                                    try:
+                                        sfa_db.close_deal_to_lead(con, _did, "失注")
+                                    except Exception as _e:  # noqa: BLE001
+                                        print(f"[intake] close_deal_to_lead failed: {_e}", flush=True)
                                 try:
                                     sfa_db.ensure_delivery_on_stage(con, _did, _new_stage)
                                 except Exception as _e:  # noqa: BLE001
@@ -16031,66 +16052,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 _rt0 = f.get("return_to") or ""
                                 self._redirect(_rt0 if _rt0.startswith("/") else f"/deal/{_did}")
                                 return
-                            _acct_row = con.execute(
-                                "SELECT * FROM accounts WHERE id=?", (_deal.get("account_id"),)
-                            ).fetchone()
-                            _acct = dict(_acct_row) if _acct_row else {}
-
-                            # 現状メモ: リードに戻す時のメモ（あれば）を一番上に追記した上でクローズ理由も付与
-                            _close_line = "アポ未獲得のためクローズ（リードに戻す）"
-                            if _cr:
-                                _close_line += f"／終了理由: {_cr}"
-                            _existing_note = _deal.get("note") or ""
-                            _body = f"{_existing_note}\n{_close_line}" if _existing_note else _close_line
-                            _new_note = f"[リードに戻す時のメモ] {_memo}\n{_body}" if _memo else _body
-                            # 終了理由=失注のときはステージも「失注」にして表示を実態と一致させる（#67の例外）。
-                            con.execute(
-                                "UPDATE deals SET status='closed', note=?, "
-                                "close_reason=COALESCE(?, close_reason), "
-                                "stage=CASE WHEN ?='失注' THEN '失注' ELSE stage END, "
-                                "updated_at=datetime('now') WHERE id=?",
-                                (_new_note, _cr, _cr, _did),
-                            )
-                            # 商談を受注に至らずクローズしたら、紐づくDeliveryのうち進行中のものも連動して止める
-                            # （終了理由=保留・時期尚早は「保留」、それ以外は「中止」）。
-                            sfa_db.close_deliveries_on_deal_lost(con, _did, _cr)
-
-                            _lid = None
-                            # 既存リード検索（deal_id が紐付いているもの）
-                            _lead_row = con.execute(
-                                "SELECT * FROM leads WHERE deal_id=? LIMIT 1", (_did,)
-                            ).fetchone()
-                            if _lead_row:
-                                _lead = dict(_lead_row)
-                                _lid = _lead["id"]
-                                _lead_notes = (_lead.get("notes") or "")
-                                _lead_new_notes = f"{_new_note}\n{_lead_notes}" if _lead_notes else _new_note
-                                con.execute(
-                                    "UPDATE leads SET lead_status='following', deal_id=NULL, "
-                                    "industry=COALESCE(?, industry), company_size=COALESCE(?, company_size), "
-                                    "notes=?, updated_at=datetime('now') WHERE id=?",
-                                    (_acct.get("industry"), _acct.get("company_size"), _lead_new_notes, _lid),
-                                )
-                                _activity_note = "アポ未獲得のため商談からリードへ戻す（フォロー中に変更）。"
-                                if _memo:
-                                    _activity_note += f" メモ: {_memo}"
-                                con.execute(
-                                    "INSERT INTO lead_activities (lead_id,type,content,author) VALUES (?,?,?,?)",
-                                    (_lid, "note", _activity_note, "システム"),
-                                )
-                            else:
-                                # 既存リードがなければアカウントから新規作成（業界・企業規模・現状メモを連携）
-                                _origin_line = f"商談 #{_did}（{_deal.get('deal_name','')}）からリードに戻す"
-                                _lid = sfa_db.upsert_lead(
-                                    con, name=_acct.get("name", "（不明）"),
-                                    company=_acct.get("name", "（不明）"),
-                                    industry=_acct.get("industry"),
-                                    company_size=_acct.get("company_size"),
-                                    lead_status="following",
-                                    notes=f"{_origin_line}\n{_new_note}",
-                                    assigned_to=_deal.get("owner"),
-                                )
-                            con.commit()
+                            _lid = sfa_db.close_deal_to_lead(con, _did, _cr, memo=_memo)
                             if theme_client is not None:
                                 try:
                                     theme_link.sync_deal(theme_client, con, _did)

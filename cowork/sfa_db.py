@@ -3586,6 +3586,71 @@ def close_won_if_needed(con, deal_id: int, *, commit: bool = False) -> bool:
     return True
 
 
+def close_deal_to_lead(con, deal_id: int, close_reason: str, memo: str = "") -> int | None:
+    """商談を『受注に至らずクローズ』し、リードへ差し戻す統一処理（#67）。
+    /deal/{id}/revert_to_lead のクローズ用モーダルから呼ぶのが正規のUIだが、ステージを
+    直接「失注」に変更した場合（フォーム保存・一括編集・インライン変更・ヒアリング取込経由の
+    どれでも）も同じ処理を通す（2026-08-18: 直接変更だと本処理がスキップされ、status='closed'
+    にならない・リード化されない・紐づくDeliveryも止まらないままになっていたバグの修正）。
+    close_reason は呼び出し元で CLOSE_REASONS に含まれることを確認してから渡すこと。
+    既にクローズ済みの商談には何もせず None を返す。作成/更新したリードのidを返す。"""
+    deal = get_deal(con, deal_id)
+    if not deal or (deal.get("status") or "open") == "closed":
+        return None
+    acct_row = con.execute("SELECT * FROM accounts WHERE id=?", (deal.get("account_id"),)).fetchone()
+    acct = dict(acct_row) if acct_row else {}
+
+    close_line = "アポ未獲得のためクローズ（リードに戻す）"
+    if close_reason:
+        close_line += f"／終了理由: {close_reason}"
+    existing_note = deal.get("note") or ""
+    body = f"{existing_note}\n{close_line}" if existing_note else close_line
+    new_note = f"[リードに戻す時のメモ] {memo}\n{body}" if memo else body
+
+    con.execute(
+        "UPDATE deals SET status='closed', note=?, "
+        "close_reason=COALESCE(?, close_reason), "
+        "stage=CASE WHEN ?='失注' THEN '失注' ELSE stage END, "
+        "updated_at=datetime('now') WHERE id=?",
+        (new_note, close_reason, close_reason, deal_id),
+    )
+    close_deliveries_on_deal_lost(con, deal_id, close_reason)
+
+    lid = None
+    lead_row = con.execute("SELECT * FROM leads WHERE deal_id=? LIMIT 1", (deal_id,)).fetchone()
+    if lead_row:
+        lead = dict(lead_row)
+        lid = lead["id"]
+        lead_notes = lead.get("notes") or ""
+        lead_new_notes = f"{new_note}\n{lead_notes}" if lead_notes else new_note
+        con.execute(
+            "UPDATE leads SET lead_status='following', deal_id=NULL, "
+            "industry=COALESCE(?, industry), company_size=COALESCE(?, company_size), "
+            "notes=?, updated_at=datetime('now') WHERE id=?",
+            (acct.get("industry"), acct.get("company_size"), lead_new_notes, lid),
+        )
+        activity_note = "アポ未獲得のため商談からリードへ戻す（フォロー中に変更）。"
+        if memo:
+            activity_note += f" メモ: {memo}"
+        con.execute(
+            "INSERT INTO lead_activities (lead_id,type,content,author) VALUES (?,?,?,?)",
+            (lid, "note", activity_note, "システム"),
+        )
+    else:
+        origin_line = f"商談 #{deal_id}（{deal.get('deal_name', '')}）からリードに戻す"
+        lid = upsert_lead(
+            con, name=acct.get("name", "（不明）"),
+            company=acct.get("name", "（不明）"),
+            industry=acct.get("industry"),
+            company_size=acct.get("company_size"),
+            lead_status="following",
+            notes=f"{origin_line}\n{new_note}",
+            assigned_to=deal.get("owner"),
+        )
+    con.commit()
+    return lid
+
+
 def close_deliveries_on_deal_lost(con, deal_id: int, close_reason: str | None) -> int:
     """商談をリードに戻す（＝受注に至らずクローズ）際、紐づくDeliveryのうち進行中のものを
     連動して止める。終了理由が「保留・時期尚早」ならDelivery側も「保留」、それ以外

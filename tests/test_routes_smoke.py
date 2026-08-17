@@ -153,6 +153,52 @@ def test_close_to_lead_stops_linked_delivery(server, db_path):
     con.close()
 
 
+def test_stage_direct_to_lost_matches_revert_to_lead(server, db_path):
+    """ステージを直接「失注」に変更する3経路(フォーム保存/一括編集/インライン変更)が、
+    いずれも「リードに戻す」(revert_to_lead)と同じ処理(status=closed・リード化・
+    紐づくDeliveryの中止)をトリガーすることを確認する（従来はここが素通りしていた不具合）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('L社')").lastrowid
+    con.commit()
+    # 本番のdeal_stagesマスタには#67以前からの legacy値として「失注」が残っている
+    # （DEAL_STAGES定数からは撤廃済みだが、DB保存済みマスタは移行されていない）。
+    # 一括編集/インライン変更はこのマスタで値を検証するため、フレッシュなテストDBでも再現する。
+    sfa_db.set_master_list(con, "deal_stages", list(sfa_db.DEAL_STAGES) + ["失注"])
+
+    # ① フォーム保存 (/deal/save)
+    deal1 = sfa_db.upsert_deal(con, account_id=acc, deal_name="D1", stage="提案", status="open")
+    dv1 = sfa_db.create_delivery(con, deal_id=deal1, title="Delivery1")
+    con.commit()
+    code, _ = _post(server + "/deal/save",
+                    {"id": str(deal1), "account_id": str(acc), "deal_name": "D1", "stage": "失注"},
+                    headers=_auth_header())
+    assert code in (200, 303)
+
+    # ② 一括編集 (/deals/bulk_edit)
+    deal2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="D2", stage="提案", status="open")
+    dv2 = sfa_db.create_delivery(con, deal_id=deal2, title="Delivery2")
+    con.commit()
+    _post(server + "/deals/bulk_edit",
+          [("ids", str(deal2)), ("field", "stage"), ("value", "失注")], headers=_auth_header())
+
+    # ③ インライン変更 (/deal/{id}/field)
+    deal3 = sfa_db.upsert_deal(con, account_id=acc, deal_name="D3", stage="提案", status="open")
+    dv3 = sfa_db.create_delivery(con, deal_id=deal3, title="Delivery3")
+    con.commit()
+    _post(server + f"/deal/{deal3}/field", {"field": "stage", "value": "失注"}, headers=_auth_header())
+
+    con2 = sfa_db.connect(db_path)
+    for deal_id, dv_id in ((deal1, dv1), (deal2, dv2), (deal3, dv3)):
+        row = con2.execute("SELECT status, close_reason FROM deals WHERE id=?", (deal_id,)).fetchone()
+        assert row["status"] == "closed", f"deal {deal_id} not closed"
+        assert row["close_reason"] == "失注", f"deal {deal_id} close_reason wrong: {row['close_reason']}"
+        lead = con2.execute("SELECT id FROM leads WHERE company='L社' AND deal_id IS NULL").fetchone()
+        assert lead is not None, f"deal {deal_id} was not reverted to a lead"
+        assert sfa_db.get_delivery(con2, dv_id)["status"] == "中止", f"delivery for deal {deal_id} not stopped"
+    con2.close()
+    con.close()
+
+
 def test_dev_project_tool_add_via_http(server, db_path):
     """開発案件一覧のモーダルからの追加リンク登録（/tools/add）が実HTTPで保存される。"""
     con = sfa_db.connect(db_path)
