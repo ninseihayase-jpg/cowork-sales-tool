@@ -62,27 +62,90 @@ def test_delivery_title_defaults_to_deal_name(con, acc_id):
 # ---- アサイン集計（見込み/確定・除外・週展開） ----
 
 def test_compute_load_forecast_committed_and_exclusion(con, acc_id):
-    d_prop = _deal(con, acc_id, "提案", name="見込み案件")
+    d_prop = _deal(con, acc_id, "提案", name="見込み(提案中)案件")
+    d_closing = _deal(con, acc_id, "クロージング", name="見込み(クロージング)案件")
     d_won = _deal(con, acc_id, "受注", name="確定案件")
     d_lost = _deal(con, acc_id, "提案", status="closed", name="失注案件")
-    for did in (d_prop, d_won, d_lost):
-        sfa_db.ensure_delivery_on_stage(con, did, "提案")
+    for did in (d_prop, d_closing, d_won, d_lost):
+        sfa_db.ensure_delivery_on_stage(con, did, sfa_db.get_deal(con, did)["stage"])
     dv = {d["deal_id"]: d["id"] for d in sfa_db.list_deliveries(con)}
     W0 = "2026-07-27"  # 月曜
     sfa_db.add_delivery_assignment(con, delivery_id=dv[d_prop], owner="早瀬",
                                    from_week=W0, to_week="2026-08-10", fte_pct=50)
+    sfa_db.add_delivery_assignment(con, delivery_id=dv[d_closing], owner="早瀬",
+                                   from_week=W0, to_week="2026-08-10", fte_pct=30)
     sfa_db.add_delivery_assignment(con, delivery_id=dv[d_won], owner="早瀬",
                                    from_week=W0, to_week="2026-08-03", fte_pct=80)
     sfa_db.add_delivery_assignment(con, delivery_id=dv[d_lost], owner="早瀬",
                                    from_week=W0, to_week="2026-08-03", fte_pct=100)
     load = sfa_db.compute_delivery_load(con, start_week=W0, n_weeks=4)
     cell = load["cells"]["早瀬"][W0]
-    assert cell["actual"]["forecast"] == 50    # 提案案件のみ（失注案件は除外）
+    assert cell["actual"]["proposal"] == 50    # 提案案件のみ（失注案件は除外）
+    assert cell["actual"]["closing"] == 30     # クロージング案件
     assert cell["actual"]["committed"] == 80   # 受注案件
     # billingはfte_billing未指定なら実想定と同値
-    assert cell["billing"]["forecast"] == 50
+    assert cell["billing"]["proposal"] == 50
     # 範囲外の週は0（案件は8/10まで/8/3まで）
     assert "2026-08-17" not in load["cells"]["早瀬"]
+
+
+def test_confidence_auto_derivation():
+    assert sfa_db.delivery_confidence_auto("提案", "open") == "見込み(提案中)"
+    assert sfa_db.delivery_confidence_auto("クロージング", "open") == "見込み(クロージング)"
+    assert sfa_db.delivery_confidence_auto("受注", "open") == "確定"
+    assert sfa_db.delivery_confidence_auto("受注", "closed") == "確定"   # 受注クローズは確定のまま
+    assert sfa_db.delivery_confidence_auto("提案", "closed") == "無効(終了)"   # 失注等
+
+
+def test_confidence_override_takes_priority_over_auto(con, acc_id):
+    did = _deal(con, acc_id, "提案")
+    dv_id = sfa_db.create_delivery(con, deal_id=did, title="D")
+    dv = sfa_db.get_delivery(con, dv_id)
+    assert sfa_db.delivery_confidence_effective(dv) == "見込み(提案中)"   # override無し=自動
+    sfa_db.update_delivery(con, dv_id, confidence_override="確定")
+    dv = sfa_db.get_delivery(con, dv_id)
+    assert sfa_db.delivery_confidence_effective(dv) == "確定"   # 手修正が自動導出を上書き
+    sfa_db.update_delivery(con, dv_id, confidence_override=None)
+    dv = sfa_db.get_delivery(con, dv_id)
+    assert sfa_db.delivery_confidence_effective(dv) == "見込み(提案中)"   # 空に戻すと自動に戻る
+
+
+def test_delivery_is_active_excludes_completed_hold_cancelled_and_invalid(con, acc_id):
+    did = _deal(con, acc_id, "提案")
+    dv_ing = sfa_db.get_delivery(con, sfa_db.create_delivery(con, deal_id=did, status="進行中"))
+    dv_done = sfa_db.get_delivery(con, sfa_db.create_delivery(con, deal_id=did, status="完了"))
+    dv_hold = sfa_db.get_delivery(con, sfa_db.create_delivery(con, deal_id=did, status="保留"))
+    dv_stop = sfa_db.get_delivery(con, sfa_db.create_delivery(con, deal_id=did, status="中止"))
+    assert sfa_db.delivery_is_active(dv_ing) is True
+    assert sfa_db.delivery_is_active(dv_done) is False
+    assert sfa_db.delivery_is_active(dv_hold) is False
+    assert sfa_db.delivery_is_active(dv_stop) is False
+    # 状態=進行中でも、確度が(手修正で)無効(終了)ならactive対象外
+    _id = sfa_db.create_delivery(con, deal_id=did, status="進行中")
+    sfa_db.update_delivery(con, _id, confidence_override="無効(終了)")
+    dv_invalid = sfa_db.get_delivery(con, _id)
+    assert sfa_db.delivery_is_active(dv_invalid) is False
+
+
+def test_compute_load_excludes_completed_hold_cancelled_deliveries(con, acc_id):
+    """状態=完了/保留/中止のDeliveryは、紐づく商談が開いていても稼働集計から除外される。"""
+    d_done = _deal(con, acc_id, "提案", name="完了済み案件")
+    d_hold = _deal(con, acc_id, "提案", name="保留中案件")
+    d_stop = _deal(con, acc_id, "提案", name="中止案件")
+    d_active = _deal(con, acc_id, "提案", name="進行中案件")
+    dv_done = sfa_db.create_delivery(con, deal_id=d_done, status="完了")
+    dv_hold = sfa_db.create_delivery(con, deal_id=d_hold, status="保留")
+    dv_stop = sfa_db.create_delivery(con, deal_id=d_stop, status="中止")
+    dv_active = sfa_db.create_delivery(con, deal_id=d_active, status="進行中")
+    W0 = "2026-07-27"
+    for dv_id in (dv_done, dv_hold, dv_stop, dv_active):
+        sfa_db.add_delivery_assignment(con, delivery_id=dv_id, owner="早瀬",
+                                       from_week=W0, to_week="2026-08-03", fte_pct=40)
+    load = sfa_db.compute_delivery_load(con, start_week=W0, n_weeks=2)
+    cell = load["cells"]["早瀬"][W0]
+    assert cell["actual"]["proposal"] == 40   # 進行中案件のみ
+    assert len(load["items"]) == 1
+    assert load["items"][0]["delivery_id"] == dv_active
 
 
 def test_base_workload_sum_and_upsert(con):

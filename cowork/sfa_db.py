@@ -122,6 +122,40 @@ POINTS_PER_FTE = 20                   # デモ開発点数→FTE%換算の基準
 DELIVERY_TRIGGER_STAGES = ("提案", "クロージング", "受注")
 # ヒートマップ閾値(%)。100%超が常態のため150%も閾値に。定数で調整可。
 DELIVERY_HEAT_THRESHOLDS = {"ok": 70, "full": 100, "over": 150}
+# Deliveryの確度（2026-08-18: 見込みを提案中/クロージングの2段階に分割）。
+# 自動導出=商談のstage/statusから毎回算出。deliveries.confidence_overrideがあればそれを優先（人間の手修正）。
+DELIVERY_CONFIDENCE_LEVELS = ["見込み(提案中)", "見込み(クロージング)", "確定", "無効(終了)"]
+
+
+def delivery_confidence_auto(deal_stage: str | None, deal_status: str | None) -> str:
+    """Deliveryの確度を商談のstage/statusから自動導出する（DELIVERY_CONFIDENCE_LEVELSのいずれか）。
+    confidence_overrideの手修正は考慮しない（呼び出し側でdelivery_confidence_effectiveを使うこと）。"""
+    stage = deal_stage or ""
+    status = deal_status or "open"
+    if status == "closed" and stage != "受注":
+        return "無効(終了)"
+    if stage == "受注":
+        return "確定"
+    if stage == "クロージング":
+        return "見込み(クロージング)"
+    return "見込み(提案中)"
+
+
+def delivery_confidence_effective(dv: dict) -> str:
+    """confidence_override（人間の手修正）があれば優先、無ければ自動導出。
+    dv は deal_stage/deal_status/confidence_override を含む辞書（get_delivery/list_deliveriesの戻り値）。"""
+    override = dv.get("confidence_override")
+    if override in DELIVERY_CONFIDENCE_LEVELS:
+        return override
+    return delivery_confidence_auto(dv.get("deal_stage"), dv.get("deal_status"))
+
+
+def delivery_is_active(dv: dict) -> bool:
+    """状態=進行中、かつ確度≠無効(終了)のDeliveryのみ「稼働中」として稼働計算・KPI集計の対象にする
+    （完了/保留/中止、および確度が無効(終了)＝手修正含む、はいずれも対象外）。"""
+    if (dv.get("status") or "進行中") != "進行中":
+        return False
+    return delivery_confidence_effective(dv) != "無効(終了)"
 
 # 開発案件（商談に紐づく開発テーマの管理）
 DEV_PROJECT_STATUSES = ["開発中", "完成", "中止"]
@@ -794,7 +828,8 @@ CREATE TABLE IF NOT EXISTS dev_coefficient (
 );
 
 -- Delivery（受注後・納品）案件（#75）。デモ開発(dev_projects)とは別系統。商談が「提案」到達で自動起票。
--- 1商談に複数可（deal_id は非UNIQUE）。見込み/確定の確度は紐づく deal.stage から都度導出（専用列は持たない）。
+-- 1商談に複数可（deal_id は非UNIQUE）。確度（見込み(提案中)/見込み(クロージング)/確定/無効(終了)）は
+-- 紐づく deal.stage/status から自動導出するのが既定だが、confidence_override で人間が上書きできる。
 CREATE TABLE IF NOT EXISTS deliveries (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     deal_id     INTEGER NOT NULL,          -- 紐づく商談（非UNIQUE）
@@ -806,6 +841,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
     fee_mode    TEXT DEFAULT 'monthly',    -- 報酬形態: monthly=月額報酬 / total=総額報酬（どちらを入力するか）
     fee_monthly REAL,                      -- 報酬額/月額（万円）
     fee_total   REAL,                      -- 報酬額/総額（万円）。期間の月数で月額と相互換算
+    confidence_override TEXT,              -- 確度の手修正。NULL=自動導出。値ありならDELIVERY_CONFIDENCE_LEVELSのいずれか
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE
@@ -1171,6 +1207,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE deliveries ADD COLUMN fee_monthly REAL")
         if _dv_cols and "fee_total" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN fee_total REAL")
+        # Delivery確度の手修正（自動導出=商談ステージ連動に対する人間の上書き。NULL=自動）。
+        if _dv_cols and "confidence_override" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN confidence_override TEXT")
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -3535,7 +3574,7 @@ def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
 
 def update_delivery(con, delivery_id: int, **fields) -> None:
     allowed = {"title", "start_week", "end_week", "status", "overview",
-               "fee_mode", "fee_monthly", "fee_total"}
+               "fee_mode", "fee_monthly", "fee_total", "confidence_override"}
     sets, args = [], []
     for k, v in fields.items():
         if k in allowed:
@@ -4056,25 +4095,33 @@ def delete_base_workload(con, base_id: int) -> None:
     con.commit()
 
 
+_DELIVERY_CONFIDENCE_BUCKET = {
+    "確定": "committed",
+    "見込み(クロージング)": "closing",
+    "見込み(提案中)": "proposal",
+}   # "無効(終了)" はバケット無し＝集計除外
+
+
 def compute_delivery_load(con, *, start_week: str | None = None,
                           n_weeks: int = DELIVERY_VIEW_WEEKS,
                           internal_only: bool = False) -> dict:
     """全社の Delivery 稼働(FTE%)を メンバー×週 に展開・合算（#75）。
-    確度は紐づく deal.stage から導出: 受注=確定(committed)/提案・クロージング=見込み(forecast)。
-    クローズ済みかつ非受注（失注・リード戻し等）は集計から除外。
-    internal_only=True で 外部メンバー(member_kind='外部') を除外（Hisho稼働予定はこちら）。
-    items にはクリック明細用の各アサイン（案件名・役割・期間・稼働率・確度）を返す。
+    確度（見込み(提案中)/見込み(クロージング)/確定/無効(終了)）は delivery_confidence_effective で
+    導出（自動＝商談stage/statusから、confidence_overrideがあればそれを優先）。
+    確度=無効(終了)、または当該Deliveryのstatus≠進行中（完了/保留/中止）は集計から除外
+    （delivery_is_active）。internal_only=True で 外部メンバー(member_kind='外部') を除外
+    （Hisho稼働予定はこちら）。items にはクリック明細用の各アサイン（案件名・役割・期間・稼働率・確度）を返す。
     デモ開発負荷は別系統(Hisho側で加算)。ここでは delivery と base のみ返す。"""
     start_week = start_week or _monday_of(date.today())
     weeks = _weeks_from(start_week, n_weeks)
     week_end = weeks[-1] if weeks else start_week
-    # owner -> week -> {actual:{committed,forecast}, billing:{committed,forecast}}
+    # owner -> week -> {actual:{committed,closing,proposal}, billing:{committed,closing,proposal}}
     cells: dict = {}
     items: list = []
 
     def _blank():
-        return {"actual": {"committed": 0.0, "forecast": 0.0},
-                "billing": {"committed": 0.0, "forecast": 0.0}}
+        return {"actual": {"committed": 0.0, "closing": 0.0, "proposal": 0.0},
+                "billing": {"committed": 0.0, "closing": 0.0, "proposal": 0.0}}
 
     # 案件ごとの体制(役割)並び順（delivery_form と同じ id 昇順）。クリック内訳をこの順で並べる用。
     _role_order: dict = {}
@@ -4085,19 +4132,22 @@ def compute_delivery_load(con, *, start_week: str | None = None,
 
     for r in con.execute(
         "SELECT da.owner, da.role, da.member_kind, da.from_week, da.to_week, da.fte_pct, da.fte_billing, "
-        "d.stage, d.status, d.deal_name, dv.id AS delivery_id, dv.title AS delivery_title, "
+        "d.stage AS deal_stage, d.status AS deal_status, d.deal_name, "
+        "dv.id AS delivery_id, dv.title AS delivery_title, dv.status AS dv_status, "
+        "dv.confidence_override AS confidence_override, "
         "dv.start_week AS delivery_start, acc.name AS account_name "
         "FROM delivery_assignments da "
         "JOIN deliveries dv ON dv.id=da.delivery_id "
         "JOIN deals d ON d.id=dv.deal_id "
         "LEFT JOIN accounts acc ON acc.id=d.account_id"):
-        stage = r["stage"] or ""
-        status = r["status"] or "open"
-        if status == "closed" and stage != "受注":
-            continue  # 提案でクローズ（失注/リード戻し）は見込みから除外
+        _dv_like = {"status": r["dv_status"], "confidence_override": r["confidence_override"],
+                    "deal_stage": r["deal_stage"], "deal_status": r["deal_status"]}
+        if not delivery_is_active(_dv_like):
+            continue  # 状態≠進行中、または確度=無効(終了)は集計から除外
         if internal_only and (r["member_kind"] or "内部") == "外部":
             continue
-        key = "committed" if stage == "受注" else "forecast"
+        confidence = delivery_confidence_effective(_dv_like)
+        key = _DELIVERY_CONFIDENCE_BUCKET[confidence]
         actual = r["fte_pct"] or 0
         billing = float(r["fte_billing"]) if r["fte_billing"] is not None else actual
         for wk in weeks:
@@ -4110,7 +4160,7 @@ def compute_delivery_load(con, *, start_week: str | None = None,
             items.append({
                 "owner": r["owner"], "role": r["role"] or "", "member_kind": r["member_kind"] or "内部",
                 "from_week": r["from_week"], "to_week": r["to_week"],
-                "actual": actual, "billing": billing, "committed": (stage == "受注"),
+                "actual": actual, "billing": billing, "confidence": key,
                 "deal_name": r["deal_name"] or "", "delivery_title": r["delivery_title"] or "",
                 "account_name": r["account_name"] or "",
                 "delivery_id": r["delivery_id"], "delivery_start": r["delivery_start"] or "",

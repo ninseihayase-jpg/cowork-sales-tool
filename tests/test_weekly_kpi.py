@@ -172,15 +172,17 @@ def test_delivery_dedup_amount(con, acc):
 
 
 def test_delivery_status_fallback_to_deal(con, acc):
-    # status未設定(NULL)のdeliveryは紐づくdealのopen/closedで判定。
+    # status未設定(NULL)のdeliveryはDBのDEFAULT '進行中'と同じ解釈で既定active。
+    # 除外されるのは確度が無効(終了)＝クローズ済みかつ非受注（失注等）の場合のみ
+    # （sfa_db.delivery_is_active）。受注してクローズ済み（成約後の納品継続）はactive対象のまま。
     # create_delivery は空statusを'進行中'に補正するため、NULLは直接INSERTで用意する。
-    d_open = _deal(con, acc, stage="受注", status="open", value_recurring=10)
-    d_closed = _deal(con, acc, stage="受注", status="closed", value_recurring=10)
-    con.execute("INSERT INTO deliveries(deal_id, status) VALUES(?, NULL)", (d_open,))
-    con.execute("INSERT INTO deliveries(deal_id, status) VALUES(?, NULL)", (d_closed,))
+    d_won_closed = _deal(con, acc, stage="受注", status="closed", value_recurring=10)
+    d_lost_closed = _deal(con, acc, stage="提案", status="closed", value_recurring=10)
+    con.execute("INSERT INTO deliveries(deal_id, status) VALUES(?, NULL)", (d_won_closed,))
+    con.execute("INSERT INTO deliveries(deal_id, status) VALUES(?, NULL)", (d_lost_closed,))
     con.commit()
     G = weekly_report.compute_kpi_pack(con, today=TODAY)["G"]
-    assert G["active_count"] == 1        # openのみactive
+    assert G["active_count"] == 1        # 受注クローズのみactive（失注クローズは無効(終了)で除外）
     assert G["recurring"] == 10
 
 

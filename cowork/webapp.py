@@ -1213,13 +1213,19 @@ def _snap_monday(s) -> str:
         return ""
 
 
-def _delivery_confidence(deal_stage: str, deal_status: str) -> tuple[str, str]:
-    """(ラベル, 色) を返す。受注=確定/提案・クロージング=見込み/クローズ非受注=無効。"""
-    if deal_status == "closed" and deal_stage != "受注":
-        return ("無効(終了)", "#9ca3af")
-    if deal_stage == "受注":
-        return ("確定", "#047857")
-    return ("見込み", "#b45309")
+_DELIVERY_CONFIDENCE_COLORS = {
+    "見込み(提案中)": "#b45309",
+    "見込み(クロージング)": "#c2410c",
+    "確定": "#047857",
+    "無効(終了)": "#9ca3af",
+}
+
+
+def _delivery_confidence(deal_stage: str, deal_status: str, override: str | None = None) -> tuple[str, str]:
+    """(ラベル, 色) を返す。受注=確定/クロージング=見込み(クロージング)/提案=見込み(提案中)/
+    クローズ非受注=無効(終了)。override（deliveries.confidence_override）があれば自動導出より優先。"""
+    label = override if override in sfa_db.DELIVERY_CONFIDENCE_LEVELS else sfa_db.delivery_confidence_auto(deal_stage, deal_status)
+    return (label, _DELIVERY_CONFIDENCE_COLORS.get(label, "#6b7280"))
 
 
 def _heat_style(pct: float) -> str:
@@ -1562,7 +1568,7 @@ def deliveries_page(con) -> str:
     rows = ""
     for dv in sfa_db.list_deliveries(con):
         _id = dv["id"]
-        lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
+        lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open", dv.get("confidence_override"))
         blocks = sfa_db.list_delivery_assignments(con, _id)
         who = "、".join(sorted({b["owner"] for b in blocks})) or "—"
         # 総アサイン工数と同じロジック（期間平均の合計稼働率）: 実想定＋純粋請求（請求0%は「-」）。
@@ -1631,7 +1637,7 @@ def deliveries_page(con) -> str:
         <input type="text" id="dvSearch" placeholder="🔍 案件名・クライアントで検索" style="font-size:12px;padding:4px 8px;width:260px" oninput="_deb('filterDeliveries')">
         <select id="dvStatusF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全状態</option>{_st_filter}</select>
         <select id="dvConfF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全確度</option>
-          <option value="確定">確定</option><option value="見込み">見込み</option><option value="無効(終了)">無効(終了)</option></select>
+          {"".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in sfa_db.DELIVERY_CONFIDENCE_LEVELS)}</select>
         <span id="dvCount" class="muted" style="font-size:12px"></span>
         <a class="btn sec" href="/deliveries/export.xlsx" style="font-size:12px;margin-left:auto">📥 xlsx出力（全件・全テーブル）</a>
       </div>
@@ -1720,8 +1726,14 @@ def delivery_form(con, delivery_id: int) -> str:
     dv = sfa_db.get_delivery(con, delivery_id)
     if not dv:
         return '<div class="card"><p>Deliveryが見つかりません。<a href="/deliveries">← 一覧</a></p></div>'
-    lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
+    lbl, col = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open", dv.get("confidence_override"))
     status_opts = _opt(sfa_db.DELIVERY_STATUSES, dv.get("status") or "進行中")
+    # 確度の手修正（自動＝商談ステージ連動に対する上書き。空選択=自動に戻す）。
+    _auto_conf = sfa_db.delivery_confidence_auto(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
+    _conf_override = dv.get("confidence_override") or ""
+    conf_opts = f'<option value=""{" selected" if not _conf_override else ""}>自動（現在: {_esc(_auto_conf)}）</option>' + "".join(
+        f'<option value="{_esc(c)}"{" selected" if _conf_override == c else ""}>{_esc(c)}</option>'
+        for c in sfa_db.DELIVERY_CONFIDENCE_LEVELS)
     # 総アサイン工数(%/月)。実想定=稼働負荷表示用。請求ベース(請求未入力行は実想定)=平均単価の分母。
     _assign_effort = sfa_db.delivery_total_assign_effort(con, delivery_id)
     _assign_effort_bill = sfa_db.delivery_total_assign_effort(con, delivery_id, use_billing=True)
@@ -1831,6 +1843,7 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd();dvFeeRecalc()"></label>
               <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
+              <label style="font-size:12px">確度<br><select name="confidence_override">{conf_opts}</select></label>
               <button class="btn" style="font-size:12px">保存</button>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
@@ -3186,7 +3199,7 @@ def weekly_numbers_audit_page(con, as_of=None, exh_filter=None) -> str:
          for r in G["rows"]])
     sec_G = _audit_section(
         "デリバリー（進行中）",
-        "active=delivery.status='進行中'（未設定なら紐づく商談がopen）。進行中案件数=activeなdeliveryの商談(deal_id)ユニーク数。"
+        "active=delivery.status='進行中'かつ確度≠無効(終了)（sfa_db.delivery_is_active）。進行中案件数=activeなdeliveryの商談(deal_id)ユニーク数。"
         "継続月額/単発総額は商談(deal_id)単位で1回だけ計上（1商談を複数deliveryに分割しても按分しない）。",
         f'進行中案件 <b>{G["active_count"]}</b>件・継続月額計 <b>{G["recurring"]:,}</b>万/月・'
         f'単発総額計 <b>{G["lumpsum"]:,}</b>万',
@@ -13902,6 +13915,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _months = sfa_db.delivery_month_count(_sw, _ew)
                     _fee_monthly, _fee_total = sfa_db.compute_delivery_fee(
                         _fee_mode, f.get("fee_monthly", ""), f.get("fee_total", ""), _months)
+                    _conf_ov = (f.get("confidence_override", "") or "").strip()
+                    _conf_ov = _conf_ov if _conf_ov in sfa_db.DELIVERY_CONFIDENCE_LEVELS else None
                     sfa_db.update_delivery(
                         con, _dvid,
                         title=(f.get("title", "") or "").strip(),
@@ -13911,7 +13926,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         overview=(f.get("overview", "") or "").strip(),
                         fee_mode=_fee_mode,
                         fee_monthly=_fee_monthly,
-                        fee_total=_fee_total)
+                        fee_total=_fee_total,
+                        confidence_override=_conf_ov)
                     # 期間の変更に合わせて各アサインの週も連動スライド（開始移動＝全員スライド／週数延長＝全員の終了延長）
                     sfa_db.reschedule_delivery_assignments(
                         con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"), _sw, _ew)

@@ -825,22 +825,14 @@ def _kpi_outcome(rows: list[dict]) -> dict:
 
 def _kpi_delivery(con) -> dict:
     """G. デリバリー（進行中・ストック）。
-    active = deliveries.status='進行中'（未設定なら紐づくdealがopen）。
+    active = sfa_db.delivery_is_active()（status='進行中'、かつ確度≠無効(終了)。手修正含む）。
     金額（継続月額/単発総額）は商談(deal_id)単位で1回だけ計上する（1商談を複数deliveryに
     分割しても按分せず二重計上しない）。active_count は active deliveryの deal_id ユニーク数。"""
     out_rows = []
     seen = set()
     recurring = lumpsum = 0.0
     for dv in sfa_db.list_deliveries(con):
-        st = (dv.get("status") or "").strip()
-        if st == "進行中":
-            active = True
-        elif st == "":
-            ds = dv.get("deal_status")
-            active = (ds is None or ds == "open")
-        else:
-            active = False
-        if not active:
+        if not sfa_db.delivery_is_active(dv):
             continue
         did = dv.get("deal_id")
         first = did not in seen
