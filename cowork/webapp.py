@@ -9485,14 +9485,14 @@ def intake_inbox_page(con) -> str:
                 + _cand_html
                 + f'<form method="post" action="/intake-inbox/{t["id"]}/assign" '
                   f'style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px" '
-                  f'onsubmit="var b=this.querySelector(\'button[type=submit]\');setTimeout(function(){{if(b){{b.disabled=true;b.textContent=\'整形中…\';}}}},0);">'
+                  f'onsubmit="var b=this.querySelector(\'button[type=submit]\');setTimeout(function(){{if(b){{b.disabled=true;b.textContent=\'処理中…\';}}}},0);">'
                   f'<select name="ttype" onchange="assignFilter(this.form)" style="width:auto">'
                   f'<option value="">種別</option><option value="deal">商談</option><option value="issue">論点</option></select>'
                   f'<input type="text" class="assign-q" placeholder="🔍 会社/案件/論点で絞り込み" '
                   f'oninput="assignFilter(this.form)" style="width:auto;max-width:220px">'
                   f'<select name="target" required style="max-width:360px">'
                   f'<option value="">割り当て先を選択…</option>{_tgt_opts}</select>'
-                  f'<button class="btn" type="submit">この会議を割り当てて整形</button>'
+                  f'<button class="btn" type="submit">この会議を割り当てる</button>'
                   f'<a class="btn sec" href="/intake-transcript/{t["id"]}/view" target="_blank" style="font-size:12px">本文</a>'
                   f'</form>'
                   f'<form method="post" action="/intake-transcript/{t["id"]}/delete" style="margin:6px 0 0" '
@@ -9509,8 +9509,10 @@ def intake_inbox_page(con) -> str:
     <style>.cand-btn.on{{background:#eff6ff;border-color:#60a5fa;color:#1d4ed8;font-weight:600}}</style>
     <div class="card">
       <h2 style="margin-top:0">📥 取り込みインボックス（自動連携）</h2>
-      <p class="muted" style="font-size:13px">Jamie/Zoom等から自動受信した会議の文字起こしです。
-      内容を確認し、<b>商談または論点へ割り当て</b>るとAI整形の確認画面へ進みます（割り当てないと確定されません）。</p>
+      <p class="muted" style="font-size:13px">Jamie/Zoom等から自動受信した会議の文字起こしです。内容を確認し、
+      <b>商談または論点へ割り当て</b>てください（割り当てないと確定されません）。
+      商談へ割り当てると、まず<b>記録方法（顧客面談/社内議論）や取込オプションを選ぶ画面</b>に進み、
+      そこでAI整形を実行します。論点へ割り当てるとAI整形の確認画面へ直接進みます。</p>
       {_cfg_warn}
       {rows}
     </div>
