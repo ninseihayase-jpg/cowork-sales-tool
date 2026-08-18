@@ -1576,14 +1576,20 @@ def list_deals(con, status: str | None = "open", owner: str | None = None,
 
 
 def list_deals_by_date(con, date: str, owner: str | None = None) -> list[dict]:
-    """指定日が次回MS日付、または活動履歴の実施日のいずれかに一致する商談を返す。
-    過去の振り返り用途のためクローズ済み商談も含める（statusで絞らない）。"""
+    """指定日が次回MS日付、活動履歴の実施日、または（キャッシュ上の「次回MS」以外も含めた）
+    未完了の個別MS日付のいずれかに一致する商談を返す。1商談に複数MS（#48）がある場合、
+    deals.next_milestone_dateキャッシュは「未完了で最も早い1件」しか反映しないため、
+    2件目以降のMS日をdeal_milestonesテーブル自体からも見て拾う（そうしないと2件目以降のMS日で
+    この画面を検索しても該当商談が出てこない）。過去の振り返り用途のためクローズ済み商談も
+    含める（statusで絞らない）。"""
     q = """SELECT DISTINCT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d
            LEFT JOIN accounts a ON a.id = d.account_id
            WHERE (d.next_milestone_date = ?
-                  OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id AND act.occurred_on = ?))"""
-    params: list = [date, date]
+                  OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id AND act.occurred_on = ?)
+                  OR EXISTS (SELECT 1 FROM deal_milestones dm
+                             WHERE dm.deal_id = d.id AND dm.done = 0 AND dm.ms_date = ?))"""
+    params: list = [date, date, date]
     if owner:
         q += " AND (d.owner = ? OR d.sub_owner = ?)"
         params.append(owner)
@@ -1593,15 +1599,20 @@ def list_deals_by_date(con, date: str, owner: str | None = None) -> list[dict]:
 
 
 def list_deals_by_week(con, week_start: str, week_end: str, owner: str | None = None) -> list[dict]:
-    """週(week_start〜week_end, 両端含む)に次回MS日付 または 活動実施日 が含まれる商談を返す。
-    過去の振り返り用途のためクローズ済み商談も含める（statusで絞らない）。"""
+    """週(week_start〜week_end, 両端含む)に次回MS日付、活動実施日、または（キャッシュ上の
+    「次回MS」以外も含めた）未完了の個別MS日付が含まれる商談を返す（list_deals_by_dateと同じ理由で
+    deal_milestonesテーブル自体も見る。#48）。過去の振り返り用途のためクローズ済み商談も
+    含める（statusで絞らない）。"""
     q = """SELECT DISTINCT d.*, a.name AS account_name, a.industry, a.company_size
            FROM deals d
            LEFT JOIN accounts a ON a.id = d.account_id
            WHERE ((d.next_milestone_date BETWEEN ? AND ?)
                   OR EXISTS (SELECT 1 FROM activities act WHERE act.deal_id = d.id
-                             AND act.occurred_on BETWEEN ? AND ?))"""
-    params: list = [week_start, week_end, week_start, week_end]
+                             AND act.occurred_on BETWEEN ? AND ?)
+                  OR EXISTS (SELECT 1 FROM deal_milestones dm
+                             WHERE dm.deal_id = d.id AND dm.done = 0
+                             AND dm.ms_date BETWEEN ? AND ?))"""
+    params: list = [week_start, week_end, week_start, week_end, week_start, week_end]
     if owner:
         q += " AND (d.owner = ? OR d.sub_owner = ?)"
         params.append(owner)

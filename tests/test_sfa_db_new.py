@@ -195,6 +195,34 @@ def test_list_deals_by_week(con, acc_id):
         con, "2026-07-13", "2026-07-19", owner="早瀬")} == {"週内月", "週内日"}
 
 
+def test_list_deals_by_date_and_week_find_second_ms_beyond_cache(con, acc_id):
+    """1商談に複数MS(#48)があるとき、deals.next_milestone_dateキャッシュが反映するのは
+    「未完了で最も早い1件」だけ。2件目以降のMS日で検索しても、deal_milestonesテーブル自体を
+    見ないと該当商談を見つけられなかった不具合（マルハン案件で発覚）の回帰テスト。"""
+    did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="マルハン", stage="クロージング", status="open")
+    # 2件のMS: 08-17(早い方=キャッシュに反映)・08-18(2件目)
+    sfa_db.add_deal_milestone(con, did, date="2026-08-17", label="決裁用提案資料作成", ms_type="タスク")
+    sfa_db.add_deal_milestone(con, did, date="2026-08-18", label="PoC開始前詰めのMTG", ms_type="アポ")
+    con.commit()
+
+    cache = sfa_db.get_deal(con, did)
+    assert cache["next_milestone_date"] == "2026-08-17"   # キャッシュは早い方のみ
+
+    # 08-17（キャッシュ経由）・08-18（2件目、deal_milestones経由）どちらでも見つかること
+    assert {d["deal_name"] for d in sfa_db.list_deals_by_date(con, "2026-08-17")} == {"マルハン"}
+    assert {d["deal_name"] for d in sfa_db.list_deals_by_date(con, "2026-08-18")} == {"マルハン"}
+    assert {d["deal_name"] for d in sfa_db.list_deals_by_date(con, "2026-08-19")} == set()
+
+    assert {d["deal_name"] for d in sfa_db.list_deals_by_week(con, "2026-08-17", "2026-08-23")} == {"マルハン"}
+    assert {d["deal_name"] for d in sfa_db.list_deals_by_week(con, "2026-08-24", "2026-08-30")} == set()
+
+    # 完了済みのMSは対象外（完了扱いなので該当日検索には出てこない）
+    ms = sfa_db.list_deal_milestones(con, did)
+    done_ms_id = next(m["id"] for m in ms if m["ms_date"] == "2026-08-18")
+    sfa_db.update_deal_milestone(con, done_ms_id, "done", True)
+    assert {d["deal_name"] for d in sfa_db.list_deals_by_date(con, "2026-08-18")} == set()
+
+
 # ---- 週次スナップショット / 数字パック ----
 
 def test_weekly_snapshot_roundtrip(con):
