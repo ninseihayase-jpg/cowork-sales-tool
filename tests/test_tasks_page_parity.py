@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -64,12 +64,17 @@ def test_recurring_duplication_already_works_for_normal_tasks(con):
 
 
 def test_urgency_filter_has_five_buckets_like_desk(con):
-    today = date(2026, 8, 19)
-    overdue = sfa_db.upsert_task(con, title="超過タスク", due_date="2026-08-18")
-    today_t = sfa_db.upsert_task(con, title="今日タスク", due_date="2026-08-19")
-    tmr_t = sfa_db.upsert_task(con, title="明日タスク", due_date="2026-08-20")
-    nodue_t = sfa_db.upsert_task(con, title="期限なしタスク")
-    hold_t = sfa_db.upsert_task(con, title="保留タスク", due_date="2026-08-18", status="保留")
+    # 実行日を基準にした相対日付で組む（tasks_pageは内部で_today_jst()＝実行時の実日付を使うため、
+    # ハードコードした日付だと日をまたいだ瞬間にoverdue/today/tomorrowの分類がズレて壊れる）。
+    today = webapp._today_jst()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    today_s = today.isoformat()
+    tomorrow = (today + timedelta(days=1)).isoformat()
+    sfa_db.upsert_task(con, title="超過タスク", due_date=yesterday)
+    sfa_db.upsert_task(con, title="今日タスク", due_date=today_s)
+    sfa_db.upsert_task(con, title="明日タスク", due_date=tomorrow)
+    sfa_db.upsert_task(con, title="期限なしタスク")
+    sfa_db.upsert_task(con, title="保留タスク", due_date=yesterday, status="保留")
 
     def titles(urgency):
         html = webapp.tasks_page(con, urgency=urgency)

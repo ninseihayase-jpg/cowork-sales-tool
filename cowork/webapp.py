@@ -5542,7 +5542,7 @@ _MS_PANEL_BLOCK = """
   max-height:70vh;overflow:auto;font-size:12px}
 #dealMsPanel h4{margin:0 0 8px;font-size:13px;display:flex;justify-content:space-between;align-items:center}
 #dealMsPanel .msp-row,#dealMsPanel .msp-add{display:flex;gap:5px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
-#dealMsPanel input[type=date]{font-size:12px;padding:2px 4px}
+#dealMsPanel input[type=date]{font-size:12px;padding:2px 4px;width:auto}
 #dealMsPanel input[type=text]{font-size:12px;padding:2px 4px;flex:1;min-width:110px}
 #dealMsPanel select{font-size:12px;padding:2px 4px;width:auto}
 #dealMsPanel .msp-add{border-bottom:1px dashed #cbd5e1;padding-bottom:10px;margin-bottom:10px;background:#f8fafc;border-radius:6px;padding:8px}
@@ -5578,8 +5578,8 @@ _MS_PANEL_BLOCK = """
     var rows=mss.map(function(m){
       return '<div class="msp-row">'
         +'<input type="date" data-mid="'+m.id+'" data-mf="date" value="'+esc(m.date)+'">'
-        +'<input type="text" data-mid="'+m.id+'" data-mf="label" value="'+esc(m.label)+'" placeholder="ラベル">'
         +'<select data-mid="'+m.id+'" data-mf="type">'+typeOpts(m.type)+'</select>'
+        +'<input type="text" data-mid="'+m.id+'" data-mf="label" value="'+esc(m.label)+'" placeholder="ラベル">'
         +'<label style="font-size:11px"><input type="checkbox" data-mid="'+m.id+'" data-mf="done"'+(m.done?' checked':'')+'>完了</label>'
         +'<button type="button" class="msp-del" data-del="'+m.id+'">×</button>'
         +'</div>';
@@ -5587,8 +5587,8 @@ _MS_PANEL_BLOCK = """
     if(!rows) rows='<p class="msp-hint">MSはまだありません。上の欄で追加してください。</p>';
     var add='<div class="msp-add">'
       +'<input type="date" id="mspNewDate">'
-      +'<input type="text" id="mspNewLabel" placeholder="ラベル（例：初回アポ）">'
       +'<select id="mspNewType">'+typeOpts('')+'</select>'
+      +'<input type="text" id="mspNewLabel" placeholder="ラベル（例：初回アポ）">'
       +'<button type="button" class="msp-add-btn" data-add="1">＋追加</button></div>';
     p.innerHTML='<h4>次回マイルストーン <span data-close="1" style="cursor:pointer;color:#94a3b8">✕</span></h4>'
       +'<p class="msp-hint">新規入力は一番上。下ほど古い日付で、最下段の最も早い日付が「次回MS」として集計されます。変更は即保存。</p>'
@@ -5942,17 +5942,17 @@ def _ms_type_options(selected: str = "") -> str:
 
 
 def _ms_row_html(ms: dict) -> str:
-    """個別商談フォームの次回MS 1行分（日付/ラベル/種別/完了/削除）。"""
+    """個別商談フォームの次回MS 1行分（日付/種別/ラベル/完了/削除）。"""
     d = _esc(ms.get("ms_date") or "")
     lb = _esc(ms.get("ms_label") or "")
     tp = ms.get("ms_type") or ""
     done = 1 if ms.get("done") else 0
     return (
         '<div class="ms-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap">'
-        f'<input type="date" name="ms_date[]" value="{d}" style="font-size:13px">'
+        f'<input type="date" name="ms_date[]" value="{d}" style="width:auto;font-size:13px">'
+        f'<select name="ms_type[]" style="font-size:13px;width:auto">{_ms_type_options(tp)}</select>'
         f'<input type="text" name="ms_label[]" value="{lb}" placeholder="ラベル（例：初回アポ）" '
         'style="flex:1;min-width:150px;font-size:13px">'
-        f'<select name="ms_type[]" style="font-size:13px;width:auto">{_ms_type_options(tp)}</select>'
         '<span style="font-size:12px;display:inline-flex;align-items:center;gap:3px">'
         f'<input type="checkbox" class="ms-done-chk"{" checked" if done else ""} '
         "onchange=\"this.parentElement.querySelector('input[type=hidden]').value=this.checked?'1':'0'\">"
