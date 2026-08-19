@@ -1,10 +1,13 @@
 """#98: Jamie文字起こしの商談識別をSlackに移設する運用の回帰テスト。
 
-設計(docs/hearing-ai/DESIGN.md §10)の3本柱を検証する:
-1. Jamie webhook到着時、商談候補があればSlackに候補ボタンを投稿する（識別①）。
-   候補が無い（＝論点/内部議論など）場合は投稿せず、Web `/intake-inbox` に委ねる。
+設計(docs/hearing-ai/DESIGN.md §10、2026-08-19改訂)の3本柱を検証する:
+1. Jamie webhook到着時、候補の有無に関わらず個人DM（JAMIE_CANDIDATE_DM_OWNER）に
+   「候補ボタン(最大5)＋対象(候補以外)＋対象外(割当不要)」を投稿する（識別①）。
+   候補0件でも投稿する（以前は候補0件なら投稿自体をスキップしていたが、それが見逃しの
+   温床だったため撤廃）。
 2. Slack上のボタン操作で識別・突合が完結する
-   （割当→既存活動の有無チェック→無ければ確定時に統合、あれば追記提案→追記）。
+   （候補割当→既存活動の有無チェック→無ければWeb取込リンクを提示／あれば追記提案→追記。
+   対象(候補以外)→Web割当画面へのリンク。対象外(割当不要)→完了扱い(status='not_needed')）。
 3. `@NegoCollection`確定（apply_to_db）が、割当済み・未消化のJamie全文を
    自動で本文に採用し、Slackの入力を強調として追記する（Jamie先攻ケース）。
 """
@@ -33,13 +36,13 @@ def _fake_poster(store):
     return _post
 
 
-def test_no_candidate_skips_slack_post(monkeypatch):
-    """論点/内部議論など、商談名に一致しない文字起こしはSlackに投稿されない。"""
+def test_no_candidate_still_posts_with_escape_buttons_only(monkeypatch):
+    """論点/内部議論など、商談名に一致しない文字起こしでも個人DMには投稿する
+    （2026-08-19改訂：候補0件でも通知し、「対象(候補以外)」「対象外(割当不要)」のみ出す）。"""
     d, con = _fresh()
     try:
         store = {}
         monkeypatch.setattr(slack_bot, "_slack_post", _fake_poster(store))
-        monkeypatch.setattr(slack_bot, "SALES_CHANNEL_ID", "C0AT55W40ET")
         sfa_db.upsert_deal(con, account_id=sfa_db.upsert_account(con, name="ソラスト"),
                            deal_name="成果報酬コスト削減", stage="提案")
         iid = sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="x1",
@@ -50,23 +53,25 @@ def test_no_candidate_skips_slack_post(monkeypatch):
                                          sfa_db.list_deals(con, status="open"), [])
         assert cands == []
         r = slack_bot.post_jamie_candidate_prompt(
-            con, inbox_id=iid, title="社内定例:調達方針すり合わせ", occurred_on="2026-08-15", candidates=cands)
-        assert r is None
-        assert not store  # 投稿されていない
-        # Webのinboxにはそのまま残る
+            con, inbox_id=iid, title="社内定例:調達方針すり合わせ", occurred_on="2026-08-15",
+            candidates=cands, channel="D0TESTDM")
+        assert r == "100.200"
+        blocks_json = json.dumps(store["kwargs"]["blocks"])
+        assert "jamie_pick_deal" not in blocks_json
+        assert "jamie_not_candidate" in blocks_json and "jamie_skip" in blocks_json
+        # Webのinboxにはそのまま残る（まだ割当も除外もされていない）
         assert sfa_db.count_inbox_transcripts(con) == 1
     finally:
         con.close()
         shutil.rmtree(d, ignore_errors=True)
 
 
-def test_candidate_match_posts_buttons_with_skip_option(monkeypatch):
-    """商談名に一致する場合はSlackに候補＋「対象外」ボタンを投稿する。"""
+def test_candidate_match_posts_three_button_types(monkeypatch):
+    """商談名に一致する場合、候補ボタン＋「対象(候補以外)」＋「対象外(割当不要)」の3種を投稿する。"""
     d, con = _fresh()
     try:
         store = {}
         monkeypatch.setattr(slack_bot, "_slack_post", _fake_poster(store))
-        monkeypatch.setattr(slack_bot, "SALES_CHANNEL_ID", "C0AT55W40ET")
         acc = sfa_db.upsert_account(con, name="ソラスト")
         did = sfa_db.upsert_deal(con, account_id=acc, deal_name="成果報酬コスト削減", stage="提案")
         iid = sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="x2",
@@ -76,26 +81,33 @@ def test_candidate_match_posts_buttons_with_skip_option(monkeypatch):
                                          sfa_db.list_deals(con, status="open"), [])
         assert cands and cands[0][0] == f"deal:{did}"
         ts = slack_bot.post_jamie_candidate_prompt(
-            con, inbox_id=iid, title="ソラスト 成果報酬コスト削減 定例", occurred_on="2026-08-15", candidates=cands)
+            con, inbox_id=iid, title="ソラスト 成果報酬コスト削減 定例", occurred_on="2026-08-15",
+            candidates=cands, channel="D0TESTDM")
         assert ts == "100.200"
         blocks_json = json.dumps(store["kwargs"]["blocks"])
-        assert "jamie_pick_deal" in blocks_json and "jamie_skip" in blocks_json
+        assert "jamie_pick_deal" in blocks_json
+        assert "jamie_not_candidate" in blocks_json
+        assert "jamie_skip" in blocks_json
         assert f"{iid}:{did}" in blocks_json
     finally:
         con.close()
         shutil.rmtree(d, ignore_errors=True)
 
 
-def test_candidate_prompt_channel_override_bypasses_sales_channel(monkeypatch):
-    """channel引数を渡すと、SALES_CHANNEL_ID未設定でも指定チャネル（DM等）へ投稿できる
+def test_candidate_prompt_channel_override_bypasses_dm_resolution(monkeypatch):
+    """channel引数を渡すと、DM解決（Slack API呼び出し）を経由せず指定チャネルへ投稿できる
     （#98動作確認プレビュー用: scripts/send_jamie_candidate_dm_preview.py が使う）。"""
     d, con = _fresh()
     try:
         store = {}
         monkeypatch.setattr(slack_bot, "_slack_post", _fake_poster(store))
-        monkeypatch.setattr(slack_bot, "SALES_CHANNEL_ID", "")   # 未設定でもchannel指定で投稿できること
+
+        def _fail_if_called():
+            raise AssertionError("channelを明示指定した場合はDM解決を呼ばないはず")
+        monkeypatch.setattr(slack_bot, "_resolve_jamie_dm_channel", _fail_if_called)
+
         acc = sfa_db.upsert_account(con, name="ソラスト")
-        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="成果報酬コスト削減", stage="提案")
+        sfa_db.upsert_deal(con, account_id=acc, deal_name="成果報酬コスト削減", stage="提案")
         cands = webapp._inbox_candidates("ソラスト 成果報酬コスト削減 定例", [],
                                          sfa_db.list_deals(con, status="open"), [])
         ts = slack_bot.post_jamie_candidate_prompt(
@@ -106,6 +118,30 @@ def test_candidate_prompt_channel_override_bypasses_sales_channel(monkeypatch):
     finally:
         con.close()
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_resolve_jamie_dm_channel_success(monkeypatch):
+    """_resolve_jamie_dm_channel: owner_slack_map経由でuser_id解決→conversations.openでDM取得。"""
+    from cowork import slack_tasks
+
+    def _fake_slack_get(method, params, token=None):
+        assert method == "users.lookupByEmail"
+        return {"ok": True, "user": {"id": "U123"}}
+    monkeypatch.setattr(slack_tasks, "_slack_get", _fake_slack_get)
+
+    def _fake_slack_post(method, token=None, **kwargs):
+        assert method == "conversations.open" and kwargs.get("users") == "U123"
+        return {"ok": True, "channel": {"id": "D0REAL"}}
+    monkeypatch.setattr(slack_bot, "_slack_post", _fake_slack_post)
+
+    ch = slack_bot._resolve_jamie_dm_channel()
+    assert ch == "D0REAL"
+
+
+def test_resolve_jamie_dm_channel_user_not_found_returns_none(monkeypatch):
+    from cowork import slack_tasks
+    monkeypatch.setattr(slack_tasks, "_slack_get", lambda *a, **k: {"ok": False})
+    assert slack_bot._resolve_jamie_dm_channel() is None
 
 
 def test_pick_deal_without_existing_activity_just_assigns(monkeypatch):
@@ -124,7 +160,50 @@ def test_pick_deal_without_existing_activity_just_assigns(monkeypatch):
             "channel": {"id": "C1"}, "message": {"ts": "1.1"}})
         t = sfa_db.get_intake_transcript(con, iid)
         assert t["status"] == "assigned" and t["kind"] == "deal" and t["entity_id"] == did
-        assert "確定する際にJamie全文を取り込みます" in store["kwargs"]["text"]
+        assert "割り当てました" in store["kwargs"]["text"]
+        assert f"/hearing/intake?deal={did}&inbox_id={iid}" in store["kwargs"]["text"]
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_pick_not_candidate_gives_web_inbox_link_without_assigning(monkeypatch):
+    """「対象(候補以外)」: 割当は行わず、Web取り込みインボックスへのリンクだけ提示する。"""
+    d, con = _fresh()
+    try:
+        store = {}
+        monkeypatch.setattr(slack_bot, "_slack_post", _fake_poster(store))
+        iid = sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="xnc",
+                                          title="タイトル一致なし定例", occurred_on="2026-08-15",
+                                          transcript="本文", attendees_json="[]")
+        slack_bot.handle_interactive(con, {
+            "actions": [{"action_id": "jamie_not_candidate", "value": str(iid)}],
+            "channel": {"id": "C1"}, "message": {"ts": "1.1"}})
+        t = sfa_db.get_intake_transcript(con, iid)
+        assert t["status"] == "inbox"   # 割当も除外もされていない
+        assert f"/intake-inbox#inbox-{iid}" in store["kwargs"]["text"]
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_skip_marks_not_needed_and_ends(monkeypatch):
+    """「対象外(割当不要)」: status='not_needed'にして完了扱いにする（見逃し検知/Web一覧からも除外）。"""
+    d, con = _fresh()
+    try:
+        store = {}
+        monkeypatch.setattr(slack_bot, "_slack_post", _fake_poster(store))
+        iid = sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="xskip",
+                                          title="社内定例", occurred_on="2026-08-15",
+                                          transcript="本文", attendees_json="[]")
+        slack_bot.handle_interactive(con, {
+            "actions": [{"action_id": "jamie_skip", "value": str(iid)}],
+            "channel": {"id": "C1"}, "message": {"ts": "1.1"}})
+        t = sfa_db.get_intake_transcript(con, iid)
+        assert t["status"] == "not_needed"
+        assert "対象外" in store["kwargs"]["text"]
+        # Webの取り込みインボックス一覧(status='inbox'限定)からも消える
+        assert sfa_db.count_inbox_transcripts(con) == 0
     finally:
         con.close()
         shutil.rmtree(d, ignore_errors=True)
@@ -239,18 +318,19 @@ def test_apply_to_db_without_jamie_transcript_unaffected():
         shutil.rmtree(d, ignore_errors=True)
 
 
-def test_post_jamie_slack_candidates_helper_noop_without_candidates(monkeypatch):
-    """webapp._post_jamie_slack_candidates: 候補が無ければslack_bot側を一切呼ばない。"""
+def test_post_jamie_slack_candidates_helper_calls_even_without_candidates(monkeypatch):
+    """webapp._post_jamie_slack_candidates: 候補が0件でもslack_bot側を呼ぶ（2026-08-19改訂。
+    以前は候補0件ならスキップしていたが、それが見逃しの温床だったため撤廃）。"""
     d, con = _fresh()
     try:
-        called = {"n": 0}
+        seen = {}
 
-        def _fail_if_called(*a, **kw):
-            called["n"] += 1
-            return None
-        monkeypatch.setattr(slack_bot, "post_jamie_candidate_prompt", _fail_if_called)
+        def _capture(con_, *, inbox_id, title, occurred_on, candidates):
+            seen.update(inbox_id=inbox_id, candidates=candidates)
+            return "ts"
+        monkeypatch.setattr(slack_bot, "post_jamie_candidate_prompt", _capture)
         webapp._post_jamie_slack_candidates(con, inbox_id=1, title="社内定例:何か", occurred_on="2026-08-15")
-        assert called["n"] == 0
+        assert seen.get("inbox_id") == 1 and seen.get("candidates") == []
     finally:
         con.close()
         shutil.rmtree(d, ignore_errors=True)

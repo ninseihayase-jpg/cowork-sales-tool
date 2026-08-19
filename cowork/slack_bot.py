@@ -37,8 +37,11 @@ SLACK_DESK_TOKEN = os.environ.get("SLACK_DESK_BOT_TOKEN", "")
 SLACK_DESK_SIGNING_SECRET = os.environ.get("SLACK_DESK_SIGNING_SECRET", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "http://localhost:8787")
-# #98: Jamie文字起こし到着時の商談候補提示を投稿する先（#sales）。未設定なら投稿をスキップ。
+# #98: Jamie文字起こし到着時の商談候補提示を投稿する先（#sales）。2026-08-19以降は個人DM
+# （JAMIE_CANDIDATE_DM_OWNER）へ変更したため未使用だが、明示的にchannelを渡す呼び出し用に残す。
 SALES_CHANNEL_ID = os.environ.get("SALES_CHANNEL_ID", "")
+# Jamie商談候補提示の送り先（個人DM）。#sales全体ではなくこの担当者個人へ届ける。
+JAMIE_CANDIDATE_DM_OWNER = os.environ.get("JAMIE_CANDIDATE_DM_OWNER", "早瀬").strip()
 
 _bot_user_id: str | None = None
 
@@ -182,27 +185,49 @@ def find_deal(con: sqlite3.Connection, text: str) -> dict | None:
 # ── #98: Jamie文字起こし×Slack識別 ─────────────────────────────────────────
 # Jamie webhook到着時点では商談との紐付けが無い（識別ステップが#97のWeb inboxでしか
 # 発生せず、Slack先攻の運用実態と噛み合わず放置されるバグを設計で特定）。この識別を
-# Slackに引き取らせ、候補ボタンの選択で即座に割り当てる。候補が1件も無い（＝論点/
-# 社内議論など商談名に一致しない）場合は投稿自体を行わず、従来通りWeb inboxに委ねる
-# （スコープ外＝論点/内部議論の既存コードは無改修のまま共存）。
+# Slackに引き取らせ、候補ボタンの選択で即座に割り当てる。
+# 2026-08-19改訂: #salesチャンネル全体ではなくJAMIE_CANDIDATE_DM_OWNER個人のDMへ送る。
+# 候補が0件でも投稿する（以前は候補0件なら投稿自体をスキップしWeb inboxに委ねていたが、
+# それこそが見逃しの原因だったため、常に通知した上で「対象（候補以外）」の逃げ道を用意する）。
+
+def _resolve_jamie_dm_channel() -> str | None:
+    """JAMIE_CANDIDATE_DM_OWNER宛のDMチャネルIDを解決する（owner_slack_map.json→
+    users.lookupByEmail→conversations.open）。"""
+    from cowork.slack_tasks import _slack_user_id_for
+    uid = _slack_user_id_for(JAMIE_CANDIDATE_DM_OWNER)
+    if not uid:
+        print(f"[SlackBot] Jamie候補DM: 「{JAMIE_CANDIDATE_DM_OWNER}」のSlackユーザーが見つかりません", flush=True)
+        return None
+    r = _slack_post("conversations.open", users=uid)
+    if not r.get("ok"):
+        print(f"[SlackBot] Jamie候補DM: DMチャネルを開けませんでした: {r.get('error')}", flush=True)
+        return None
+    return r["channel"]["id"]
+
 
 def post_jamie_candidate_prompt(con: sqlite3.Connection, *, inbox_id: int, title: str,
                                 occurred_on: str, candidates: list, channel: str | None = None) -> str | None:
     """Jamie webhook到着時、商談候補（[(value,label),...] 例: [("deal:12","A社/案件X")]）を
-    #salesに投稿する。candidatesが空なら何もしない（Web inboxに委ねる）。
-    channel省略時はSALES_CHANNEL_ID（本番の通常経路）。テスト用に個人DM等へ差し替え可能
-    （scripts/send_jamie_candidate_dm_preview.py が使う。ボタンのaction/valueは本番と同一なので、
-    候補ボタンを押すと実際にそのinbox_idが割り当てられる点に注意。「対象外」ボタンはDB変更なしで安全）。"""
-    channel = channel or SALES_CHANNEL_ID
-    if not candidates or not channel:
+    個人DM（JAMIE_CANDIDATE_DM_OWNER）に投稿する。ボタンは「候補（最大5件）」＋
+    「対象（候補以外）」＋「対象外（割当不要）」の3種類。
+    channel省略時はJAMIE_CANDIDATE_DM_OWNERのDMを自動解決。テスト用に別チャネル
+    （scripts/send_jamie_candidate_dm_preview.py 等）へ差し替え可能。
+    ボタンのaction/valueは本番と同一なので、候補ボタンを押すと実際にそのinbox_idが
+    割り当てられる点に注意。「対象外」ボタンは割当不要として完了扱いにするのみでDeal未指定。"""
+    channel = channel or _resolve_jamie_dm_channel()
+    if not channel:
         return None
     buttons = [{
         "type": "button", "action_id": "jamie_pick_deal", "value": f"{inbox_id}:{v.split(':', 1)[1]}",
         "text": {"type": "plain_text", "text": lbl[:75]},
     } for v, lbl in candidates[:5]]
     buttons.append({
+        "type": "button", "action_id": "jamie_not_candidate", "value": str(inbox_id),
+        "text": {"type": "plain_text", "text": "対象（候補以外）"},
+    })
+    buttons.append({
         "type": "button", "action_id": "jamie_skip", "value": str(inbox_id),
-        "text": {"type": "plain_text", "text": "対象外（論点/社内議論など）"},
+        "text": {"type": "plain_text", "text": "対象外（割当不要）"},
     })
     text = f"🎙️ Jamie文字起こし到着：*{title}*（{occurred_on}）\nどの商談ですか？"
     blocks = [
@@ -268,12 +293,26 @@ def handle_interactive(con: sqlite3.Connection, payload: dict) -> None:
             if not r.get("ok"):
                 print(f"[SlackBot] jamie append-prompt failed: {r.get('error')}")
         else:
+            link = f"{SFA_TOOL_URL}/hearing/intake?deal={deal_id}&inbox_id={inbox_id}"
             _jamie_update_message(
                 channel, msg_ts,
-                f"✅「{deal_label}」に割り当てました。この面談をSlackで確定する際にJamie全文を取り込みます。")
+                f"✅「{deal_label}」に割り当てました。\n<{link}|▶ この文字起こしをWebで取り込む（AI整形）>")
+
+    elif action_id == "jamie_not_candidate":
+        try:
+            inbox_id = int(value)
+        except ValueError:
+            return
+        link = f"{SFA_TOOL_URL}/intake-inbox#inbox-{inbox_id}"
+        _jamie_update_message(channel, msg_ts, f"📋 Webの取り込みインボックスで商談/論点を選んでください → <{link}|開く>")
 
     elif action_id == "jamie_skip":
-        _jamie_update_message(channel, msg_ts, "対象外として保留しました（Webの取り込みインボックスに残ります）。")
+        try:
+            inbox_id = int(value)
+        except ValueError:
+            return
+        _sfa_db.mark_intake_transcript_status(con, inbox_id, "not_needed")
+        _jamie_update_message(channel, msg_ts, "🙅 対象外（割当不要）として完了扱いにしました。")
 
     elif action_id == "jamie_append_yes":
         try:

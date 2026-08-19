@@ -9329,13 +9329,13 @@ def _verify_jamie_request(headers, raw_bytes: bytes) -> bool:
 
 
 def _post_jamie_slack_candidates(con, *, inbox_id: int, title: str, occurred_on: str) -> None:
-    """#98: Jamie webhook到着時、商談候補があればSlackに識別を委ねる（識別①）。
-    候補が無ければ何もしない＝#97のWeb `/intake-inbox` に委ねる（論点/内部議論は無改修で共存）。"""
+    """#98: Jamie webhook到着時、商談候補の有無に関わらずSlack（個人DM）に識別を委ねる（識別①）。
+    2026-08-19改訂: 候補0件でも通知する（以前は候補が無ければ投稿自体をスキップしていたが、
+    それが「誰も気づかない」見逃しの温床だった）。候補が無い場合は「対象（候補以外）」
+    「対象外（割当不要）」の2択のみのメッセージになる。"""
     try:
         deals = sfa_db.list_deals(con, status="open")
         cands = _inbox_candidates(title, [], deals, [])
-        if not cands:
-            return
         from cowork import slack_bot as _sb
         _sb.post_jamie_candidate_prompt(con, inbox_id=inbox_id, title=title,
                                         occurred_on=occurred_on, candidates=cands)
@@ -9503,7 +9503,7 @@ def intake_inbox_page(con) -> str:
                 _cand_html = (f'<div style="margin:6px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
                               f'<span class="muted" style="font-size:11px">候補（クリックで選択）: </span>{_cand_btns}</div>')
             cards.append(
-                f'<div class="inbox-card" style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#fff">'
+                f'<div class="inbox-card" id="inbox-{t["id"]}" style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#fff">'
                 f'<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">'
                 f'<div style="font-weight:600;font-size:14px">🎙️ {_esc(t.get("title") or "（無題）")}</div>'
                 f'<div class="muted" style="font-size:12px">{_esc(t.get("external_source") or "")} ・ '
