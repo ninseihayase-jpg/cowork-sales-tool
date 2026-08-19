@@ -9458,6 +9458,20 @@ function pickCandidate(btn,val){
   card.querySelectorAll('.cand-btn').forEach(function(b){b.classList.remove('on');});
   btn.classList.add('on');
 }
+// 一括破棄: チェック数に応じてボタンの有効/件数表示を更新し、確認後にまとめてPOST
+function inboxBulkUpdate(){
+  var n=document.querySelectorAll('#inbox_bulk_form [name=ids]:checked').length;
+  var btn=document.getElementById('inbox_bulk_btn'); if(btn) btn.disabled=(n===0);
+  var lbl=document.getElementById('inbox_bulk_n'); if(lbl) lbl.textContent=n;
+  var all=document.getElementById('inbox_chk_all');
+  if(all) all.checked = n>0 && n===document.querySelectorAll('#inbox_bulk_form [name=ids]').length;
+}
+function inboxBulkDelete(){
+  var ids=Array.from(document.querySelectorAll('#inbox_bulk_form [name=ids]:checked')).map(function(c){return c.value;});
+  if(!ids.length) return;
+  if(!confirm(ids.length+'件の取り込みを破棄します。この操作は取り消せません。')) return;
+  document.getElementById('inbox_bulk_form').submit();
+}
 """
 
 
@@ -9505,7 +9519,10 @@ def intake_inbox_page(con) -> str:
             cards.append(
                 f'<div class="inbox-card" id="inbox-{t["id"]}" style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#fff">'
                 f'<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">'
-                f'<div style="font-weight:600;font-size:14px">🎙️ {_esc(t.get("title") or "（無題）")}</div>'
+                f'<div style="font-weight:600;font-size:14px">'
+                f'<input type="checkbox" name="ids" value="{t["id"]}" form="inbox_bulk_form" '
+                f'onchange="inboxBulkUpdate()" style="margin-right:6px;vertical-align:middle">'
+                f'🎙️ {_esc(t.get("title") or "（無題）")}</div>'
                 f'<div class="muted" style="font-size:12px">{_esc(t.get("external_source") or "")} ・ '
                 f'{_esc(t.get("occurred_on") or (t.get("created_at") or "")[:10])} ・ 文字数 {t.get("text_len") or 0:,}</div></div>'
                 + (f'<div class="muted" style="font-size:12px;margin-top:4px">参加者: {_esc(_att_txt)}</div>' if _att_txt else "")
@@ -9527,7 +9544,17 @@ def intake_inbox_page(con) -> str:
                   f'<input type="hidden" name="return_to" value="/intake-inbox">'
                   f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer;font-size:11px">破棄</button></form>'
                 f'</div>')
-        rows = '<div style="display:flex;flex-direction:column;gap:10px">' + "".join(cards) + '</div>'
+        rows = (
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+            '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer">'
+            '<input type="checkbox" id="inbox_chk_all" '
+            'onchange="document.querySelectorAll(\'#inbox_bulk_form [name=ids]\').forEach(c=>c.checked=this.checked);inboxBulkUpdate()">全選択</label>'
+            '<button type="button" id="inbox_bulk_btn" class="btn sec" disabled '
+            'style="font-size:12px;padding:4px 10px;border-color:#c53030;color:#c53030" '
+            'onclick="inboxBulkDelete()">選択した項目を破棄（<span id="inbox_bulk_n">0</span>件）</button>'
+            '</div>'
+            '<form id="inbox_bulk_form" method="post" action="/intake-inbox/bulk_delete"></form>'
+            '<div style="display:flex;flex-direction:column;gap:10px">' + "".join(cards) + '</div>')
     _cfg_warn = "" if (JAMIE_WEBHOOK_SECRET or JAMIE_WEBHOOK_API_KEY) else (
         '<div style="background:#fef2f2;border-left:3px solid #dc2626;padding:6px 10px;margin:0 0 10px;'
         'font-size:12px;color:#991b1b">⚠ Jamie Webhookの受信シークレットが未設定です（Render環境変数 '
@@ -14901,6 +14928,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(hearing_intake_page(con, dict(_row), inbox_id=_tid))
                     else:
                         self._redirect("/intake-inbox")
+
+                elif path == "/intake-inbox/bulk_delete":
+                    _ids = f_list.get("ids", [])
+                    for _iid in _ids:
+                        if str(_iid).isdigit():
+                            sfa_db.delete_intake_transcript(con, int(_iid))
+                    self._redirect("/intake-inbox")
 
                 elif path.startswith("/intake-transcript/") and path.endswith("/delete"):
                     try:
