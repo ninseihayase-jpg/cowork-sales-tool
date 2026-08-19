@@ -681,6 +681,30 @@ def test_deal_reopen_from_edit(server, db_path):
     con.close()
 
 
+def test_deal_duplicate_route_creates_new_deal_and_redirects(server, db_path):
+    """商談複製ボタン(/deal/{id}/duplicate)がPOSTだけで新規商談を作成し、その編集画面へ
+    303リダイレクトすること（htmlの目視ではなくルート経由の統合確認）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('加藤製作所')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="制御システム部", stage="クロージング",
+                             owner="吉江", note="既存の現状メモ")
+    con.close()
+
+    code, body = _post(server + f"/deal/{did}/duplicate", {}, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    rows = con2.execute("SELECT * FROM deals WHERE account_id=? ORDER BY id", (acc,)).fetchall()
+    assert len(rows) == 2
+    new = dict(rows[-1])
+    assert new["deal_name"] == "制御システム部（コピー）"
+    assert new["stage"] == sfa_db.DEAL_STAGES[0]
+    assert new["status"] == "open"
+    assert f"SFA#{did}" in (new["note"] or "") and "既存の現状メモ" in new["note"]
+    con2.close()
+
+
 def test_slack_desk_events_not_configured(server):
     """事務Bot未設定(環境変数なし)なら /slack/desk-events は503（500/例外にならない）。"""
     code, _ = _post(server + "/slack/desk-events", {"dummy": "1"}, headers=_auth_header())

@@ -1888,6 +1888,53 @@ def upsert_deal(con, *, id=None, commit: bool = True, **fields) -> int:
     return cur.lastrowid
 
 
+def duplicate_deal(con, deal_id: int) -> int | None:
+    """商談を複製し新規商談(status='open')を作成する。ユーザー確定方針:
+    ステージは先頭ステージへリセット、現状メモは「複製である旨」を明示した上で引き継ぐ。
+    活動履歴・マイルストーン・ヒアリング結果・論点・取り込み文字起こし・Hisho同期状態
+    (theme_id)・Slack紐付け・終了理由・次回MSは引き継がない（新規案件として真っ白から
+    始める）。開発案件(dev_projects)は元商談を参照したまま＝新商談には何も紐付かない。
+    戻り値は新規商談id（元商談が無ければNone）。"""
+    src = get_deal(con, deal_id)
+    if not src:
+        return None
+    first_stage = (get_master_list(con, "deal_stages") or DEAL_STAGES)[0]
+    orig_label = "/".join(x for x in (src.get("account_name"), src.get("deal_name")) if x)
+    note_prefix = f"※SFA#{deal_id}" + (f"（{orig_label}）" if orig_label else "") + "の複製です。\n\n"
+    new_id = upsert_deal(
+        con,
+        account_id=src.get("account_id"),
+        deal_name=(src.get("deal_name") or "(無題)") + "（コピー）",
+        stage=first_stage,
+        business_type_l1=src.get("business_type_l1"),
+        business_type_l2=src.get("business_type_l2"),
+        lead_pattern=src.get("lead_pattern"),
+        owner=src.get("owner"),
+        sub_owner=src.get("sub_owner"),
+        client_contact=src.get("client_contact"),
+        client_dept=src.get("client_dept"),
+        value_lumpsum=src.get("value_lumpsum"),
+        value_lumpsum_monthly=src.get("value_lumpsum_monthly"),
+        value_recurring=src.get("value_recurring"),
+        client_budget=src.get("client_budget"),
+        note=note_prefix + (src.get("note") or ""),
+        goal=src.get("goal"),
+        importance=src.get("importance"),
+        status="open",
+        cost_stage=src.get("cost_stage"),
+        approach_value=src.get("approach_value"),
+        approach_rate=src.get("approach_rate"),
+        reduction_rate=src.get("reduction_rate"),
+        fee_rate=src.get("fee_rate"),
+        diagnosis_cost=src.get("diagnosis_cost"),
+    )
+    # exhibition_nameはDEAL_FIELDS外（一括タグ付け専用UPDATE運用のため）。分類属性として引き継ぐ。
+    if src.get("exhibition_name"):
+        con.execute("UPDATE deals SET exhibition_name=? WHERE id=?", (src["exhibition_name"], new_id))
+        con.commit()
+    return new_id
+
+
 # ---- 次回マイルストーン（1商談:N。#48） ----
 # deals.next_milestone_date/label/type は「未完了で最も日付の早いMS」のキャッシュ（ミラー）。
 # 集計（MS超過・Slack通知・Hisho同期）は従来どおりキャッシュ列を読むため影響範囲が最小。

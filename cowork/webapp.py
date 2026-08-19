@@ -7786,6 +7786,10 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           <a class="btn sec" href="/dev-projects/new?deal_id={_did}">＋新規開発案件</a>
           <a class="btn sec" href="/hearing/new?target=deal:{_did}">＋新規ヒアリング</a>
           <a class="btn sec" href="/deal-issue/new?deal_id={_did}">＋新規論点</a>
+          <form method="post" action="/deal/{_did}/duplicate" style="display:inline;margin:0"
+            onsubmit="return confirm('この商談を複製して新規商談を作成します（活動履歴・マイルストーン等は引き継ぎません）。よろしいですか？')">
+            <button class="btn sec" type="submit">📋 この商談を複製</button>
+          </form>
         </div>"""
     acc_req = "required" if deal.get("id") else ""
     new_acc_html = ""
@@ -15250,6 +15254,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect(f"/deal/{did}")
 
                 # ── 商談インライン編集 ──
+                elif (path.startswith("/deal/") and path.endswith("/duplicate")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _dup_src_id = int(path.split("/")[2])
+                    _dup_new_id = sfa_db.duplicate_deal(con, _dup_src_id)
+                    if _dup_new_id:
+                        self._redirect(f"/deal/{_dup_new_id}")
+                    else:
+                        self._redirect("/deals")
+
                 elif path.startswith("/deal/") and path.endswith("/field"):
                     _DEAL_ALLOWED_FIELDS = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
                                              "client_budget", "value_lumpsum", "deal_name", "importance",
