@@ -9683,6 +9683,26 @@ def hearing_review_page(con, deal: dict, session: dict) -> str:
     _ns_text = "\n".join(_ns_list)
     _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
 
+    # 重複防止: 同一(deal_id, 面談日)に既に活動履歴があれば、新規作成ではなく統合(追記)を既定で促す
+    # （/hearing/intake経由はSlackの候補選択ボタンと違い既存チェックが無く、常に新規作成していたため
+    #   Slack Bot経由の活動履歴とWeb取り込みが別々の活動として重複登録される事故があった）。
+    _dup_html = ""
+    _conducted_on = session.get("conducted_on") or ""
+    _existing_act = sfa_db.find_activity_by_deal_and_date(con, did, _conducted_on) if _conducted_on else None
+    if _existing_act:
+        _ex_body = (_existing_act.get("body") or "").strip()
+        _ex_snip = _esc(_ex_body[:80]) + ("…" if len(_ex_body) > 80 else "")
+        _dup_html = (
+            '<div style="background:#fff7ed;border-left:3px solid #f59e0b;padding:8px 12px;margin:0 0 10px;font-size:13px">'
+            f'⚠ {_esc(_conducted_on)}の活動履歴（{_esc(_existing_act.get("type") or "")}'
+            f'・{_esc(_existing_act.get("contact_name") or "—")}）が既にあります'
+            + (f'：「{_ex_snip}」' if _ex_snip else '') + '<br>'
+            '<label style="font-weight:600;cursor:pointer">'
+            '<input type="checkbox" name="merge_into_existing" value="1" checked style="width:auto;vertical-align:middle"> '
+            '新規ではなく既存の活動履歴に統合する（推奨・全文を追記）</label>'
+            f'<input type="hidden" name="existing_activity_id" value="{_existing_act["id"]}">'
+            '</div>')
+
     # ヒアリング項目（起票ONの時だけ）
     _hearing_html = ""
     if _make_hearing:
@@ -9739,6 +9759,7 @@ def hearing_review_page(con, deal: dict, session: dict) -> str:
       {_ai_warn}
       <form method="post" action="/hearing/intake/commit" data-acct="{_esc(deal.get("account_name") or "")}"
         onsubmit="return hearingCommitSubmit(this)">
+        {_dup_html}
         <input type="hidden" name="session_id" value="{session["id"]}">
         <input type="hidden" name="item_count" value="{len(items)}">
         <div class="filter-row js-nofilter" style="gap:14px;flex-wrap:wrap;margin:6px 0">
@@ -15537,10 +15558,31 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _conducted = _sess.get("conducted_on") or _today_jst().isoformat()
                         _act_type = (f.get("act_type") or _opts.get("act_type") or "面談").strip()
                         _contact = (f.get("contact_name") or "").strip() or None
-                        # ① 活動履歴（記録の土台・常に作成）
-                        _act = sfa_db.add_activity(con, deal_id=_did, type=_act_type,
-                                                   occurred_on=_conducted, contact_name=_contact,
-                                                   body=(_overview or None), intake_transcript_id=_itid_ref)
+                        # ① 活動履歴（記録の土台）。同日の既存活動への統合が選ばれていれば、
+                        # 新規作成せず既存の本文へ追記する（Slack Bot経由の活動と重複登録される事故の修正）。
+                        _merge_into = f.get("merge_into_existing") == "1"
+                        try:
+                            _existing_act_id = int(f.get("existing_activity_id") or 0)
+                        except ValueError:
+                            _existing_act_id = 0
+                        _existing_act = sfa_db.get_activity(con, _existing_act_id) if _existing_act_id else None
+                        if _merge_into and _existing_act:
+                            _prev_body = (_existing_act.get("body") or "").strip()
+                            _new_chunk = (_overview or "").strip()
+                            if _prev_body and _new_chunk:
+                                _merged_body = _prev_body + "\n\n---\n【追加記録】\n" + _new_chunk
+                            else:
+                                _merged_body = _prev_body or _new_chunk or None
+                            sfa_db.update_activity_field(con, _existing_act_id, "body", _merged_body)
+                            if _itid_ref and not _existing_act.get("intake_transcript_id"):
+                                con.execute("UPDATE activities SET intake_transcript_id=? WHERE id=?",
+                                            (_itid_ref, _existing_act_id))
+                                con.commit()
+                            _act = _existing_act_id
+                        else:
+                            _act = sfa_db.add_activity(con, deal_id=_did, type=_act_type,
+                                                       occurred_on=_conducted, contact_name=_contact,
+                                                       body=(_overview or None), intake_transcript_id=_itid_ref)
                         # ② ヒアリング結果（起票ON時のみ・活動履歴に紐付け）
                         _rid = None
                         if _make_hearing:

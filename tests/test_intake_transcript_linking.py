@@ -120,6 +120,82 @@ def test_deal_meeting_flow_links_activity_and_hearing_result(server, db_path):
         con.close()
 
 
+def test_hearing_intake_commit_merges_into_existing_same_day_activity(server, db_path):
+    """実事故の回帰確認: Slack Bot経由で既に同日の活動履歴がある状態で、
+    Web(/hearing/intake)からJamie取り込みを記録すると、既定で1件に統合され重複登録されないこと。"""
+    con = sfa_db.connect(db_path)
+    try:
+        acc = sfa_db.upsert_account(con, name="ASTI株式会社")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="要件詰め")
+        existing_id = sfa_db.add_activity(con, deal_id=did, type="面談", occurred_on="2026-08-19",
+                                          contact_name="太田", body="Slack Bot経由の初回メモ")
+        con.commit()
+    finally:
+        con.close()
+
+    code, body = _post(server + "/hearing/intake/structure",
+                       {"deal_id": str(did), "record_kind": "meeting", "transcript": "Jamie全文の文字起こし。",
+                        "conducted_on": "2026-08-19", "act_type": "面談"},
+                       headers=_auth_header())
+    assert code == 200
+    import re
+    assert 'name="merge_into_existing"' in body, "重複警告バナーが出ていない"
+    assert f'name="existing_activity_id" value="{existing_id}"' in body
+    m = re.search(r'name="session_id" value="(\d+)"', body)
+    sid = m.group(1)
+
+    code, _ = _post(server + "/hearing/intake/commit",
+                    {"session_id": sid, "item_count": "0", "overview": "Jamie全文の要約",
+                     "make_tasks": "0", "merge_into_existing": "1",
+                     "existing_activity_id": str(existing_id)}, headers=_auth_header())
+    assert code in (200, 303)
+
+    con = sfa_db.connect(db_path)
+    try:
+        acts = con.execute("SELECT * FROM activities WHERE deal_id=?", (did,)).fetchall()
+        assert len(acts) == 1, f"重複登録された: {len(acts)}件"
+        merged = dict(acts[0])
+        assert merged["id"] == existing_id
+        assert "Slack Bot経由の初回メモ" in merged["body"]
+        assert "Jamie全文の要約" in merged["body"]
+    finally:
+        con.close()
+
+
+def test_hearing_intake_commit_creates_new_when_merge_unchecked(server, db_path):
+    """統合チェックを外せば（意図的に別記録として）2件目が作られること。"""
+    con = sfa_db.connect(db_path)
+    try:
+        acc = sfa_db.upsert_account(con, name="ASTI株式会社")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="要件詰め")
+        sfa_db.add_activity(con, deal_id=did, type="面談", occurred_on="2026-08-19",
+                            contact_name="太田", body="1件目")
+        con.commit()
+    finally:
+        con.close()
+
+    code, body = _post(server + "/hearing/intake/structure",
+                       {"deal_id": str(did), "record_kind": "meeting", "transcript": "別件の文字起こし。",
+                        "conducted_on": "2026-08-19", "act_type": "面談"},
+                       headers=_auth_header())
+    assert code == 200
+    import re
+    m = re.search(r'name="session_id" value="(\d+)"', body)
+    sid = m.group(1)
+
+    code, _ = _post(server + "/hearing/intake/commit",
+                    {"session_id": sid, "item_count": "0", "overview": "2件目の内容",
+                     "make_tasks": "0"}, headers=_auth_header())  # merge_into_existingを送らない=チェック外し相当
+    assert code in (200, 303)
+
+    con = sfa_db.connect(db_path)
+    try:
+        n = con.execute("SELECT COUNT(*) FROM activities WHERE deal_id=?", (did,)).fetchone()[0]
+        assert n == 2
+    finally:
+        con.close()
+
+
 def test_deal_memo_flow_links_rich_note(server, db_path):
     con = sfa_db.connect(db_path)
     try:
