@@ -187,10 +187,14 @@ def find_deal(con: sqlite3.Connection, text: str) -> dict | None:
 # （スコープ外＝論点/内部議論の既存コードは無改修のまま共存）。
 
 def post_jamie_candidate_prompt(con: sqlite3.Connection, *, inbox_id: int, title: str,
-                                occurred_on: str, candidates: list) -> str | None:
+                                occurred_on: str, candidates: list, channel: str | None = None) -> str | None:
     """Jamie webhook到着時、商談候補（[(value,label),...] 例: [("deal:12","A社/案件X")]）を
-    #salesに投稿する。candidatesが空なら何もしない（Web inboxに委ねる）。"""
-    if not candidates or not SALES_CHANNEL_ID:
+    #salesに投稿する。candidatesが空なら何もしない（Web inboxに委ねる）。
+    channel省略時はSALES_CHANNEL_ID（本番の通常経路）。テスト用に個人DM等へ差し替え可能
+    （scripts/send_jamie_candidate_dm_preview.py が使う。ボタンのaction/valueは本番と同一なので、
+    候補ボタンを押すと実際にそのinbox_idが割り当てられる点に注意。「対象外」ボタンはDB変更なしで安全）。"""
+    channel = channel or SALES_CHANNEL_ID
+    if not candidates or not channel:
         return None
     buttons = [{
         "type": "button", "action_id": "jamie_pick_deal", "value": f"{inbox_id}:{v.split(':', 1)[1]}",
@@ -205,7 +209,7 @@ def post_jamie_candidate_prompt(con: sqlite3.Connection, *, inbox_id: int, title
         {"type": "section", "text": {"type": "mrkdwn", "text": text}},
         {"type": "actions", "elements": buttons},
     ]
-    r = _slack_post("chat.postMessage", channel=SALES_CHANNEL_ID, text=text, blocks=blocks)
+    r = _slack_post("chat.postMessage", channel=channel, text=text, blocks=blocks)
     if r.get("ok"):
         return r.get("ts")
     print(f"[SlackBot] post_jamie_candidate_prompt failed: {r.get('error')}")

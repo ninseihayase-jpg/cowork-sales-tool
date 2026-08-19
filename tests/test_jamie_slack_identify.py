@@ -86,6 +86,28 @@ def test_candidate_match_posts_buttons_with_skip_option(monkeypatch):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_candidate_prompt_channel_override_bypasses_sales_channel(monkeypatch):
+    """channel引数を渡すと、SALES_CHANNEL_ID未設定でも指定チャネル（DM等）へ投稿できる
+    （#98動作確認プレビュー用: scripts/send_jamie_candidate_dm_preview.py が使う）。"""
+    d, con = _fresh()
+    try:
+        store = {}
+        monkeypatch.setattr(slack_bot, "_slack_post", _fake_poster(store))
+        monkeypatch.setattr(slack_bot, "SALES_CHANNEL_ID", "")   # 未設定でもchannel指定で投稿できること
+        acc = sfa_db.upsert_account(con, name="ソラスト")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="成果報酬コスト削減", stage="提案")
+        cands = webapp._inbox_candidates("ソラスト 成果報酬コスト削減 定例", [],
+                                         sfa_db.list_deals(con, status="open"), [])
+        ts = slack_bot.post_jamie_candidate_prompt(
+            con, inbox_id=99, title="ソラスト 成果報酬コスト削減 定例", occurred_on="2026-08-15",
+            candidates=cands, channel="D0TESTDM")
+        assert ts == "100.200"
+        assert store["kwargs"]["channel"] == "D0TESTDM"
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_pick_deal_without_existing_activity_just_assigns(monkeypatch):
     """Jamie先攻: 既存活動が無ければ割当のみで、確定時の統合を待つ旨を表示する。"""
     d, con = _fresh()
