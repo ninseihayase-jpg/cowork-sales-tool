@@ -4148,10 +4148,45 @@ def task_form(con, task=None) -> str:
     </div>{notes_block}"""
 
 
+def tasks_deleted_page(con) -> str:
+    """削除済み通常タスクの確認・復活ビュー（ソフト削除された is_admin=0/NULL）。"""
+    dels = sfa_db.list_tasks(con, admin=False, only_deleted=True)
+    rows = "".join(
+        f'<tr>'
+        f'<td>{_esc(t.get("title") or "(無題)")}</td>'
+        f'<td>{_esc(t.get("assignee") or "—")}</td>'
+        f'<td>{_esc(t.get("status") or "—")}</td>'
+        f'<td>{_esc(t.get("category") or "—")}</td>'
+        f'<td>{_esc(t.get("due_date") or "—")}</td>'
+        f'<td class="muted" style="font-size:11px">{_esc((t.get("deleted_at") or "")[:16])}</td>'
+        f'<td><form method="post" action="/task/{t["id"]}/restore" style="margin:0">'
+        f'<input type="hidden" name="return_to" value="/tasks?deleted=1">'
+        f'<button class="btn sec" type="submit" title="このタスクを復活">↩ 復活</button></form></td>'
+        f'</tr>'
+        for t in dels
+    ) or '<tr><td colspan=7 class=muted>削除済みのタスクはありません（ソフト削除以降のみ復活可能）。</td></tr>'
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>🗑 削除済み タスク（{len(dels)}）</span>
+        <a class="btn sec" href="/tasks" style="font-size:12px">← タスクへ戻る</a>
+      </h2>
+      <p class="muted" style="font-size:12px">削除したタスクの確認・復活ができます。※この機能の導入より前に削除したものは復元できません。</p>
+      <div style="overflow:auto;max-height:72vh">
+      <table style="width:100%;border-collapse:collapse">
+        <tr>{_sticky_th('件名')}{_sticky_th('担当')}{_sticky_th('状態')}{_sticky_th('種類')}{_sticky_th('期限')}{_sticky_th('削除日時')}{_sticky_th('')}</tr>
+        {rows}
+      </table></div>
+    </div>"""
+
+
 def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
-               project: str | None = None, urgency: str | None = None) -> str:
+               project: str | None = None, urgency: str | None = None,
+               pinned: bool = False, deleted: bool = False) -> str:
     """タスクボード（状態別カンバン）。コンパクト折りたたみカード＋その場編集＋緊急度自動＋
     プロジェクト一覧（期限・状態別内訳）＋期限クイック/逆算推奨（#30）。"""
+    if deleted:
+        return tasks_deleted_page(con)
     owners = sfa_db.get_master_list(con, "owners")
     cats = sfa_db.get_master_list(con, "task_categories")
     proj_objs = sfa_db.list_task_projects(con)
@@ -4160,8 +4195,28 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     dev_map = {dp["id"]: dp for dp in sfa_db.list_dev_projects(con)}
     # プロジェクトはカンマ区切りで複数選択可（チップのトグルで増減）
     sel_projects = [p for p in (project or "").split(",") if p.strip()]
+    _td = _today_jst()
+    today = _td.isoformat()
+    d3 = sfa_db.add_business_days(_td, 3).isoformat()
+    weekend = (_td + timedelta(days=6 - _td.weekday())).isoformat()
+    tomorrow = (_td + timedelta(days=1)).isoformat()
+
     # 事務タスク(is_admin=1)は専用ビュー(/desk-tasks)に分離。通常ボードには出さない。
-    tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None, admin=False)
+    # 集計ボックス（上部）は全フィルタ非適用の全通常タスク・未完了ベース（desk-tasksと同仕様）。
+    all_tasks = sfa_db.list_tasks(con, admin=False)
+    open_tasks = [t for t in all_tasks if (t.get("status") or "") != "完了"]
+    _due_pool = [t for t in open_tasks if (t.get("status") or "") != "保留"]
+    overdue_n = sum(1 for t in _due_pool if (t.get("due_date") or "") and (t.get("due_date") or "") < today)
+    today_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == today)
+    tmr_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == tomorrow)
+    hold_n = sum(1 for t in open_tasks if (t.get("status") or "") == "保留")
+    pinned_n = sum(1 for t in all_tasks if t.get("pinned"))
+
+    if assignee == "__none__":
+        tasks = sfa_db.list_tasks(con, category=category or None, admin=False)
+        tasks = [t for t in tasks if not (t.get("assignee") or "").strip()]
+    else:
+        tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None, admin=False)
     if sel_projects:
         _selset = set(sel_projects)
         tasks = [t for t in tasks if (t.get("project") or "") in _selset]
@@ -4171,24 +4226,30 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         "SELECT id FROM task_notes WHERE task_id=n.task_id AND kind='progress' "
         "ORDER BY created_at DESC, id DESC LIMIT 1)"):
         latest_notes[r["task_id"]] = dict(r)
-    _td = _today_jst()
-    today = _td.isoformat()
-    d3 = sfa_db.add_business_days(_td, 3).isoformat()
-    weekend = (_td + timedelta(days=6 - _td.weekday())).isoformat()
     # 期限クイック候補（今日＋N営業日）を先に計算してJSへ
     qdates = {n: sfa_db.add_business_days(_td, n).isoformat() for n in (1, 3, 5, 8)}
-    # 緊急度フィルタ（期限ベース）: overdue=超過 / week=今週まで / nodue=期限なし
+    # 緊急度フィルタ（期限ベース）: overdue=超過/today=今日/tomorrow=明日/nodue=期限なし/hold=保留中。
+    # 保留中は期限アラート系の対象外（desk-tasksと同仕様）。
     if urgency:
         def _uok(t):
             due = (t.get("due_date") or "").strip()
+            hold = (t.get("status") or "") == "保留"
+            if urgency == "hold":
+                return hold
+            if hold:
+                return False
             if urgency == "overdue":
                 return bool(due) and due < today
-            if urgency == "week":
-                return bool(due) and today <= due <= weekend
+            if urgency == "today":
+                return due == today
+            if urgency == "tomorrow":
+                return due == tomorrow
             if urgency == "nodue":
                 return not due
             return True
         tasks = [t for t in tasks if _uok(t)]
+    if pinned:
+        tasks = [t for t in tasks if t.get("pinned")]  # 最優先ピンのみ（上部ボックスから）
     cols = {s: [] for s in sfa_db.TASK_STATUSES}
     for t in tasks:
         cols.setdefault(t.get("status") or "受信箱", []).append(t)
@@ -4230,6 +4291,50 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             dp = dev_map[t["link_id"]]
             link_html = (f'<a href="/dev-project/{dp["id"]}/edit" style="font-size:10px" '
                          f'title="{_esc(dp.get("account_name") or "")}">🛠{_esc(dp.get("theme") or "開発案件")}</a>')
+        _plink = (t.get("slack_permalink") or "").strip()
+        if _plink:
+            slack_html = (
+                f'<span id="tcslk-{tid}"><a class="tc-edit" href="{_esc(_plink)}" target="_blank" '
+                f'rel="noopener" title="Slackメッセージを開く" style="color:#2563eb">🔗 Slack</a>'
+                f'<button type="button" class="tc-edit" style="border:none;background:none;cursor:pointer" '
+                f'title="リンクを編集" onclick="tcSlack({tid})">✎</button></span>')
+        else:
+            slack_html = (f'<button type="button" id="tcslk-{tid}" class="tc-edit" '
+                          f'style="border:none;background:none;cursor:pointer;color:#94a3b8" '
+                          f'title="Slackリンクを追加" onclick="tcSlack({tid})">🔗 リンク追加</button>')
+        # 繰り返し発生（定期複製）。desk-tasksと共通のパネル(_DESK_RECUR_JS)を再利用。
+        is_rec = bool(t.get("is_recurring"))
+        rec_freq = (t.get("recur_freq") or "monthly")
+        rec_day = t.get("recur_dup_day")
+        mday_val = (str(rec_day) if (rec_freq == "monthly" and rec_day is not None) else "")
+        _wd_opts = "".join(
+            f'<option value="{i}"{" selected" if (rec_freq == "weekly" and rec_day is not None and int(rec_day) == i) else ""}>{lbl}</option>'
+            for i, lbl in enumerate(sfa_db.RECUR_WEEKDAY_LABELS))
+        _off_btn = (f'<button type="button" class="btn sec" style="color:#c53030" '
+                    f'onclick="tcRecurOff({tid})">繰り返しOFF</button>') if is_rec else ""
+        rec_wrap = (
+            f'<span class="tc-rec-wrap">'
+            f'<button type="button" class="tc-rec-pin{" on" if is_rec else ""}" '
+            f'onclick="tcRecurPanel({tid},event)" title="🔁繰り返し発生（複製設定）">🔁</button>'
+            f'<div class="tc-recur-panel" id="tcrec-{tid}" data-freq="{_esc(rec_freq)}" '
+            f'style="display:none" onclick="event.stopPropagation()">'
+            f'<div style="font-weight:600;font-size:12px;margin-bottom:4px">🔁 繰り返し発生（複製設定）</div>'
+            f'<div class="tc-recur-row"><label>頻度</label>'
+            f'<select class="tc-rec-freq" onchange="tcRecurFreqUI({tid})">'
+            f'<option value="monthly"{" selected" if rec_freq != "weekly" else ""}>毎月</option>'
+            f'<option value="weekly"{" selected" if rec_freq == "weekly" else ""}>毎週</option></select></div>'
+            f'<div class="tc-recur-row tc-rec-monthly" style="display:{"none" if rec_freq == "weekly" else "flex"}">'
+            f'<label>複製日</label><span>毎月 '
+            f'<input type="number" class="tc-rec-mday" min="1" max="31" value="{_esc(mday_val)}" '
+            f'placeholder="20" style="width:56px"> 日</span></div>'
+            f'<div class="tc-recur-row tc-rec-weekly" style="display:{"flex" if rec_freq == "weekly" else "none"}">'
+            f'<label>複製曜日</label><span>毎週 <select class="tc-rec-wday">{_wd_opts}</select> 曜</span></div>'
+            f'<div class="tc-recur-row" style="justify-content:space-between">'
+            f'<button type="button" class="btn sec" onclick="tcRecurSave({tid})">保存</button>'
+            f'{_off_btn}'
+            f'<span class="tc-rec-note"></span></div>'
+            f'<div class="tc-recur-help">複製タイミングが来たら、この内容を「◯月分／◯週分」付きの新規カードに複製します。</div>'
+            f'</div></span>')
         search = _esc(" ".join(str(t.get(k) or "") for k in
                                ("title", "detail", "assignee", "category", "project", "next_action")).lower())
         note = latest_notes.get(tid)
@@ -4255,7 +4360,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'<div class="tc-head">'
             f'<span class="tc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
             f'<span class="tc-ttl">{_esc(t.get("title"))}</span>'
-            f'{pin_btn}<span class="tc-car">▸</span></div>'
+            f'{rec_wrap}{pin_btn}<span class="tc-car">▸</span></div>'
             f'<div class="tc-mini">{m_pj}{m_asg}{m_due}</div>'
             f'<div class="tc-actions"></div>'
             f'<div class="tc-body">'
@@ -4264,7 +4369,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'<div class="tc-na{" empty" if not na else ""}"><span>▶</span>'
             f'<input value="{_esc(na)}" placeholder="次アクション未設定" title="次アクション" '
             f'onchange="taskField({tid},&#39;next_action&#39;,this.value)"></div>'
-            f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{link_html}</div>'
+            f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{link_html}{slack_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}{rec}</div>'
             f'<div class="tc-notes" onclick="openNotes({tid},&#39;progress&#39;)" title="進捗ログを見る・追記">📝 {note_snip}</div>'
             f'{summary_html}'
@@ -4323,11 +4428,17 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             for v in values)
     _urg_opts = "".join(
         f'<option value="{v}"{" selected" if urgency == v else ""}>{lbl}</option>'
-        for v, lbl in (("", "緊急度:全て"), ("overdue", "🔴 超過"), ("week", "🟡 今週まで"),
-                       ("nodue", "⚪ 期限なし")))
+        for v, lbl in (("", "緊急度:全て"), ("overdue", "🔴 超過"), ("today", "🟠 今日まで"),
+                       ("tomorrow", "🟡 明日まで"), ("nodue", "⚪ 期限なし"), ("hold", "⏸ 保留中")))
+    # 担当フィルタに「受信箱（未割当）」を明示選択肢として追加。
+    _asg_fopt = (
+        f'<option value="">担当:全て</option>'
+        f'<option value="__none__"{" selected" if assignee == "__none__" else ""}>📥 受信箱（未割当のみ）</option>'
+        + "".join(f'<option value="{html.escape(a)}"{" selected" if a == assignee else ""}>{html.escape(a)}</option>'
+                  for a in owners))
     filter_row = f"""<form method="get" action="/tasks" class="filter-row">
       <input type="hidden" name="project" value="{_esc(','.join(sel_projects))}">
-      <select name="assignee" onchange="this.form.submit()">{_fopt(owners, assignee, '担当:全て')}</select>
+      <select name="assignee" onchange="this.form.submit()">{_asg_fopt}</select>
       <select name="category" onchange="this.form.submit()"><option value="">種類:全て</option>{_task_cat_optgroups(cats, category)}</select>
       <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
       <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細・次アクションで検索…" oninput="_deb('taskFilter')" style="max-width:260px">
@@ -4346,25 +4457,37 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     filt_note = (f'<span class="muted" style="font-size:12px">📁 {_esc("・".join(sel_projects))} で絞り込み中 '
                  f'<a href="{_tasks_url([])}">解除</a></span>' if sel_projects else "")
     quick_js = (f'<script>window._TC={{today:"{today}",d3:"{d3}",weekend:"{weekend}"}};</script>')
+    # 上部集計ボックス（期限アラート＋最優先ピン件数。desk-tasksと同仕様・依頼者別内訳は無し）。
+    agg = f"""
+      <div class="desk-agg">
+        <a class="box desk-alert-over{' active' if overdue_n else ''}" href="/tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b>{overdue_n}</b></a>
+        <a class="box desk-alert-today{' active' if today_n else ''}" href="/tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
+        <a class="box desk-alert-tmr{' active' if tmr_n else ''}" href="/tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
+        <a class="box desk-alert-hold" href="/tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b>{hold_n}</b></a>
+        <a class="box desk-alert-pin{' on' if pinned else ''}" href="/tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b>{pinned_n}</b></a>
+      </div>"""
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>タスク（{len(tasks)}） {filt_note}</span>
         <span style="display:flex;gap:8px;flex-wrap:wrap">
+          <a class="btn sec" href="/tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
           {seed_btn}
           <a class="btn sec" href="/tasks/digest">🔔 朝ダイジェスト</a>
           <a class="btn" href="/tasks/new">＋新規タスク</a>
         </span>
       </h2>
+      {agg}
       {test_bar}
       {strip}
       {filter_row}
       <div id="taskBoard">{columns}</div>
-    </div>{quick_js}{_TASKS_JS}"""
+    </div>{quick_js}{_TASKS_JS}{_DESK_CSS}{_DESK_RECUR_JS}"""
 
 
-# 事務ボードは通常タスク看板(.task-card + _TASKS_JS)をそのまま再利用する。
-# ここでは事務専用の「集計ボックス/依頼者バッジ」CSSだけを持つ。
+# 通常タスク看板(/tasks)・事務タスク看板(/desk-tasks)共通の「上部集計ボックス」CSS
+# （名前は歴史的経緯でDESKのままだが、tasks_page/desk_tasks_page両方から使われる）。
+# .m-req（依頼者バッジ）は事務タスク専用。
 _DESK_CSS = """<style>
 .desk-agg{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
 .desk-agg .box{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;font-size:12px;text-decoration:none;color:inherit}
@@ -4390,7 +4513,7 @@ _DESK_CSS = """<style>
 </style>"""
 
 
-# 繰り返し発生（定期複製）の設定パネル用JS（事務タスク看板専用）。/task/{id}/recur に保存。
+# 繰り返し発生（定期複製）の設定パネル用JS（通常/事務タスク看板共通）。/task/{id}/recur に保存。
 _DESK_RECUR_JS = """<script>
 // ヘッダの🔁アイコン（ピン★の左）で複製設定パネルを開閉。ON時はアイコンを着色（tc-rec-pin.on）。
 function tcRecurPanel(id,ev){ if(ev)ev.stopPropagation();
@@ -13053,7 +13176,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con, assignee=(_tq.get("assignee", [""])[0] or None),
                         category=(_tq.get("category", [""])[0] or None),
                         project=(_tq.get("project", [""])[0] or None),
-                        urgency=(_tq.get("urgency", [""])[0] or None))))
+                        urgency=(_tq.get("urgency", [""])[0] or None),
+                        pinned=bool(_tq.get("pinned", [""])[0]),
+                        deleted=bool(_tq.get("deleted", [""])[0]))))
                 elif path == "/desk-tasks":
                     _dq = self._qs()
                     self._send(render(desk_tasks_page(
