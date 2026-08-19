@@ -603,10 +603,37 @@ def _extract_field(text: str, label: str) -> str | None:
     return None
 
 
+_DATE_FIELDS = ("次回MS日", "活動日")
+
+
+def _normalize_date_str(s: str) -> str | None:
+    """人間の自由記述の日付表記（2026/10/31・2026.10.31・2026年10月31日等）をISO(YYYY-MM-DD)に
+    正規化する。パース不能ならNone（=未指定扱い）。
+
+    背景（実事故）: SFAのdeals.next_milestone_date/deal_milestones.ms_dateは<input type="date">で
+    表示するため、スラッシュ区切り等の非ISO文字列を保存するとブラウザが値を表示できず「MSが空」に
+    見える不具合が起きた。Bot側は確定時にfieldsの生テキストをそのまま「次回MS→...」と成功報告して
+    しまうため、保存に失敗している（=表示できないゴミが入っている）ことに気付けなかった。"""
+    s = (s or "").strip()
+    if not s:
+        return None
+    m = re.match(r'^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$', s)
+    if not m:
+        return None
+    from datetime import date as _date
+    try:
+        iso = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        _date.fromisoformat(iso)
+        return iso
+    except ValueError:
+        return None
+
+
 def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
     """
     bot_ts のテンプレートを基準に、その後の人間の返信で上書きした最終値を返す。
     confirm_ts より前のメッセージのみ対象。
+    日付欄（次回MS日・活動日）は表記揺れ（区切り文字）を吸収してISOへ正規化する。
     """
     bot_uid = get_bot_user_id()
     base: dict = {}
@@ -638,7 +665,15 @@ def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
                 if val:
                     overrides[label] = val
 
-    return {**base, **overrides}
+    merged = {**base, **overrides}
+    for _lbl in _DATE_FIELDS:
+        if _lbl in merged:
+            _norm = _normalize_date_str(merged[_lbl])
+            if _norm:
+                merged[_lbl] = _norm
+            else:
+                del merged[_lbl]
+    return merged
 
 
 # ── DB update ──────────────────────────────────────────────────────────────

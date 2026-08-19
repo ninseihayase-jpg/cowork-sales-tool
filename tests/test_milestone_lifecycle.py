@@ -138,3 +138,44 @@ def test_hearing_intake_style_flow_no_longer_leaves_stale_overdue_milestone():
     finally:
         con.close()
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_slack_override_reply_with_slash_date_normalizes_and_does_not_leave_ms_blank():
+    """実事故の再現: Slack返信で「次回MS日: 2026/10/31」(スラッシュ区切り)と上書きすると、
+    <input type="date">がISO以外の文字列を表示できず「MSが空」に見える不具合の回帰確認。
+    collect_fieldsがISOへ正規化することで、next_milestone_dateが実際に設定されること。"""
+    d, con = _fresh()
+    try:
+        acc = sfa_db.upsert_account(con, name="ソラスト")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="要件詰め")
+
+        messages = [
+            {"ts": "100.0", "bot_id": "B1",
+             "text": "ステージ: 要件詰め\n次回MS日: 【記載なし】\n次回MSラベル: 金型管理・BCP相談予定\n次回MS種別: アポ"},
+            {"ts": "200.0", "user": "U1",
+             "text": "活動日: 2026-08-18\n種別: 面談\n内容: 購買システムAX導入を進行中。\n"
+                     "次回MS日: 2026/10/31\n次回MSラベル: 金型管理検討状況ヒアリング\n次回MS種別: タスク"},
+            {"ts": "300.0", "user": "U1", "text": "ok"},
+        ]
+        fields = slack_bot.collect_fields(messages, bot_ts="100.0", confirm_ts="300.0")
+        assert fields["次回MS日"] == "2026-10-31", "スラッシュ区切りがISOへ正規化されていない"
+
+        slack_bot.apply_to_db(con, fields, did)
+        deal = sfa_db.get_deal(con, did)
+        assert deal["next_milestone_date"] == "2026-10-31", (
+            "バグ再発: next_milestone_dateが設定されていない（画面上はMS空に見える不具合）")
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_slack_override_reply_with_unparseable_date_is_dropped_not_corrupted():
+    """パース不能な日付表記（自由記述）は、そのまま保存して壊れたデータを作るより
+    未指定扱い（フィールド無視）にする方が安全。"""
+    messages = [
+        {"ts": "100.0", "bot_id": "B1", "text": "内容: テスト"},
+        {"ts": "200.0", "user": "U1", "text": "次回MS日: 来週あたり"},
+        {"ts": "300.0", "user": "U1", "text": "ok"},
+    ]
+    fields = slack_bot.collect_fields(messages, bot_ts="100.0", confirm_ts="300.0")
+    assert "次回MS日" not in fields
