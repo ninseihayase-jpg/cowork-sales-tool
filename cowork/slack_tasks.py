@@ -515,15 +515,18 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
 
 # ── @メンションでタスク化（webapp/slack_botから条件付きで呼ぶ） ──────────────
 
-def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: str) -> int:
+def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: str,
+                        token: str | None = None) -> int:
+    """@Botメンション(task/タスク:)を通常タスク化。#93: token指定で通常タスクBot（別アプリ）
+    として返信・ユーザー解決を行う（desk-tasksのhandle_admin_mention_taskと対）。"""
     prefill = ai_extract_task(text)
-    owner = owner_from_slack_user(user_id)
+    owner = owner_from_slack_user(user_id, token=token)
     tid = create_task_from_fields(
         con, title=prefill["title"], next_action=prefill["next_action"] or None,
         assignee=owner, due_date=prefill["due_date"] or None, category=prefill["category"] or None,
         slack_channel=channel, slack_ts=thread_ts, created_by=owner or user_id)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
-    _slack_post("chat.postMessage", channel=channel, thread_ts=thread_ts,
+    _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
                 text=f"タスク化しました: {prefill['title']}",
                 blocks=[{"type": "section", "text": {"type": "mrkdwn",
                         "text": f"✅ タスク化しました *<{link}|{prefill['title']}>*"}},

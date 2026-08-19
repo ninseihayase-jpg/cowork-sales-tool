@@ -685,3 +685,9 @@ def test_slack_desk_events_not_configured(server):
     """事務Bot未設定(環境変数なし)なら /slack/desk-events は503（500/例外にならない）。"""
     code, _ = _post(server + "/slack/desk-events", {"dummy": "1"}, headers=_auth_header())
     assert code == 503
+
+
+def test_slack_task_events_not_configured(server):
+    """#93 通常タスクBot未設定(環境変数なし)なら /slack/task-events は503（500/例外にならない）。"""
+    code, _ = _post(server + "/slack/task-events", {"dummy": "1"}, headers=_auth_header())
+    assert code == 503

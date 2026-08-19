@@ -16766,6 +16766,68 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _threading.Thread(target=_process_desk, daemon=True).start()
                     return
 
+                elif path == "/slack/task-events":
+                    # #93: 通常タスクBot（別Slackアプリ）専用。署名は通常タスクBotのSigning Secret
+                    # で検証、応答は通常タスクBotのトークンで送信。🎯リアクション と @Bot task/タスク
+                    # メンションのみ処理（/task スラッシュコマンド・ダイジェストのボタンは引き続き
+                    # NegoCollection＝既存共有アプリのまま。desk-eventsと同じ分離範囲）。
+                    import threading as _threading
+                    from cowork import slack_bot as _sb
+                    if not _sb.SLACK_TASK_SIGNING_SECRET or not _sb.SLACK_TASK_TOKEN:
+                        self._send(b'{"error":"task bot not configured"}', 503, ctype="application/json")
+                        return
+                    if not _sb.verify_signature(
+                        raw.encode("utf-8"),
+                        self.headers.get("X-Slack-Request-Timestamp", ""),
+                        self.headers.get("X-Slack-Signature", ""),
+                        secret=_sb.SLACK_TASK_SIGNING_SECRET,
+                    ):
+                        self._send(b'{"error":"invalid signature"}', 401, ctype="application/json")
+                        return
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        self._send(b"<error/>", 400)
+                        return
+                    if data.get("type") == "url_verification":
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"challenge": data["challenge"]}).encode())
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+
+                    def _process_task():
+                        _con = sfa_db.connect(db_path)
+                        try:
+                            import re as _re
+                            from cowork import slack_bot as _sb2
+                            from cowork import slack_tasks as _st
+                            _inner = data.get("event", {}) or {}
+                            _tok = _sb2.SLACK_TASK_TOKEN
+                            _eid = data.get("event_id")
+                            if _eid and not _sb2._mark_event_processed(_con, _eid):
+                                return  # Slack再送の冪等化
+                            _etype = _inner.get("type")
+                            if _etype == "reaction_added":
+                                _st.handle_reaction(_con, _inner, token=_tok)
+                            elif _etype == "app_mention":
+                                _text = _re.sub(r"<@[^>]+>", "", _inner.get("text", "")).strip()
+                                _ch = _inner.get("channel", "")
+                                _ts = _inner.get("thread_ts") or _inner.get("ts", "")
+                                _uid = _inner.get("user", "")
+                                if _text and _ch and _ts:
+                                    _st.handle_mention_task(_con, _ch, _ts, _text, _uid, token=_tok)
+                        except Exception as _e:  # noqa: BLE001
+                            print(f"[slack_task_events] error: {_e}", flush=True)
+                        finally:
+                            _con.close()
+                    _threading.Thread(target=_process_task, daemon=True).start()
+                    return
+
                 else:
                     self._send(render("<div class=card>不明な操作</div>"), 404)
             finally:

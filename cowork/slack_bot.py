@@ -35,6 +35,11 @@ SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 # 事務Bot（別Slackアプリ）用。/slack/desk-events で使用（未設定なら事務Botエンドポイントは無効）。
 SLACK_DESK_TOKEN = os.environ.get("SLACK_DESK_BOT_TOKEN", "")
 SLACK_DESK_SIGNING_SECRET = os.environ.get("SLACK_DESK_SIGNING_SECRET", "")
+# #93: 通常タスクBot（別Slackアプリ）用。/slack/task-events で使用（未設定ならタスクBot
+# エンドポイントは無効。/task スラッシュコマンド・ダイジェストのボタン等は引き続き
+# NegoCollection（既存共有アプリ）側のまま＝desk-eventsと同じ分離範囲）。
+SLACK_TASK_TOKEN = os.environ.get("SLACK_TASK_BOT_TOKEN", "")
+SLACK_TASK_SIGNING_SECRET = os.environ.get("SLACK_TASK_SIGNING_SECRET", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "http://localhost:8787")
 # #98: Jamie文字起こし到着時の商談候補提示を投稿する先（#sales）。2026-08-19以降は個人DM
