@@ -9460,14 +9460,14 @@ function pickCandidate(btn,val){
 }
 // 一括破棄: チェック数に応じてボタンの有効/件数表示を更新し、確認後にまとめてPOST
 function inboxBulkUpdate(){
-  var n=document.querySelectorAll('#inbox_bulk_form [name=ids]:checked').length;
+  var n=document.querySelectorAll('input[name=ids][form=inbox_bulk_form]:checked').length;
   var btn=document.getElementById('inbox_bulk_btn'); if(btn) btn.disabled=(n===0);
   var lbl=document.getElementById('inbox_bulk_n'); if(lbl) lbl.textContent=n;
   var all=document.getElementById('inbox_chk_all');
-  if(all) all.checked = n>0 && n===document.querySelectorAll('#inbox_bulk_form [name=ids]').length;
+  if(all) all.checked = n>0 && n===document.querySelectorAll('input[name=ids][form=inbox_bulk_form]').length;
 }
 function inboxBulkDelete(){
-  var ids=Array.from(document.querySelectorAll('#inbox_bulk_form [name=ids]:checked')).map(function(c){return c.value;});
+  var ids=Array.from(document.querySelectorAll('input[name=ids][form=inbox_bulk_form]:checked')).map(function(c){return c.value;});
   if(!ids.length) return;
   if(!confirm(ids.length+'件の取り込みを破棄します。この操作は取り消せません。')) return;
   document.getElementById('inbox_bulk_form').submit();
@@ -9548,7 +9548,7 @@ def intake_inbox_page(con) -> str:
             '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
             '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer">'
             '<input type="checkbox" id="inbox_chk_all" '
-            'onchange="document.querySelectorAll(\'#inbox_bulk_form [name=ids]\').forEach(c=>c.checked=this.checked);inboxBulkUpdate()">全選択</label>'
+            'onchange="document.querySelectorAll(\'input[name=ids][form=inbox_bulk_form]\').forEach(c=>c.checked=this.checked);inboxBulkUpdate()">全選択</label>'
             '<button type="button" id="inbox_bulk_btn" class="btn sec" disabled '
             'style="font-size:12px;padding:4px 10px;border-color:#c53030;color:#c53030" '
             'onclick="inboxBulkDelete()">選択した項目を破棄（<span id="inbox_bulk_n">0</span>件）</button>'
