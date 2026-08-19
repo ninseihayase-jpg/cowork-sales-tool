@@ -486,7 +486,9 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
                 print(f"[slack_tasks] notify_task_created(reaction) error: {_e}", flush=True)
         link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
         _req = f"（依頼者: {requester}）" if requester else ""
-        _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
+        # 起票したらスレッド投稿（@メンション起票と同仕様。以前はchat.postEphemeralで
+        # リアクションした本人にしか見えなかった）。
+        _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
                     text=f"📋 事務タスク化しました: {prefill['title']}",
                     blocks=[
                         {"type": "section", "text": {"type": "mrkdwn",
@@ -503,7 +505,8 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
         assignee=owner, due_date=prefill["due_date"] or None, category=prefill["category"] or None,
         slack_channel=channel, slack_ts=ts, slack_permalink=permalink, created_by=owner or user_id)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
-    _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
+    # 起票したらスレッド投稿（@メンション起票・事務タスクのリアクション起票と同仕様）。
+    _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
                 text=f"🎯 タスク化しました: {prefill['title']}",
                 blocks=[
                     {"type": "section", "text": {"type": "mrkdwn",
