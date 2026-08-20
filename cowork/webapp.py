@@ -502,7 +502,6 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <!-- 次: ヒアリング・論点 -->
   <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
   <a href="/deal-issues" style="opacity:.85;font-size:13px">論点</a>
-  <a href="/intake-inbox" style="opacity:.85;font-size:13px" title="Jamie/Zoom等から自動受信した会議の取り込み">📥 取り込み</a>
   <span class="nav-sep"></span>
   <!-- クライアント管理: リード・アカウント -->
   <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
@@ -514,6 +513,9 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <span class="nav-sep"></span>
   <!-- 発信 -->
   <a href="/email-draft" style="opacity:.85;font-size:13px">メール</a>
+  <span class="nav-sep"></span>
+  <!-- 取り込み（自動連携インボックス。独立セクションとして一番右に配置） -->
+  <a href="/intake-inbox" style="opacity:.85;font-size:13px" title="Jamie/Zoom等から自動受信した会議の取り込み">📥 取り込み</a>
   <!-- 管理（まとめ） -->
   <details class="nav-menu">
     <summary>⚙ 管理 ▾</summary>
