@@ -291,7 +291,7 @@ def build_create_modal(con, prefill: dict, private_meta: dict) -> dict:
     ]
     return {
         "type": "modal", "callback_id": "task_create",
-        "title": {"type": "plain_text", "text": "タスクを起票"},
+        "title": {"type": "plain_text", "text": "コンサルタスクを起票"},
         "submit": {"type": "plain_text", "text": "起票"},
         "close": {"type": "plain_text", "text": "キャンセル"},
         "private_metadata": json.dumps(private_meta, ensure_ascii=False),
@@ -507,10 +507,10 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
     # 起票したらスレッド投稿（@メンション起票・事務タスクのリアクション起票と同仕様）。
     _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
-                text=f"🎯 タスク化しました: {prefill['title']}",
+                text=f"🎯 コンサルタスク化しました: {prefill['title']}",
                 blocks=[
                     {"type": "section", "text": {"type": "mrkdwn",
-                     "text": f"🎯 タスク化しました\n*<{link}|{prefill['title']}>*"
+                     "text": f"🎯 コンサルタスク化しました\n*<{link}|{prefill['title']}>*"
                              + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
                     _task_action_block(tid),
                 ])
@@ -530,9 +530,9 @@ def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: s
         slack_channel=channel, slack_ts=thread_ts, created_by=owner or user_id)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
     _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-                text=f"タスク化しました: {prefill['title']}",
+                text=f"コンサルタスク化しました: {prefill['title']}",
                 blocks=[{"type": "section", "text": {"type": "mrkdwn",
-                        "text": f"✅ タスク化しました *<{link}|{prefill['title']}>*"}},
+                        "text": f"✅ コンサルタスク化しました *<{link}|{prefill['title']}>*"}},
                         _task_action_block(tid)])
     return tid
 
@@ -631,7 +631,7 @@ def _handle_view_submission(con, payload: dict) -> dict | None:
         # 起票通知（本人へDM）
         link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
         _slack_post("chat.postMessage", channel=user_id,
-                    text=f"タスクを起票しました: {_view_val(state,'title')}",
+                    text=f"コンサルタスクを起票しました: {_view_val(state,'title')}",
                     blocks=[{"type": "section", "text": {"type": "mrkdwn",
                             "text": f"✅ 起票しました *<{link}|{_view_val(state,'title')}>*"}},
                             _task_action_block(tid)])

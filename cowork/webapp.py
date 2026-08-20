@@ -508,7 +508,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <a href="/accounts" style="opacity:.85;font-size:13px">アカウント</a>
   <span class="nav-sep"></span>
   <!-- タスク群（メールの左にセクションとして配置） -->
-  <a href="/tasks">✅ タスク</a>
+  <a href="/tasks">✅ コンサルタスク</a>
   <a href="/desk-tasks" style="opacity:.85;font-size:13px">🗂 事務タスク</a>
   <span class="nav-sep"></span>
   <!-- 発信 -->
@@ -4168,8 +4168,8 @@ def tasks_deleted_page(con) -> str:
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <span>🗑 削除済み タスク（{len(dels)}）</span>
-        <a class="btn sec" href="/tasks" style="font-size:12px">← タスクへ戻る</a>
+        <span>🗑 削除済み コンサルタスク（{len(dels)}）</span>
+        <a class="btn sec" href="/tasks" style="font-size:12px">← コンサルタスクへ戻る</a>
       </h2>
       <p class="muted" style="font-size:12px">削除したタスクの確認・復活ができます。※この機能の導入より前に削除したものは復元できません。</p>
       <div style="overflow:auto;max-height:72vh">
@@ -4469,12 +4469,12 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <span>タスク（{len(tasks)}） {filt_note}</span>
+        <span>コンサルタスク（{len(tasks)}） {filt_note}</span>
         <span style="display:flex;gap:8px;flex-wrap:wrap">
           <a class="btn sec" href="/tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
           {seed_btn}
           <a class="btn sec" href="/tasks/digest">🔔 朝ダイジェスト</a>
-          <a class="btn" href="/tasks/new">＋新規タスク</a>
+          <a class="btn" href="/tasks/new">＋新規コンサルタスク</a>
         </span>
       </h2>
       {agg}
@@ -4897,7 +4897,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
               🔧 請求分類を一括修正
             </button>
           </form>
-          <a class="btn sec" href="/tasks" style="font-size:12px">✅ 通常タスクへ</a>
+          <a class="btn sec" href="/tasks" style="font-size:12px">✅ コンサルタスクへ</a>
         </span>
       </h2>
       {agg}
@@ -4944,7 +4944,7 @@ def task_projects_page(con) -> str:
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>📁 プロジェクト管理（大項目）</span>
-        <a class="btn sec" href="/tasks">← タスク看板へ</a>
+        <a class="btn sec" href="/tasks">← コンサルタスク看板へ</a>
       </h2>
       <p class="muted" style="font-size:13px">プロジェクトに期限と状態を持たせると、看板上部の一覧に出て、
       タスクの期日はプロジェクト期限から逆算して推奨されます。「🧠PJサマリ生成」で配下タスクの
