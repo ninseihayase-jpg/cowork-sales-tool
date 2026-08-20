@@ -288,6 +288,7 @@ def build_create_modal(con, prefill: dict, private_meta: dict) -> dict:
                      else {"type": "datepicker", "action_id": "due_date"})},
         _select("project", "プロジェクト", projects, prefill.get("project")),
         _select("category", "種類（空ならAI判定）", cats, prefill.get("category")),
+        _select("effort_level", "工数感（ガント表示用）", sfa_db.TASK_EFFORT_LEVELS, prefill.get("effort_level")),
     ]
     return {
         "type": "modal", "callback_id": "task_create",
@@ -332,7 +333,7 @@ def _view_val(state: dict, block_id: str):
 def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_date=None,
                             project=None, category=None, slack_channel=None, slack_ts=None,
                             slack_permalink=None, created_by=None, ai_category=True,
-                            is_admin=0, requester=None, return_created=False):
+                            is_admin=0, requester=None, return_created=False, effort_level=None):
     """モーダル/AI抽出の値からタスク作成。種類が空かつai_category=Trueならその場でAI判定
     （モーダル送信＝3秒制約のある文脈では ai_category=False にして背景で後追い判定）。
     is_admin=1 で事務タスク（requester=依頼者）。事務タスクは分類体系が異なるためAI後追い判定はしない。
@@ -369,7 +370,7 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
             status="受信箱", source="slack", is_admin=1 if is_admin else 0,
             requester=requester or None,
             slack_channel=slack_channel, slack_ts=slack_ts, slack_permalink=slack_permalink,
-            created_by=created_by)
+            created_by=created_by, effort_level=(effort_level if not is_admin else None))
         # 担当＋期限が揃えば受信箱→未着手へ自動整理（通常/事務とも）。事務タスクはSlack起票時に
         # 既定担当あみ＋期限3営業日後が入るため、実質すぐ未着手に上がる。担当未割当（担当空欄）の
         # 受付だけが受信箱に留まる。
@@ -513,6 +514,7 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
                      "text": f"🎯 コンサルタスク化しました\n*<{link}|{prefill['title']}>*"
                              + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
                     _task_action_block(tid),
+                    _task_effort_block(tid),
                 ])
 
 
@@ -533,7 +535,8 @@ def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: s
                 text=f"コンサルタスク化しました: {prefill['title']}",
                 blocks=[{"type": "section", "text": {"type": "mrkdwn",
                         "text": f"✅ コンサルタスク化しました *<{link}|{prefill['title']}>*"}},
-                        _task_action_block(tid)])
+                        _task_action_block(tid),
+                        _task_effort_block(tid)])
     return tid
 
 
@@ -591,6 +594,17 @@ def _task_action_block(task_id: int) -> dict:
     ]}
 
 
+def _task_effort_block(task_id: int) -> dict:
+    """コンサルタスクのガントチャート用「工数感」をSlackから即時設定するボタン行。
+    3秒制約のある起票フロー(dartリアクション/@メンション)では、その場でモーダルを
+    挟まず、起票直後の返信にこのボタンを添えて後から1クリックで設定してもらう。"""
+    return {"type": "actions", "block_id": f"tef_{task_id}", "elements": [
+        {"type": "button", "action_id": f"task_effort:{task_id}", "value": lvl,
+         "text": {"type": "plain_text", "text": f"工数感:{lvl}"}}
+        for lvl in sfa_db.TASK_EFFORT_LEVELS
+    ]}
+
+
 # ── インタラクティブ（ボタン・モーダル送信） ───────────────────────────────
 
 def handle_interactive(con, payload: dict) -> dict | None:
@@ -626,6 +640,7 @@ def _handle_view_submission(con, payload: dict) -> dict | None:
             due_date=_view_val(state, "due_date"),
             project=_view_val(state, "project"),
             category=_cat,
+            effort_level=_view_val(state, "effort_level"),
             slack_channel=meta.get("channel"), slack_ts=meta.get("ts"),
             created_by=owner or user_id, ai_category=False)  # AIは3秒制約回避のため背景で
         # 起票通知（本人へDM）
@@ -722,6 +737,15 @@ def _handle_block_action(con, payload: dict) -> None:
     elif name == "task_progress":
         view = build_progress_modal(tid, "progress", tk.get("title", ""))
         _slack_post("views.open", trigger_id=trigger_id, view=view)
+    elif name == "task_effort":
+        level = act.get("value") or ""
+        if level not in sfa_db.TASK_EFFORT_LEVELS:
+            _respond_url(resp_url, "⚠ 工数感の値が不正です")
+        else:
+            con.execute("UPDATE tasks SET effort_level=?, updated_at=datetime('now') WHERE id=?",
+                        (level, tid))
+            con.commit()
+            _respond_url(resp_url, f"📊 工数感を「{level}」に設定しました: {tk.get('title')}")
     elif name == "task_edit":
         # 起票と同じモーダルを既存値で開く（簡易編集）
         prefill = {"title": tk.get("title", ""), "next_action": tk.get("next_action") or "",

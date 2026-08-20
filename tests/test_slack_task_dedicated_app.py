@@ -92,6 +92,72 @@ def test_handle_reaction_posts_to_thread_not_ephemeral(con, monkeypatch):
     assert kwargs2.get("thread_ts") == "222.2"
 
 
+def test_dart_reaction_reply_includes_effort_level_buttons(con, monkeypatch):
+    """#93拡張(ガント): dartリアクション起票の返信に工数感(軽/中/重/超重)ボタンが付くこと。
+    3秒制約の起票フローではモーダルを挟まず、後から1クリックで工数感を設定できるように。"""
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "_fetch_message",
+                        lambda channel, ts, token=None: {"text": "資料を作る", "user": "U_AUTHOR"})
+    monkeypatch.setattr(slack_tasks, "_message_permalink", lambda channel, ts, token=None: None)
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+
+    slack_tasks.handle_reaction(con, {
+        "reaction": "dart", "user": "U_REACTOR", "item": {"channel": "C1", "ts": "111.1"},
+    })
+    _, kwargs = posts[-1]
+    action_ids = [el["action_id"] for block in kwargs["blocks"] if block.get("type") == "actions"
+                  for el in block["elements"]]
+    effort_labels = [el["text"]["text"] for block in kwargs["blocks"] if block.get("type") == "actions"
+                     for el in block["elements"] if el["action_id"].startswith("task_effort:")]
+    assert any(a.startswith("task_effort:") for a in action_ids)
+    assert sorted(l.replace("工数感:", "") for l in effort_labels) == sorted(sfa_db.TASK_EFFORT_LEVELS)
+
+
+def test_mention_task_reply_includes_effort_level_buttons(con, monkeypatch):
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+
+    slack_tasks.handle_mention_task(con, "C1", "1.0", "見積を送る", "U1")
+    _, kwargs = posts[-1]
+    action_ids = [el["action_id"] for block in kwargs["blocks"] if block.get("type") == "actions"
+                  for el in block["elements"]]
+    assert any(a.startswith("task_effort:") for a in action_ids)
+
+
+def test_task_effort_button_click_updates_effort_level(con, monkeypatch):
+    tid = sfa_db.upsert_task(con, title="ガント確認用タスク")
+    monkeypatch.setattr(slack_tasks, "_respond_url", lambda url, text: None)
+
+    slack_tasks._handle_block_action(con, {
+        "actions": [{"action_id": f"task_effort:{tid}", "value": "重"}],
+        "trigger_id": "", "response_url": "https://example.com/respond",
+    })
+    assert sfa_db.get_task(con, tid)["effort_level"] == "重"
+
+
+def test_task_effort_button_click_rejects_invalid_level(con, monkeypatch):
+    tid = sfa_db.upsert_task(con, title="不正値テスト用タスク", effort_level="軽")
+    responses = []
+    monkeypatch.setattr(slack_tasks, "_respond_url", lambda url, text: responses.append(text))
+
+    slack_tasks._handle_block_action(con, {
+        "actions": [{"action_id": f"task_effort:{tid}", "value": "でたらめ"}],
+        "trigger_id": "", "response_url": "https://example.com/respond",
+    })
+    assert sfa_db.get_task(con, tid)["effort_level"] == "軽"  # 変更されない
+    assert responses and "不正" in responses[0]
+
+
+def test_build_create_modal_includes_effort_level_select(con):
+    modal = slack_tasks.build_create_modal(con, {}, {})
+    block_ids = [b.get("block_id") for b in modal["blocks"]]
+    assert "effort_level" in block_ids
+
+
 def test_handle_mention_task_without_token_falls_back_to_default(con, monkeypatch):
     """token省略時は従来通りNone扱い（＝_slack_post内部でSLACK_TOKENへフォールバック）。
     後方互換の確認（既存のNegoCollection経由の呼び出しを壊さないこと）。"""
