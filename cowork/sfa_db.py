@@ -203,6 +203,28 @@ TASK_STATUSES = ["受信箱", "未着手", "対応中", "保留", "完了"]  # �
 TASK_OPEN_STATUSES = ["受信箱", "未着手", "対応中", "保留"]        # 完了以外
 TASK_PRIORITIES = ["高", "中", "低"]
 
+# コンサルタスクのガントチャート用「工数感」（ユーザー確定・2026-08-19）。
+# 期日から工数感の営業日数ぶん逆算した日を開始日にする（当日/作成日より前でもよい）。
+TASK_EFFORT_LEVELS = ["軽", "中", "重", "超重"]
+TASK_EFFORT_DAYS = {"軽": 1, "中": 2, "重": 5, "超重": 10}
+
+
+def task_gantt_range(due_date: str | None, effort_level: str | None) -> tuple[str | None, str | None]:
+    """(開始日, 終了日)を返す。終了日=期日。開始日=期日から工数感の営業日数ぶん逆算。
+    期日または工数感が無ければ開始日は算出不能(None)（終了日だけは期日があれば返す）。"""
+    due = (due_date or "").strip()
+    if not due:
+        return None, None
+    days = TASK_EFFORT_DAYS.get(effort_level or "")
+    if days is None:
+        return None, due
+    try:
+        d = date.fromisoformat(due)
+    except ValueError:
+        return None, None
+    start = add_business_days(d, -days)
+    return start.isoformat(), due
+
 # 繰り返し発生（定期複製）。事務タスク等のテンプレカードに付与し、複製タイミングが来たら
 # 期間分の新規カードを複製生成する（→ duplicate_due_recurring_tasks）。
 TASK_RECUR_FREQS = ["monthly", "weekly"]         # 頻度: 毎月 / 毎週
@@ -1189,6 +1211,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE tasks ADD COLUMN recur_dup_day INTEGER")
         if _task_cols and "recur_last_period" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN recur_last_period TEXT")
+        # コンサルタスクのガントチャート用「工数感」（軽/中/重/超重）。破壊的変更はしない。
+        if _task_cols and "effort_level" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN effort_level TEXT")
         # project列が存在する状態でインデックスを作る（SCHEMAではなくここで＝既存DBでも安全）
         if _task_cols:
             con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")
@@ -3126,7 +3151,7 @@ def delete_deal_issue_memo(con, memo_id: int) -> None:
 TASK_FIELDS = [
     "title", "detail", "project", "next_action", "assignee", "due_date", "status",
     "priority", "category", "is_admin", "requester", "link_type", "link_id", "source",
-    "slack_channel", "slack_ts", "slack_permalink", "created_by",
+    "slack_channel", "slack_ts", "slack_permalink", "created_by", "effort_level",
 ]
 
 

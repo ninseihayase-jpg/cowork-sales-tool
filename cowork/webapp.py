@@ -4088,9 +4088,12 @@ def _ai_summarize_project(pname: str, meta: str, task_lines: list) -> str | None
 
 
 def task_form(con, task=None) -> str:
-    """タスクの新規/編集フォーム（純粋な入力フォーム, #30）。"""
+    """タスクの新規/編集フォーム（純粋な入力フォーム, #30）。
+    事務タスク(is_admin=1)の編集もこのフォームを共用するため、工数感（ガント用・
+    コンサルタスク専用）はis_adminの時だけ非表示にする。"""
     task = task or {}
     is_edit = bool(task.get("id"))
+    is_admin_task = bool(task.get("is_admin"))
     owners = sfa_db.get_master_list(con, "owners")
     cats = sfa_db.get_master_list(con, "task_categories")
     projects = [p["name"] for p in sfa_db.list_task_projects(con)]
@@ -4140,6 +4143,7 @@ def task_form(con, task=None) -> str:
           <div><label>期限</label><input type="date" name="due_date" value="{_esc(task.get('due_date'))}"></div>
           <div><label>種類（空ならAIが自動判定）</label><select name="category"><option value=""></option>{_task_cat_optgroups(cats, task.get('category'))}</select></div>
           <div><label>状態</label><select name="status">{_opt(sfa_db.TASK_STATUSES, task.get('status') or ('未着手' if is_edit else '受信箱'))}</select></div>
+          {'' if is_admin_task else f'<div><label>工数感（ガント表示用）</label><select name="effort_level">{_opt(sfa_db.TASK_EFFORT_LEVELS, task.get("effort_level"))}</select></div>'}
           <div class="full"><label>関連（開発案件）</label><select name="link">{dev_opts}</select></div>
         </div>
         <div style="margin-top:14px"><button class="btn" type="submit">保存</button>
@@ -4270,6 +4274,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                    f'<option value="">種類</option>{_task_cat_optgroups(cats, t.get("category"))}</select>')
         ai_btn = (f'<button type="button" class="tc-ai" title="AIで種類を判定" '
                   f'onclick="tcAiCat({tid})">🤖種類</button>')
+        effort_sel = _tc_sel(tid, "effort_level", sfa_db.TASK_EFFORT_LEVELS, t.get("effort_level"), "工数感")
         due_input = (f'<input type="date" class="tc-due" style="color:{ucolor}" value="{_esc(due)}" '
                      f'title="期限" onchange="tcDue({tid},this.value)">')
         quick = "".join(
@@ -4369,7 +4374,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'<div class="tc-na{" empty" if not na else ""}"><span>▶</span>'
             f'<input value="{_esc(na)}" placeholder="次アクション未設定" title="次アクション" '
             f'onchange="taskField({tid},&#39;next_action&#39;,this.value)"></div>'
-            f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{link_html}{slack_html}</div>'
+            f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{effort_sel}{link_html}{slack_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}{rec}</div>'
             f'<div class="tc-notes" onclick="openNotes({tid},&#39;progress&#39;)" title="進捗ログを見る・追記">📝 {note_snip}</div>'
             f'{summary_html}'
@@ -4471,6 +4476,10 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>コンサルタスク（{len(tasks)}） {filt_note}</span>
         <span style="display:flex;gap:8px;flex-wrap:wrap">
+          <span class="btn sec" style="background:#eef2ff;border-color:#c7d2fe;padding:0;overflow:hidden;display:inline-flex">
+            <a href="/tasks" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">🗂 看板</a>
+            <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
+          </span>
           <a class="btn sec" href="/tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
           {seed_btn}
           <a class="btn sec" href="/tasks/digest">🔔 朝ダイジェスト</a>
@@ -4483,6 +4492,149 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
       {filter_row}
       <div id="taskBoard">{columns}</div>
     </div>{quick_js}{_TASKS_JS}{_DESK_CSS}{_DESK_RECUR_JS}"""
+
+
+_GANTT_CSS = """<style>
+.gantt-wrap{overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px;margin-top:6px}
+.gantt-grid{display:grid;grid-auto-rows:26px;align-items:center;font-size:11px;min-width:max-content;position:relative}
+.gantt-daycell{border-left:1px solid #f1f5f9;height:100%}
+.gantt-daycell.weekend{background:#f8fafc}
+.gantt-daycell.today{background:#fef3c7}
+.gantt-lbl{position:sticky;left:0;background:#fff;z-index:2;padding:2px 8px;font-size:12px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-right:1px solid #e2e8f0;height:100%;
+  display:flex;align-items:center}
+.gantt-lbl.grp{font-weight:700;background:#f1f5f9;color:#334155}
+.gantt-daylabel{font-size:10px;color:#64748b;text-align:center;border-left:1px solid #f1f5f9}
+.gantt-daylabel.weekend{background:#f8fafc}
+.gantt-daylabel.today{background:#fef3c7;font-weight:700}
+.gantt-bar{border-radius:4px;height:16px;align-self:center;font-size:10px;color:#fff;
+  white-space:nowrap;overflow:hidden;padding:0 4px;line-height:16px;text-decoration:none;display:block;z-index:1}
+</style>"""
+
+
+def tasks_gantt_page(con) -> str:
+    """コンサルタスクのガントチャートビュー（ユーザー確定仕様・2026-08-19）。
+    工数感×期日から所要日数・開始日（期日から営業日逆算、当日/作成日より前でも可）を算出し、
+    大分類(project×category)ごとにグループ化。並び順:
+      グループ間＝グループ内タスクの所要日数合計が多い順。
+      グループ内＝開始日が古い順（今日以前は同列扱い）→期日が近い順。
+    工数感/期日が未設定でガント化できないタスクは、件数と一覧を明示して別枠に出す
+    （バーが引けないタスクを黙って消さない）。"""
+    today = _today_jst()
+    all_tasks = sfa_db.list_tasks(con, admin=False)
+    open_tasks = [t for t in all_tasks if (t.get("status") or "") != "完了"]
+
+    ready, missing = [], []
+    for t in open_tasks:
+        start, end = sfa_db.task_gantt_range(t.get("due_date"), t.get("effort_level"))
+        if start and end:
+            ready.append({**t, "_start": start, "_end": end})
+        else:
+            missing.append(t)
+
+    def _days(t):
+        return sfa_db.TASK_EFFORT_DAYS.get(t.get("effort_level") or "", 0)
+
+    groups: dict = {}
+    for t in ready:
+        key = (t.get("project") or "（未設定）", t.get("category") or "（未設定）")
+        groups.setdefault(key, []).append(t)
+    group_items = sorted(groups.items(), key=lambda kv: -sum(_days(t) for t in kv[1]))
+
+    def _sort_key(t):
+        return (max(t["_start"], today.isoformat()), t["_end"])
+
+    d3 = sfa_db.add_business_days(today, 3).isoformat()
+    weekend_end = (today + timedelta(days=6 - today.weekday())).isoformat()
+
+    if not ready:
+        body = ('<p class="muted" style="margin:0">工数感と期日の両方が設定されたコンサルタスクが'
+                'まだありません。カード上で工数感（軽/中/重/超重）を選ぶとガントに表示されます。</p>')
+    else:
+        min_d = min(date.fromisoformat(t["_start"]) for t in ready)
+        min_d = min(min_d, today)
+        max_d = max(date.fromisoformat(t["_end"]) for t in ready)
+        n_days = (max_d - min_d).days + 1
+        col_tpl = f"220px repeat({n_days}, 22px)"
+
+        def _col_of(d: date) -> int:
+            return (d - min_d).days + 2  # 列1=ラベル列。列2=min_d
+
+        def _day_bg_cells(row: int) -> str:
+            out = []
+            for i in range(n_days):
+                dd = min_d + timedelta(days=i)
+                cls = "gantt-daycell"
+                if not sfa_db.is_business_day(dd):
+                    cls += " weekend"
+                if dd == today:
+                    cls += " today"
+                out.append(f'<div class="{cls}" style="grid-row:{row};grid-column:{i + 2}"></div>')
+            return "".join(out)
+
+        cells = ['<div class="gantt-lbl grp" style="grid-row:1;grid-column:1"></div>']
+        for i in range(n_days):
+            dd = min_d + timedelta(days=i)
+            cls = "gantt-daylabel"
+            if not sfa_db.is_business_day(dd):
+                cls += " weekend"
+            if dd == today:
+                cls += " today"
+            label = f"{dd.month}/{dd.day}" if (dd.day == 1 or dd.weekday() == 0) else ""
+            cells.append(f'<div class="{cls}" style="grid-row:1;grid-column:{i + 2}">{label}</div>')
+
+        row = 2
+        for (proj, cat), items in group_items:
+            total = sum(_days(t) for t in items)
+            cells.append(
+                f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
+                f'📁{_esc(proj)} ／ 🏷{_esc(cat)}（{len(items)}件・計{total}営業日）</div>')
+            row += 1
+            for t in sorted(items, key=_sort_key):
+                cells.append(_day_bg_cells(row))
+                s = date.fromisoformat(t["_start"])
+                e = date.fromisoformat(t["_end"])
+                ucolor, _ = _task_urgency(t.get("due_date") or "", today.isoformat(), d3, weekend_end)
+                cells.append(
+                    f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1">'
+                    f'<a href="/tasks#tc-{t["id"]}" style="color:inherit;text-decoration:none;'
+                    f'overflow:hidden;text-overflow:ellipsis" title="{_esc(t.get("title"))}">'
+                    f'{_esc(t.get("title"))}</a></div>')
+                c1, c2 = _col_of(s), _col_of(e) + 1
+                cells.append(
+                    f'<a href="/tasks#tc-{t["id"]}" class="gantt-bar" '
+                    f'style="grid-row:{row};grid-column:{c1} / {c2};background:{ucolor}" '
+                    f'title="{_esc(t.get("title"))}｜{_esc(t["_start"])}〜{_esc(t["_end"])}'
+                    f'（工数感:{_esc(t.get("effort_level") or "")}）">{_esc(t.get("title"))}</a>')
+                row += 1
+        body = (f'<div class="gantt-wrap"><div class="gantt-grid" '
+                f'style="grid-template-columns:{col_tpl}">{"".join(cells)}</div></div>')
+
+    missing_html = ""
+    if missing:
+        names = "、".join(_esc(t.get("title") or "(無題)") for t in missing[:20])
+        more = f"　他{len(missing) - 20}件" if len(missing) > 20 else ""
+        missing_html = (f'<p class="muted" style="font-size:12px;margin:8px 0 0">'
+                        f'⚠ 工数感または期日が未設定のためガントに表示していないタスク '
+                        f'{len(missing)}件: {names}{more}</p>')
+
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>コンサルタスク ガントチャート</span>
+        <span style="display:flex;gap:8px;flex-wrap:wrap">
+          <span class="btn sec" style="background:#eef2ff;border-color:#c7d2fe;padding:0;overflow:hidden;display:inline-flex">
+            <a href="/tasks" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗂 看板</a>
+            <a href="/tasks/gantt" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📊 ガント</a>
+          </span>
+          <a class="btn" href="/tasks/new">＋新規コンサルタスク</a>
+        </span>
+      </h2>
+      <p class="muted" style="font-size:12px">大分類（プロジェクト×種類）ごとに、合計所要日数が多いグループから表示。
+      グループ内は開始日が古い順（今日以前は同列）→期日が近い順。</p>
+      {body}
+      {missing_html}
+    </div>{_GANTT_CSS}"""
 
 
 # 通常タスク看板(/tasks)・事務タスク看板(/desk-tasks)共通の「上部集計ボックス」CSS
@@ -13183,6 +13335,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         urgency=(_tq.get("urgency", [""])[0] or None),
                         pinned=bool(_tq.get("pinned", [""])[0]),
                         deleted=bool(_tq.get("deleted", [""])[0]))))
+                elif path == "/tasks/gantt":
+                    self._send(render(tasks_gantt_page(con)))
                 elif path == "/desk-tasks":
                     _dq = self._qs()
                     self._send(render(desk_tasks_page(
@@ -13749,6 +13903,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         status=f.get("status") or "受信箱",
                         category=_cat,
                         link_type=_lt, link_id=_li, source="web",
+                        effort_level=f.get("effort_level") or None,
                     )
                     # 担当＋期限が揃っていれば受信箱→未着手へ自動整理
                     _task_auto_triage(con, _saved_id)
@@ -13926,7 +14081,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _value = f.get("value", "")
                     _allowed = {"status", "assignee", "due_date", "category", "priority",
                                 "title", "project", "next_action", "pinned", "slack_permalink",
-                                "requester"}
+                                "requester", "effort_level"}
                     if _field not in _allowed:
                         self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(), ctype="application/json")
                     elif _field == "slack_permalink" and _value and not _value.startswith(("http://", "https://")):
@@ -13935,6 +14090,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(json.dumps({"ok": False, "error": "不正な状態"}).encode(), ctype="application/json")
                     elif _field == "priority" and _value and _value not in sfa_db.TASK_PRIORITIES:
                         self._send(json.dumps({"ok": False, "error": "不正な優先度"}).encode(), ctype="application/json")
+                    elif _field == "effort_level" and _value and _value not in sfa_db.TASK_EFFORT_LEVELS:
+                        self._send(json.dumps({"ok": False, "error": "不正な工数感"}).encode(), ctype="application/json")
                     elif _field == "status":
                         _prev_st = (sfa_db.get_task(con, _tid) or {}).get("status") or ""
                         sfa_db.set_task_status(con, _tid, _value)
