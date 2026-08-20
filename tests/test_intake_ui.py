@@ -45,6 +45,45 @@ def test_inbox_assign_has_type_search_list_ui():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_inbox_candidate_matches_common_company_name_abbreviation():
+    """実事故の回帰確認: 会議タイトル「川崎重工向け...」が、正式社名「川崎重工業株式会社」に
+    対して候補として出せなかった不具合の修正。法人格接尾辞の除去＋末尾1文字の省略許容で
+    「重工業→重工」のような日本語社名の慣用的な略称を候補に出せること。"""
+    d, con = _fresh()
+    try:
+        acc = sfa_db.upsert_account(con, name="川崎重工業株式会社")
+        sfa_db.upsert_deal(con, account_id=acc, deal_name="生産管理部 太田 淳 部長", stage="要件詰め")
+        sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="m2",
+                                    title="(I) 川崎重工向けデモアプリ集中討議", occurred_on="2026-08-20",
+                                    transcript="本文", attendees_json="[]")
+        html = _s(webapp.intake_inbox_page(con))
+        assert "候補（クリックで選択）" in html
+        assert "川崎重工業株式会社" in html.split("候補（クリックで選択）")[1][:300]
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_inbox_card_checkbox_and_discard_are_on_header_row():
+    """#実事故の回帰確認: チェックボックスがグローバルCSS(input{width:100%})の影響で
+    タイトルと同じ行に乗らず折り返していた不具合、および「破棄」がカード最下部の別行に
+    あった配置の修正。チェックボックスにwidth:auto、破棄をヘッダ行内に配置。"""
+    d, con = _fresh()
+    try:
+        acc = sfa_db.upsert_account(con, name="テスト社")
+        sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="m3",
+                                    title="定例会議", occurred_on="2026-08-20",
+                                    transcript="本文", attendees_json="[]")
+        html = _s(webapp.intake_inbox_page(con))
+        assert 'style="width:auto;flex:none;margin:0"' in html  # チェックボックスの折り返し防止
+        idx_discard = html.find("破棄")
+        idx_assign_btn = html.find("この会議を割り当てる")
+        assert 0 < idx_discard < idx_assign_btn, "破棄ボタンがヘッダ行（割り当てフォームより前）にない"
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_hearing_review_expand_mailto_and_checkbox():
     d, con = _fresh()
     try:

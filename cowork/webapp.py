@@ -9754,17 +9754,40 @@ function inboxBulkDelete(){
 """
 
 
+_CORP_SUFFIXES = ("株式会社", "有限会社", "合同会社", "合名会社", "合資会社", "（株）", "(株)", "（有）", "(有)")
+
+
+def _inbox_name_hits(name: str, text: str) -> bool:
+    """会議タイトル等に社名/案件名が含まれるかを判定。会社の法人格接尾辞（株式会社等）を除いた
+    上で、さらに末尾1文字までの省略（例: 「川崎重工業」→「川崎重工」）も許容する
+    （日本語の社名は「重工業→重工」のように略されて会議名に書かれることが多いため、
+    完全一致の部分文字列判定だけでは実在の候補すら出せない不具合の修正）。"""
+    if not name:
+        return False
+    core = name
+    for suf in _CORP_SUFFIXES:
+        core = core.replace(suf, "")
+    core = core.strip()
+    if not core:
+        return False
+    if core in text:
+        return True
+    if len(core) >= 3 and core[:-1] in text:
+        return True
+    return False
+
+
 def _inbox_candidates(title: str, attendees: list, deals: list, issues: list) -> list:
     """会議タイトル/参加者から割り当て候補を推定（題名にアカウント名/案件名/論点名を含むもの）。"""
     t = (title or "").lower()
     out = []
     for d in deals:
         an, dn = (d.get("account_name") or ""), (d.get("deal_name") or "")
-        if (an and an.lower() in t) or (dn and dn.lower() in t):
+        if _inbox_name_hits(an.lower(), t) or _inbox_name_hits(dn.lower(), t):
             out.append((f"deal:{d['id']}", f'商談: {an} / {dn}'))
     for it in issues:
         nm = it.get("issue") or ""
-        if nm and nm.lower() in t:
+        if _inbox_name_hits(nm.lower(), t):
             out.append((f"issue:{it['id']}", f'論点: {nm}'))
     return out[:5]
 
@@ -9795,19 +9818,27 @@ def intake_inbox_page(con) -> str:
                     for v, lbl in _cands)
                 _cand_html = (f'<div style="margin:6px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
                               f'<span class="muted" style="font-size:11px">候補（クリックで選択）: </span>{_cand_btns}</div>')
+            _discard_form = (
+                f'<form method="post" action="/intake-transcript/{t["id"]}/delete" style="margin:0" '
+                f'onsubmit="return confirm(\'この取り込みを破棄しますか？\')">'
+                f'<input type="hidden" name="return_to" value="/intake-inbox">'
+                f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer;'
+                f'font-size:11px;padding:0;white-space:nowrap">破棄</button></form>')
             cards.append(
-                f'<div class="inbox-card" id="inbox-{t["id"]}" style="border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#fff">'
+                f'<div class="inbox-card" id="inbox-{t["id"]}" style="border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;background:#fff">'
                 f'<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">'
-                f'<div style="font-weight:600;font-size:14px">'
+                f'<div style="font-weight:600;font-size:14px;display:flex;align-items:center;gap:6px;min-width:0">'
                 f'<input type="checkbox" name="ids" value="{t["id"]}" form="inbox_bulk_form" '
-                f'onchange="inboxBulkUpdate()" style="margin-right:6px;vertical-align:middle">'
-                f'🎙️ {_esc(t.get("title") or "（無題）")}</div>'
-                f'<div class="muted" style="font-size:12px">{_esc(t.get("external_source") or "")} ・ '
-                f'{_esc(t.get("occurred_on") or (t.get("created_at") or "")[:10])} ・ 文字数 {t.get("text_len") or 0:,}</div></div>'
+                f'onchange="inboxBulkUpdate()" style="width:auto;flex:none;margin:0">'
+                f'<span style="overflow:hidden;text-overflow:ellipsis">🎙️ {_esc(t.get("title") or "（無題）")}</span></div>'
+                f'<div style="display:flex;align-items:center;gap:10px;flex:none">'
+                f'<span class="muted" style="font-size:12px;white-space:nowrap">{_esc(t.get("external_source") or "")} ・ '
+                f'{_esc(t.get("occurred_on") or (t.get("created_at") or "")[:10])} ・ 文字数 {t.get("text_len") or 0:,}</span>'
+                f'{_discard_form}</div></div>'
                 + (f'<div class="muted" style="font-size:12px;margin-top:4px">参加者: {_esc(_att_txt)}</div>' if _att_txt else "")
                 + _cand_html
                 + f'<form method="post" action="/intake-inbox/{t["id"]}/assign" '
-                  f'style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px" '
+                  f'style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px" '
                   f'onsubmit="var b=this.querySelector(\'button[type=submit]\');setTimeout(function(){{if(b){{b.disabled=true;b.textContent=\'処理中…\';}}}},0);">'
                   f'<select name="ttype" onchange="assignFilter(this.form)" style="width:auto">'
                   f'<option value="">種別</option><option value="deal">商談</option><option value="issue">論点</option></select>'
@@ -9818,22 +9849,18 @@ def intake_inbox_page(con) -> str:
                   f'<button class="btn" type="submit">この会議を割り当てる</button>'
                   f'<a class="btn sec" href="/intake-transcript/{t["id"]}/view" target="_blank" style="font-size:12px">本文</a>'
                   f'</form>'
-                  f'<form method="post" action="/intake-transcript/{t["id"]}/delete" style="margin:6px 0 0" '
-                  f'onsubmit="return confirm(\'この取り込みを破棄しますか？\')">'
-                  f'<input type="hidden" name="return_to" value="/intake-inbox">'
-                  f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer;font-size:11px">破棄</button></form>'
                 f'</div>')
         rows = (
             '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
             '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer">'
-            '<input type="checkbox" id="inbox_chk_all" '
+            '<input type="checkbox" id="inbox_chk_all" style="width:auto;flex:none;margin:0" '
             'onchange="document.querySelectorAll(\'input[name=ids][form=inbox_bulk_form]\').forEach(c=>c.checked=this.checked);inboxBulkUpdate()">全選択</label>'
             '<button type="button" id="inbox_bulk_btn" class="btn sec" disabled '
             'style="font-size:12px;padding:4px 10px;border-color:#c53030;color:#c53030" '
             'onclick="inboxBulkDelete()">選択した項目を破棄（<span id="inbox_bulk_n">0</span>件）</button>'
             '</div>'
             '<form id="inbox_bulk_form" method="post" action="/intake-inbox/bulk_delete"></form>'
-            '<div style="display:flex;flex-direction:column;gap:10px">' + "".join(cards) + '</div>')
+            '<div style="display:flex;flex-direction:column;gap:8px">' + "".join(cards) + '</div>')
     _cfg_warn = "" if (JAMIE_WEBHOOK_SECRET or JAMIE_WEBHOOK_API_KEY) else (
         '<div style="background:#fef2f2;border-left:3px solid #dc2626;padding:6px 10px;margin:0 0 10px;'
         'font-size:12px;color:#991b1b">⚠ Jamie Webhookの受信シークレットが未設定です（Render環境変数 '
