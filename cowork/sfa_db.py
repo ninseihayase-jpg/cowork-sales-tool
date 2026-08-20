@@ -1075,6 +1075,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         cols = {r[1] for r in con.execute("PRAGMA table_info(activities)")}
         if "contact_name" not in cols:
             con.execute("ALTER TABLE activities ADD COLUMN contact_name TEXT")
+        acc_cols = {r[1] for r in con.execute("PRAGMA table_info(accounts)")}
+        if "aliases" not in acc_cols:
+            # 取り込みインボックスの候補検出（_inbox_candidates）が社名の慣用的な略称
+            # （例: 住友重工業→住重）を機械的には検出できないため、手動登録の辞書として追加。
+            con.execute("ALTER TABLE accounts ADD COLUMN aliases TEXT")
         lead_cols = {r[1] for r in con.execute("PRAGMA table_info(leads)")}
         for col, typedef in [
             ("industry", "TEXT"),
@@ -1581,7 +1586,7 @@ def merge_accounts(con, keep_id: int, drop_ids: list[int]) -> dict:
 
 def list_deals(con, status: str | None = "open", owner: str | None = None,
                stage: str | None = None) -> list[dict]:
-    q = """SELECT d.*, a.name AS account_name, a.industry, a.company_size
+    q = """SELECT d.*, a.name AS account_name, a.industry, a.company_size, a.aliases AS account_aliases
            FROM deals d LEFT JOIN accounts a ON a.id = d.account_id WHERE 1=1"""
     params: list = []
     if status == "open":
@@ -1839,22 +1844,44 @@ def reopen_deal(con, deal_id: int) -> dict:
 
 
 # ---- 更新系 ----
-def upsert_account(con, *, id=None, name, industry=None, company_size=None, note=None, commit: bool = True) -> int:
+_UNSET = object()
+
+
+def upsert_account(con, *, id=None, name, industry=None, company_size=None, note=None,
+                   aliases=_UNSET, commit: bool = True) -> int:
+    """aliases省略時（既存の /account/save 等の呼び出し）は列を触らない。
+    None/文字列を明示的に渡した時だけ更新する（一括登録画面からの誤クリア防止）。"""
     if id is not None:
-        con.execute(
-            "UPDATE accounts SET name=?, industry=?, company_size=?, note=?, updated_at=datetime('now') WHERE id=?",
-            (name, industry, company_size, note, id),
-        )
+        if aliases is _UNSET:
+            con.execute(
+                "UPDATE accounts SET name=?, industry=?, company_size=?, note=?, "
+                "updated_at=datetime('now') WHERE id=?",
+                (name, industry, company_size, note, id),
+            )
+        else:
+            con.execute(
+                "UPDATE accounts SET name=?, industry=?, company_size=?, note=?, aliases=?, "
+                "updated_at=datetime('now') WHERE id=?",
+                (name, industry, company_size, note, aliases, id),
+            )
         if commit:
             con.commit()
         return int(id)
     cur = con.execute(
-        "INSERT INTO accounts (name, industry, company_size, note) VALUES (?,?,?,?)",
-        (name, industry, company_size, note),
+        "INSERT INTO accounts (name, industry, company_size, note, aliases) VALUES (?,?,?,?,?)",
+        (name, industry, company_size, note, (None if aliases is _UNSET else aliases)),
     )
     if commit:
         con.commit()
     return cur.lastrowid
+
+
+def set_account_aliases(con, account_id: int, aliases: str, commit: bool = True) -> None:
+    """候補検出用の略称辞書（読点/カンマ区切り）を1件更新する（一括登録画面から使用）。"""
+    con.execute("UPDATE accounts SET aliases=?, updated_at=datetime('now') WHERE id=?",
+                ((aliases or "").strip() or None, int(account_id)))
+    if commit:
+        con.commit()
 
 
 def upsert_account_merge(con, *, name: str, industry=None, company_size=None, commit: bool = True) -> int:

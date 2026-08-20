@@ -84,7 +84,7 @@ def _get(url, headers=None):
 
 
 def _post(url, data, headers=None):
-    body = urllib.parse.urlencode(data).encode()
+    body = urllib.parse.urlencode(data, doseq=True).encode()
     h = dict(headers or {})
     h["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=body, headers=h, method="POST")
@@ -658,6 +658,29 @@ def test_activity_add_requires_date_and_type(server, db_path):
           {"deal_id": str(did), "type": "面談", "occurred_on": "2026-07-15", "body": "面談実施"},
           headers=_auth_header())
     assert _act_count() == 1
+
+
+def test_account_aliases_bulk_save_route(server, db_path):
+    """/account-aliases/save がHTTP経由でも正しく複数アカウントの略称を一括保存すること。"""
+    con = sfa_db.connect(db_path)
+    acc1 = con.execute("INSERT INTO accounts(name) VALUES('住友重工業株式会社')").lastrowid
+    acc2 = con.execute("INSERT INTO accounts(name) VALUES('川崎重工業株式会社')").lastrowid
+    con.commit()
+    con.close()
+
+    code, _ = _post(server + "/account-aliases/save", {
+        "aids[]": [str(acc1), str(acc2)],
+        f"aliases__{acc1}": "住重、住重工",
+        f"aliases__{acc2}": "川重",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row1 = con2.execute("SELECT aliases FROM accounts WHERE id=?", (acc1,)).fetchone()
+    row2 = con2.execute("SELECT aliases FROM accounts WHERE id=?", (acc2,)).fetchone()
+    assert row1["aliases"] == "住重、住重工"
+    assert row2["aliases"] == "川重"
+    con2.close()
 
 
 def test_deal_reopen_from_edit(server, db_path):

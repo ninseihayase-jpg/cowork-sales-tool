@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import difflib
 import hashlib
 import hmac
 import html
@@ -530,6 +531,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
       <a href="/data-tagging">🏷 データ整備（終了理由・活動）</a>
       <a href="/exhibition-tagging">🎪 展示会名タグ付け</a>
       <a href="/tech-seed-tagging">🌱 技術シード一括付け</a>
+      <a href="/account-aliases">🏢 アカウント略称一括登録</a>
       <a href="/slack-memo-backfill">🩹 Slack追記メモ復旧</a>
       <div class="grp">システム</div>
       <a href="/backups">🗄 バックアップ</a>
@@ -3697,6 +3699,38 @@ def tech_seed_tagging_page(con) -> str:
       </table></div>
       <div style="margin-top:12px"><button class="btn" type="submit">💾 まとめて保存</button>
         <a class="btn sec" href="/dev-projects">キャンセル</a></div>
+    </div>
+    </form>"""
+
+
+def account_aliases_page(con) -> str:
+    """アカウントの略称（候補検出用）一括登録画面。取り込みインボックスの候補検出
+    (_inbox_candidates)が「住友重工業→住重」のような慣用的なニックネームを機械的には
+    導出できないため、辞書として手動登録する。読点/カンマ区切りで複数登録可。"""
+    accounts = sfa_db.list_accounts(con)
+    _rows = "".join(
+        f'<tr><td><a href="/account/{a["id"]}">{_esc(a.get("name") or "")}</a>'
+        f'<input type="hidden" name="aids[]" value="{a["id"]}"></td>'
+        f'<td><input type="text" name="aliases__{a["id"]}" value="{_esc(a.get("aliases") or "")}" '
+        f'placeholder="例: 住重、住重工" style="width:100%"></td></tr>'
+        for a in accounts
+    ) or '<tr><td colspan=2 class=muted>アカウントがありません。</td></tr>'
+    return f"""
+    <form method="post" action="/account-aliases/save" id="accAliasForm">
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>アカウント略称 一括登録（{len(accounts)}件）</span>
+        <a class="btn sec" href="/accounts">← アカウント一覧へ</a></h2>
+      {_save_bar('accAliasForm', cancel_url='/accounts', label='💾 まとめて保存')}
+      <p class="muted" style="font-size:12px">取り込みインボックス（Jamie/Zoom）の候補検出は、会議名に社名の略称・通称
+      （例: 「住友重工業株式会社」→「住重」）が使われていると自動では見つけられません。ここで登録した略称は
+      次回以降、会議名に含まれていれば候補として自動的に候補一覧に出るようになります（読点/カンマ区切りで複数可）。</p>
+      <div style="overflow:auto;max-height:72vh"><table style="min-width:600px">
+        <tr>{_sticky_th('アカウント', '220px')}{_sticky_th('略称（読点/カンマ区切りで複数可）')}</tr>
+        {_rows}
+      </table></div>
+      <div style="margin-top:12px"><button class="btn" type="submit">💾 まとめて保存</button>
+        <a class="btn sec" href="/accounts">キャンセル</a></div>
     </div>
     </form>"""
 
@@ -9757,39 +9791,61 @@ function inboxBulkDelete(){
 _CORP_SUFFIXES = ("株式会社", "有限会社", "合同会社", "合名会社", "合資会社", "（株）", "(株)", "（有）", "(有)")
 
 
-def _inbox_name_hits(name: str, text: str) -> bool:
-    """会議タイトル等に社名/案件名が含まれるかを判定。会社の法人格接尾辞（株式会社等）を除いた
-    上で、さらに末尾1文字までの省略（例: 「川崎重工業」→「川崎重工」）も許容する
-    （日本語の社名は「重工業→重工」のように略されて会議名に書かれることが多いため、
-    完全一致の部分文字列判定だけでは実在の候補すら出せない不具合の修正）。"""
+def _inbox_name_score(name: str, aliases: str | None, text: str) -> int:
+    """会議タイトル等に社名/案件名が含まれる度合いを0〜100で返す（0=無関係、候補に出さない）。
+    - 完全一致（法人格接尾辞を除いた上での部分文字列一致）=100
+    - 登録済み略称（accounts.aliases、読点/カンマ区切り。例:「住友重工業」→「住重」のような
+      機械的に導出できない慣用ニックネームは辞書登録でしか拾えない）=95
+    - それ以外は最長共通部分文字列(difflib)のcoverageでスケーリング（50〜90、coverage<0.5は0）
+      例: 「川崎重工業」→会議名「川崎重工」は最長一致4/5=0.8で高スコア。
+    """
     if not name:
-        return False
+        return 0
     core = name
     for suf in _CORP_SUFFIXES:
         core = core.replace(suf, "")
     core = core.strip()
     if not core:
-        return False
+        return 0
     if core in text:
-        return True
-    if len(core) >= 3 and core[:-1] in text:
-        return True
-    return False
+        return 100
+    for al in (aliases or "").replace("、", ",").split(","):
+        al = al.strip()
+        if al and al in text:
+            return 95
+    if len(core) < 2:
+        return 0
+    m = difflib.SequenceMatcher(None, core, text, autojunk=False).find_longest_match(
+        0, len(core), 0, len(text))
+    if m.size < 2:
+        return 0
+    coverage = m.size / len(core)
+    if coverage < 0.5:
+        return 0
+    return min(90, round(coverage * 90))
 
 
 def _inbox_candidates(title: str, attendees: list, deals: list, issues: list) -> list:
-    """会議タイトル/参加者から割り当て候補を推定（題名にアカウント名/案件名/論点名を含むもの）。"""
+    """会議タイトル/参加者から割り当て候補を推定し、一致度が高いものから最大5件を返す
+    （0点=無関係は除外。#実事故: 完全一致以外を一切候補に出せず「川崎重工業」に対し
+    会議名「川崎重工」がヒットしなかった不具合、および「住友重工業→住重」のような
+    アルゴリズムでは導出不能な慣用ニックネームへの対応として、辞書登録＋ファジー一致に拡張）。"""
     t = (title or "").lower()
-    out = []
+    scored = []
     for d in deals:
         an, dn = (d.get("account_name") or ""), (d.get("deal_name") or "")
-        if _inbox_name_hits(an.lower(), t) or _inbox_name_hits(dn.lower(), t):
-            out.append((f"deal:{d['id']}", f'商談: {an} / {dn}'))
+        aliases = d.get("account_aliases")
+        score = max(_inbox_name_score(an.lower(), aliases, t),
+                    _inbox_name_score(dn.lower(), None, t))
+        if score > 0:
+            scored.append((score, f"deal:{d['id']}", f'商談: {an} / {dn}'))
     for it in issues:
         nm = it.get("issue") or ""
-        if _inbox_name_hits(nm.lower(), t):
-            out.append((f"issue:{it['id']}", f'論点: {nm}'))
-    return out[:5]
+        score = _inbox_name_score(nm.lower(), None, t)
+        if score > 0:
+            scored.append((score, f"issue:{it['id']}", f'論点: {nm}'))
+    scored.sort(key=lambda x: -x[0])
+    return [(v, lbl) for _, v, lbl in scored[:5]]
 
 
 def intake_inbox_page(con) -> str:
@@ -13353,6 +13409,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(tech_seed_master_page(con)))
                 elif path == "/tech-seed-tagging":
                     self._send(render(tech_seed_tagging_page(con)))
+                elif path == "/account-aliases":
+                    self._send(render(account_aliases_page(con)))
                 elif path == "/tasks":
                     _tq = self._qs()
                     self._send(render(tasks_page(
@@ -13890,6 +13948,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect("/tech-seed-master")
 
                 # ── 技術シード 一括タグ付け（#58）: 表示中の全開発案件のシードをまとめて保存 ──
+                elif path == "/account-aliases/save":
+                    for _aid_s in f_list.get("aids[]", []):
+                        try:
+                            _aid = int(_aid_s)
+                        except (ValueError, TypeError):
+                            continue
+                        _aliases = f.get(f"aliases__{_aid}") or ""
+                        sfa_db.set_account_aliases(con, _aid, _aliases, commit=False)
+                    con.commit()
+                    self._redirect("/account-aliases")
+
                 elif path == "/tech-seed-tagging/save":
                     for _pid_s in f_list.get("pids[]", []):
                         try:

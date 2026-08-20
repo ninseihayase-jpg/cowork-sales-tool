@@ -64,6 +64,49 @@ def test_inbox_candidate_matches_common_company_name_abbreviation():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_inbox_candidate_uses_registered_alias_dictionary():
+    """住友重工業→住重のような、機械的には導出不能な慣用ニックネームは辞書登録
+    (accounts.aliases)経由でのみ候補に出せる。登録前は出ず、登録後は出ることを確認。"""
+    d, con = _fresh()
+    try:
+        acc = sfa_db.upsert_account(con, name="住友重工業株式会社")
+        sfa_db.upsert_deal(con, account_id=acc, deal_name="設備投資案件", stage="要件詰め")
+        sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="m4",
+                                    title="住重様との定例MTG", occurred_on="2026-08-20",
+                                    transcript="本文", attendees_json="[]")
+
+        html_before = _s(webapp.intake_inbox_page(con))
+        assert "候補（クリックで選択）" not in html_before, "辞書未登録なのに候補が出ている"
+
+        sfa_db.set_account_aliases(con, acc, "住重、住重工")
+        html_after = _s(webapp.intake_inbox_page(con))
+        assert "候補（クリックで選択）" in html_after
+        assert "住友重工業株式会社" in html_after.split("候補（クリックで選択）")[1][:300]
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_inbox_candidates_ranked_by_confidence_exact_before_fuzzy():
+    """完全一致(score100)は部分一致(fuzzy)より必ず上位に来ること。"""
+    deals = [
+        {"id": 1, "account_name": "川崎重工業株式会社", "deal_name": "部分一致のみ", "account_aliases": None},
+        {"id": 2, "account_name": "加藤製作所株式会社", "deal_name": "完全一致するはず", "account_aliases": None},
+    ]
+    cands = webapp._inbox_candidates("加藤製作所株式会社と川崎重工向けの合同会議", [], deals, [])
+    assert cands[0][1].startswith("商談: 加藤製作所株式会社")
+
+
+def test_inbox_candidates_caps_at_five_and_excludes_zero_score():
+    """関係のない会社は0点で除外され、5件を超えても上位5件だけになること。"""
+    deals = [{"id": i, "account_name": f"サンプル商事{i}株式会社", "deal_name": "", "account_aliases": None}
+             for i in range(7)]
+    cands = webapp._inbox_candidates("サンプル商事4株式会社との打ち合わせ", [], deals, [])
+    assert len(cands) <= 5
+    unrelated = [{"id": 99, "account_name": "全く無関係な株式会社", "deal_name": "", "account_aliases": None}]
+    assert webapp._inbox_candidates("サンプル商事4株式会社との打ち合わせ", [], unrelated, []) == []
+
+
 def test_inbox_card_checkbox_and_discard_are_on_header_row():
     """#実事故の回帰確認: チェックボックスがグローバルCSS(input{width:100%})の影響で
     タイトルと同じ行に乗らず折り返していた不具合、および「破棄」がカード最下部の別行に
