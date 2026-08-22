@@ -7969,11 +7969,20 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     top_action_buttons = ""
     if deal.get("id"):
         _did = deal["id"]
+        # #75: Delivery追加は下部カードと同条件（既存Deliveryあり or 提案以降のステージ）の時だけ
+        # 上部にも導線を出す（下までスクロールしないと気付けないという指摘への対応）。
+        _delivery_top_btn = ""
+        if _dvs or _stg in sfa_db.DELIVERY_TRIGGER_STAGES:
+            _delivery_top_btn = (
+                f'<form method="post" action="/deliveries/new" style="display:inline;margin:0">'
+                f'<input type="hidden" name="deal_id" value="{_did}">'
+                f'<button class="btn sec" type="submit">🚚 ＋Delivery追加</button></form>')
         top_action_buttons = f"""
         <div style="display:flex;gap:8px;margin:-4px 0 14px;flex-wrap:wrap">
           <a class="btn sec" href="/dev-projects/new?deal_id={_did}">＋新規開発案件</a>
           <a class="btn sec" href="/hearing/new?target=deal:{_did}">＋新規ヒアリング</a>
           <a class="btn sec" href="/deal-issue/new?deal_id={_did}">＋新規論点</a>
+          {_delivery_top_btn}
           <form method="post" action="/deal/{_did}/duplicate" style="display:inline;margin:0"
             onsubmit="return confirm('この商談を複製して新規商談を作成します（活動履歴・マイルストーン等は引き継ぎません）。よろしいですか？')">
             <button class="btn sec" type="submit">📋 この商談を複製</button>

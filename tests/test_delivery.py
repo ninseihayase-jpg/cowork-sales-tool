@@ -53,6 +53,20 @@ def test_ensure_delivery_only_from_proposal(con, acc_id):
     assert len(sfa_db.list_deliveries(con, deal_id=d_req)) == 0
 
 
+def test_deal_form_shows_delivery_button_in_top_row_when_triggered(con, acc_id):
+    """商談編集画面の上部ボタン列（＋新規開発案件等と並び）にも「＋Delivery追加」を出す。
+    下部カードと同条件（既存Deliveryあり or 提案以降のステージ）のみ表示し、
+    下までスクロールしないと気付けないという指摘への対応。"""
+    d_won = _deal(con, acc_id, "受注", name="調達BPO")
+    html = webapp.deal_form(con, sfa_db.get_deal(con, d_won))
+    assert "🚚 ＋Delivery追加" in html
+    assert html.find("🚚 ＋Delivery追加") < html.find("この商談を複製")
+
+    d_early = _deal(con, acc_id, "初回アポ実施", name="早期商談")
+    html_early = webapp.deal_form(con, sfa_db.get_deal(con, d_early))
+    assert "🚚 ＋Delivery追加" not in html_early
+
+
 def test_delivery_title_defaults_to_deal_name(con, acc_id):
     did = _deal(con, acc_id, "受注", name="納品対象案件")
     sfa_db.ensure_delivery_on_stage(con, did, "受注")
