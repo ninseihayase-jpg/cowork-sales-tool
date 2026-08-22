@@ -3406,14 +3406,14 @@ def deal_hygiene_page(con) -> str:
             f'<tr><td>{_esc(r["acc"] or "—")}</td><td>{_esc(r["deal_name"] or "—")}</td>'
             f'<td>{_esc(r["owner"] or "—")}</td><td class="muted">{_esc((r["updated_at"] or "")[:10])}</td>'
             f'<td><form method="post" action="/deal/{r["id"]}/close-won" style="display:inline" '
-            f'onsubmit="return confirm(\'この受注商談をクローズ（完了）します。Delivery稼働予定には影響しません（stage=受注のまま確定として残ります）。よろしいですか？\');">'
+            f'onsubmit="return confirm(\'受注・契約処理完了として、この商談をクローズします。Delivery稼働予定には影響しません（stage=受注のまま確定として残ります）。よろしいですか？\');">'
             f'<input type="hidden" name="return_to" value="/deal-hygiene">'
-            f'<button class="btn" style="font-size:11px;padding:3px 8px;background:#047857;color:#fff;border-color:#047857">受注として完了（クローズ）</button>'
+            f'<button class="btn" style="font-size:11px;padding:3px 8px;background:#047857;color:#fff;border-color:#047857">✅ 受注・契約処理完了（クローズ）</button>'
             f'</form> {_open_btn(r["id"])}</td></tr>' for r in won_rows)
         won_tbl = (f'<table style="font-size:13px;width:100%;border-collapse:collapse">'
                    f'<tr><th>アカウント</th><th>案件名</th><th>担当</th><th>最終更新</th><th>操作</th></tr>{_won_body}</table>')
     else:
-        won_tbl = '<p class="muted" style="margin:.3rem 0">受注なのにopenの商談はありません。✅</p>'
+        won_tbl = '<p class="muted" style="margin:.3rem 0">受注・契約処理完了待ちの商談はありません。✅</p>'
 
     return f"""
     <div class="card">
@@ -3428,9 +3428,10 @@ def deal_hygiene_page(con) -> str:
       {bad_tbl}
     </div>
     <div class="card">
-      <h3 style="margin:0 0 4px">② 受注なのに未クローズ（open）の商談 <span class="stage" style="background:#fef3c7;color:#92400e">{len(won_rows)}件</span></h3>
-      <p class="muted" style="font-size:12px;margin:0 0 8px">ステージ「受注」だが status=open のまま。「進行中商談」に受注が混ざる原因です。
-      「受注として完了」でクローズできます。<b>Delivery稼働予定は stage=受注 で判定するため、クローズしても確定稼働として残ります</b>（消えません）。</p>
+      <h3 style="margin:0 0 4px">② 受注・契約処理完了待ちの商談 <span class="stage" style="background:#fef3c7;color:#92400e">{len(won_rows)}件</span></h3>
+      <p class="muted" style="font-size:12px;margin:0 0 8px">ステージ「受注」だが、まだ契約処理が完了していないためopenのままの商談です（不整合ではありません。
+      受注確定後、契約処理完了まで一定期間openで残るのは意図した挙動です）。契約処理が終わったら「受注・契約処理完了」でクローズしてください。
+      <b>Delivery稼働予定は stage=受注 で判定するため、クローズしても確定稼働として残ります</b>（消えません）。</p>
       {won_tbl}
     </div>"""
 
@@ -7998,13 +7999,13 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         _acc_nm = next((a["name"] for a in accounts if a["id"] == deal.get("account_id")), "")
         _sb_title = f"SFA#{deal['id']}　{_acc_nm}／{deal.get('deal_name') or ''}"
         _st_label = "クローズ済" if deal.get("status") == "closed" else "進行中"
+        _did_js = deal["id"]
         if deal.get("status") == "closed":
             # クローズ済みは「終了理由」をその場で修正できる（リード化時の理由選択ミスを直す導線）。
             _cr_cur = deal.get("close_reason") or ""
             _cr_opts = "".join(
                 f'<option value="{_esc(v)}"{" selected" if v == _cr_cur else ""}>{_esc(v)}</option>'
                 for v in sfa_db.CLOSE_REASONS)
-            _did_js = deal["id"]
             _reopen_ret = urllib.parse.quote(return_to or f"/deal/{_did_js}", safe="")
             _reopen_btn = (
                 f'<form method="post" action="/deal/{_did_js}/reopen" style="display:inline;margin-left:8px" '
@@ -8016,6 +8017,19 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
                        f"<select onchange=\"updateDealField({_did_js}, 'close_reason', this.value)\" "
                        f'style="font-size:12px;padding:1px 4px"><option value=""></option>{_cr_opts}</select>'
                        + _reopen_btn)
+        elif (deal.get("stage") or "") == "受注":
+            # 受注ステージは自動クローズしない（契約処理完了まではopenのまま）。
+            # 契約処理が終わったら、ここから明示的にクローズする。
+            _cr_ctl = (
+                f'<form method="post" action="/deal/{_did_js}/close-won" style="display:inline" '
+                f'onsubmit="return confirm(\'受注・契約処理完了として、この商談をクローズします。'
+                f'Delivery稼働予定には影響しません（stage=受注のまま確定として残ります）。よろしいですか？\');">'
+                f'<input type="hidden" name="return_to" value="/deal/{_did_js}">'
+                f'<button type="submit" class="btn" style="font-size:11px;padding:4px 10px;'
+                f'background:#047857;color:#fff;border-color:#047857">✅ 受注・契約処理完了（クローズ）</button>'
+                f'</form>'
+                f'<span class="muted" style="font-size:11px;margin-left:8px">'
+                f'失注等でのクローズは画面下部の「クローズ」ボタンから</span>')
         else:
             _cr_ctl = '<span class="muted" style="font-size:11px">クローズは画面下部の「クローズ」ボタンから</span>'
         # 📝ノートはステータスの左に小さく（固定エリア）。クリックで大画面フローティング編集。
@@ -14793,12 +14807,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     con.execute(
                                         f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
                                         (value or None, did))
-                                # 受注→自動クローズ（一括でも。stageは受注のままstatus=closed）
-                                if field == "stage" and value == "受注":
-                                    for did in ids:
-                                        sfa_db.close_won_if_needed(con, did)
+                                # 受注ステージは自動クローズしない（契約処理完了まではopenのまま。
+                                # 「受注・契約処理完了」ボタンで人間が明示的にクローズする）。
                                 # 失注→自動クローズ＋リードに戻す（一括でも#67のリードに戻す処理と統一）
-                                elif field == "stage" and value == "失注":
+                                if field == "stage" and value == "失注":
                                     for did in ids:
                                         sfa_db.close_deal_to_lead(con, did, "失注")
                                 con.commit()
@@ -14891,12 +14903,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         fee_rate=num("fee_rate"),
                         diagnosis_cost=num("diagnosis_cost"),
                     )
-                    # 受注→自動クローズ（フォームで受注ステージ保存時。stageは受注のままstatus=closed）
-                    if (f.get("stage") or "") == "受注":
-                        sfa_db.close_won_if_needed(con, did, commit=True)
+                    # 受注ステージは自動クローズしない（契約処理完了まではopenのまま。
+                    # 「受注・契約処理完了」ボタンで人間が明示的にクローズする）。
                     # 失注→自動クローズ＋リードに戻す（フォームでステージを直接「失注」に保存した場合も
                     # #67の「リードに戻す」と同一処理を通す）
-                    elif (f.get("stage") or "") == "失注":
+                    if (f.get("stage") or "") == "失注":
                         sfa_db.close_deal_to_lead(con, did, "失注")
                     # #75: 提案以降ステージで保存されたらDeliveryを自動起票（未作成時のみ）
                     try:
@@ -15554,12 +15565,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     "UPDATE deals SET stage=?, updated_at=datetime('now') WHERE id=?",
                                     (value or None, deal_id),
                                 )
-                                # 受注→自動クローズ（stageを受注にした瞬間に完了扱い）
-                                if value == "受注":
-                                    sfa_db.close_won_if_needed(con, deal_id)
+                                # 受注ステージは自動クローズしない（契約処理完了まではopenのまま。
+                                # 「受注・契約処理完了」ボタンで人間が明示的にクローズする）。
                                 # 失注→自動クローズ＋リードに戻す（インラインでステージを直接「失注」に
                                 # 変更した場合も#67の「リードに戻す」と同一処理を通す）
-                                elif value == "失注":
+                                if value == "失注":
                                     sfa_db.close_deal_to_lead(con, deal_id, "失注")
                                 con.commit()
                                 _ok = True
@@ -16009,13 +16019,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 con.execute("UPDATE deals SET stage=?, updated_at=datetime('now') WHERE id=?",
                                             (_new_stage, _did))
                                 con.commit()
-                                if _new_stage == "受注":
-                                    try:
-                                        sfa_db.close_won_if_needed(con, _did, commit=True)
-                                    except Exception as _e:  # noqa: BLE001
-                                        print(f"[intake] close_won failed: {_e}", flush=True)
+                                # 受注ステージは自動クローズしない（契約処理完了まではopenのまま。
+                                # 「受注・契約処理完了」ボタンで人間が明示的にクローズする）。
                                 # 失注→自動クローズ＋リードに戻す（#67の「リードに戻す」と同一処理を通す）
-                                elif _new_stage == "失注":
+                                if _new_stage == "失注":
                                     try:
                                         sfa_db.close_deal_to_lead(con, _did, "失注")
                                     except Exception as _e:  # noqa: BLE001
@@ -16535,26 +16542,19 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             import traceback as _tb; _tb.print_exc()
                             self._redirect(f"/leads/{lid}")
 
-                # ── 商談: 受注として完了（クローズ） ── データ整備(#27)。stage='受注'を保ったままstatus=closed。
+                # ── 商談: 受注・契約処理完了（クローズ） ── stage='受注'を保ったままstatus=closed。
+                # deal_formの上部ボタン・deal_hygiene_pageの②一覧の両方からこの経路を通る。
                 elif path.endswith("/close-won") and "/deal/" in path:
                     _wid_s = path.split("/deal/")[1].split("/")[0]
                     _rt = f.get("return_to") or "/deal-hygiene"
                     _rt = _rt if _rt.startswith("/") else "/deal-hygiene"
                     if _wid_s.isdigit():
                         _wid = int(_wid_s)
-                        _wd = sfa_db.get_deal(con, _wid)
-                        # 受注ステージ かつ 未クローズ のものだけを完了扱いにする（直POST防御）
-                        if _wd and (_wd.get("stage") == "受注") and (_wd.get("status") or "open") != "closed":
-                            con.execute(
-                                "UPDATE deals SET status='closed', "
-                                "close_reason=COALESCE(NULLIF(close_reason,''),'受注'), "
-                                "updated_at=datetime('now') WHERE id=?", (_wid,))
-                            con.commit()
-                            if theme_client is not None:
-                                try:
-                                    theme_link.sync_deal(theme_client, con, _wid)
-                                except Exception as _exc:  # noqa: BLE001
-                                    print(f"[theme_link] sync_deal failed (close-won): {_exc}", flush=True)
+                        if sfa_db.close_won_if_needed(con, _wid, commit=True) and theme_client is not None:
+                            try:
+                                theme_link.sync_deal(theme_client, con, _wid)
+                            except Exception as _exc:  # noqa: BLE001
+                                print(f"[theme_link] sync_deal failed (close-won): {_exc}", flush=True)
                     self._redirect(_rt)
 
                 # ── 商談に戻す（再開）── リード戻しの逆操作。クローズ済みを open に戻し、リードを再紐付け。

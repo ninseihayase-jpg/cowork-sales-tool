@@ -3848,11 +3848,15 @@ def ensure_delivery_on_stage(con, deal_id: int, stage: str | None) -> int | None
 
 
 def close_won_if_needed(con, deal_id: int, *, commit: bool = False) -> bool:
-    """受注→自動クローズ運用: stage='受注' かつ未クローズなら status='closed' にする
-    （close_reason は既存が空のとき '受注' を既定投入。stage は '受注' のまま保持）。
-    クローズしたら True。ステージを受注にした瞬間に案件を完了扱いにするための共通処理で、
-    フォーム保存・一括編集・インラインstage変更の全経路から呼ぶ。commit=False（既定）は
-    呼び出し側でまとめて commit する想定。"""
+    """「受注・契約処理完了」の明示的なクローズ処理: stage='受注' かつ未クローズなら
+    status='closed' にする（close_reason は既存が空のとき '受注' を既定投入。stage は
+    '受注' のまま保持）。クローズしたら True。
+
+    2026-08時点の方針: stage を '受注' にした時点では自動クローズしない
+    （受注確定はしたが契約処理が終わっていない、というopenな期間を許容するため）。
+    人間が明示的に「受注・契約処理完了」ボタン（POST /deal/{id}/close-won、
+    deal_hygiene_pageの②一覧からも同じ経路）を押した時だけこの関数が呼ばれる。
+    commit=False（既定）は呼び出し側でまとめて commit する想定。"""
     row = con.execute("SELECT stage, status FROM deals WHERE id=?", (int(deal_id),)).fetchone()
     if not row or (row["stage"] or "") != "受注" or (row["status"] or "open") == "closed":
         return False
