@@ -683,6 +683,50 @@ def test_account_aliases_bulk_save_route(server, db_path):
     con2.close()
 
 
+def test_deliveries_new_route_persists_confidence_override(server, db_path):
+    """POST /deliveries/new に confidence_override を渡すと、そのまま起票時に確定できること
+    （ユーザー要望2026-08-23: 新規Delivery起票時に確定/見込みを選べるようにしたい）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案")
+    con.close()
+
+    code, _ = _post(server + "/deliveries/new",
+                    {"deal_id": str(did), "confidence_override": "確定"}, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT * FROM deliveries WHERE deal_id=?", (did,)).fetchone()
+    assert row is not None
+    assert row["confidence_override"] == "確定"
+    con2.close()
+
+
+def test_delivery_save_route_persists_cost_fields(server, db_path):
+    """POST /delivery/{id}/save に外注費(cost_mode/cost_monthly/cost_total/cost_vendor)を渡すと
+    保存され、月額↔総額が期間の月数で相互換算されること（ユーザー要望2026-08-23）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-10-04")  # 4週=1.0ヶ月
+    con.close()
+
+    code, _ = _post(server + f"/delivery/{dvid}/save", {
+        "title": "D", "start_week": "2026-09-07", "end_week": "2026-10-04", "status": "進行中",
+        "fee_mode": "monthly", "fee_monthly": "150", "fee_total": "",
+        "cost_mode": "monthly", "cost_monthly": "60", "cost_total": "",
+        "cost_vendor": "C社",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT * FROM deliveries WHERE id=?", (dvid,)).fetchone()
+    assert row["cost_vendor"] == "C社"
+    assert row["cost_monthly"] == 60
+    assert row["cost_total"] == 60  # 月数1.0で総額に補完
+    con2.close()
+
+
 def test_deal_reopen_from_edit(server, db_path):
     """クローズ済み商談を『商談に戻す（再開）』でopen化＋同社フォロー中リードを再紐付け。"""
     con = sfa_db.connect(db_path)

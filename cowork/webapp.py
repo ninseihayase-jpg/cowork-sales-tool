@@ -1232,6 +1232,13 @@ def _delivery_confidence(deal_stage: str, deal_status: str, override: str | None
     return (label, _DELIVERY_CONFIDENCE_COLORS.get(label, "#6b7280"))
 
 
+def _delivery_new_confidence_opts() -> str:
+    """新規Delivery起票時（confidence_override）の<option>群。既定は空=自動（商談ステージに連動）。"""
+    return ('<option value="">確度: 自動（商談ステージに連動）</option>' +
+            "".join(f'<option value="{_esc(c)}">確度: {_esc(c)}</option>'
+                    for c in sfa_db.DELIVERY_CONFIDENCE_LEVELS))
+
+
 _DELIVERY_ACTIVE_CONF_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2}
 
 
@@ -1694,6 +1701,7 @@ def deliveries_page(con) -> str:
         <input type="text" id="dvNewDealFilter" placeholder="🔍 会社名・案件名で絞り込み" autocomplete="off"
           oninput="_deb('dvNewDealFilterFn')" style="font-size:12px;max-width:220px">
         <select name="deal_id" id="dvNewDealSelect" required style="font-size:12px;max-width:420px"><option value="">商談を選択（提案以降）</option>{_cand_opts}</select>
+        <select name="confidence_override" style="font-size:12px">{_delivery_new_confidence_opts()}</select>
         <button class="btn sec" style="font-size:12px">＋Delivery追加</button>
       </form>
     </div>
@@ -1870,9 +1878,9 @@ def delivery_form(con, delivery_id: int) -> str:
           <form method="post" action="/delivery/{delivery_id}/save" style="display:flex;flex-direction:column;flex:1">
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
               <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:200px"></label>
-              <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:60px" oninput="hdrCalcEnd();dvFeeRecalc()"></label>
-              <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd();dvFeeRecalc()"></label>
-              <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc()"></label>
+              <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:60px" oninput="hdrCalcEnd();dvFeeRecalc();dvCostRecalc()"></label>
+              <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd();dvFeeRecalc();dvCostRecalc()"></label>
+              <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
               <label style="font-size:12px">確度<br><select name="confidence_override">{conf_opts}</select></label>
               <button class="btn" style="font-size:12px">保存</button>
@@ -1884,17 +1892,36 @@ def delivery_form(con, delivery_id: int) -> str:
                   <option value="total"{" selected" if (dv.get("fee_mode") or "monthly") == "total" else ""}>総額報酬</option>
                 </select></label>
               <label style="font-size:12px">報酬額/月額(万)<br>
-                <input type="number" step="0.1" id="dvFeeMonthly" name="fee_monthly" style="width:110px"
+                <input type="number" step="0.1" min="0" id="dvFeeMonthly" name="fee_monthly" style="width:110px"
                        value="{"" if dv.get("fee_monthly") is None else dv.get("fee_monthly")}" oninput="dvFeeFieldInput(this)"></label>
               <label style="font-size:12px">報酬額/総額(万)<br>
-                <input type="number" step="0.1" id="dvFeeTotal" name="fee_total" style="width:110px"
+                <input type="number" step="0.1" min="0" id="dvFeeTotal" name="fee_total" style="width:110px"
                        value="{"" if dv.get("fee_total") is None else dv.get("fee_total")}" oninput="dvFeeFieldInput(this)"></label>
               <span class="muted" style="font-size:11px;align-self:center" id="dvFeeMonths"></span>
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+              <label style="font-size:12px">外注先<br>
+                <input type="text" id="dvCostVendor" name="cost_vendor" style="width:140px"
+                       value="{_esc(dv.get("cost_vendor") or "")}"></label>
+              <label style="font-size:12px">外注費形態<br>
+                <select id="dvCostMode" name="cost_mode" onchange="dvCostModeChanged()">
+                  <option value="monthly"{" selected" if (dv.get("cost_mode") or "monthly") != "total" else ""}>月額</option>
+                  <option value="total"{" selected" if (dv.get("cost_mode") or "monthly") == "total" else ""}>総額</option>
+                </select></label>
+              <label style="font-size:12px">外注費/月額(万)<br>
+                <input type="number" step="0.1" min="0" id="dvCostMonthly" name="cost_monthly" style="width:110px"
+                       value="{"" if dv.get("cost_monthly") is None else dv.get("cost_monthly")}" oninput="dvCostFieldInput(this)"></label>
+              <label style="font-size:12px">外注費/総額(万)<br>
+                <input type="number" step="0.1" min="0" id="dvCostTotal" name="cost_total" style="width:110px"
+                       value="{"" if dv.get("cost_total") is None else dv.get("cost_total")}" oninput="dvCostFieldInput(this)"></label>
+              <span class="muted" style="font-size:11px;align-self:center" id="dvCostMonths"></span>
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:8px">
               <div style="font-size:12px">総アサイン工数<br><b id="dvEffort" style="font-size:15px">{_assign_effort:g}</b> <span class="muted">%/月</span>
                 <span class="muted" style="font-size:10px">（請求 <b id="dvEffortBill">{f'{_assign_effort_bill:g}' if _assign_effort_bill > 0 else '-'}</b>%/月）</span></div>
               <div style="font-size:12px">平均単価(月額)<br><b id="dvUnitPrice" style="font-size:15px">—</b> <span class="muted">万円/100%</span></div>
+              <div style="font-size:12px">想定利益(月額/総額)<br><b id="dvProfitMonthly" style="font-size:15px">—</b> / <b id="dvProfitTotal" style="font-size:15px">—</b> <span class="muted">万円</span>
+                <span class="muted" style="font-size:10px">（報酬額－外注費）</span></div>
               <div class="muted" style="font-size:10px;align-self:center;max-width:320px">※総アサイン工数＝Σ(アサイン週数×稼働率)÷総期間週数（＝期間平均の合計稼働率）。請求は純粋な請求稼働（0%＝成果物ベースで稼働コミットなし＝「-」）。平均単価(月額)＝<b>月額報酬</b>÷総工数×100（請求ベース優先・請求0%は実想定で試算）を万円単位・10万円未満四捨五入で表示。アサイン編集後は保存して再読込で更新。</div>
             </div>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
@@ -1975,6 +2002,7 @@ def delivery_form(con, delivery_id: int) -> str:
         upEl.textContent = (effP>0 && mon>0)
           ? (Math.round(mon*10000*100/effP/100000)*10).toLocaleString() : '—';
       }}
+      dvProfitRecalc();
     }}
     function dvFeeFieldInput(el){{
       var modeEl=document.getElementById('dvFeeMode');
@@ -1988,7 +2016,50 @@ def delivery_form(con, delivery_id: int) -> str:
       mo.dataset.manual=''; to.dataset.manual='';
       dvFeeRecalc();
     }}
+    /* 外注費（報酬額と同じ月額/総額の自動換算＋手修正の仕組み）。 */
+    function dvCostRecalc(){{
+      var modeEl=document.getElementById('dvCostMode'); if(!modeEl) return;
+      var mode=modeEl.value, m=_dvFeeMonths();
+      var mo=document.getElementById('dvCostMonthly'), to=document.getElementById('dvCostTotal');
+      var note=document.getElementById('dvCostMonths');
+      if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（合計週数÷4）') : '開始/終了週を入れると換算';
+      var ro='#f1f5f9';
+      if(mode==='total'){{
+        to.style.background='';
+        mo.style.background = (mo.dataset.manual==='1') ? '' : ro;
+        if(m && to.value!=='' && mo.dataset.manual!=='1') mo.value=Math.round((parseFloat(to.value)/m)*100)/100;
+      }} else {{
+        mo.style.background='';
+        to.style.background = (to.dataset.manual==='1') ? '' : ro;
+        if(m && mo.value!=='' && to.dataset.manual!=='1') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
+      }}
+      dvProfitRecalc();
+    }}
+    function dvCostFieldInput(el){{
+      var modeEl=document.getElementById('dvCostMode');
+      var mode=modeEl?modeEl.value:'monthly';
+      var isMaster=(mode==='monthly' && el.id==='dvCostMonthly')||(mode==='total' && el.id==='dvCostTotal');
+      if(!isMaster){{ el.dataset.manual='1'; }}
+      dvCostRecalc();
+    }}
+    function dvCostModeChanged(){{
+      var mo=document.getElementById('dvCostMonthly'), to=document.getElementById('dvCostTotal');
+      mo.dataset.manual=''; to.dataset.manual='';
+      dvCostRecalc();
+    }}
+    // 想定利益(月額/総額) = 報酬額－外注費。どちらも未入力なら「—」、片方だけ未入力は0扱い。
+    function dvProfitRecalc(){{
+      var pm=document.getElementById('dvProfitMonthly'), pt=document.getElementById('dvProfitTotal');
+      if(!pm||!pt) return;
+      var fm=document.getElementById('dvFeeMonthly'), ft=document.getElementById('dvFeeTotal'),
+          cm=document.getElementById('dvCostMonthly'), ct=document.getElementById('dvCostTotal');
+      var fmv=(fm&&fm.value!=='')?parseFloat(fm.value):null, ftv=(ft&&ft.value!=='')?parseFloat(ft.value):null;
+      var cmv=(cm&&cm.value!=='')?parseFloat(cm.value):null, ctv=(ct&&ct.value!=='')?parseFloat(ct.value):null;
+      pm.textContent = (fmv===null && cmv===null) ? '—' : Math.round(((fmv||0)-(cmv||0))*100)/100;
+      pt.textContent = (ftv===null && ctv===null) ? '—' : Math.round(((ftv||0)-(ctv||0))*100)/100;
+    }}
     dvFeeRecalc();
+    dvCostRecalc();
     function tglMember(sel){{ var f=sel.closest('form'); if(!f) return;
       var mi=f.querySelector('.mint'), me=f.querySelector('.mext');
       if(sel.value==='外部'){{ if(mi)mi.style.display='none'; if(me)me.style.display=''; }}
@@ -7773,8 +7844,9 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         <div class="card">
           <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
             <span>🚚 Delivery（アサイン計画）</span>
-            <form method="post" action="/deliveries/new" style="margin:0">
+            <form method="post" action="/deliveries/new" style="margin:0;display:flex;gap:6px;align-items:center">
               <input type="hidden" name="deal_id" value="{deal["id"]}">
+              <select name="confidence_override" style="font-size:12px">{_delivery_new_confidence_opts()}</select>
               <button class="btn sec" style="font-size:12px">＋Delivery追加</button></form>
           </h2>
           {_dv_body}
@@ -7975,8 +8047,9 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         _delivery_top_btn = ""
         if _dvs or _stg in sfa_db.DELIVERY_TRIGGER_STAGES:
             _delivery_top_btn = (
-                f'<form method="post" action="/deliveries/new" style="display:inline;margin:0">'
+                f'<form method="post" action="/deliveries/new" style="display:inline-flex;gap:4px;margin:0;vertical-align:middle">'
                 f'<input type="hidden" name="deal_id" value="{_did}">'
+                f'<select name="confidence_override" style="font-size:12px">{_delivery_new_confidence_opts()}</select>'
                 f'<button class="btn sec" type="submit">🚚 ＋Delivery追加</button></form>')
         top_action_buttons = f"""
         <div style="display:flex;gap:8px;margin:-4px 0 14px;flex-wrap:wrap">
@@ -14427,9 +14500,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/deliveries/new":
                     _did = (f.get("deal_id", "") or "").strip()
                     if _did.isdigit() and sfa_db.get_deal(con, int(_did)):
+                        _new_conf = (f.get("confidence_override", "") or "").strip() or None
                         _nid = sfa_db.create_delivery(
                             con, deal_id=int(_did),
-                            title=(sfa_db.get_deal(con, int(_did)) or {}).get("deal_name") or "")
+                            title=(sfa_db.get_deal(con, int(_did)) or {}).get("deal_name") or "",
+                            confidence_override=_new_conf)
                         self._redirect(f"/delivery/{_nid}")
                     else:
                         self._redirect("/deliveries")
@@ -14444,6 +14519,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _months = sfa_db.delivery_month_count(_sw, _ew)
                     _fee_monthly, _fee_total = sfa_db.compute_delivery_fee(
                         _fee_mode, f.get("fee_monthly", ""), f.get("fee_total", ""), _months)
+                    # 外注費: 報酬額と同じ仕組みで月額/総額を相互換算して両方保持。
+                    _cost_mode = (f.get("cost_mode", "") or "monthly").strip()
+                    _cost_monthly, _cost_total = sfa_db.compute_delivery_fee(
+                        _cost_mode, f.get("cost_monthly", ""), f.get("cost_total", ""), _months)
                     _conf_ov = (f.get("confidence_override", "") or "").strip()
                     _conf_ov = _conf_ov if _conf_ov in sfa_db.DELIVERY_CONFIDENCE_LEVELS else None
                     sfa_db.update_delivery(
@@ -14456,7 +14535,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         fee_mode=_fee_mode,
                         fee_monthly=_fee_monthly,
                         fee_total=_fee_total,
-                        confidence_override=_conf_ov)
+                        confidence_override=_conf_ov,
+                        cost_mode=_cost_mode,
+                        cost_monthly=_cost_monthly,
+                        cost_total=_cost_total,
+                        cost_vendor=(f.get("cost_vendor", "") or "").strip())
                     # 期間の変更に合わせて各アサインの週も連動スライド（開始移動＝全員スライド／週数延長＝全員の終了延長）
                     sfa_db.reschedule_delivery_assignments(
                         con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"), _sw, _ew)

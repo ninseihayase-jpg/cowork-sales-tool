@@ -67,6 +67,31 @@ def test_deal_form_shows_delivery_button_in_top_row_when_triggered(con, acc_id):
     assert "🚚 ＋Delivery追加" not in html_early
 
 
+def test_create_delivery_accepts_confidence_override_at_creation(con, acc_id):
+    """新規Delivery起票時に確度（確定/見込み等）を指定できる（ユーザー要望2026-08-23）。
+    不正値・省略時は自動導出(None)にフォールバックする。"""
+    d = _deal(con, acc_id, "提案")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="X", confidence_override="確定")
+    dv = sfa_db.get_delivery(con, dvid)
+    assert dv["confidence_override"] == "確定"
+    assert sfa_db.delivery_confidence_effective(dv) == "確定"
+
+    dvid2 = sfa_db.create_delivery(con, deal_id=d, title="Y", confidence_override="でたらめ")
+    assert sfa_db.get_delivery(con, dvid2)["confidence_override"] is None
+
+    dvid3 = sfa_db.create_delivery(con, deal_id=d, title="Z")
+    assert sfa_db.get_delivery(con, dvid3)["confidence_override"] is None
+
+
+def test_deal_form_and_deliveries_page_creation_forms_include_confidence_select(con, acc_id):
+    d = _deal(con, acc_id, "受注", name="調達BPO")
+    html = webapp.deal_form(con, sfa_db.get_deal(con, d))
+    assert html.count('name="confidence_override"') == 2  # 上部ボタン列＋下部カードの両方
+
+    dp_html = webapp.deliveries_page(con)
+    assert 'name="confidence_override"' in dp_html
+
+
 def test_delivery_title_defaults_to_deal_name(con, acc_id):
     did = _deal(con, acc_id, "受注", name="納品対象案件")
     sfa_db.ensure_delivery_on_stage(con, did, "受注")
@@ -503,3 +528,47 @@ def test_base_max_periods_effective_and_replace(con):
     sfa_db.replace_base_max_periods(con, "早瀬", [{"from_week": "", "to_week": "", "max_pct": 50}])
     assert len(sfa_db.list_base_max_periods(con)["早瀬"]) == 1
     assert sfa_db.base_max_at(con, "早瀬", "2027-01-01") == 50   # 開区間=常に適用
+
+
+def test_delivery_cost_fields_persist_and_convert(con, acc_id):
+    """外注費（ユーザー要望2026-08-23）: 報酬額と同じ月額/総額の相互換算＋外注先名の記録。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-10-04")  # 4週=1.0ヶ月
+    sfa_db.update_delivery(con, dvid, cost_mode="monthly", cost_monthly=50, cost_total=50,
+                            cost_vendor="A社")
+    dv = sfa_db.get_delivery(con, dvid)
+    assert dv["cost_vendor"] == "A社"
+    assert sfa_db.delivery_display_costs(dv) == (50, 50)
+
+    # 総額モードで片方だけ入力→月数から補完される
+    sfa_db.update_delivery(con, dvid, cost_mode="total", cost_monthly=None, cost_total=200)
+    dv2 = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_display_costs(dv2) == (200.0, 200)  # 200/1.0ヶ月=200/月
+
+
+def test_delivery_profit_is_fee_minus_cost(con, acc_id):
+    """想定利益＝報酬額－外注費。外注費未入力なら報酬額そのまま。両方未入力ならNone。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-10-04")
+    dv0 = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_profit(dv0) == (None, None)
+
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=150, fee_total=150)
+    dv1 = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_profit(dv1) == (150, 150)  # 外注費未入力=0扱い
+
+    sfa_db.update_delivery(con, dvid, cost_mode="monthly", cost_monthly=60, cost_total=60)
+    dv2 = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_profit(dv2) == (90, 90)
+
+
+def test_delivery_form_renders_cost_fields_and_profit_display(con, acc_id):
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=150, fee_total=150,
+                            cost_mode="monthly", cost_monthly=60, cost_total=60, cost_vendor="B社")
+    html = webapp.delivery_form(con, dvid)
+    assert 'name="cost_vendor"' in html and 'value="B社"' in html
+    assert 'name="cost_mode"' in html
+    assert 'id="dvCostMonthly"' in html and 'id="dvCostTotal"' in html
+    assert 'id="dvProfitMonthly"' in html and 'id="dvProfitTotal"' in html

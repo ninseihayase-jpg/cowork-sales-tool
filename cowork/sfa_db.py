@@ -870,6 +870,10 @@ CREATE TABLE IF NOT EXISTS deliveries (
     fee_monthly REAL,                      -- 報酬額/月額（万円）
     fee_total   REAL,                      -- 報酬額/総額（万円）。期間の月数で月額と相互換算
     confidence_override TEXT,              -- 確度の手修正。NULL=自動導出。値ありならDELIVERY_CONFIDENCE_LEVELSのいずれか
+    cost_mode   TEXT DEFAULT 'monthly',    -- 外注費の入力形態: monthly=月額 / total=総額（fee_modeと同じ仕組み）
+    cost_monthly REAL,                     -- 外注費/月額（万円）
+    cost_total   REAL,                     -- 外注費/総額（万円）。期間の月数でcost_monthlyと相互換算
+    cost_vendor  TEXT,                     -- 外注先名（自由記述）
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE
@@ -1265,6 +1269,15 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # Delivery確度の手修正（自動導出=商談ステージ連動に対する人間の上書き。NULL=自動）。
         if _dv_cols and "confidence_override" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN confidence_override TEXT")
+        # Delivery 外注費（2026-08）: 報酬額と同じ仕組みで月額/総額のどちらかを入力→相互換算。
+        if _dv_cols and "cost_mode" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN cost_mode TEXT DEFAULT 'monthly'")
+        if _dv_cols and "cost_monthly" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN cost_monthly REAL")
+        if _dv_cols and "cost_total" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN cost_total REAL")
+        if _dv_cols and "cost_vendor" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN cost_vendor TEXT")
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -3729,12 +3742,16 @@ def _weeks_from(start_monday: str, n: int) -> list[str]:
 
 def create_delivery(con, *, deal_id: int, title: str = "", start_week: str | None = None,
                     end_week: str | None = None, status: str = "進行中",
-                    overview: str = "") -> int:
+                    overview: str = "", confidence_override: str | None = None) -> int:
+    """confidence_override省略時（既定）は自動導出（商談stage/statusに連動）。
+    起票時点で確度を確定/見込み等に固定したい場合はDELIVERY_CONFIDENCE_LEVELSのいずれかを渡す。"""
+    if confidence_override not in DELIVERY_CONFIDENCE_LEVELS:
+        confidence_override = None
     cur = con.execute(
-        "INSERT INTO deliveries (deal_id, title, start_week, end_week, status, overview) "
-        "VALUES (?,?,?,?,?,?)",
+        "INSERT INTO deliveries (deal_id, title, start_week, end_week, status, overview, confidence_override) "
+        "VALUES (?,?,?,?,?,?,?)",
         (int(deal_id), title or None, start_week or None, end_week or None,
-         status or "進行中", overview or None))
+         status or "進行中", overview or None, confidence_override))
     con.commit()
     return cur.lastrowid
 
@@ -3787,6 +3804,29 @@ def delivery_display_fees(dv: dict) -> tuple:
     return compute_delivery_fee("monthly", dv.get("fee_monthly"), None, months)
 
 
+def delivery_display_costs(dv: dict) -> tuple:
+    """一覧・出力の表示用 (cost_monthly, cost_total)。外注費。delivery_display_feesと同じロジック
+    （cost_modeの入力値を正とし、現在の月数でもう一方を都度再計算する）。"""
+    months = delivery_month_count(dv.get("start_week"), dv.get("end_week"))
+    if (dv.get("cost_mode") or "monthly") == "total":
+        return compute_delivery_fee("total", None, dv.get("cost_total"), months)
+    return compute_delivery_fee("monthly", dv.get("cost_monthly"), None, months)
+
+
+def delivery_profit(dv: dict) -> tuple:
+    """(profit_monthly, profit_total) = 報酬額 − 外注費。両方未入力ならNone、片方だけ未入力は
+    0扱いで差額を出す（外注費未入力＝外注費0として利益=報酬額、が直感に合う）。"""
+    fee_mon, fee_tot = delivery_display_fees(dv)
+    cost_mon, cost_tot = delivery_display_costs(dv)
+
+    def _sub(fee, cost):
+        if fee is None and cost is None:
+            return None
+        return (fee or 0.0) - (cost or 0.0)
+
+    return (_sub(fee_mon, cost_mon), _sub(fee_tot, cost_tot))
+
+
 def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
     """(fee_monthly, fee_total) を返す。mode='monthly'なら月額を正とし総額=月額×月数、
     mode='total'なら総額を正とし月額=総額÷月数。月数は合計週数÷4（小数可）。空/不正は None。
@@ -3814,7 +3854,8 @@ def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
 
 def update_delivery(con, delivery_id: int, **fields) -> None:
     allowed = {"title", "start_week", "end_week", "status", "overview",
-               "fee_mode", "fee_monthly", "fee_total", "confidence_override"}
+               "fee_mode", "fee_monthly", "fee_total", "confidence_override",
+               "cost_mode", "cost_monthly", "cost_total", "cost_vendor"}
     sets, args = [], []
     for k, v in fields.items():
         if k in allowed:
