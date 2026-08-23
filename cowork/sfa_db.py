@@ -8,9 +8,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
+import secrets
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "cowork_sfa.db")
@@ -675,6 +678,11 @@ CREATE TABLE IF NOT EXISTS deal_issues (
     status      TEXT DEFAULT '議論中', -- 議論中/議論済み/取り消し
     due_date    TEXT,                 -- 解消期限（YYYY-MM-DD）
     ai_summary  TEXT,                 -- メモ全履歴からAI自動生成したサマリー
+    note_lock_salt TEXT,              -- 論点メモのパスワードロック（2026-08）。NULL=ロック無し
+    note_lock_hash TEXT,              -- sha256(salt+password)。NULL=ロック無し
+    note_lock_recovery_email TEXT,    -- パスワード忘れ時の連絡先（本人確認クリック用リンクの送付先）
+    note_lock_reset_token TEXT,       -- パスワード忘れリセット用トークン（発行後24h有効）
+    note_lock_reset_expires TEXT,     -- 上記トークンの有効期限(YYYY-MM-DD HH:MM:SS)
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now'))
 );
@@ -874,9 +882,23 @@ CREATE TABLE IF NOT EXISTS deliveries (
     cost_monthly REAL,                     -- 外注費/月額（万円）
     cost_total   REAL,                     -- 外注費/総額（万円）。期間の月数でcost_monthlyと相互換算
     cost_vendor  TEXT,                     -- 外注先名（自由記述）
+    payment_cycle_months INTEGER DEFAULT 1, -- 支払いサイクル: 検収月から何ヶ月後に入金されるか（既定=翌月）
+    business_type_l1_override TEXT,        -- 事業種別L1の手修正。NULL=紐づく商談のL1を継承
+    business_type_l2_override TEXT,        -- 事業種別L2の手修正。NULL=紐づく商談のL2を継承
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE
+);
+
+-- Delivery月別検収額（2026-08）。fee_monthly/fee_totalの均した換算では実際の入金月がズレるため、
+-- 月ごとの検収額を実額で入力し、payment_cycle_months分ズラして月別入金額を算出する。
+CREATE TABLE IF NOT EXISTS delivery_receipts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_id INTEGER NOT NULL,
+    month       TEXT NOT NULL,              -- 検収月(YYYY-MM)
+    amount      REAL NOT NULL,              -- 検収金額（万円）
+    UNIQUE(delivery_id, month),
+    FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
 );
 
 -- アサインブロック（#75）。入力の最小単位＝(メンバー・開始週〜終了週・FTE%)。
@@ -1278,6 +1300,14 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE deliveries ADD COLUMN cost_total REAL")
         if _dv_cols and "cost_vendor" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN cost_vendor TEXT")
+        # 月別入金計画（2026-08）: 検収月から何ヶ月後に入金されるか。
+        if _dv_cols and "payment_cycle_months" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN payment_cycle_months INTEGER DEFAULT 1")
+        # 事業種別L1/L2の手修正（2026-08）。既定は紐づく商談のL1/L2を継承。
+        if _dv_cols and "business_type_l1_override" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN business_type_l1_override TEXT")
+        if _dv_cols and "business_type_l2_override" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN business_type_l2_override TEXT")
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -1320,6 +1350,14 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         _issue_cols = {c[1] for c in con.execute("PRAGMA table_info(deal_issues)")}
         if "responsible" not in _issue_cols:
             con.execute("ALTER TABLE deal_issues ADD COLUMN responsible TEXT")
+        # 論点メモのパスワードロック（2026-08）。
+        for _col, _ddl in (
+            ("note_lock_salt", "TEXT"), ("note_lock_hash", "TEXT"),
+            ("note_lock_recovery_email", "TEXT"), ("note_lock_reset_token", "TEXT"),
+            ("note_lock_reset_expires", "TEXT"),
+        ):
+            if _col not in _issue_cols:
+                con.execute(f"ALTER TABLE deal_issues ADD COLUMN {_col} {_ddl}")
         # 議論メンバーを区分（経営/営業担当/営業+開発担当/開発コア）から社員名方式へ移行。
         # 旧区分のみで構成された members は一括クリアし、以後は社員名で入れ直す（ユーザー確定 2026-08-13）。
         # 冪等: クリア後は名前が入るため下の判定に再度該当せず、二重実行しても影響しない。
@@ -3138,6 +3176,84 @@ def get_deal_issue(con, id: int) -> dict | None:
     return dict(r) if r else None
 
 
+# ── 論点メモのパスワードロック（2026-08）。鍵の単位は論点(deal_issue)1件ごと。 ──
+ISSUE_NOTE_LOCK_RESET_VALID_HOURS = 24
+
+
+def _issue_note_lock_hash(password: str, salt: str) -> str:
+    return hashlib.sha256((salt + (password or "")).encode("utf-8")).hexdigest()
+
+
+def issue_note_lock_status(con, issue_id: int) -> dict:
+    """{"locked": bool, "recovery_email": str|None}。"""
+    row = con.execute("SELECT note_lock_hash, note_lock_recovery_email FROM deal_issues WHERE id=?",
+                       (int(issue_id),)).fetchone()
+    if not row:
+        return {"locked": False, "recovery_email": None}
+    return {"locked": bool(row["note_lock_hash"]), "recovery_email": row["note_lock_recovery_email"]}
+
+
+def set_issue_note_lock(con, issue_id: int, password: str, recovery_email: str) -> None:
+    """論点メモにパスワードロックを設定（既存ロックも上書き）。パスワード忘れ時の連絡先メール必須。"""
+    salt = secrets.token_hex(16)
+    con.execute(
+        "UPDATE deal_issues SET note_lock_salt=?, note_lock_hash=?, note_lock_recovery_email=?, "
+        "note_lock_reset_token=NULL, note_lock_reset_expires=NULL, updated_at=datetime('now') WHERE id=?",
+        (salt, _issue_note_lock_hash(password, salt), (recovery_email or "").strip() or None, int(issue_id)))
+    con.commit()
+
+
+def clear_issue_note_lock(con, issue_id: int) -> None:
+    con.execute(
+        "UPDATE deal_issues SET note_lock_salt=NULL, note_lock_hash=NULL, note_lock_recovery_email=NULL, "
+        "note_lock_reset_token=NULL, note_lock_reset_expires=NULL, updated_at=datetime('now') WHERE id=?",
+        (int(issue_id),))
+    con.commit()
+
+
+def verify_issue_note_lock(con, issue_id: int, password: str) -> bool:
+    """ロック無し（or 論点が存在しない）ならTrue。ロックありならパスワード一致でTrue。"""
+    row = con.execute("SELECT note_lock_salt, note_lock_hash FROM deal_issues WHERE id=?",
+                       (int(issue_id),)).fetchone()
+    if not row or not row["note_lock_hash"]:
+        return True
+    calc = _issue_note_lock_hash(password or "", row["note_lock_salt"] or "")
+    return hmac.compare_digest(calc, row["note_lock_hash"])
+
+
+def request_issue_note_lock_reset(con, issue_id: int) -> dict | None:
+    """パスワード忘れ: リセット用トークンを発行（24時間有効）。未ロック/連絡先未設定ならNone。
+    呼び出し側（webapp）はこのtokenでリセットURLを作り、recovery_emailへmailto等で送る。"""
+    row = con.execute("SELECT note_lock_hash, note_lock_recovery_email FROM deal_issues WHERE id=?",
+                       (int(issue_id),)).fetchone()
+    if not row or not row["note_lock_hash"] or not row["note_lock_recovery_email"]:
+        return None
+    token = secrets.token_urlsafe(24)
+    expires = (datetime.now() + timedelta(hours=ISSUE_NOTE_LOCK_RESET_VALID_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    con.execute("UPDATE deal_issues SET note_lock_reset_token=?, note_lock_reset_expires=? WHERE id=?",
+                (token, expires, int(issue_id)))
+    con.commit()
+    return {"token": token, "recovery_email": row["note_lock_recovery_email"]}
+
+
+def confirm_issue_note_lock_reset(con, issue_id: int, token: str) -> bool:
+    """本人確認クリック（メール内のリセットリンク）からの確定処理。トークン一致＆期限内ならロック解除。"""
+    row = con.execute(
+        "SELECT note_lock_reset_token, note_lock_reset_expires FROM deal_issues WHERE id=?",
+        (int(issue_id),)).fetchone()
+    if not row or not row["note_lock_reset_token"] or not token:
+        return False
+    if not hmac.compare_digest(row["note_lock_reset_token"], token):
+        return False
+    try:
+        if datetime.now() > datetime.strptime(row["note_lock_reset_expires"], "%Y-%m-%d %H:%M:%S"):
+            return False
+    except (TypeError, ValueError):
+        return False
+    clear_issue_note_lock(con, issue_id)
+    return True
+
+
 def upsert_deal_issue(con, *, id=None, commit: bool = True, **fields) -> int:
     data = {k: fields.get(k) for k in DEAL_ISSUE_FIELDS}
     if id is not None:
@@ -3759,6 +3875,7 @@ def create_delivery(con, *, deal_id: int, title: str = "", start_week: str | Non
 def get_delivery(con, delivery_id: int) -> dict | None:
     r = con.execute(
         "SELECT dv.*, d.deal_name, d.stage AS deal_stage, d.status AS deal_status, "
+        "d.business_type_l1 AS deal_business_type_l1, d.business_type_l2 AS deal_business_type_l2, "
         "acc.name AS account_name "
         "FROM deliveries dv JOIN deals d ON d.id=dv.deal_id "
         "LEFT JOIN accounts acc ON acc.id=d.account_id WHERE dv.id=?",
@@ -3769,6 +3886,7 @@ def get_delivery(con, delivery_id: int) -> dict | None:
 def list_deliveries(con, *, deal_id: int | None = None) -> list[dict]:
     """Delivery一覧（deal名・stage・status付き）。deal_id指定でその商談分のみ。"""
     sql = ("SELECT dv.*, d.deal_name, d.stage AS deal_stage, d.status AS deal_status, "
+           "d.business_type_l1 AS deal_business_type_l1, d.business_type_l2 AS deal_business_type_l2, "
            "acc.name AS account_name "
            "FROM deliveries dv JOIN deals d ON d.id=dv.deal_id "
            "LEFT JOIN accounts acc ON acc.id=d.account_id ")
@@ -3827,6 +3945,17 @@ def delivery_profit(dv: dict) -> tuple:
     return (_sub(fee_mon, cost_mon), _sub(fee_tot, cost_tot))
 
 
+def delivery_business_type_effective(dv: dict) -> tuple:
+    """(l1, l2) 有効値。business_type_l1/l2_override（人間の手修正）があれば優先、無ければ
+    紐づく商談のbusiness_type_l1/l2を継承（1商談から複数Deliveryが分かれる場合に、
+    Deliveryごとに事業種別を分けたいケースに対応。ユーザー要望2026-08-23）。
+    dv は deal_business_type_l1/l2/business_type_l1_override/l2_overrideを含む辞書
+    （get_delivery/list_deliveriesの戻り値）。"""
+    l1 = dv.get("business_type_l1_override") or dv.get("deal_business_type_l1")
+    l2 = dv.get("business_type_l2_override") or dv.get("deal_business_type_l2")
+    return (l1, l2)
+
+
 def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
     """(fee_monthly, fee_total) を返す。mode='monthly'なら月額を正とし総額=月額×月数、
     mode='total'なら総額を正とし月額=総額÷月数。月数は合計週数÷4（小数可）。空/不正は None。
@@ -3855,7 +3984,8 @@ def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
 def update_delivery(con, delivery_id: int, **fields) -> None:
     allowed = {"title", "start_week", "end_week", "status", "overview",
                "fee_mode", "fee_monthly", "fee_total", "confidence_override",
-               "cost_mode", "cost_monthly", "cost_total", "cost_vendor"}
+               "cost_mode", "cost_monthly", "cost_total", "cost_vendor",
+               "payment_cycle_months", "business_type_l1_override", "business_type_l2_override"}
     sets, args = [], []
     for k, v in fields.items():
         if k in allowed:
@@ -3869,10 +3999,84 @@ def update_delivery(con, delivery_id: int, **fields) -> None:
 
 
 def delete_delivery(con, delivery_id: int) -> None:
-    # delivery_assignments は ON DELETE CASCADE。念のためFK ON前提でなくても消す。
+    # delivery_assignments/delivery_receipts は ON DELETE CASCADE。念のためFK ON前提でなくても消す。
     con.execute("DELETE FROM delivery_assignments WHERE delivery_id=?", (int(delivery_id),))
+    con.execute("DELETE FROM delivery_receipts WHERE delivery_id=?", (int(delivery_id),))
     con.execute("DELETE FROM deliveries WHERE id=?", (int(delivery_id),))
     con.commit()
+
+
+def list_delivery_receipts(con, delivery_id: int) -> list[dict]:
+    """月別検収額（月別入金計画）の登録済み行。月昇順。"""
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM delivery_receipts WHERE delivery_id=? ORDER BY month",
+        (int(delivery_id),))]
+
+
+def set_delivery_receipt(con, delivery_id: int, month: str, amount) -> None:
+    """月別検収額を1ヶ月分保存。amountが空/不正ならその月の行を削除（未入力に戻す）。"""
+    month = (str(month) or "")[:7]
+    try:
+        amt = float(amount) if amount not in (None, "") else None
+    except (TypeError, ValueError):
+        amt = None
+    if len(month) != 7 or month[4] != "-" or not month[:4].isdigit() or not month[5:7].isdigit():
+        return
+    if amt is None:
+        con.execute("DELETE FROM delivery_receipts WHERE delivery_id=? AND month=?",
+                    (int(delivery_id), month))
+    else:
+        con.execute(
+            "INSERT INTO delivery_receipts (delivery_id, month, amount) VALUES (?,?,?) "
+            "ON CONFLICT(delivery_id, month) DO UPDATE SET amount=excluded.amount",
+            (int(delivery_id), month, amt))
+    con.commit()
+
+
+def _add_months_ym(year: int, month: int, n: int) -> tuple:
+    idx = year * 12 + (month - 1) + n
+    return (idx // 12, idx % 12 + 1)
+
+
+def delivery_month_range(dv: dict, extra_months: int = 0) -> list:
+    """開始週〜終了週を月初単位の'YYYY-MM'リストに展開（末尾にextra_months分延長）。不正/未設定は[]。"""
+    try:
+        sd = date.fromisoformat(str(dv.get("start_week"))[:10])
+        ed = date.fromisoformat(str(dv.get("end_week"))[:10])
+    except (TypeError, ValueError):
+        return []
+    s_idx = sd.year * 12 + (sd.month - 1)
+    e_idx = ed.year * 12 + (ed.month - 1) + max(0, int(extra_months or 0))
+    months = []
+    idx = s_idx
+    while idx <= e_idx:
+        y, m = idx // 12, idx % 12 + 1
+        months.append(f"{y:04d}-{m:02d}")
+        idx += 1
+    return months
+
+
+def delivery_cashflow(con, delivery_id: int) -> dict:
+    """月別入金計画: {"months": [...], "receipts": {月: 検収額}, "payments": {月: 入金額}}。
+    入金額は検収額をpayment_cycle_months分先の月へずらして算出（同月に複数検収があれば合算）。"""
+    dv = get_delivery(con, delivery_id)
+    if not dv:
+        return {"months": [], "receipts": {}, "payments": {}}
+    cycle = int(dv.get("payment_cycle_months") or 0)
+    months = set(delivery_month_range(dv, extra_months=cycle))
+    receipts = {r["month"]: r["amount"] for r in list_delivery_receipts(con, delivery_id)}
+    payments = {}
+    for m, amt in receipts.items():
+        try:
+            y, mo = int(m[:4]), int(m[5:7])
+        except (TypeError, ValueError):
+            continue
+        py, pmo = _add_months_ym(y, mo, cycle)
+        pm = f"{py:04d}-{pmo:02d}"
+        payments[pm] = (payments.get(pm) or 0.0) + (amt or 0.0)
+        months.add(m)
+        months.add(pm)
+    return {"months": sorted(months), "receipts": receipts, "payments": payments}
 
 
 def ensure_delivery_on_stage(con, deal_id: int, stage: str | None) -> int | None:

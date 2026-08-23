@@ -727,6 +727,47 @@ def test_delivery_save_route_persists_cost_fields(server, db_path):
     con2.close()
 
 
+def test_delivery_save_route_persists_business_type_override(server, db_path):
+    """POST /delivery/{id}/save に事業種別L1/L2の手修正を渡すと保存され、無効値はNoneに落ちること
+    （ユーザー要望2026-08-23）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注",
+                             business_type_l1="コスト削減", business_type_l2="コスト診断(無償)")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-10-04")
+    con.close()
+
+    code, _ = _post(server + f"/delivery/{dvid}/save", {
+        "title": "D", "start_week": "2026-09-07", "end_week": "2026-10-04", "status": "進行中",
+        "business_type_l1_override": "コンサルティング", "business_type_l2_override": "でたらめなL2",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT * FROM deliveries WHERE id=?", (dvid,)).fetchone()
+    assert row["business_type_l1_override"] == "コンサルティング"
+    assert row["business_type_l2_override"] is None  # 不正なL2（新L1配下に存在しない）はNoneに落ちる
+    con2.close()
+
+
+def test_delivery_receipt_route_persists_monthly_amount(server, db_path):
+    """POST /delivery/{id}/receipt で月別検収額を保存できること（月別入金計画・ユーザー要望2026-08-23）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-10-04")
+    con.close()
+
+    code, _ = _post(server + f"/delivery/{dvid}/receipt", {"month": "2026-09", "amount": "100"},
+                    headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    rows = con2.execute("SELECT * FROM delivery_receipts WHERE delivery_id=?", (dvid,)).fetchall()
+    assert len(rows) == 1 and rows[0]["month"] == "2026-09" and rows[0]["amount"] == 100
+    con2.close()
+
+
 def test_deal_reopen_from_edit(server, db_path):
     """クローズ済み商談を『商談に戻す（再開）』でopen化＋同社フォロー中リードを再紐付け。"""
     con = sfa_db.connect(db_path)

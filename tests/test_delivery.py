@@ -347,10 +347,10 @@ def test_delivery_fee_persist_and_xlsx(con):
     xls = webapp.build_deliveries_xlsx(con)
     assert xls[:2] == b"PK"
     wb = openpyxl.load_workbook(io.BytesIO(xls))
-    assert wb.sheetnames == ["Delivery一覧", "アサイン明細", "体制(役割別目標)"]
+    assert wb.sheetnames == ["Delivery一覧", "アサイン明細", "体制(役割別目標)", "月別入金計画"]
     ws = wb["Delivery一覧"]
     assert ws.cell(2, 9).value == 2.75         # 月数（11週÷4）
-    assert ws.cell(2, 10).value == "総額報酬"   # 報酬形態
+    assert ws.cell(2, 12).value == "総額報酬"   # 報酬形態（事業種別L1/L2列が2列追加され列位置が後ろへ移動）
     assert wb["アサイン明細"].cell(2, 7).value == "早瀬"
 
 
@@ -465,7 +465,7 @@ def test_delivery_unit_price_8weeks_case(con):
     # 平均単価(月額)=月額150÷(工数/100)。請求0%なので実想定100で試算→150万 → xlsxの平均単価列で確認
     wb = openpyxl.load_workbook(io.BytesIO(webapp.build_deliveries_xlsx(con)))
     ws = wb["Delivery一覧"]
-    assert ws.cell(2, 15).value == 150   # 平均単価(月額・万円/100%)
+    assert ws.cell(2, 17).value == 150   # 平均単価(月額・万円/100%)（事業種別L1/L2列の追加で列位置が後ろへ移動）
 
 
 def test_reschedule_delivery_assignments_slide_and_extend(con):
@@ -572,3 +572,121 @@ def test_delivery_form_renders_cost_fields_and_profit_display(con, acc_id):
     assert 'name="cost_mode"' in html
     assert 'id="dvCostMonthly"' in html and 'id="dvCostTotal"' in html
     assert 'id="dvProfitMonthly"' in html and 'id="dvProfitTotal"' in html
+
+
+def test_delivery_month_range_extends_by_cycle(con, acc_id):
+    """delivery_month_range: 開始週〜終了週の月初リスト＋extra_months分の延長（ユーザー要望2026-08-23:
+    月別入金計画。検収額と支払いサイクルから入金月を算出するための月範囲展開）。"""
+    dv = {"start_week": "2026-09-07", "end_week": "2026-11-30"}
+    assert sfa_db.delivery_month_range(dv) == ["2026-09", "2026-10", "2026-11"]
+    assert sfa_db.delivery_month_range(dv, extra_months=2) == \
+        ["2026-09", "2026-10", "2026-11", "2026-12", "2027-01"]
+    assert sfa_db.delivery_month_range({}) == []
+
+
+def test_delivery_receipt_set_and_delete(con, acc_id):
+    """set_delivery_receipt: 保存・上書き・空入力での削除（未入力に戻す）。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
+    assert sfa_db.list_delivery_receipts(con, dvid)[0]["amount"] == 100
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 150)  # 上書き
+    rows = sfa_db.list_delivery_receipts(con, dvid)
+    assert len(rows) == 1 and rows[0]["amount"] == 150
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", "")  # 空入力で削除
+    assert sfa_db.list_delivery_receipts(con, dvid) == []
+    sfa_db.set_delivery_receipt(con, dvid, "不正な月", 100)  # 不正な月は無視
+    assert sfa_db.list_delivery_receipts(con, dvid) == []
+
+
+def test_delivery_cashflow_shifts_receipts_by_payment_cycle(con, acc_id):
+    """delivery_cashflow: 検収額をpayment_cycle_months分ずらして入金額を算出。既定は翌月(1)。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
+    sfa_db.set_delivery_receipt(con, dvid, "2026-10", 50)
+    cf = sfa_db.delivery_cashflow(con, dvid)
+    assert cf["receipts"] == {"2026-09": 100, "2026-10": 50}
+    assert cf["payments"] == {"2026-10": 100, "2026-11": 50}  # 既定サイクル=1ヶ月後
+    assert "2026-11" in cf["months"]  # 入金月も月一覧に含まれる（テーブル表示のため）
+
+    sfa_db.update_delivery(con, dvid, payment_cycle_months=0)  # 検収月内に入金
+    cf2 = sfa_db.delivery_cashflow(con, dvid)
+    assert cf2["payments"] == {"2026-09": 100, "2026-10": 50}
+
+    sfa_db.update_delivery(con, dvid, payment_cycle_months=2)  # 検収月+2ヶ月後・年跨ぎ確認は別途
+    cf3 = sfa_db.delivery_cashflow(con, dvid)
+    assert cf3["payments"] == {"2026-11": 100, "2026-12": 50}
+
+
+def test_delivery_form_renders_cashflow_table(con, acc_id):
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
+    html = webapp.delivery_form(con, dvid)
+    assert 'id="dvCashflow"' in html
+    assert "2026/09" in html and "2026/10" in html  # _fmt_month表示
+    assert 'onchange="dvSetCycle(' in html
+    assert f'onchange="dvReceiptSet({dvid},\'2026-09\',this.value)"' in html
+
+
+def test_delivery_business_type_inherits_from_deal_by_default(con, acc_id):
+    """事業種別L1/L2はデフォルトで紐づく商談を継承（ユーザー要望2026-08-23）。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注",
+                           business_type_l1="コスト削減", business_type_l2="コスト診断(無償)")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    dv = sfa_db.get_delivery(con, dvid)
+    assert dv["deal_business_type_l1"] == "コスト削減"
+    assert sfa_db.delivery_business_type_effective(dv) == ("コスト削減", "コスト診断(無償)")
+
+
+def test_delivery_business_type_override_takes_precedence(con, acc_id):
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注",
+                           business_type_l1="コスト削減", business_type_l2="コスト診断(無償)")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    sfa_db.update_delivery(con, dvid, business_type_l1_override="コンサルティング")
+    dv = sfa_db.get_delivery(con, dvid)
+    l1, l2 = sfa_db.delivery_business_type_effective(dv)
+    assert l1 == "コンサルティング"
+
+
+def test_delivery_form_renders_business_type_override_selects(con, acc_id):
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注",
+                           business_type_l1="コスト削減", business_type_l2="コスト診断(無償)")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    html = webapp.delivery_form(con, dvid)
+    assert 'name="business_type_l1_override"' in html
+    assert 'name="business_type_l2_override"' in html
+    assert "自動（商談を継承: コスト削減）" in html
+    assert "自動（商談を継承: コスト診断(無償)）" in html
+
+
+def test_build_deliveries_xlsx_includes_business_type_columns(con, acc_id):
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注",
+                           business_type_l1="コスト削減", business_type_l2="コスト診断(無償)")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_deliveries_xlsx(con)))
+    ws = wb["Delivery一覧"]
+    hdr = [c.value for c in ws[1]]
+    assert "事業種別L1" in hdr and "事業種別L2" in hdr
+    row = [c.value for c in ws[2]]
+    row_dict = dict(zip(hdr, row))
+    assert row_dict["ID"] == dvid
+    assert row_dict["事業種別L1"] == "コスト削減"
+    assert row_dict["事業種別L2"] == "コスト診断(無償)"
+
+
+def test_build_deliveries_xlsx_includes_cashflow_sheet(con, acc_id):
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_deliveries_xlsx(con)))
+    assert "月別入金計画" in wb.sheetnames
+    ws = wb["月別入金計画"]
+    assert ws.cell(row=1, column=1).value == "Delivery ID"
+    rows = [tuple(r) for r in ws.iter_rows(min_row=2, values_only=True)]
+    assert any(r[0] == dvid and r[3] == "2026-09" and r[4] == 100 for r in rows)

@@ -1178,6 +1178,15 @@ def _fmt_week(mon: str) -> str:
         return mon or ""
 
 
+def _fmt_month(ym: str) -> str:
+    """'YYYY-MM' → 'YYYY/MM' 表示ラベル。"""
+    try:
+        y, m = ym.split("-")
+        return f"{int(y)}/{int(m):02d}"
+    except Exception:
+        return ym or ""
+
+
 def _num_pct(v) -> str:
     """FTE%を整数なら整数、端数あれば小数1桁で表示（50.0→50, 12.5→12.5）。"""
     try:
@@ -1237,6 +1246,28 @@ def _delivery_new_confidence_opts() -> str:
     return ('<option value="">確度: 自動（商談ステージに連動）</option>' +
             "".join(f'<option value="{_esc(c)}">確度: {_esc(c)}</option>'
                     for c in sfa_db.DELIVERY_CONFIDENCE_LEVELS))
+
+
+def _delivery_biz_l1_opts(con, dv: dict) -> str:
+    """Delivery編集画面の事業種別L1(business_type_l1_override)の<option>群。
+    未選択＝商談のL1を継承（ユーザー要望2026-08-23）。"""
+    _inherited = dv.get("deal_business_type_l1") or "未設定"
+    _cur = dv.get("business_type_l1_override") or ""
+    opts = [f'<option value=""{" selected" if not _cur else ""}>自動（商談を継承: {_esc(_inherited)}）</option>']
+    for v in sfa_db.get_master_list(con, "business_type_l1"):
+        opts.append(f'<option value="{_esc(v)}"{" selected" if v == _cur else ""}>{_esc(v)}</option>')
+    return "".join(opts)
+
+
+def _delivery_biz_l2_opts(con, dv: dict) -> str:
+    """事業種別L2(business_type_l2_override)の<option>群。選択肢は「現在の有効L1」配下のL2。"""
+    _eff_l1, _ = sfa_db.delivery_business_type_effective(dv)
+    _inherited = dv.get("deal_business_type_l2") or "未設定"
+    _cur = dv.get("business_type_l2_override") or ""
+    opts = [f'<option value=""{" selected" if not _cur else ""}>自動（商談を継承: {_esc(_inherited)}）</option>']
+    for v in sfa_db.business_type_l2_of(con, _eff_l1):
+        opts.append(f'<option value="{_esc(v)}"{" selected" if v == _cur else ""}>{_esc(v)}</option>')
+    return "".join(opts)
 
 
 _DELIVERY_ACTIVE_CONF_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2}
@@ -1493,7 +1524,8 @@ def build_deliveries_xlsx(con) -> bytes:
     ws = wb.active
     ws.title = "Delivery一覧"
     hdr = ["ID", "アカウント", "商談", "納品案件名", "商談ステージ", "状態", "開始週", "終了週",
-           "月数", "報酬形態", "月額報酬(万)", "総額報酬(万)", "総アサイン工数(実想定%/月)",
+           "月数", "事業種別L1", "事業種別L2", "報酬形態", "月額報酬(万)", "総額報酬(万)",
+           "総アサイン工数(実想定%/月)",
            "総アサイン工数(請求%/月)", "平均単価(月額・万円/100%)", "アサイン数", "概要", "作成", "更新"]
     for c, h in enumerate(hdr, 1):
         ws.cell(row=1, column=c, value=h).font = Font(bold=True)
@@ -1510,9 +1542,11 @@ def build_deliveries_xlsx(con) -> bytes:
         _eff_price = effort_bill if effort_bill > 0 else effort
         unit_price = (round(_fmon * 10000 * 100 / _eff_price / 100000) * 10
                       if (_fmon and _eff_price > 0) else None)
+        _biz_l1, _biz_l2 = sfa_db.delivery_business_type_effective(dv)
         vals = [dv["id"], dv.get("account_name") or "", dv.get("deal_name") or "",
                 dv.get("title") or "", dv.get("deal_stage") or "", dv.get("status") or "",
                 dv.get("start_week") or "", dv.get("end_week") or "", months,
+                _biz_l1 or "", _biz_l2 or "",
                 _fee_label.get(dv.get("fee_mode") or "monthly", ""),
                 _fmon, _ftot, effort, effort_bill, unit_price, n_asg,
                 dv.get("overview") or "", dv.get("created_at") or "", dv.get("updated_at") or ""]
@@ -1549,6 +1583,20 @@ def build_deliveries_xlsx(con) -> bytes:
             for c, v in enumerate(vals, 1):
                 ws3.cell(row=r3, column=c, value=v)
             r3 += 1
+
+    ws4 = wb.create_sheet("月別入金計画")
+    hdr4 = ["Delivery ID", "納品案件", "アカウント", "月", "検収額(万)", "入金額(万)"]
+    for c, h in enumerate(hdr4, 1):
+        ws4.cell(row=1, column=c, value=h).font = Font(bold=True)
+    r4 = 2
+    for dv in dvs:
+        cf = sfa_db.delivery_cashflow(con, dv["id"])
+        for m in cf["months"]:
+            vals = [dv["id"], dv.get("title") or "", dv.get("account_name") or "", m,
+                    cf["receipts"].get(m), cf["payments"].get(m)]
+            for c, v in enumerate(vals, 1):
+                ws4.cell(row=r4, column=c, value=v)
+            r4 += 1
 
     buf = BytesIO()
     wb.save(buf)
@@ -1760,6 +1808,32 @@ def _delivery_row_fields(owners: list, b: dict) -> str:
     )
 
 
+def _delivery_cashflow_table_html(con, delivery_id: int) -> str:
+    """月別入金計画テーブル（月が横軸、検収額(入力)/入金額(算出)が縦軸）。#75外注費に続く2026-08機能。"""
+    cf = sfa_db.delivery_cashflow(con, delivery_id)
+    months = cf["months"]
+    if not months:
+        return '<p class="muted" style="font-size:11px">開始週/終了週を設定すると月が表示されます。</p>'
+    head = "".join(f'<th style="font-size:11px;padding:4px 8px;white-space:nowrap">{_fmt_month(m)}</th>' for m in months)
+    receipt_cells = "".join(
+        f'<td style="padding:2px 4px"><input type="number" step="0.1" min="0" style="width:80px" '
+        f'value="{"" if cf["receipts"].get(m) is None else cf["receipts"][m]}" '
+        f'onchange="dvReceiptSet({delivery_id},\'{m}\',this.value)"></td>'
+        for m in months)
+    def _pay_disp(m):
+        v = cf["payments"].get(m)
+        return f'{v:,.1f}' if v is not None else '<span class="muted">—</span>'
+    payment_cells = "".join(
+        f'<td style="text-align:right;padding:4px 8px;white-space:nowrap">{_pay_disp(m)}</td>'
+        for m in months)
+    return (
+        '<div style="overflow:auto"><table style="border-collapse:collapse">'
+        f'<tr><th style="text-align:left;font-size:11px;padding:4px 8px;white-space:nowrap">月</th>{head}</tr>'
+        f'<tr><th style="text-align:left;font-size:11px;padding:4px 8px;white-space:nowrap">検収額(万)</th>{receipt_cells}</tr>'
+        f'<tr><th style="text-align:left;font-size:11px;padding:4px 8px;white-space:nowrap">入金額(万)</th>{payment_cells}</tr>'
+        '</table></div>')
+
+
 def delivery_form(con, delivery_id: int) -> str:
     """1Deliveryの編集：ヘッダ（週数・体制）＋アサイン（役割/区分/メンバー）＋プレビュー。#75。"""
     dv = sfa_db.get_delivery(con, delivery_id)
@@ -1886,6 +1960,11 @@ def delivery_form(con, delivery_id: int) -> str:
               <button class="btn" style="font-size:12px">保存</button>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+              <label style="font-size:12px">事業種別L1<br><select name="business_type_l1_override">{_delivery_biz_l1_opts(con, dv)}</select></label>
+              <label style="font-size:12px">事業種別L2<br><select name="business_type_l2_override">{_delivery_biz_l2_opts(con, dv)}</select></label>
+              <div class="muted" style="font-size:10px;align-self:center;max-width:280px">※未選択＝商談の事業種別を継承。1商談から複数Deliveryが分かれる場合など、Deliveryごとに個別指定したい時だけ選んでください。</div>
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">報酬形態<br>
                 <select id="dvFeeMode" name="fee_mode" onchange="dvFeeModeChanged()">
                   <option value="monthly"{" selected" if (dv.get("fee_mode") or "monthly") != "total" else ""}>月額報酬</option>
@@ -1950,6 +2029,15 @@ def delivery_form(con, delivery_id: int) -> str:
 
       <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
       <div id="dvPreview">{grid_html}</div>
+
+      <h3 style="margin:16px 0 6px;font-size:14px">月別入金計画（検収額→入金額）</h3>
+      <p class="muted" style="font-size:11px;margin:0 0 8px">月額/総額報酬を均した換算では実際の入金月がズレるため、月ごとの検収額(万円)を実額で入力すると、
+        支払いサイクル分ずらした月の入金額として算出されます。xlsx出力（Delivery一覧の一括抽出）にも同テーブルが出ます。</p>
+      <label style="font-size:12px">支払いサイクル<br>
+        <input type="number" min="0" max="24" style="width:70px"
+               value="{int(dv.get("payment_cycle_months") if dv.get("payment_cycle_months") is not None else 1)}"
+               onchange="dvSetCycle({delivery_id}, this.value)"> ヶ月後に入金（検収した月を0として。既定=1＝翌月）</label>
+      <div id="dvCashflow" style="margin-top:8px">{_delivery_cashflow_table_html(con, delivery_id)}</div>
 
       <div style="margin-top:18px;border-top:1px solid #eee;padding-top:10px">
         <form method="post" action="/delivery/{delivery_id}/delete" style="display:inline"
@@ -2057,6 +2145,20 @@ def delivery_form(con, delivery_id: int) -> str:
       var cmv=(cm&&cm.value!=='')?parseFloat(cm.value):null, ctv=(ct&&ct.value!=='')?parseFloat(ct.value):null;
       pm.textContent = (fmv===null && cmv===null) ? '—' : Math.round(((fmv||0)-(cmv||0))*100)/100;
       pt.textContent = (ftv===null && ctv===null) ? '—' : Math.round(((ftv||0)-(ctv||0))*100)/100;
+    }}
+    // 月別入金計画: 検収額・支払いサイクルの変更は月の範囲や入金月がズレるため、保存後にページ
+    // 再読込してテーブルを再構築する（他の自動保存フィールドと異なり単純なJS再計算では追えない）。
+    function dvReceiptSet(id, month, value){{
+      fetch('/delivery/'+id+'/receipt',{{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'month='+encodeURIComponent(month)+'&amount='+encodeURIComponent(value)}})
+      .then(function(){{ location.reload(); }}).catch(function(){{}});
+    }}
+    function dvSetCycle(id, value){{
+      fetch('/delivery/'+id+'/field',{{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field=payment_cycle_months&value='+encodeURIComponent(value)}})
+      .then(function(){{ location.reload(); }}).catch(function(){{}});
     }}
     dvFeeRecalc();
     dvCostRecalc();
@@ -7446,17 +7548,29 @@ _RICH_NOTE_ASSETS = """
   </div>
 </div>
 <script>
-var _rnT=null,_rnDirty=false,_rnKind=null,_rnId=null,_rnNotes=[],_rnCur=0;
+var _rnT=null,_rnDirty=false,_rnKind=null,_rnId=null,_rnNotes=[],_rnCur=0,_rnPw='';
 function _rnEl(){return document.getElementById('rnEdit');}
 function _rnTitleEl(){return document.getElementById('rnNoteTitle');}
 function _rnEsc(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function rnOpen(kind,id,noteId){
-  _rnKind=kind; _rnId=id; _rnDirty=false; _rnNotes=[]; _rnCur=0;
+  _rnKind=kind; _rnId=id; _rnDirty=false; _rnNotes=[]; _rnCur=0; _rnPw='';
   var m=document.getElementById('rnModal'),b=document.getElementById('rnBackdrop');
   document.getElementById('rnRail').innerHTML=''; _rnEl().innerHTML=''; _rnTitleEl().value='';
   var st=document.getElementById('rnStatus'); if(st)st.textContent='';
   b.style.display='block'; m.classList.add('open');
-  fetch('/rich-notes?kind='+encodeURIComponent(kind)+'&id='+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){
+  _rnFetchNotes(id, noteId, 0);
+}
+// 論点メモ(kind='issue')がロック中の場合、サーバがlocked:trueを返す→パスワード入力を促してリトライ。
+// 他のkind（deal/htmpl等）はロック機能が無いため常に1回目で成功する。
+function _rnFetchNotes(id, noteId, tries){
+  fetch('/rich-notes?kind='+encodeURIComponent(_rnKind)+'&id='+encodeURIComponent(id)
+        +'&pw='+encodeURIComponent(_rnPw)).then(function(r){return r.json();}).then(function(d){
+    if(d && d.locked){
+      if(tries>=3){ alert('パスワードが正しくないため開けません。'); rnClose(); return; }
+      var pw=prompt('🔒 この論点メモはロックされています。パスワードを入力してください。');
+      if(pw==null){ rnClose(); return; }
+      _rnPw=pw; _rnFetchNotes(id, noteId, tries+1); return;
+    }
     var t=document.getElementById('rnTitle'); if(t)t.textContent='📝 '+((d&&d.title)||'メモ');
     _rnNotes=(d&&d.notes)?d.notes.slice():[];
     if(!_rnNotes.length)_rnNotes.push({id:null,title:'',body:''});
@@ -7487,7 +7601,8 @@ function rnNew(){ if(_rnDirty){rnStash();rnSave();} _rnNotes.push({id:null,title
 function rnDel(i){ var n=_rnNotes[i]; if(!n)return; if(!confirm('このメモを削除しますか？（元に戻せません）'))return;
   function after(){ _rnNotes.splice(i,1); if(!_rnNotes.length)_rnNotes.push({id:null,title:'',body:''});
     if(_rnCur>=_rnNotes.length)_rnCur=_rnNotes.length-1; _rnDirty=false; rnRenderRail(); rnLoadCur(); rnSyncTriggers(); }
-  if(n.id){ fetch('/rich-note/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'note_id='+n.id}).then(after).catch(after); }
+  if(n.id){ fetch('/rich-note/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'note_id='+n.id+'&pw='+encodeURIComponent(_rnPw)}).then(after).catch(after); }
   else after(); }
 function rnTitleInput(){ if(_rnNotes[_rnCur])_rnNotes[_rnCur].title=_rnTitleEl().value;
   var items=document.querySelectorAll('#rnRail .rn-rail-item'); if(items[_rnCur]){ var s=items[_rnCur].querySelector('.rn-rail-ttl'); if(s)s.textContent=_rnLabel(_rnNotes[_rnCur]); }
@@ -7524,30 +7639,92 @@ function rnCaretInLi(li){ var r=document.createRange(),sel=window.getSelection()
   if(node&&node.nodeType===3){ r.setStart(node,node.length); }
   else if(node){ r.setStartAfter(node); } else { r.setStart(li,0); }
   r.collapse(true); sel.removeAllRanges(); sel.addRange(r); }
+// キャレットがliの「自分のテキストの先頭」（子ul/olの手前まで含めて何も無い）にあるか判定。
+function _rnCaretAtLiStart(li){
+  var sel=window.getSelection(); if(!sel.rangeCount) return false;
+  var r=sel.getRangeAt(0); if(!r.collapsed) return false;
+  var test=document.createRange();
+  try{ test.setStart(li,0); test.setEnd(r.startContainer, r.startOffset); }
+  catch(_){ return false; }
+  return test.toString().length===0;
+}
+// liが完全に空（テキスト無し・子ul/olも無し）か判定。貼付バグ等で残った空ブレットの削除対象を絞る。
+function _rnLiIsEmpty(li){
+  for(var i=0;i<li.childNodes.length;i++){
+    var n=li.childNodes[i];
+    if(n.nodeName==='UL'||n.nodeName==='OL') return false;
+    if(n.nodeName==='BR') continue;
+    if((n.textContent||'').replace(/​/g,'').length) return false;
+  }
+  return true;
+}
+// 空ブレットでBackspace: 前のliへ吸収して消す（前がなければ親liがある場合のみアウトデント）。
+// ユーザー報告2026-08-23「ブレットが二重でかかって消せない」の復旧策（テキストが残る通常のケースは
+// 既定のcontentEditable挙動に任せ、完全に空の行だけを対象にした安全側の実装）。
+function _rnBackspaceAtLiStart(li){
+  if(!_rnLiIsEmpty(li)) return false;
+  var prev=li.previousElementSibling;
+  if(prev && prev.nodeName==='LI'){ li.remove(); rnCaretInLi(prev); return true; }
+  var ul=li.parentNode;
+  if(ul && (ul.nodeName==='UL'||ul.nodeName==='OL') && ul.parentNode && ul.parentNode.nodeName==='LI'){
+    rnDoOutdent(); return true;
+  }
+  return false;
+}
+// 複数ブレット同時選択（ユーザー要望2026-08-23）: 選択範囲が複数liにまたがる場合、
+// 最初にヒットしたliと同じ親(ul/ol)直下の子liのうち選択に含まれるものだけを連続ブロックとして返す。
+// 単一キャレットの場合は従来通りrnCurrentLi()の1件のみ。
+function _rnSelectedLis(){
+  var sel=window.getSelection(); if(!sel.rangeCount) return [];
+  var r=sel.getRangeAt(0);
+  if(r.collapsed){ var li=rnCurrentLi(); return li?[li]:[]; }
+  var e=_rnEl(); if(!e) return [];
+  var all=e.querySelectorAll('li'), hit=[];
+  for(var i=0;i<all.length;i++){ if(r.intersectsNode(all[i])) hit.push(all[i]); }
+  if(!hit.length) return [];
+  var parent=hit[0].parentNode;
+  var siblings=Array.prototype.slice.call(parent.children).filter(function(c){return c.nodeName==='LI';});
+  var selected=siblings.filter(function(li){ return hit.indexOf(li)!==-1; });
+  return selected.length?selected:[hit[0]];
+}
+// 複数li操作後、選択範囲をその複数liにまたがる形で再設定（連続で操作できるように）。1件ならキャレット復帰。
+function _rnReselectLis(lis){
+  if(!lis||!lis.length) return;
+  if(lis.length===1){ rnCaretInLi(lis[0]); return; }
+  var r=document.createRange(), last=lis[lis.length-1];
+  r.setStart(lis[0],0); r.setEnd(last,last.childNodes.length);
+  var sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+}
 // 独自インデント: 直前のli配下（同型サブリスト）へ移動。ブラウザ差異でブレットが消える問題を回避。
-function rnDoIndent(){ var li=rnCurrentLi(); if(!li)return;
-  var prev=li.previousElementSibling; if(!prev||prev.nodeName!=='LI')return; // 先頭は下げられない
+// 複数li選択時は選択ブロックまとめて同じ子リストへ（相対順序は維持）。
+function rnDoIndent(){ var lis=_rnSelectedLis(); if(!lis.length)return;
+  var prev=lis[0].previousElementSibling; if(!prev||prev.nodeName!=='LI')return; // 先頭は下げられない
   var sub=null,k=prev.children,i; for(i=0;i<k.length;i++){ if(k[i].nodeName==='UL'||k[i].nodeName==='OL'){sub=k[i];break;} }
-  if(!sub){ sub=document.createElement(li.parentNode.nodeName||'ul'); prev.appendChild(sub); }
-  prev.removeAttribute('data-collapsed'); sub.appendChild(li); rnCaretInLi(li); }
-// 独自アウトデント: 親liの直後へ上げる（後続の兄弟は自分の子にぶら下げる）。常にliのまま＝ブレット維持。
-function rnDoOutdent(){ var li=rnCurrentLi(); if(!li)return;
-  var ul=li.parentNode; if(!ul||(ul.nodeName!=='UL'&&ul.nodeName!=='OL'))return;
+  if(!sub){ sub=document.createElement(lis[0].parentNode.nodeName||'ul'); prev.appendChild(sub); }
+  prev.removeAttribute('data-collapsed');
+  lis.forEach(function(li){ sub.appendChild(li); });
+  _rnReselectLis(lis); }
+// 独自アウトデント: 親liの直後へ上げる（後続の兄弟は選択ブロック最後のliの子にぶら下げる）。
+// 常にliのまま＝ブレット維持。複数li選択時は選択ブロックまとめて同階層を上げる。
+function rnDoOutdent(){ var lis=_rnSelectedLis(); if(!lis.length)return;
+  var ul=lis[0].parentNode; if(!ul||(ul.nodeName!=='UL'&&ul.nodeName!=='OL'))return;
   var parentLi=ul.parentNode; if(!parentLi||parentLi.nodeName!=='LI')return; // 既に最上位
-  var grand=parentLi.parentNode;
-  var following=[],sib=li.nextElementSibling; while(sib){ following.push(sib); sib=sib.nextElementSibling; }
+  var grand=parentLi.parentNode, last=lis[lis.length-1];
+  var following=[],sib=last.nextElementSibling; while(sib){ following.push(sib); sib=sib.nextElementSibling; }
   if(following.length){ var ns=document.createElement(ul.nodeName);
-    following.forEach(function(f){ns.appendChild(f);}); li.appendChild(ns); }
-  grand.insertBefore(li, parentLi.nextSibling);
-  if(!ul.children.length)ul.remove(); rnCaretInLi(li); }
+    following.forEach(function(f){ns.appendChild(f);}); last.appendChild(ns); }
+  var anchor=parentLi.nextSibling;
+  lis.forEach(function(li){ grand.insertBefore(li, anchor); });
+  if(!ul.children.length)ul.remove(); _rnReselectLis(lis); }
 // OneNote互換: Alt+Shift+↑/↓ で現在行(liとその子リストごと)を同階層内で上下に移動。
-// 端（先頭/末尾）ではそのまま。キャレットは移動後のli内に戻す（連続移動できる）。
-function rnMoveLine(dir){ var li=rnCurrentLi(); if(!li)return;
-  if(dir<0){ var prev=li.previousElementSibling; if(!prev||prev.nodeName!=='LI')return;
-    li.parentNode.insertBefore(li, prev); }
-  else { var next=li.nextElementSibling; if(!next||next.nodeName!=='LI')return;
-    li.parentNode.insertBefore(li, next.nextElementSibling); }
-  rnCaretInLi(li); rnDirty(); }
+// 端（先頭/末尾）ではそのまま。複数li選択時は選択ブロックをまとめて移動（隣接するliと丸ごと入れ替え）。
+function rnMoveLine(dir){ var lis=_rnSelectedLis(); if(!lis.length)return;
+  var parent=lis[0].parentNode, last=lis[lis.length-1];
+  if(dir<0){ var prev=lis[0].previousElementSibling; if(!prev||prev.nodeName!=='LI')return;
+    parent.insertBefore(prev, last.nextSibling); }
+  else { var next=last.nextElementSibling; if(!next||next.nodeName!=='LI')return;
+    parent.insertBefore(next, lis[0]); }
+  _rnReselectLis(lis); rnDirty(); }
 function rnParentLiWithChildren(){ var li=rnCurrentLi();
   while(li){ if(li.nodeName==='LI'&&li.querySelector(':scope>ul, :scope>ol'))return li; li=li.parentNode; } return null; }
 function rnCollapse(expand){ var li=rnParentLiWithChildren(); if(!li)return;
@@ -7581,7 +7758,13 @@ function rnPaste(ev){
   for(var i=0;i<items.length;i++){
     if(items[i].kind==='file' && items[i].type.indexOf('image/')===0){
       var f=items[i].getAsFile(); if(f){ ev.preventDefault(); _rnInsertImage(f); return; } } }
-  // 画像でなければ既定の（テキスト）ペーストに任せる
+  // 画像以外はプレーンテキストへ強制変換して貼り付ける。HTMLのまま貼ると、他のブレット行や
+  // Word/Notion等からコピーしたul/li構造がそのまま混ざり込み、ネストした空のliが残ってブレットが
+  // 二重に見える上に消せなくなる不具合（ユーザー報告2026-08-23）があったため。
+  var cd=ev.clipboardData; var txt=cd&&cd.getData?cd.getData('text/plain'):'';
+  ev.preventDefault();
+  if(txt) document.execCommand('insertText', false, txt);
+  rnDirty();
 }
 function rnPickImage(ev){ if(ev)ev.preventDefault(); var inp=document.getElementById('rnImgFile'); if(inp){ inp.value=''; inp.click(); } return false; }
 function rnImgFileChosen(inp){ if(inp&&inp.files&&inp.files[0]) _rnInsertImage(inp.files[0]); }
@@ -7615,6 +7798,10 @@ function _rnGripUp(){ if(!_rnDrag)return;
     _rnSelImg.setAttribute('width', w); _rnSelImg.style.width=''; _rnPositionGrip(); }
   _rnDrag=null; rnDirty(); rnSave(); }
 function rnKey(ev){
+  if(ev.key==='Backspace' && !ev.shiftKey && !ev.ctrlKey && !ev.metaKey && !ev.altKey){
+    var bli=rnCurrentLi();
+    if(bli && _rnCaretAtLiStart(bli) && _rnBackspaceAtLiStart(bli)){ ev.preventDefault(); rnDirty(); return; }
+  }
   if(ev.key==='Tab'){ ev.preventDefault();
     if(rnCurrentLi()){ if(ev.shiftKey)rnDoOutdent(); else rnDoIndent(); }
     else if(!ev.shiftKey){ document.execCommand('insertHTML',false,'&nbsp;&nbsp;&nbsp;&nbsp;'); }
@@ -7664,7 +7851,7 @@ function rnSave(){ if(!_rnDirty||_rnKind==null)return; _rnDirty=false; clearTime
   var n=_rnNotes[_rnCur]; if(!n)return; var s=document.getElementById('rnStatus');
   var body='kind='+encodeURIComponent(_rnKind)+'&id='+encodeURIComponent(_rnId)
     +'&title='+encodeURIComponent(n.title||'')+'&body='+encodeURIComponent(n.body||'')
-    +(n.id?('&note_id='+n.id):'');
+    +(n.id?('&note_id='+n.id):'')+'&pw='+encodeURIComponent(_rnPw);
   fetch('/rich-note/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
    .then(function(r){return r.json();}).then(function(d){
      if(d&&d.ok){ if(!n.id&&d.id)n.id=d.id; if(s)s.textContent='✓ 保存しました'; rnSyncTriggers();
@@ -7674,6 +7861,35 @@ function rnSave(){ if(!_rnDirty||_rnKind==null)return; _rnDirty=false; clearTime
 document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ var m=document.getElementById('rnModal');
   if(m&&m.classList.contains('open')){ ev.preventDefault(); rnClose(); } } });
 window.addEventListener('beforeunload',function(){ if(_rnDirty)rnSave(); });
+// 論点メモのパスワードロック管理（ユーザー要望2026-08-23）。
+function diLockSet(iid){
+  var pw=prompt('論点メモにかけるパスワードを入力してください'); if(!pw)return;
+  var email=prompt('パスワードを忘れた際の連絡先メールアドレスを入力してください（必須）'); if(!email)return;
+  fetch('/deal-issue/'+iid+'/note-lock/set',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'password='+encodeURIComponent(pw)+'&recovery_email='+encodeURIComponent(email)})
+   .then(function(r){return r.json();}).then(function(d){
+     if(d&&d.ok){ alert('🔒 パスワードロックを設定しました。'); location.reload(); }
+     else alert('エラー: '+((d&&d.error)||'')); });
+}
+function diLockClear(iid){
+  var pw=prompt('現在のパスワードを入力してください'); if(pw==null)return;
+  fetch('/deal-issue/'+iid+'/note-lock/clear',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'password='+encodeURIComponent(pw)})
+   .then(function(r){return r.json();}).then(function(d){
+     if(d&&d.ok){ alert('🔓 パスワードロックを解除しました。'); location.reload(); }
+     else alert('エラー: '+((d&&d.error)||'')); });
+}
+function diLockForgot(iid){
+  if(!confirm('登録済みの連絡先メール宛に、パスワードリセット用リンクを送るための下書きメールを開きます。よろしいですか？'))return;
+  fetch('/deal-issue/'+iid+'/note-lock/request-reset',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'x=1'})
+   .then(function(r){return r.json();}).then(function(d){
+     if(d&&d.ok){
+       var body=encodeURIComponent('論点メモのパスワードをリセットします。以下のリンクを開いて本人確認してください:\\n'+d.reset_url);
+       location.href='mailto:'+encodeURIComponent(d.recovery_email)
+         +'?subject='+encodeURIComponent('論点メモのパスワードリセット')+'&body='+body;
+     } else alert('エラー: '+((d&&d.error)||'')); });
+}
 </script>"""
 
 
@@ -9276,18 +9492,37 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
           <button class="btn" style="background:#ef4444" type="submit">削除</button></form>
       </div>"""
     # 右: AIサマリ（論点メモから生成）＋ 論点メモ一覧（カードクリックで大画面編集）
-    summary_html = _format_ai_summary_html(it.get("ai_summary"))
-    notes = sfa_db.list_rich_notes(con, "issue", iid)
-    if notes:
-        note_cards = "".join(
-            f'<div class="di-note-card" onclick="rnOpen(&#39;issue&#39;,{iid},{n["id"]})" '
-            f'title="クリックで大きく編集">'
-            f'<div class="di-note-ttl">{_esc((n.get("title") or "無題"))}</div>'
-            f'<div class="di-note-pv">{_rich_note_preview(n.get("body") or "", 120) or "（空）"}</div></div>'
-            for n in notes
-        )
+    # 論点メモのパスワードロック（2026-08）。ロック中はサマリ・メモ本文プレビューをサーバ側で
+    # 一切出力しない（HTMLソースからも内容が読めないようにする）。rnOpen自体が開く際に
+    # パスワード入力を促し、正しければ大画面エディタで内容を表示する。
+    _lock_st = sfa_db.issue_note_lock_status(con, iid)
+    _locked = _lock_st["locked"]
+    if _locked:
+        summary_html = '<span class="muted">🔒 論点メモがロックされているため非表示です。</span>'
+        note_cards = (
+            f'<div class="di-note-card" onclick="rnOpen(&#39;issue&#39;,{iid})" '
+            f'title="クリックしてパスワードを入力">🔒 論点メモはロック中です（クリックしてパスワードを入力）</div>')
     else:
-        note_cards = '<div class="muted">論点メモはまだありません。「📝 論点メモ」から追加してください。</div>'
+        summary_html = _format_ai_summary_html(it.get("ai_summary"))
+        notes = sfa_db.list_rich_notes(con, "issue", iid)
+        if notes:
+            note_cards = "".join(
+                f'<div class="di-note-card" onclick="rnOpen(&#39;issue&#39;,{iid},{n["id"]})" '
+                f'title="クリックで大きく編集">'
+                f'<div class="di-note-ttl">{_esc((n.get("title") or "無題"))}</div>'
+                f'<div class="di-note-pv">{_rich_note_preview(n.get("body") or "", 120) or "（空）"}</div></div>'
+                for n in notes
+            )
+        else:
+            note_cards = '<div class="muted">論点メモはまだありません。「📝 論点メモ」から追加してください。</div>'
+    _lock_ctl = (
+        f'<button type="button" class="btn sec" style="font-size:12px" onclick="diLockClear({iid})" '
+        f'title="現在のパスワードで解除">🔓 鍵を外す</button>'
+        f'<button type="button" class="btn sec" style="font-size:12px" onclick="diLockForgot({iid})" '
+        f'title="連絡先メールへリセットリンクを送る下書きを開く">🔑 パスワードを忘れた</button>'
+        if _locked else
+        f'<button type="button" class="btn sec" style="font-size:12px" onclick="diLockSet({iid})" '
+        f'title="論点メモにパスワードロックをかける">🔒 鍵をかける</button>')
     intake_html = _intake_originals_html(con, "issue", iid, self_url)
     right = f"""
       <div class="card" style="flex:1;min-width:320px">
@@ -9302,10 +9537,11 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;
           border-top:1px solid #eef1f5;padding-top:12px">
           <h2 style="margin:0">論点メモ</h2>
-          <span style="display:flex;gap:6px;align-items:center">
+          <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
             <a class="btn sec" href="/deal-issue/{iid}/intake" style="font-size:12px"
                title="議論の文字起こしを貼付→AIで整形して論点メモ化">🎙️ 議論を取り込む（AI整形）</a>
-            {_rich_note_chip("issue", iid)}
+            {"" if _locked else _rich_note_chip("issue", iid)}
+            {_lock_ctl}
           </span>
         </div>
         <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">{note_cards}</div>
@@ -13018,7 +13254,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _q = self._qs()
                     _kind = (_q.get("kind", [""])[0] or "")
                     _eids = (_q.get("id", [""])[0] or "")
-                    if _kind in sfa_db.RICH_NOTE_KINDS and _eids.isdigit():
+                    _pw = (_q.get("pw", [""])[0] or "")
+                    if (_kind in sfa_db.RICH_NOTE_KINDS and _eids.isdigit() and _kind == "issue"
+                            and not sfa_db.verify_issue_note_lock(con, int(_eids), _pw)):
+                        self._send(json.dumps({"ok": False, "locked": True}).encode(), ctype="application/json")
+                    elif _kind in sfa_db.RICH_NOTE_KINDS and _eids.isdigit():
                         _eid = int(_eids)
                         _notes = [{"id": r["id"], "title": r.get("title") or "",
                                    "body": _sanitize_rich_html(r.get("body") or ""),
@@ -13819,6 +14059,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self.send_header("Content-Length", str(len(_data)))
                         self.end_headers()
                         self.wfile.write(_data)
+                elif path.startswith("/deal-issue/") and path.endswith("/note-lock/reset"):
+                    # パスワード忘れリセットの本人確認クリック先（メール内リンク）。トークン一致＆期限内で解除。
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._send(render("<div class=card>ページが見つかりません</div>"), 404)
+                        return
+                    _token = self._qs().get("token", [""])[0]
+                    _ok = sfa_db.confirm_issue_note_lock_reset(con, iid, _token)
+                    iss = sfa_db.get_deal_issue(con, iid)
+                    if not iss:
+                        self._send(render("<div class=card>論点が見つかりません</div>"), 404)
+                    else:
+                        _flash = "🔓 論点メモのパスワードロックを解除しました。" if _ok else \
+                            "⚠️ リセットリンクが無効、または期限切れです。"
+                        self._send(render(deal_issue_detail_page(con, iss), flash=_flash))
                 elif path.startswith("/deal-issue/") and path.endswith("/edit"):
                     try:
                         iid = int(path.split("/")[2])
@@ -14164,6 +14420,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _eids = f.get("id", "")
                     if _kind not in sfa_db.RICH_NOTE_KINDS or not _eids.isdigit():
                         self._send(json.dumps({"ok": False, "error": "不正な対象"}).encode(), ctype="application/json")
+                    elif _kind == "issue" and not sfa_db.verify_issue_note_lock(
+                            con, int(_eids), f.get("pw", "") or ""):
+                        self._send(json.dumps({"ok": False, "locked": True, "error": "ロック中です"}).encode(),
+                                   ctype="application/json")
                     else:
                         _eid = int(_eids)
                         _title = (f.get("title") or "").strip()[:200] or None
@@ -14185,11 +14445,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 elif path == "/rich-note/delete":
                     _nid_s = f.get("note_id", "")
-                    if _nid_s.isdigit():
-                        sfa_db.delete_rich_note(con, int(_nid_s))
-                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
-                    else:
+                    if not _nid_s.isdigit():
                         self._send(json.dumps({"ok": False}).encode(), ctype="application/json")
+                    else:
+                        _drow = sfa_db.get_rich_note(con, int(_nid_s))
+                        if (_drow and _drow.get("kind") == "issue"
+                                and not sfa_db.verify_issue_note_lock(
+                                    con, _drow.get("entity_id"), f.get("pw", "") or "")):
+                            self._send(json.dumps({"ok": False, "locked": True}).encode(), ctype="application/json")
+                        else:
+                            sfa_db.delete_rich_note(con, int(_nid_s))
+                            self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
 
                 elif path == "/task-projects/save":
                     _pid = None
@@ -14469,7 +14735,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _dvid = int(path.split("/")[2])
                     _fld = (f.get("field", "") or "").strip()
                     _val = f.get("value", "")
-                    if _fld in ("title", "status", "start_week", "end_week", "overview"):
+                    if _fld in ("title", "status", "start_week", "end_week", "overview",
+                                 "payment_cycle_months"):
                         if _fld in ("start_week", "end_week"):
                             _val = _snap_monday(_val)
                             _old_dv = sfa_db.get_delivery(con, _dvid) or {}
@@ -14484,6 +14751,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     else:
                         self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(),
                                    ctype="application/json")
+                elif (path.startswith("/delivery/") and path.endswith("/receipt")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # 月別入金計画: 1ヶ月分の検収額をajax保存（ユーザー要望2026-08-23）。
+                    _dvid = int(path.split("/")[2])
+                    sfa_db.set_delivery_receipt(con, _dvid, f.get("month", ""), f.get("amount", ""))
+                    self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
                 elif path == "/deliveries/bulk_delete":
                     for _idr in f_list.get("ids", []):
                         if str(_idr).isdigit():
@@ -14525,6 +14798,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _cost_mode, f.get("cost_monthly", ""), f.get("cost_total", ""), _months)
                     _conf_ov = (f.get("confidence_override", "") or "").strip()
                     _conf_ov = _conf_ov if _conf_ov in sfa_db.DELIVERY_CONFIDENCE_LEVELS else None
+                    # 事業種別L1/L2の手修正。未選択(空)は商談継承のためNone。不正値もNoneへ落とす。
+                    _biz_l1_ov = (f.get("business_type_l1_override", "") or "").strip()
+                    _biz_l1_ov = _biz_l1_ov if _biz_l1_ov in sfa_db.get_master_list(con, "business_type_l1") else None
+                    _biz_l2_ov = (f.get("business_type_l2_override", "") or "").strip()
+                    # L2はL1override未選択（自動）ならL1override自体は商談のL1を継承する前提で判定
+                    _eff_l1_for_l2 = _biz_l1_ov or _old_dv.get("deal_business_type_l1")
+                    _biz_l2_ov = _biz_l2_ov if _biz_l2_ov in sfa_db.business_type_l2_of(con, _eff_l1_for_l2) else None
                     sfa_db.update_delivery(
                         con, _dvid,
                         title=(f.get("title", "") or "").strip(),
@@ -14539,7 +14819,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         cost_mode=_cost_mode,
                         cost_monthly=_cost_monthly,
                         cost_total=_cost_total,
-                        cost_vendor=(f.get("cost_vendor", "") or "").strip())
+                        cost_vendor=(f.get("cost_vendor", "") or "").strip(),
+                        business_type_l1_override=_biz_l1_ov,
+                        business_type_l2_override=_biz_l2_ov)
                     # 期間の変更に合わせて各アサインの週も連動スライド（開始移動＝全員スライド／週数延長＝全員の終了延長）
                     sfa_db.reschedule_delivery_assignments(
                         con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"), _sw, _ew)
@@ -15498,6 +15780,58 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _err = "不正なリクエスト"
                     _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
                     self._send(_resp, ctype="application/json")
+
+                elif (path.startswith("/deal-issue/") and path.endswith("/note-lock/set")
+                      and len(path.split("/")) == 5 and path.split("/")[2].isdigit()):
+                    # 論点メモのパスワードロック設定/変更（ユーザー要望2026-08-23）。
+                    # 連絡先メール必須。既にロック済みの場合は現在のパスワード一致が変更条件。
+                    iid = int(path.split("/")[2])
+                    _new_pw = f.get("password", "") or ""
+                    _old_pw = f.get("old_password", "") or ""
+                    _rec_email = (f.get("recovery_email", "") or "").strip()
+                    _st = sfa_db.issue_note_lock_status(con, iid)
+                    if not _new_pw or not _rec_email:
+                        self._send(json.dumps({"ok": False, "error": "パスワードと連絡先メールは必須です"}).encode(),
+                                   ctype="application/json")
+                    elif _st["locked"] and not sfa_db.verify_issue_note_lock(con, iid, _old_pw):
+                        self._send(json.dumps({"ok": False, "error": "現在のパスワードが一致しません"}).encode(),
+                                   ctype="application/json")
+                    else:
+                        sfa_db.set_issue_note_lock(con, iid, _new_pw, _rec_email)
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+
+                elif (path.startswith("/deal-issue/") and path.endswith("/note-lock/clear")
+                      and len(path.split("/")) == 5 and path.split("/")[2].isdigit()):
+                    iid = int(path.split("/")[2])
+                    if sfa_db.verify_issue_note_lock(con, iid, f.get("password", "") or ""):
+                        sfa_db.clear_issue_note_lock(con, iid)
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                    else:
+                        self._send(json.dumps({"ok": False, "error": "パスワードが一致しません"}).encode(),
+                                   ctype="application/json")
+
+                elif (path.startswith("/deal-issue/") and path.endswith("/note-lock/verify")
+                      and len(path.split("/")) == 5 and path.split("/")[2].isdigit()):
+                    iid = int(path.split("/")[2])
+                    self._send(json.dumps(
+                        {"ok": sfa_db.verify_issue_note_lock(con, iid, f.get("password", "") or "")}
+                    ).encode(), ctype="application/json")
+
+                elif (path.startswith("/deal-issue/") and path.endswith("/note-lock/request-reset")
+                      and len(path.split("/")) == 5 and path.split("/")[2].isdigit()):
+                    # パスワード忘れ: リセットトークンを発行。メール送信機能は無いため、
+                    # 連絡先アドレス宛のmailtoリンクをクライアント側で組み立てて本人が送る運用。
+                    iid = int(path.split("/")[2])
+                    _req = sfa_db.request_issue_note_lock_reset(con, iid)
+                    if _req:
+                        _tool_url = os.environ.get("SFA_TOOL_URL", "") or "https://sfa-crm.onrender.com"
+                        _reset_url = f"{_tool_url}/deal-issue/{iid}/note-lock/reset?token={_req['token']}"
+                        self._send(json.dumps({"ok": True, "recovery_email": _req["recovery_email"],
+                                               "reset_url": _reset_url}, ensure_ascii=False).encode(),
+                                   ctype="application/json")
+                    else:
+                        self._send(json.dumps({"ok": False, "error": "ロック無し、または連絡先未設定です"}).encode(),
+                                   ctype="application/json")
 
                 elif path.startswith("/deal/") and path.endswith("/attachment"):
                     try:
