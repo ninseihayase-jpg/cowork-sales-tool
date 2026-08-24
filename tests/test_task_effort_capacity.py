@@ -182,3 +182,123 @@ def test_tasks_capacity_page_renders_owners_and_days(con):
     assert "早瀬" in html
     assert "capSet(" in html
     assert "/tasks/capacity/set" in html
+
+
+# ── Phase 2: スケジューラ（compute_owner_schedule / latest_start_date） ──
+
+def test_compute_owner_schedule_none_without_capacity_data(con):
+    sfa_db.upsert_task(con, title="X", assignee="早瀬", effort_level="中", due_date="2026-09-01")
+    assert sfa_db.compute_owner_schedule(con, "早瀬") is None
+
+
+def test_compute_owner_schedule_packs_tasks_across_business_days():
+    d = tempfile.mkdtemp(prefix="sfa_sched_")
+    try:
+        from datetime import date
+        path = str(Path(d) / "t.db")
+        sfa_db.init_db(path)
+        con = sfa_db.connect(path)
+        sfa_db.set_owner_daily_capacity_default(con, {"早瀬": 4.0})
+        today = date(2026, 8, 24)  # 月曜
+        tid1 = sfa_db.upsert_task(con, title="A", assignee="早瀬", effort_hours=10.0, due_date="2026-09-01")
+        tid2 = sfa_db.upsert_task(con, title="B", assignee="早瀬", effort_hours=4.0, due_date="2026-09-05")
+        sched = sfa_db.compute_owner_schedule(con, "早瀬", today=today)
+        assert sched["starts"][tid1] == "2026-08-24"
+        assert sched["ends"][tid1] == "2026-08-26"
+        assert sched["starts"][tid2] == "2026-08-26"  # Aの残り2hと同日に相乗り
+        assert sched["ends"][tid2] == "2026-08-27"
+        # 容量を超えて割り当てられていないこと
+        for day, load in sched["daily_load"].items():
+            assert load["allocated"] <= load["capacity"] + 1e-9
+        con.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_compute_owner_schedule_excludes_done_and_hold():
+    d = tempfile.mkdtemp(prefix="sfa_sched2_")
+    try:
+        path = str(Path(d) / "t.db")
+        sfa_db.init_db(path)
+        con = sfa_db.connect(path)
+        sfa_db.set_owner_daily_capacity_default(con, {"早瀬": 4.0})
+        done_id = sfa_db.upsert_task(con, title="完了済み", assignee="早瀬", effort_hours=4.0,
+                                     due_date="2026-09-01", status="完了")
+        hold_id = sfa_db.upsert_task(con, title="保留中", assignee="早瀬", effort_hours=4.0,
+                                     due_date="2026-09-01", status="保留")
+        sched = sfa_db.compute_owner_schedule(con, "早瀬")
+        assert done_id not in sched["starts"]
+        assert hold_id not in sched["starts"]
+        con.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_latest_start_date_matches_manual_calc_with_capacity():
+    d = tempfile.mkdtemp(prefix="sfa_latest_")
+    try:
+        path = str(Path(d) / "t.db")
+        sfa_db.init_db(path)
+        con = sfa_db.connect(path)
+        sfa_db.set_owner_daily_capacity_default(con, {"早瀬": 4.0})
+        tid = sfa_db.upsert_task(con, title="A", assignee="早瀬", effort_hours=10.0, due_date="2026-09-01")
+        t = sfa_db.get_task(con, tid)
+        # 09/01(火)=4h(rem6) -> 08/31(月)=4h(rem2) -> 08/28(金,土日跨ぎ)=4h(rem<=0) で確定
+        assert sfa_db.latest_start_date(con, t) == "2026-08-28"
+        con.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_latest_start_date_falls_back_without_capacity_data(con):
+    tid = sfa_db.upsert_task(con, title="X", assignee="中島", effort_level="中", due_date="2026-09-01")
+    t = sfa_db.get_task(con, tid)
+    fallback_start, _ = sfa_db.task_gantt_range("2026-09-01", "中")
+    assert sfa_db.latest_start_date(con, t) == fallback_start
+
+
+def test_latest_start_date_none_without_due_date(con):
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬")
+    t = sfa_db.get_task(con, tid)
+    assert sfa_db.latest_start_date(con, t) is None
+
+
+# ── Phase 2: ガント統合・アラート ──
+
+def test_tasks_gantt_page_uses_capacity_schedule_when_available(con):
+    sfa_db.set_owner_daily_capacity_default(con, {"早瀬": 4.0})
+    sfa_db.upsert_task(con, title="NoCapOwnerTask", assignee="中島", effort_level="中", due_date="2026-09-10")
+    sfa_db.upsert_task(con, title="CapOwnerTask", assignee="早瀬", effort_hours=8.0, due_date="2026-09-10")
+    html = webapp.tasks_gantt_page(con)
+    assert "NoCapOwnerTask" in html
+    assert "CapOwnerTask" in html
+
+
+def test_tasks_page_shows_start_overdue_alert_box_and_filters(con):
+    sfa_db.set_owner_daily_capacity_default(con, {"早瀬": 4.0})
+    import datetime as _dt
+    tid = sfa_db.upsert_task(con, title="開始遅延タスク", assignee="早瀬", effort_hours=40.0,
+                             due_date=(_dt.date.today() + _dt.timedelta(days=1)).isoformat())
+    html = webapp.tasks_page(con)
+    assert "開始遅延" in html
+    assert "urgency=start_overdue" in html
+    filtered = webapp.tasks_page(con, urgency="start_overdue")
+    assert "開始遅延タスク" in filtered
+
+
+# ── Phase 3: 容量ビューの必要工数(Over/Under)表示 ──
+
+def test_tasks_capacity_page_shows_daily_load_for_owners_with_capacity(con):
+    sfa_db.set_owner_daily_capacity_default(con, {"早瀬": 4.0})
+    sfa_db.upsert_task(con, title="A", assignee="早瀬", effort_hours=20.0, due_date="2026-09-10")
+    sfa_db.upsert_task(con, title="B", assignee="中島", effort_level="中", due_date="2026-09-10")
+    html = webapp.tasks_capacity_page(con)
+    assert "必要/容量(h)" in html
+    assert "早瀬" in html and "中島" in html
+
+
+def test_tasks_capacity_page_omits_load_row_without_capacity_data(con):
+    sfa_db.upsert_task(con, title="B", assignee="中島", effort_level="中", due_date="2026-09-10")
+    html = webapp.tasks_capacity_page(con)
+    # 中島には容量データが無いため必要工数行(必要/容量(h))自体が出ない
+    assert "必要/容量(h)" not in html

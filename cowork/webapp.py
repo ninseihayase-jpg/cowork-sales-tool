@@ -4568,6 +4568,11 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     tmr_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == tomorrow)
     hold_n = sum(1 for t in open_tasks if (t.get("status") or "") == "保留")
     pinned_n = sum(1 for t in all_tasks if t.get("pinned"))
+    # 最遅開始日（容量から算出。容量未設定の担当者はtask_gantt_rangeへ自動フォールバック）を
+    # 過ぎているタスクの件数。期限そのものへの超過(overdue_n)とは別の、早期警告アラート
+    # （ユーザー要望2026-08-24）。
+    _late_starts = {t["id"]: (sfa_db.latest_start_date(con, t) or "") for t in _due_pool}
+    start_overdue_n = sum(1 for t in _due_pool if _late_starts[t["id"]] and _late_starts[t["id"]] < today)
 
     if assignee == "__none__":
         tasks = sfa_db.list_tasks(con, category=category or None, admin=False,
@@ -4605,6 +4610,9 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                 return due == tomorrow
             if urgency == "nodue":
                 return not due
+            if urgency == "start_overdue":
+                ls = sfa_db.latest_start_date(con, t) or ""
+                return bool(ls) and ls < today
             return True
         tasks = [t for t in tasks if _uok(t)]
     if pinned:
@@ -4834,6 +4842,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     agg = f"""
       <div class="desk-agg">
         <a class="box desk-alert-over{' active' if overdue_n else ''}" href="/tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b>{overdue_n}</b></a>
+        <a class="box desk-alert-over{' active' if start_overdue_n else ''}" href="/tasks?urgency=start_overdue" style="text-decoration:none;color:inherit" title="容量から算出した最遅開始日（＝これより後に始めると期限に間に合わない日）を過ぎているタスク">⏱ 開始遅延 <b>{start_overdue_n}</b></a>
         <a class="box desk-alert-today{' active' if today_n else ''}" href="/tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
         <a class="box desk-alert-tmr{' active' if tmr_n else ''}" href="/tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
         <a class="box desk-alert-hold" href="/tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b>{hold_n}</b></a>
@@ -4882,8 +4891,12 @@ _GANTT_CSS = """<style>
 
 
 def tasks_gantt_page(con) -> str:
-    """コンサルタスクのガントチャートビュー（ユーザー確定仕様・2026-08-19）。
-    工数感×期日から所要日数・開始日（期日から営業日逆算、当日/作成日より前でも可）を算出し、
+    """コンサルタスクのガントチャートビュー（ユーザー確定仕様・2026-08-19、
+    2026-08-24に容量ベースのスケジューリングを追加）。
+    担当者に容量データ（/tasks/capacity・管理画面の既定値）があれば、compute_owner_schedule
+    （他タスクとの競合込みで容量から実際にいつ着手できるかを計算）の結果を使う。
+    容量データが無い担当者は従来通りtask_gantt_range（工数感×期日→所要日数・開始日を
+    期日から単純逆算、他タスクとの競合は見ない）にフォールバックする（無停止移行）。
     大分類(project×category)ごとにグループ化。並び順:
       グループ間＝グループ内タスクの所要日数合計が多い順。
       グループ内＝開始日が古い順（今日以前は同列扱い）→期日が近い順。
@@ -4893,9 +4906,21 @@ def tasks_gantt_page(con) -> str:
     all_tasks = sfa_db.list_tasks(con, admin=False)
     open_tasks = [t for t in all_tasks if (t.get("status") or "") != "完了"]
 
+    _owner_schedules = {}
+
+    def _sched_for(owner):
+        if owner not in _owner_schedules:
+            _owner_schedules[owner] = sfa_db.compute_owner_schedule(con, owner, today=today)
+        return _owner_schedules[owner]
+
     ready, missing = [], []
     for t in open_tasks:
-        start, end = sfa_db.task_gantt_range(t.get("due_date"), t.get("effort_level"))
+        _owner = (t.get("assignee") or "").strip()
+        _sched = _sched_for(_owner) if _owner else None
+        if _sched and t["id"] in _sched["starts"]:
+            start, end = _sched["starts"][t["id"]], _sched["ends"][t["id"]]
+        else:
+            start, end = sfa_db.task_gantt_range(t.get("due_date"), t.get("effort_level"))
         if start and end:
             ready.append({**t, "_start": start, "_end": end})
         else:
@@ -5008,9 +5033,12 @@ def tasks_gantt_page(con) -> str:
 
 
 def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
-    """担当者×直近N営業日の「1日あたり作業可能時間」の手動編集ビュー（2026-08-24）。
-    「毎朝手修正する」対象の値そのもの。日別入力が無い日はcapacity_atの既定値フォールバックに
-    従いプレースホルダで示す（未入力=既定値を使う、という意味を明示）。"""
+    """担当者×直近N営業日の「1日あたり作業可能時間」の手動編集ビュー（2026-08-24）＋
+    毎日の必要工数(必要h/容量h・Over率)の表示（Phase 3）。
+    容量入力行は「毎朝手修正する」対象の値そのもの。日別入力が無い日はcapacity_atの
+    既定値フォールバックに従いプレースホルダで示す（未入力=既定値を使う、という意味を明示）。
+    必要工数行は容量データがある担当者のみcompute_owner_scheduleのdaily_loadを表示
+    （_heat_style/DELIVERY_HEAT_THRESHOLDSでDelivery稼働率と同じ3段階の色分け）。"""
     today = _today_jst()
     days = []
     d = today
@@ -5024,14 +5052,29 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
     rows = ""
     for o in owners:
         overrides = sfa_db.list_owner_daily_capacity(con, o, days[0], days[-1])
-        cells = "".join(
+        cap_cells = "".join(
             f'<td style="padding:2px 4px;text-align:center">'
             f'<input type="number" step="0.5" min="0" style="width:64px;text-align:center" '
             f'value="{overrides.get(day, "")}" placeholder="{sfa_db.capacity_at(con, o, day):g}" '
             f'onchange="capSet(&#39;{_esc(o)}&#39;,&#39;{day}&#39;,this.value)"></td>'
             for day in days)
         rows += (f'<tr><th style="text-align:left;font-size:12px;padding:4px 8px;white-space:nowrap">'
-                 f'{_esc(o)}</th>{cells}</tr>')
+                 f'{_esc(o)}<br><span class="muted" style="font-size:10px;font-weight:normal">容量(h)</span></th>'
+                 f'{cap_cells}</tr>')
+        sched = sfa_db.compute_owner_schedule(con, o, today=today, horizon_days=horizon_days)
+        if sched:
+            load_cells = ""
+            for day in days:
+                dl = sched["daily_load"].get(day)
+                if dl and dl["capacity"] > 0:
+                    pct = dl["allocated"] / dl["capacity"] * 100
+                    txt = f'{dl["allocated"]:g}/{dl["capacity"]:g}h'
+                else:
+                    pct, txt = 0, "—"
+                load_cells += (f'<td style="padding:2px 4px;text-align:center;font-size:11px;'
+                               f'{_heat_style(pct)}">{txt}</td>')
+            rows += (f'<tr><td style="padding:2px 8px;font-size:10px;color:#94a3b8">'
+                     f'必要/容量(h)</td>{load_cells}</tr>')
     return f"""
     <div class="card">
       <h2 style="margin:0 0 4px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -5044,7 +5087,8 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
       </h2>
       <p class="muted" style="font-size:12px;margin:0 0 10px">担当者ごとの1日あたり作業可能時間（打ち合わせ除く）を、当日〜直近{horizon_days}営業日分で
         その場編集できます（未入力の日は薄字のプレースホルダの既定値が使われます）。既定値自体は
-        <a href="/">管理 → 担当者の1日あたり作業可能時間</a>で設定します。</p>
+        <a href="/">管理 → 担当者の1日あたり作業可能時間</a>で設定します。容量データがある担当者は、
+        必要工数(タスクの所要時間を容量へ割り当てた結果)と容量の比較（Over/Under）も併せて表示します。</p>
       <div style="overflow:auto"><table style="border-collapse:collapse">
         <tr><th style="text-align:left;font-size:11px;padding:4px 8px">担当</th>{head}</tr>
         {rows}
@@ -5054,7 +5098,7 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
     function capSet(owner, day, value){{
       fetch('/tasks/capacity/set',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
         body:'owner='+encodeURIComponent(owner)+'&day='+encodeURIComponent(day)+'&hours='+encodeURIComponent(value)}})
-        .catch(function(){{}});
+        .then(function(){{ location.reload(); }}).catch(function(){{}});
     }}
     </script>"""
 

@@ -1667,6 +1667,83 @@ def list_owner_daily_capacity(con, owner: str, from_day: str, to_day: str) -> di
     return {r["day"]: r["hours"] for r in rows}
 
 
+def compute_owner_schedule(con, owner: str, *, horizon_days: int = 90, today: date | None = None) -> dict | None:
+    """担当者ownerの未完了コンサルタスクを、capacity_atの容量に従って営業日ごとに貪欲に割り当てる
+    （キュー順=list_tasksの既定順＝pinned優先→期限昇順→id降順、をそのまま使う）。
+    戻り値: {"starts": {task_id: 'YYYY-MM-DD'}, "ends": {...},
+             "daily_load": {day: {"allocated": h, "capacity": h}}}。
+    容量データが1件も無い担当者はNone（呼び出し側はtask_gantt_rangeへフォールバックすること＝
+    容量未設定の担当者の挙動を変えないための無停止移行ガード）。"""
+    if not owner or not has_owner_capacity_data(con, owner):
+        return None
+    today = today or date.today()
+    tasks = [t for t in list_tasks(con, assignee=owner, admin=False)
+             if (t.get("status") or "") not in ("完了", "保留")]
+    starts, ends, daily_load = {}, {}, {}
+
+    def _next_business_day(d):
+        while not is_business_day(d):
+            d += timedelta(days=1)
+        return d
+
+    day = _next_business_day(today)
+    day_remaining = capacity_at(con, owner, day.isoformat())
+    daily_load[day.isoformat()] = {"allocated": 0.0, "capacity": day_remaining}
+
+    for t in tasks:
+        remaining = effective_effort_hours(t)
+        if remaining <= 0:
+            continue
+        first_day = last_day = None
+        while remaining > 1e-9:
+            if day_remaining <= 1e-9:
+                day = _next_business_day(day + timedelta(days=1))
+                if (day - today).days > horizon_days:
+                    break  # 計算範囲超過は打ち切り（このタスクは以降未割当のまま）
+                day_remaining = capacity_at(con, owner, day.isoformat())
+                daily_load[day.isoformat()] = {"allocated": 0.0, "capacity": day_remaining}
+                continue
+            alloc = min(remaining, day_remaining)
+            daily_load[day.isoformat()]["allocated"] += alloc
+            remaining -= alloc
+            day_remaining -= alloc
+            first_day = first_day or day.isoformat()
+            last_day = day.isoformat()
+        if first_day:
+            starts[t["id"]] = first_day
+            ends[t["id"]] = last_day
+    return {"starts": starts, "ends": ends, "daily_load": daily_load}
+
+
+def latest_start_date(con, task: dict, owner: str | None = None) -> str | None:
+    """タスク単体の「これより後に始めると期限に間に合わない」開始日（他タスクとの競合は見ない、
+    タスク単体の安全マージンのみ）。担当者の容量データが無ければ既存のtask_gantt_range
+    （工数感→固定営業日数の逆算）にフォールバックする（無停止移行）。期限が無ければNone。"""
+    due = (task.get("due_date") or "").strip()
+    if not due:
+        return None
+    owner = owner if owner is not None else (task.get("assignee") or "")
+    if not owner or not has_owner_capacity_data(con, owner):
+        start, _ = task_gantt_range(due, task.get("effort_level"))
+        return start
+    try:
+        d = date.fromisoformat(due)
+    except ValueError:
+        return None
+    remaining = effective_effort_hours(task)
+    guard = 0
+    while remaining > 1e-9 and guard < 3650:
+        if not is_business_day(d):
+            d -= timedelta(days=1)
+            guard += 1
+            continue
+        remaining -= capacity_at(con, owner, d.isoformat())
+        if remaining > 1e-9:
+            d -= timedelta(days=1)
+        guard += 1
+    return d.isoformat()
+
+
 def get_industry_target_map(con) -> dict:
     """業界→ターゲット領域 のマップ（masters key='industry_target_map' にJSON保持）。未設定は空dict。"""
     row = con.execute("SELECT values_json FROM masters WHERE key='industry_target_map'").fetchone()
