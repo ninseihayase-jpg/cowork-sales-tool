@@ -3381,6 +3381,27 @@ def get_task(con, id: int) -> dict | None:
     return dict(r) if r else None
 
 
+def task_link_label(con, link_type: str | None, link_id: int | None) -> str | None:
+    """タスクのlink_type/link_id（deal/issue）の表示ラベル。対象が消えていたらNone。
+    ユーザー要望2026-08-24: コンサルタスクを商談/論点に紐づけられるようにする機能で使用。"""
+    if not link_type or not link_id:
+        return None
+    if link_type == "deal":
+        d = get_deal(con, link_id)
+        if not d:
+            return None
+        return f'{d.get("account_name") or "—"}：{d.get("deal_name") or "—"}'
+    if link_type == "issue":
+        it = get_deal_issue(con, link_id)
+        if not it:
+            return None
+        base = it.get("issue") or "(無題)"
+        if it.get("deal_name"):
+            return f'{base}（{it.get("account_name") or "—"}：{it["deal_name"]}）'
+        return f"{base}（商談共通）"
+    return None
+
+
 def set_task_status(con, id: int, status: str, commit: bool = True) -> None:
     if status == "完了":
         con.execute("UPDATE tasks SET status=?, done_at=datetime('now'), updated_at=datetime('now') WHERE id=?",

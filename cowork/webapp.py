@@ -468,6 +468,50 @@ function filterSelectOptions(selectId, inputId) {{
     o.style.display = (!q || o.text.toLowerCase().indexOf(q) >= 0) ? '' : 'none';
   }}
 }}
+/* 全SFA共通: タスクの「関連（商談/論点/開発案件）」ピッカー（ユーザー要望2026-08-24）。
+   種別select→検索input（<datalist>で候補が自動表示、ドロップダウンを開く操作は不要）→
+   完全一致した候補のdata-idを隠しinput({{prefix}}Type/{{prefix}}Id)へ書き込む。
+   HTML側は_task_link_picker_html()が生成する（task_form・tasks_pageの絞り込みで共用）。*/
+function taskLinkKindChanged(prefix) {{
+  var kind = (document.getElementById(prefix + 'Kind') || {{}}).value || '';
+  var devWrap = document.getElementById(prefix + 'DevWrap');
+  var dealWrap = document.getElementById(prefix + 'DealWrap');
+  var issueWrap = document.getElementById(prefix + 'IssueWrap');
+  if (devWrap) devWrap.style.display = (kind === 'dev_project') ? '' : 'none';
+  if (dealWrap) dealWrap.style.display = (kind === 'deal') ? '' : 'none';
+  if (issueWrap) issueWrap.style.display = (kind === 'issue') ? '' : 'none';
+  var devSel = document.getElementById(prefix + 'DevSel');
+  if (kind !== 'dev_project' && devSel) devSel.value = '';
+  if (kind === 'deal' || kind === 'issue') {{
+    taskLinkResolve(prefix, kind);
+  }} else {{
+    var typeEl = document.getElementById(prefix + 'Type'), idEl = document.getElementById(prefix + 'Id');
+    if (typeEl) typeEl.value = ''; if (idEl) idEl.value = '';
+  }}
+}}
+function taskLinkResolve(prefix, kind) {{
+  var inputId = (kind === 'deal') ? prefix + 'DealQ' : prefix + 'IssueQ';
+  var dlId = (kind === 'deal') ? prefix + 'DealsDL' : prefix + 'IssuesDL';
+  var input = document.getElementById(inputId), dl = document.getElementById(dlId);
+  var typeEl = document.getElementById(prefix + 'Type'), idEl = document.getElementById(prefix + 'Id');
+  if (!input || !dl || !typeEl || !idEl) return;
+  var val = input.value, opts = dl.querySelectorAll('option'), hit = null;
+  for (var i = 0; i < opts.length; i++) {{ if (opts[i].value === val) {{ hit = opts[i]; break; }} }}
+  typeEl.value = hit ? kind : '';
+  idEl.value = hit ? hit.getAttribute('data-id') : '';
+}}
+/* タスク一覧の絞り込み用: 候補が確定した瞬間にフォームを送信する（種別selectで「なし」に
+   戻した時も即送信＝フィルタ解除）。 */
+function taskLinkFilterResolve(prefix, kind, formId) {{
+  taskLinkResolve(prefix, kind);
+  var idEl = document.getElementById(prefix + 'Id');
+  if (idEl && idEl.value) {{ var f = document.getElementById(formId); if (f) f.submit(); }}
+}}
+function taskLinkFilterKindChanged(prefix, formId) {{
+  taskLinkKindChanged(prefix);
+  var kind = (document.getElementById(prefix + 'Kind') || {{}}).value || '';
+  if (!kind) {{ var f = document.getElementById(formId); if (f) f.submit(); }}
+}}
 /* 全SFA共通: フィルタ適用中の項目に .filter-active を付けて薄くハイライトする。
    対象は .filter-row 内のコントロール（js-nofilter を付けた入力/作成フォームは除外）。
    select=先頭(既定)以外を選択中／text・search・date=値あり／details=チェックあり を「適用中」とみなす。
@@ -4326,6 +4370,64 @@ def _ai_summarize_project(pname: str, meta: str, task_lines: list) -> str | None
     return ans or None
 
 
+def _task_link_datalists_html(con, prefix: str) -> str:
+    """タスクの商談/論点紐づけ用<datalist>（検索して選ぶと自動でdata-idを解決する、ユーザー要望
+    2026-08-24）。deals/deal_issuesの候補一覧を1ページに1回だけ埋め込む想定。"""
+    deals = sfa_db.list_deals(con, status="open")
+    deal_opts = "".join(
+        f'<option value="{_esc(d.get("account_name") or "—")}：{_esc(d.get("deal_name") or "—")}" '
+        f'data-id="{d["id"]}">'
+        for d in deals)
+    issues = [it for it in sfa_db.list_deal_issues(con) if (it.get("status") or "") != "取り消し"]
+    issue_opts = "".join(
+        f'<option value="{_esc(sfa_db.task_link_label(con, "issue", it["id"]) or it.get("issue") or "")}" '
+        f'data-id="{it["id"]}">'
+        for it in issues)
+    return (f'<datalist id="{prefix}DealsDL">{deal_opts}</datalist>'
+            f'<datalist id="{prefix}IssuesDL">{issue_opts}</datalist>')
+
+
+def _task_link_picker_html(con, *, prefix: str, cur_type: str | None, cur_id, include_dev: bool = False,
+                           dev_opts: str = "", auto_submit_form_id: str | None = None) -> str:
+    """タスクの「関連（商談/論点/開発案件）」ピッカー。種別を選ぶ→単語で検索→候補から選ぶ
+    （ネイティブ<datalist>なので、候補が自動表示されドロップダウンを開く必要がない）。
+    include_dev=Trueの時だけ開発案件<select>（呼び出し側でdev_optsを渡す）も選択肢に含める。
+    auto_submit_form_id指定時（一覧の絞り込み用）は、候補が確定した瞬間にそのform_idのフォームを
+    自動送信する。JS本体は共通スクリプト(PAGE定数)のtaskLinkKindChanged/taskLinkResolve等を参照。"""
+    cur_type = cur_type if cur_type in ("deal", "issue", "dev_project") else None
+    deal_label = sfa_db.task_link_label(con, "deal", cur_id) if cur_type == "deal" else ""
+    issue_label = sfa_db.task_link_label(con, "issue", cur_id) if cur_type == "issue" else ""
+    kind_opts = ['<option value="">（なし）</option>',
+                 f'<option value="deal"{" selected" if cur_type == "deal" else ""}>商談</option>',
+                 f'<option value="issue"{" selected" if cur_type == "issue" else ""}>論点</option>']
+    if include_dev:
+        kind_opts.append(f'<option value="dev_project"{" selected" if cur_type == "dev_project" else ""}>開発案件</option>')
+    dev_wrap = (f'<span id="{prefix}DevWrap" style="display:{"" if cur_type == "dev_project" else "none"}">'
+                f'<select id="{prefix}DevSel" name="link">{dev_opts}</select></span>') if include_dev else ""
+    _hidden_type = cur_type if cur_type in ("deal", "issue") else None
+    _hidden_id = cur_id if _hidden_type else None
+    if auto_submit_form_id:
+        kind_onchange = f"taskLinkFilterKindChanged(&#39;{prefix}&#39;,&#39;{auto_submit_form_id}&#39;)"
+        deal_oninput = f"taskLinkFilterResolve(&#39;{prefix}&#39;,&#39;deal&#39;,&#39;{auto_submit_form_id}&#39;)"
+        issue_oninput = f"taskLinkFilterResolve(&#39;{prefix}&#39;,&#39;issue&#39;,&#39;{auto_submit_form_id}&#39;)"
+    else:
+        kind_onchange = f"taskLinkKindChanged(&#39;{prefix}&#39;)"
+        deal_oninput = f"taskLinkResolve(&#39;{prefix}&#39;,&#39;deal&#39;)"
+        issue_oninput = f"taskLinkResolve(&#39;{prefix}&#39;,&#39;issue&#39;)"
+    return (
+        f'<select id="{prefix}Kind" onchange="{kind_onchange}">{"".join(kind_opts)}</select> '
+        f'{dev_wrap}'
+        f'<span id="{prefix}DealWrap" style="display:{"" if cur_type == "deal" else "none"}">'
+        f'<input type="text" id="{prefix}DealQ" list="{prefix}DealsDL" value="{_esc(deal_label)}" '
+        f'placeholder="🔍 会社名・商談名で検索" autocomplete="off" oninput="{deal_oninput}"></span>'
+        f'<span id="{prefix}IssueWrap" style="display:{"" if cur_type == "issue" else "none"}">'
+        f'<input type="text" id="{prefix}IssueQ" list="{prefix}IssuesDL" value="{_esc(issue_label)}" '
+        f'placeholder="🔍 論点名・会社名で検索" autocomplete="off" oninput="{issue_oninput}"></span>'
+        f'<input type="hidden" id="{prefix}Type" name="link_type" value="{_esc(cur_type or "")}">'
+        f'<input type="hidden" id="{prefix}Id" name="link_id" value="{cur_id if cur_type else ""}">'
+        + _task_link_datalists_html(con, prefix))
+
+
 def task_form(con, task=None) -> str:
     """タスクの新規/編集フォーム（純粋な入力フォーム, #30）。
     事務タスク(is_admin=1)の編集もこのフォームを共用するため、工数感（ガント用・
@@ -4383,7 +4485,9 @@ def task_form(con, task=None) -> str:
           <div><label>種類（空ならAIが自動判定）</label><select name="category"><option value=""></option>{_task_cat_optgroups(cats, task.get('category'))}</select></div>
           <div><label>状態</label><select name="status">{_opt(sfa_db.TASK_STATUSES, task.get('status') or ('未着手' if is_edit else '受信箱'))}</select></div>
           {'' if is_admin_task else f'<div><label>工数感（ガント表示用）</label><select name="effort_level">{_opt(sfa_db.TASK_EFFORT_LEVELS, task.get("effort_level"))}</select></div>'}
-          <div class="full"><label>関連（開発案件）</label><select name="link">{dev_opts}</select></div>
+          <div class="full"><label>関連（商談・論点・開発案件）</label>
+            {_task_link_picker_html(con, prefix="tfLink", cur_type=task.get("link_type"),
+                                    cur_id=task.get("link_id"), include_dev=True, dev_opts=dev_opts)}</div>
         </div>
         <div style="margin-top:14px"><button class="btn" type="submit">保存</button>
           <a class="btn sec" href="/tasks">キャンセル</a></div>
@@ -4425,7 +4529,8 @@ def tasks_deleted_page(con) -> str:
 
 def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                project: str | None = None, urgency: str | None = None,
-               pinned: bool = False, deleted: bool = False) -> str:
+               pinned: bool = False, deleted: bool = False,
+               link_type: str | None = None, link_id: int | None = None) -> str:
     """タスクボード（状態別カンバン）。コンパクト折りたたみカード＋その場編集＋緊急度自動＋
     プロジェクト一覧（期限・状態別内訳）＋期限クイック/逆算推奨（#30）。"""
     if deleted:
@@ -4456,10 +4561,12 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     pinned_n = sum(1 for t in all_tasks if t.get("pinned"))
 
     if assignee == "__none__":
-        tasks = sfa_db.list_tasks(con, category=category or None, admin=False)
+        tasks = sfa_db.list_tasks(con, category=category or None, admin=False,
+                                  link_type=link_type or None, link_id=link_id)
         tasks = [t for t in tasks if not (t.get("assignee") or "").strip()]
     else:
-        tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None, admin=False)
+        tasks = sfa_db.list_tasks(con, assignee=assignee or None, category=category or None, admin=False,
+                                  link_type=link_type or None, link_id=link_id)
     if sel_projects:
         _selset = set(sel_projects)
         tasks = [t for t in tasks if (t.get("project") or "") in _selset]
@@ -4536,6 +4643,14 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             dp = dev_map[t["link_id"]]
             link_html = (f'<a href="/dev-project/{dp["id"]}/edit" style="font-size:10px" '
                          f'title="{_esc(dp.get("account_name") or "")}">🛠{_esc(dp.get("theme") or "開発案件")}</a>')
+        elif t.get("link_type") in ("deal", "issue") and t.get("link_id"):
+            _link_lbl = sfa_db.task_link_label(con, t["link_type"], t["link_id"])
+            if _link_lbl:
+                _link_href = (f'/deal/{t["link_id"]}' if t["link_type"] == "deal"
+                              else f'/deal-issue/{t["link_id"]}')
+                _link_icon = "🤝" if t["link_type"] == "deal" else "📌"
+                link_html = (f'<a href="{_link_href}" style="font-size:10px" title="{_esc(_link_lbl)}">'
+                             f'{_link_icon}{_esc(_link_lbl[:20])}</a>')
         _plink = (t.get("slack_permalink") or "").strip()
         if _plink:
             slack_html = (
@@ -4681,12 +4796,16 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         f'<option value="__none__"{" selected" if assignee == "__none__" else ""}>📥 受信箱（未割当のみ）</option>'
         + "".join(f'<option value="{html.escape(a)}"{" selected" if a == assignee else ""}>{html.escape(a)}</option>'
                   for a in owners))
-    filter_row = f"""<form method="get" action="/tasks" class="filter-row">
+    _link_filter_html = _task_link_picker_html(
+        con, prefix="tfFilterLink", cur_type=link_type, cur_id=link_id,
+        auto_submit_form_id="tasksFilterForm")
+    filter_row = f"""<form method="get" action="/tasks" class="filter-row" id="tasksFilterForm">
       <input type="hidden" name="project" value="{_esc(','.join(sel_projects))}">
       <select name="assignee" onchange="this.form.submit()">{_asg_fopt}</select>
       <select name="category" onchange="this.form.submit()"><option value="">種類:全て</option>{_task_cat_optgroups(cats, category)}</select>
       <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
       <input type="text" id="taskSearch" placeholder="🔍 タイトル・詳細・次アクションで検索…" oninput="_deb('taskFilter')" style="max-width:260px">
+      <span class="muted" style="font-size:12px">紐づけ先:</span>{_link_filter_html}
       <a class="btn sec" href="/tasks">リセット</a>
     </form>"""
     has_test = any((t.get("source") == "test") for t in tasks)
@@ -13788,7 +13907,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         project=(_tq.get("project", [""])[0] or None),
                         urgency=(_tq.get("urgency", [""])[0] or None),
                         pinned=bool(_tq.get("pinned", [""])[0]),
-                        deleted=bool(_tq.get("deleted", [""])[0]))))
+                        deleted=bool(_tq.get("deleted", [""])[0]),
+                        link_type=(_tq.get("link_type", [""])[0] or None),
+                        link_id=(int(_tq["link_id"][0]) if _tq.get("link_id", [""])[0].isdigit() else None))))
                 elif path == "/tasks/gantt":
                     self._send(render(tasks_gantt_page(con)))
                 elif path == "/desk-tasks":
@@ -14370,6 +14491,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _li = int(_link.split(":", 1)[1])
                         except ValueError:
                             _li = None
+                    else:
+                        # 商談/論点への紐づけ（_task_link_picker_html由来。ユーザー要望2026-08-24）。
+                        _flt = (f.get("link_type") or "").strip()
+                        _fli = (f.get("link_id") or "").strip()
+                        if _flt in ("deal", "issue") and _fli.isdigit():
+                            _lt, _li = _flt, int(_fli)
                     _cat = f.get("category") or None
                     if not _cat:  # 種類が空ならAI(Haiku)で自動判定（間違えたら手修正）
                         _cat = _ai_guess_task_category(f.get("title") or "", f.get("detail") or "")
