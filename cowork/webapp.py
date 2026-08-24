@@ -1809,14 +1809,21 @@ def _delivery_row_fields(owners: list, b: dict) -> str:
 
 
 def _delivery_cashflow_table_html(con, delivery_id: int) -> str:
-    """月別入金計画テーブル（月が横軸、検収額(入力)/入金額(算出)が縦軸）。#75外注費に続く2026-08機能。"""
+    """月別入金計画テーブル（月が横軸、検収額(入力)/入金額(算出)が縦軸）。#75外注費に続く2026-08機能。
+    3行(月ヘッダ/検収額/入金額)の縦のズレ防止のため、データ列は全てtext-align:centerに統一する
+    （th既定=center・td既定=left・right指定と混在させると同じ列でも行ごとに水平位置が変わり、
+    縦に並べた時にガタついて見える：ユーザー報告2026-08-24）。
+    JS側のライブ再計算（dvCashflowRecalc、リロード無しで検収額入力→入金額表示を即時更新するため）が
+    月を突き止められるよう、各セルに data-month 属性を付ける。"""
     cf = sfa_db.delivery_cashflow(con, delivery_id)
     months = cf["months"]
     if not months:
         return '<p class="muted" style="font-size:11px">開始週/終了週を設定すると月が表示されます。</p>'
-    head = "".join(f'<th style="font-size:11px;padding:4px 8px;white-space:nowrap">{_fmt_month(m)}</th>' for m in months)
+    _th = 'style="font-size:11px;padding:4px 8px;white-space:nowrap;text-align:center"'
+    head = "".join(f'<th data-month="{m}" {_th}>{_fmt_month(m)}</th>' for m in months)
     receipt_cells = "".join(
-        f'<td style="padding:2px 4px"><input type="number" step="0.1" min="0" style="width:80px" '
+        f'<td style="padding:2px 4px;text-align:center"><input type="number" step="0.1" min="0" '
+        f'data-month="{m}" id="dvRc_{delivery_id}_{m}" style="width:80px;text-align:center;box-sizing:border-box" '
         f'value="{"" if cf["receipts"].get(m) is None else cf["receipts"][m]}" '
         f'onchange="dvReceiptSet({delivery_id},\'{m}\',this.value)"></td>'
         for m in months)
@@ -1824,7 +1831,8 @@ def _delivery_cashflow_table_html(con, delivery_id: int) -> str:
         v = cf["payments"].get(m)
         return f'{v:,.1f}' if v is not None else '<span class="muted">—</span>'
     payment_cells = "".join(
-        f'<td style="text-align:right;padding:4px 8px;white-space:nowrap">{_pay_disp(m)}</td>'
+        f'<td data-month="{m}" id="dvPy_{delivery_id}_{m}" '
+        f'style="text-align:center;padding:4px 8px;white-space:nowrap">{_pay_disp(m)}</td>'
         for m in months)
     return (
         '<div style="overflow:auto"><table style="border-collapse:collapse">'
@@ -2034,7 +2042,7 @@ def delivery_form(con, delivery_id: int) -> str:
       <p class="muted" style="font-size:11px;margin:0 0 8px">月額/総額報酬を均した換算では実際の入金月がズレるため、月ごとの検収額(万円)を実額で入力すると、
         支払いサイクル分ずらした月の入金額として算出されます。xlsx出力（Delivery一覧の一括抽出）にも同テーブルが出ます。</p>
       <label style="font-size:12px">支払いサイクル<br>
-        <input type="number" min="0" max="24" style="width:70px"
+        <input type="number" min="0" max="24" id="dvPayCycle" style="width:70px"
                value="{int(dv.get("payment_cycle_months") if dv.get("payment_cycle_months") is not None else 1)}"
                onchange="dvSetCycle({delivery_id}, this.value)"> ヶ月後に入金（検収した月を0として。既定=1＝翌月）</label>
       <div id="dvCashflow" style="margin-top:8px">{_delivery_cashflow_table_html(con, delivery_id)}</div>
@@ -2146,19 +2154,40 @@ def delivery_form(con, delivery_id: int) -> str:
       pm.textContent = (fmv===null && cmv===null) ? '—' : Math.round(((fmv||0)-(cmv||0))*100)/100;
       pt.textContent = (ftv===null && ctv===null) ? '—' : Math.round(((ftv||0)-(ctv||0))*100)/100;
     }}
-    // 月別入金計画: 検収額・支払いサイクルの変更は月の範囲や入金月がズレるため、保存後にページ
-    // 再読込してテーブルを再構築する（他の自動保存フィールドと異なり単純なJS再計算では追えない）。
+    // 月別入金計画: 保存はバックグラウンドで行い（レスポンスを待たない）、入金額表示は
+    // その場でJS側で再計算する。以前はfetch完了後にlocation.reload()していたため、セルを
+    // move（Tab/クリック）した直後にページ全体が再読込されてしまい、連続入力ができなかった
+    // （ユーザー報告2026-08-24）。入金月が現在の表示列より先（表の右端より後ろ）に出る場合のみ、
+    // その月の表示は次回ページ再読込まで反映されない（軽微な制約として許容）。
     function dvReceiptSet(id, month, value){{
       fetch('/delivery/'+id+'/receipt',{{method:'POST',
         headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
-        body:'month='+encodeURIComponent(month)+'&amount='+encodeURIComponent(value)}})
-      .then(function(){{ location.reload(); }}).catch(function(){{}});
+        body:'month='+encodeURIComponent(month)+'&amount='+encodeURIComponent(value)}}).catch(function(){{}});
+      dvCashflowRecalc();
     }}
     function dvSetCycle(id, value){{
       fetch('/delivery/'+id+'/field',{{method:'POST',
         headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
-        body:'field=payment_cycle_months&value='+encodeURIComponent(value)}})
-      .then(function(){{ location.reload(); }}).catch(function(){{}});
+        body:'field=payment_cycle_months&value='+encodeURIComponent(value)}}).catch(function(){{}});
+      dvCashflowRecalc();
+    }}
+    function dvCashflowRecalc(){{
+      var cont=document.getElementById('dvCashflow'); if(!cont) return;
+      var cycleEl=document.getElementById('dvPayCycle');
+      var cycle=cycleEl?(parseInt(cycleEl.value,10)||0):1;
+      var pays={{}};
+      cont.querySelectorAll('input[data-month]').forEach(function(el){{
+        var v=parseFloat(el.value); if(!(v>0))return;
+        var m=el.getAttribute('data-month'), p=m.split('-'), y=+p[0], mo=+p[1];
+        var idx=y*12+(mo-1)+cycle, py=Math.floor(idx/12), pmo=(idx%12)+1;
+        var pm=py+'-'+('0'+pmo).slice(-2);
+        pays[pm]=(pays[pm]||0)+v;
+      }});
+      cont.querySelectorAll('td[data-month]').forEach(function(td){{
+        var m=td.getAttribute('data-month');
+        td.innerHTML = pays.hasOwnProperty(m) ? (Math.round(pays[m]*10)/10).toLocaleString()
+                                              : '<span class="muted">—</span>';
+      }});
     }}
     dvFeeRecalc();
     dvCostRecalc();

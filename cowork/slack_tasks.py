@@ -489,15 +489,18 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
         _req = f"（依頼者: {requester}）" if requester else ""
         # 起票したらスレッド投稿（@メンション起票と同仕様。以前はchat.postEphemeralで
         # リアクションした本人にしか見えなかった）。
-        _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
-                    text=f"📋 事務タスク化しました: {prefill['title']}",
-                    blocks=[
-                        {"type": "section", "text": {"type": "mrkdwn",
-                         "text": f"📋 事務タスク化しました{_req}\n*<{link}|{prefill['title']}>*"
-                                 + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
-                        _admin_due_context(con, tid),
-                        _task_action_block(tid),
-                    ])
+        _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
+                         text=f"📋 事務タスク化しました: {prefill['title']}",
+                         blocks=[
+                             {"type": "section", "text": {"type": "mrkdwn",
+                              "text": f"📋 事務タスク化しました{_req}\n*<{link}|{prefill['title']}>*"
+                                      + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
+                             _admin_due_context(con, tid),
+                             _task_action_block(tid),
+                         ])
+        if not _r.get("ok"):
+            print(f"[slack_tasks] handle_reaction(admin): reply post failed (task {tid} created): "
+                  f"{_r.get('error')}", flush=True)
         return
     prefill = ai_extract_task(text)
     owner = owner_from_slack_user(user_id, token=token)
@@ -507,15 +510,18 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
         slack_channel=channel, slack_ts=ts, slack_permalink=permalink, created_by=owner or user_id)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
     # 起票したらスレッド投稿（@メンション起票・事務タスクのリアクション起票と同仕様）。
-    _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
-                text=f"🎯 コンサルタスク化しました: {prefill['title']}",
-                blocks=[
-                    {"type": "section", "text": {"type": "mrkdwn",
-                     "text": f"🎯 コンサルタスク化しました\n*<{link}|{prefill['title']}>*"
-                             + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
-                    _task_action_block(tid),
-                    _task_effort_block(tid),
-                ])
+    _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
+                     text=f"🎯 コンサルタスク化しました: {prefill['title']}",
+                     blocks=[
+                         {"type": "section", "text": {"type": "mrkdwn",
+                          "text": f"🎯 コンサルタスク化しました\n*<{link}|{prefill['title']}>*"
+                                  + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
+                         _task_action_block(tid),
+                         _task_effort_block(tid),
+                     ])
+    if not _r.get("ok"):
+        print(f"[slack_tasks] handle_reaction: reply post failed (task {tid} created): "
+              f"{_r.get('error')}", flush=True)
 
 
 # ── @メンションでタスク化（webapp/slack_botから条件付きで呼ぶ） ──────────────
@@ -531,12 +537,18 @@ def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: s
         assignee=owner, due_date=prefill["due_date"] or None, category=prefill["category"] or None,
         slack_channel=channel, slack_ts=thread_ts, created_by=owner or user_id)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
-    _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-                text=f"コンサルタスク化しました: {prefill['title']}",
-                blocks=[{"type": "section", "text": {"type": "mrkdwn",
-                        "text": f"✅ コンサルタスク化しました *<{link}|{prefill['title']}>*"}},
-                        _task_action_block(tid),
-                        _task_effort_block(tid)])
+    _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
+                     text=f"コンサルタスク化しました: {prefill['title']}",
+                     blocks=[{"type": "section", "text": {"type": "mrkdwn",
+                             "text": f"✅ コンサルタスク化しました *<{link}|{prefill['title']}>*"}},
+                             _task_action_block(tid),
+                             _task_effort_block(tid)])
+    if not _r.get("ok"):
+        # タスク作成自体は成功しているが、返信の投稿に失敗（Botが未参加のprivateチャンネル等で
+        # 発生するchat.postMessageのAPIレベル失敗はHTTP200で返るため例外にならず、無言で消えていた
+        # ことがユーザー報告で判明。まずはログに残す＝2026-08-24）。
+        print(f"[slack_tasks] handle_mention_task: reply post failed (task {tid} created): "
+              f"{_r.get('error')}", flush=True)
     return tid
 
 
@@ -565,12 +577,15 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
         return tid
     link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
     _req = f"（依頼者: {requester}）" if requester else ""
-    _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-                text=f"事務タスク化しました: {prefill['title']}",
-                blocks=[{"type": "section", "text": {"type": "mrkdwn",
-                        "text": f"📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}},
-                        _admin_due_context(con, tid),
-                        _task_action_block(tid)])
+    _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
+                     text=f"事務タスク化しました: {prefill['title']}",
+                     blocks=[{"type": "section", "text": {"type": "mrkdwn",
+                             "text": f"📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}},
+                             _admin_due_context(con, tid),
+                             _task_action_block(tid)])
+    if not _r.get("ok"):
+        print(f"[slack_tasks] handle_admin_mention_task: reply post failed (task {tid} created): "
+              f"{_r.get('error')}", flush=True)
     # 担当者へ簡潔DM（推定緊急度＋依頼者/タスク/期日＋Slackリンク）。元の依頼本文で緊急度を推定。
     try:
         notify_task_created(con, tid, source_text=text, token=token)
