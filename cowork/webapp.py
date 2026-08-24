@@ -4470,7 +4470,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         "ORDER BY created_at DESC, id DESC LIMIT 1)"):
         latest_notes[r["task_id"]] = dict(r)
     # 期限クイック候補（今日＋N営業日）を先に計算してJSへ
-    qdates = {n: sfa_db.add_business_days(_td, n).isoformat() for n in (1, 3, 5, 8)}
+    qdates = {n: sfa_db.add_business_days(_td, n).isoformat() for n in (0, 1, 3, 5, 8)}
     # 緊急度フィルタ（期限ベース）: overdue=超過/today=今日/tomorrow=明日/nodue=期限なし/hold=保留中。
     # 保留中は期限アラート系の対象外（desk-tasksと同仕様）。
     if urgency:
@@ -4517,8 +4517,9 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         due_input = (f'<input type="date" class="tc-due" style="color:{ucolor}" value="{_esc(due)}" '
                      f'title="期限" onchange="tcDue({tid},this.value)">')
         quick = "".join(
-            f'<button type="button" class="tc-q" onclick="tcDue({tid},&#39;{qdates[n]}&#39;)">+{n}営</button>'
-            for n in (1, 3, 5, 8))
+            f'<button type="button" class="tc-q" onclick="tcDue({tid},&#39;{qdates[n]}&#39;)">'
+            f'{"当日" if n == 0 else f"+{n}営"}</button>'
+            for n in (0, 1, 3, 5, 8))
         rec = ""
         dl = proj_deadline.get(proj)
         if dl:
@@ -5054,7 +5055,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         cols.setdefault(t.get("status") or "受信箱", []).append(t)
 
     # 期限クイック候補（今日＋N営業日）
-    qdates = {n: sfa_db.add_business_days(_td, n).isoformat() for n in (1, 3, 5, 8)}
+    qdates = {n: sfa_db.add_business_days(_td, n).isoformat() for n in (0, 1, 3, 5, 8)}
 
     def _clerk_asg_sel(tid, cur):
         # 担当候補＝事務員（DESK_ASSIGNEES：先頭=既定担当アミ、以降=パス先）。空=受信箱。
@@ -5098,8 +5099,9 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         due_input = (f'<input type="date" class="tc-due" style="color:{ucolor}" value="{_esc(due)}" '
                      f'title="期限" onchange="tcDue({tid},this.value)">')
         quick = "".join(
-            f'<button type="button" class="tc-q" onclick="tcDue({tid},&#39;{qdates[n]}&#39;)">+{n}営</button>'
-            for n in (1, 3, 5, 8))
+            f'<button type="button" class="tc-q" onclick="tcDue({tid},&#39;{qdates[n]}&#39;)">'
+            f'{"当日" if n == 0 else f"+{n}営"}</button>'
+            for n in (0, 1, 3, 5, 8))
         _plink = (t.get("slack_permalink") or "").strip()
         # Slackリンク: あれば「🔗 Slack」で開く＋✎で編集、なければ「🔗 リンク追加」。どちらもtcSlackで設定。
         if _plink:

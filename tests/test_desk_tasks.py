@@ -316,3 +316,20 @@ def test_estimate_urgency_fallback(monkeypatch):
     monkeypatch.setattr(st, "_call_claude", lambda prompt: "ごめん、わかりません")  # JSON無し
     level, reason = st._estimate_urgency("何か", due_date=None, category=None)
     assert level == "中"
+
+
+def test_task_cards_offer_due_today_quick_button(con):
+    """期限クイック設定に「当日」を追加（ユーザー要望2026-08-24。従来は+1/+3/+5/+8営業日のみ）。
+    コンサルタスク看板(/tasks)・事務タスク看板(/desk-tasks)の両方で確認。"""
+    from cowork import webapp
+    from datetime import date
+
+    tid = sfa_db.upsert_task(con, title="コンサル用")
+    html = webapp.tasks_page(con)
+    assert "当日</button>" in html
+    today = date.today().isoformat()
+    assert f"tcDue({tid},'{today}')" in html.replace("&#39;", "'")
+
+    sfa_db.upsert_task(con, title="事務用", is_admin=1)
+    html2 = webapp.desk_tasks_page(con)
+    assert "当日</button>" in html2
