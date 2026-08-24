@@ -169,3 +169,41 @@ def test_handle_mention_task_without_token_falls_back_to_default(con, monkeypatc
     slack_tasks.handle_mention_task(con, "C1", "1.0", "見積を送る", "U1")
 
     assert posts[0][1].get("token") is None
+
+
+def test_handle_mention_task_dms_user_when_reply_post_fails(con, monkeypatch):
+    """ユーザー報告2026-08-24: タスク起票は成功するがチャンネルへの返信投稿(chat.postMessage)が
+    APIレベルで失敗(例: not_in_channel)した場合、無言で消えず、起票した本人へDMでフォールバック
+    通知すること。DMはchannelにユーザーIDを渡すchat.postMessageで送る（notify_task_createdと同じ
+    経路）ため、チャンネル固有の理由で失敗していても届く見込みが高い。"""
+    posts = []
+
+    def _fake_post(method, **kw):
+        posts.append((method, kw))
+        if method == "chat.postMessage" and kw.get("channel") == "C1":
+            return {"ok": False, "error": "not_in_channel"}
+        return {"ok": True}
+
+    monkeypatch.setattr(slack_tasks, "_slack_post", _fake_post)
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+
+    tid = slack_tasks.handle_mention_task(con, "C1", "1.0", "見積を送る", "U1", token="xoxb-task")
+
+    dm_posts = [kw for m, kw in posts if m == "chat.postMessage" and kw.get("channel") == "U1"]
+    assert dm_posts, "チャンネル投稿失敗時にU1へのDMフォールバックが送られていない"
+    assert dm_posts[0].get("token") == "xoxb-task"
+    assert "not_in_channel" in dm_posts[0]["text"]
+    assert str(tid) in dm_posts[0]["text"] or f"tc-{tid}" in dm_posts[0]["text"]
+
+
+def test_handle_mention_task_no_dm_fallback_when_reply_succeeds(con, monkeypatch):
+    """返信が正常に投稿できた場合はDMフォールバックを送らない（誤検知防止）。"""
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+
+    slack_tasks.handle_mention_task(con, "C1", "1.0", "見積を送る", "U1", token="xoxb-task")
+
+    dm_posts = [kw for m, kw in posts if m == "chat.postMessage" and kw.get("channel") == "U1"]
+    assert not dm_posts

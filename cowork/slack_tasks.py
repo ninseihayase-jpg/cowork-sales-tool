@@ -206,6 +206,22 @@ def notify_task_created(con, task_id: int, source_text: str = "", token: str | N
     return bool(r.get("ok"))
 
 
+def _notify_reply_post_failure(user_id: str, tid: int, title: str, error: str | None,
+                               token: str | None, path: str) -> None:
+    """チャンネルへの確認返信(chat.postMessage)がAPIレベルで失敗した時のフォールバック
+    （ユーザー報告2026-08-24: タスク起票は成功するがTaskBotの返信が来ない）。
+    起票した本人へ直接DMで知らせる。chat.postMessageはchannelにユーザーIDを渡すとDMを
+    自動で開いて送信できる（notify_task_createdと同じ経路）ため、not_in_channel等
+    チャンネル固有の理由で本来の返信が失敗していてもDMは高い確率で届く。"""
+    if not user_id:
+        return
+    link = f"{SFA_TOOL_URL}/{path}#tc-{tid}"
+    _slack_post("chat.postMessage", token=token, channel=user_id,
+                text=f"⚠ タスク化はできましたが、チャンネルへの返信投稿に失敗しました（{error}）。"
+                     f"TaskBotがそのチャンネルに参加しているかご確認ください。\n"
+                     f"作成したタスク: <{link}|{title}>")
+
+
 # ── AI補助（自由文 → タスク項目を抽出） ───────────────────────────────────
 
 def ai_extract_task(text: str, today: str | None = None, categories: list | None = None) -> dict:
@@ -501,6 +517,7 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
         if not _r.get("ok"):
             print(f"[slack_tasks] handle_reaction(admin): reply post failed (task {tid} created): "
                   f"{_r.get('error')}", flush=True)
+            _notify_reply_post_failure(user_id, tid, prefill["title"], _r.get("error"), token, "desk-tasks")
         return
     prefill = ai_extract_task(text)
     owner = owner_from_slack_user(user_id, token=token)
@@ -522,6 +539,7 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
     if not _r.get("ok"):
         print(f"[slack_tasks] handle_reaction: reply post failed (task {tid} created): "
               f"{_r.get('error')}", flush=True)
+        _notify_reply_post_failure(user_id, tid, prefill["title"], _r.get("error"), token, "tasks")
 
 
 # ── @メンションでタスク化（webapp/slack_botから条件付きで呼ぶ） ──────────────
@@ -549,6 +567,7 @@ def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: s
         # ことがユーザー報告で判明。まずはログに残す＝2026-08-24）。
         print(f"[slack_tasks] handle_mention_task: reply post failed (task {tid} created): "
               f"{_r.get('error')}", flush=True)
+        _notify_reply_post_failure(user_id, tid, prefill["title"], _r.get("error"), token, "tasks")
     return tid
 
 
@@ -586,6 +605,7 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
     if not _r.get("ok"):
         print(f"[slack_tasks] handle_admin_mention_task: reply post failed (task {tid} created): "
               f"{_r.get('error')}", flush=True)
+        _notify_reply_post_failure(user_id, tid, prefill["title"], _r.get("error"), token, "desk-tasks")
     # 担当者へ簡潔DM（推定緊急度＋依頼者/タスク/期日＋Slackリンク）。元の依頼本文で緊急度を推定。
     try:
         notify_task_created(con, tid, source_text=text, token=token)
