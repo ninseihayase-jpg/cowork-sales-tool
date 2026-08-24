@@ -150,6 +150,14 @@ def _esc(v) -> str:
     return "" if v is None else html.escape(str(v))
 
 
+def _is_float_str(v) -> bool:
+    try:
+        float(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def _num(v, default=0) -> float:
     """外部入力由来の値を数値に強制する（HTML/SVGへ埋め込む前のXSS・型事故防止）。"""
     if isinstance(v, (int, float)):
@@ -4485,6 +4493,7 @@ def task_form(con, task=None) -> str:
           <div><label>種類（空ならAIが自動判定）</label><select name="category"><option value=""></option>{_task_cat_optgroups(cats, task.get('category'))}</select></div>
           <div><label>状態</label><select name="status">{_opt(sfa_db.TASK_STATUSES, task.get('status') or ('未着手' if is_edit else '受信箱'))}</select></div>
           {'' if is_admin_task else f'<div><label>工数感（ガント表示用）</label><select name="effort_level">{_opt(sfa_db.TASK_EFFORT_LEVELS, task.get("effort_level"))}</select></div>'}
+          {'' if is_admin_task else f'<div><label>所要時間(h)<span class="muted" style="font-weight:normal"> ※未入力は工数感から自動換算</span></label><input type="number" step="0.5" min="0" name="effort_hours" value="{"" if task.get("effort_hours") is None else task.get("effort_hours")}"></div>'}
           <div class="full"><label>関連（商談・論点・開発案件）</label>
             {_task_link_picker_html(con, prefix="tfLink", cur_type=task.get("link_type"),
                                     cur_id=task.get("link_id"), include_dev=True, dev_opts=dev_opts)}</div>
@@ -4838,6 +4847,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
           <span class="btn sec" style="background:#eef2ff;border-color:#c7d2fe;padding:0;overflow:hidden;display:inline-flex">
             <a href="/tasks" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">🗂 看板</a>
             <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
+            <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
           </span>
           <a class="btn sec" href="/tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
           {seed_btn}
@@ -4985,6 +4995,7 @@ def tasks_gantt_page(con) -> str:
           <span class="btn sec" style="background:#eef2ff;border-color:#c7d2fe;padding:0;overflow:hidden;display:inline-flex">
             <a href="/tasks" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗂 看板</a>
             <a href="/tasks/gantt" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📊 ガント</a>
+            <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
           </span>
           <a class="btn" href="/tasks/new">＋新規コンサルタスク</a>
         </span>
@@ -4994,6 +5005,58 @@ def tasks_gantt_page(con) -> str:
       {body}
       {missing_html}
     </div>{_GANTT_CSS}"""
+
+
+def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
+    """担当者×直近N営業日の「1日あたり作業可能時間」の手動編集ビュー（2026-08-24）。
+    「毎朝手修正する」対象の値そのもの。日別入力が無い日はcapacity_atの既定値フォールバックに
+    従いプレースホルダで示す（未入力=既定値を使う、という意味を明示）。"""
+    today = _today_jst()
+    days = []
+    d = today
+    while len(days) < horizon_days:
+        if sfa_db.is_business_day(d):
+            days.append(d.isoformat())
+        d += timedelta(days=1)
+    owners = sfa_db.get_master_list(con, "owners")
+    head = "".join(f'<th style="font-size:11px;padding:4px 8px;white-space:nowrap;text-align:center">'
+                   f'{day[5:]}</th>' for day in days)
+    rows = ""
+    for o in owners:
+        overrides = sfa_db.list_owner_daily_capacity(con, o, days[0], days[-1])
+        cells = "".join(
+            f'<td style="padding:2px 4px;text-align:center">'
+            f'<input type="number" step="0.5" min="0" style="width:64px;text-align:center" '
+            f'value="{overrides.get(day, "")}" placeholder="{sfa_db.capacity_at(con, o, day):g}" '
+            f'onchange="capSet(&#39;{_esc(o)}&#39;,&#39;{day}&#39;,this.value)"></td>'
+            for day in days)
+        rows += (f'<tr><th style="text-align:left;font-size:12px;padding:4px 8px;white-space:nowrap">'
+                 f'{_esc(o)}</th>{cells}</tr>')
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 4px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        コンサルタスク
+        <span style="display:inline-flex;gap:4px;background:#eef0ff;border-radius:8px;padding:2px">
+          <a href="/tasks" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗂 看板</a>
+          <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
+          <a href="/tasks/capacity" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📅 容量</a>
+        </span>
+      </h2>
+      <p class="muted" style="font-size:12px;margin:0 0 10px">担当者ごとの1日あたり作業可能時間（打ち合わせ除く）を、当日〜直近{horizon_days}営業日分で
+        その場編集できます（未入力の日は薄字のプレースホルダの既定値が使われます）。既定値自体は
+        <a href="/">管理 → 担当者の1日あたり作業可能時間</a>で設定します。</p>
+      <div style="overflow:auto"><table style="border-collapse:collapse">
+        <tr><th style="text-align:left;font-size:11px;padding:4px 8px">担当</th>{head}</tr>
+        {rows}
+      </table></div>
+    </div>
+    <script>
+    function capSet(owner, day, value){{
+      fetch('/tasks/capacity/set',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'owner='+encodeURIComponent(owner)+'&day='+encodeURIComponent(day)+'&hours='+encodeURIComponent(value)}})
+        .catch(function(){{}});
+    }}
+    </script>"""
 
 
 # 通常タスク看板(/tasks)・事務タスク看板(/desk-tasks)共通の「上部集計ボックス」CSS
@@ -5752,6 +5815,28 @@ def masters_page(con) -> str:
           {_owner_rows or '<div class="muted">担当者がいません</div>'}
         </div>"""
 
+    # 担当者ごとの1日あたり作業可能時間（既定値）。実測/当日の手修正はowner_daily_capacity側
+    # （/tasks/capacity）で行い、ここは「明示的な当日入力が無い日」に使う既定値のみを設定する
+    # （ユーザー要望2026-08-24: 工数時間ベースのスケジューリング）。
+    _cap_default = sfa_db.get_owner_daily_capacity_default(con)
+    _cap_rows = "".join(
+        f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+        f'<span style="min-width:110px;font-size:13px">{html.escape(o)}</span>'
+        f'<input type="hidden" name="dailycap_owner[]" value="{html.escape(o)}">'
+        f'<input type="number" name="dailycap_hours[]" step="0.5" min="0" style="width:80px" '
+        f'value="{_cap_default.get(o, "")}" placeholder="{sfa_db.TASK_DAILY_CAPACITY_DEFAULT_HOURS:g}">'
+        f'<span class="muted" style="font-size:12px">h/日</span></div>'
+        for o in sfa_db.get_master_list(con, "owners")
+    )
+    owner_daily_capacity_card = f"""
+        <div class="card" id="master_owner_daily_capacity">
+          <h2>担当者の1日あたり作業可能時間（既定値）</h2>
+          <p class="muted" style="margin:0 0 10px;font-size:12px">打ち合わせ等を除いた、コンサルタスクに使える1日あたりの作業時間(h)の既定値です。
+            未設定の担当者は既定 {sfa_db.TASK_DAILY_CAPACITY_DEFAULT_HOURS:g}h として扱われます。
+            当日の実測・手修正は <a href="/tasks/capacity">容量ビュー</a> で行います（そちらの値が優先されます）。</p>
+          {_cap_rows or '<div class="muted">担当者がいません</div>'}
+        </div>"""
+
     # 業界ごとのターゲット領域の割当カード（候補は上の「ターゲット領域」マスタで編集）
     _targets = sfa_db.get_master_list(con, "target_domains")
     _tgt_map = sfa_db.get_industry_target_map(con)
@@ -5784,6 +5869,7 @@ def masters_page(con) -> str:
       {''.join(cards)}
       {biz_type_card}
       {owner_domain_card}
+      {owner_daily_capacity_card}
       {target_domain_card}
       <p><button class="btn">すべて保存</button>
          <a class="btn sec" href="/">キャンセル</a></p>
@@ -13912,6 +13998,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         link_id=(int(_tq["link_id"][0]) if _tq.get("link_id", [""])[0].isdigit() else None))))
                 elif path == "/tasks/gantt":
                     self._send(render(tasks_gantt_page(con)))
+                elif path == "/tasks/capacity":
+                    self._send(render(tasks_capacity_page(con)))
                 elif path == "/desk-tasks":
                     _dq = self._qs()
                     self._send(render(desk_tasks_page(
@@ -14427,6 +14515,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         if (_o or "").strip() and _v:
                             _dom_map[_o.strip()] = _v
                     sfa_db.set_owner_domain_map(con, _dom_map)
+                    # 担当者ごとの1日あたり作業可能時間（既定値）。空/不正値は未設定扱い。
+                    _cpo = f_list.get("dailycap_owner[]", [])
+                    _cph = f_list.get("dailycap_hours[]", [])
+                    _cap_map = {}
+                    for _i, _o in enumerate(_cpo):
+                        _v = (_cph[_i] if _i < len(_cph) else "").strip()
+                        if (_o or "").strip() and _v:
+                            _cap_map[_o.strip()] = _v
+                    sfa_db.set_owner_daily_capacity_default(con, _cap_map)
                     # 業界→ターゲット領域 の割当（parallel arrays）。空領域は未設定扱い。
                     _ti = f_list.get("itg_industry[]", [])
                     _tv = f_list.get("itg_value[]", [])
@@ -14500,6 +14597,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _cat = f.get("category") or None
                     if not _cat:  # 種類が空ならAI(Haiku)で自動判定（間違えたら手修正）
                         _cat = _ai_guess_task_category(f.get("title") or "", f.get("detail") or "")
+                    _eh = (f.get("effort_hours") or "").strip()
+                    try:
+                        _eh = float(_eh) if _eh else None
+                    except ValueError:
+                        _eh = None
                     _saved_id = sfa_db.upsert_task(
                         con, id=_tid,
                         title=f.get("title") or "(無題)",
@@ -14512,6 +14614,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         category=_cat,
                         link_type=_lt, link_id=_li, source="web",
                         effort_level=f.get("effort_level") or None,
+                        effort_hours=_eh,
                     )
                     # 担当＋期限が揃っていれば受信箱→未着手へ自動整理
                     _task_auto_triage(con, _saved_id)
@@ -14652,6 +14755,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(json.dumps({"ok": bool(_summ), "summary": _summ},
                                           ensure_ascii=False).encode(), ctype="application/json")
 
+                elif path == "/tasks/capacity/set":
+                    # 担当者×当日(等)の作業可能時間(h)を手修正（「毎朝手修正する」対象そのもの）。
+                    _cap_owner = (f.get("owner") or "").strip()
+                    _cap_day = (f.get("day") or "").strip()
+                    if _cap_owner and _cap_day:
+                        sfa_db.set_owner_daily_capacity(con, _cap_owner, _cap_day, f.get("hours", ""))
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                    else:
+                        self._send(json.dumps({"ok": False}).encode(), ctype="application/json")
+
                 elif path == "/tasks/seed-test":
                     _n = sfa_db.seed_sample_tasks(con)
                     self._send(render(tasks_page(con),
@@ -14699,7 +14812,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _value = f.get("value", "")
                     _allowed = {"status", "assignee", "due_date", "category", "priority",
                                 "title", "project", "next_action", "pinned", "slack_permalink",
-                                "requester", "effort_level"}
+                                "requester", "effort_level", "effort_hours"}
                     if _field not in _allowed:
                         self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(), ctype="application/json")
                     elif _field == "slack_permalink" and _value and not _value.startswith(("http://", "https://")):
@@ -14710,6 +14823,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(json.dumps({"ok": False, "error": "不正な優先度"}).encode(), ctype="application/json")
                     elif _field == "effort_level" and _value and _value not in sfa_db.TASK_EFFORT_LEVELS:
                         self._send(json.dumps({"ok": False, "error": "不正な工数感"}).encode(), ctype="application/json")
+                    elif _field == "effort_hours" and _value and not _is_float_str(_value):
+                        self._send(json.dumps({"ok": False, "error": "不正な所要時間"}).encode(), ctype="application/json")
                     elif _field == "status":
                         _prev_st = (sfa_db.get_task(con, _tid) or {}).get("status") or ""
                         sfa_db.set_task_status(con, _tid, _value)

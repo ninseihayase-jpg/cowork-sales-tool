@@ -210,6 +210,10 @@ TASK_PRIORITIES = ["高", "中", "低"]
 # 期日から工数感の営業日数ぶん逆算した日を開始日にする（当日/作成日より前でもよい）。
 TASK_EFFORT_LEVELS = ["軽", "中", "重", "超重"]
 TASK_EFFORT_DAYS = {"軽": 1, "中": 2, "重": 5, "超重": 10}
+# 工数感→作業時間(h)の既定換算（2026-08-24: tasks.effort_hours未入力時のフォールバック用）。
+# effort_hoursを明示入力した場合は常にそちらを優先する（delivery報酬額のcompute_delivery_feeと同思想）。
+TASK_EFFORT_HOURS = {"軽": 2.0, "中": 4.0, "重": 10.0, "超重": 20.0}
+TASK_EFFORT_HOURS_DEFAULT = TASK_EFFORT_HOURS["中"]
 
 
 def task_gantt_range(due_date: str | None, effort_level: str | None) -> tuple[str | None, str | None]:
@@ -227,6 +231,18 @@ def task_gantt_range(due_date: str | None, effort_level: str | None) -> tuple[st
         return None, None
     start = add_business_days(d, -days)
     return start.isoformat(), due
+
+
+def effective_effort_hours(task: dict) -> float:
+    """タスクの所要作業時間(h)。effort_hours明示入力があれば常に優先、無ければ工数感から
+    TASK_EFFORT_HOURSで補完（さらに無ければ既定=中）。ユーザー要望2026-08-24。"""
+    hours = task.get("effort_hours")
+    if hours is not None:
+        try:
+            return float(hours)
+        except (TypeError, ValueError):
+            pass
+    return TASK_EFFORT_HOURS.get(task.get("effort_level") or "", TASK_EFFORT_HOURS_DEFAULT)
 
 # 繰り返し発生（定期複製）。事務タスク等のテンプレカードに付与し、複製タイミングが来たら
 # 期間分の新規カードを複製生成する（→ duplicate_due_recurring_tasks）。
@@ -951,6 +967,20 @@ CREATE TABLE IF NOT EXISTS owner_base_max_periods (
 );
 CREATE INDEX IF NOT EXISTS idx_obmp_owner ON owner_base_max_periods(owner, from_week);
 
+-- コンサルタスクの容量管理（2026-08-24）。日別の実測/手修正の作業可能時間(h)。
+-- 「毎朝手修正する」対象の値そのもの。未設定の日はowner_daily_capacity_default（masters）→
+-- グローバル既定(TASK_DAILY_CAPACITY_DEFAULT_HOURS)にフォールバックする（capacity_at参照）。
+CREATE TABLE IF NOT EXISTS owner_daily_capacity (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner       TEXT NOT NULL,
+    day         TEXT NOT NULL,               -- YYYY-MM-DD
+    hours       REAL NOT NULL,
+    source      TEXT DEFAULT 'manual',       -- manual / calendar（将来のカレンダー自動算出用の出自記録）
+    updated_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(owner, day)
+);
+CREATE INDEX IF NOT EXISTS idx_odc_owner_day ON owner_daily_capacity(owner, day);
+
 -- ベース工数（#75）。案件に紐づかない恒常稼働（人×機能×%）。例: 早瀬 営業 30%。
 -- functionは自由入力。正本SFA＋Hishoからの書き戻し(POST /api/base_workload)で両方編集。
 CREATE TABLE IF NOT EXISTS base_workload (
@@ -1245,6 +1275,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # コンサルタスクのガントチャート用「工数感」（軽/中/重/超重）。破壊的変更はしない。
         if _task_cols and "effort_level" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN effort_level TEXT")
+        # 所要作業時間(h)。effort_levelの明示的な上書き（2026-08-24、工数時間ベースのスケジューリング）。
+        if _task_cols and "effort_hours" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN effort_hours REAL")
         # project列が存在する状態でインデックスを作る（SCHEMAではなくここで＝既存DBでも安全）
         if _task_cols:
             con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")
@@ -1544,6 +1577,94 @@ def set_owner_domain_map(con, mapping: dict) -> None:
 def owner_domain_of(con, owner: str) -> str:
     """指定担当者の担当領域（未設定は空文字）。"""
     return get_owner_domain_map(con).get(owner or "", "")
+
+
+# ---- コンサルタスクの容量管理（2026-08-24） ----
+
+TASK_DAILY_CAPACITY_DEFAULT_HOURS = 4.0  # グローバル既定（担当者別既定値も未設定の場合の最終フォールバック）
+
+
+def get_owner_daily_capacity_default(con) -> dict:
+    """担当者→1日あたり既定作業可能時間(h) のマップ（masters key='owner_daily_capacity_default'）。
+    未設定は空dict（=全員TASK_DAILY_CAPACITY_DEFAULT_HOURSにフォールバック）。"""
+    row = con.execute(
+        "SELECT values_json FROM masters WHERE key='owner_daily_capacity_default'").fetchone()
+    if row:
+        try:
+            data = _json.loads(row[0])
+            if isinstance(data, dict):
+                return {str(k): float(v) for k, v in data.items() if str(v).strip()}
+        except (ValueError, TypeError):
+            print("[masters] owner_daily_capacity_default broken, ignoring", flush=True)
+    return {}
+
+
+def set_owner_daily_capacity_default(con, mapping: dict) -> None:
+    """担当者別の既定作業可能時間(h)を保存。空/不正値は除外（＝未設定＝グローバル既定にフォールバック）。"""
+    clean = {}
+    for k, v in mapping.items():
+        k = str(k).strip()
+        if not k:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if fv > 0:
+            clean[k] = fv
+    con.execute(
+        "INSERT INTO masters(key,values_json) VALUES('owner_daily_capacity_default',?) "
+        "ON CONFLICT(key) DO UPDATE SET values_json=excluded.values_json",
+        (_json.dumps(clean, ensure_ascii=False),))
+    con.commit()
+
+
+def capacity_at(con, owner: str, day: str) -> float:
+    """指定担当者の指定日(YYYY-MM-DD)の作業可能時間(h)。
+    フォールバックチェイン: owner_daily_capacity(その日の実測/手修正値) →
+    owner_daily_capacity_default[owner] → TASK_DAILY_CAPACITY_DEFAULT_HOURS。base_max_atと同型。"""
+    row = con.execute("SELECT hours FROM owner_daily_capacity WHERE owner=? AND day=?",
+                      (owner, day)).fetchone()
+    if row is not None:
+        return float(row["hours"])
+    default = get_owner_daily_capacity_default(con).get(owner)
+    return default if default is not None else TASK_DAILY_CAPACITY_DEFAULT_HOURS
+
+
+def has_owner_capacity_data(con, owner: str) -> bool:
+    """この担当者に容量データ（実測日 or 既定値）が1件でもあるか。無ければスケジューラは
+    従来のtask_gantt_range（工数感→固定営業日数の逆算のみ）にフォールバックする
+    （容量未設定の担当者の挙動を変えないための無停止移行ガード）。"""
+    if owner in get_owner_daily_capacity_default(con):
+        return True
+    row = con.execute("SELECT 1 FROM owner_daily_capacity WHERE owner=? LIMIT 1", (owner,)).fetchone()
+    return row is not None
+
+
+def set_owner_daily_capacity(con, owner: str, day: str, hours, source: str = "manual") -> None:
+    """日別の作業可能時間(h)を保存（「毎朝手修正する」対象そのもの）。hours空/不正時はその日の
+    実測値を削除（＝既定値へフォールバックし戻す）。"""
+    try:
+        fh = float(hours) if hours not in (None, "") else None
+    except (TypeError, ValueError):
+        fh = None
+    if fh is None:
+        con.execute("DELETE FROM owner_daily_capacity WHERE owner=? AND day=?", (owner, day))
+    else:
+        con.execute(
+            "INSERT INTO owner_daily_capacity (owner, day, hours, source) VALUES (?,?,?,?) "
+            "ON CONFLICT(owner, day) DO UPDATE SET hours=excluded.hours, source=excluded.source, "
+            "updated_at=datetime('now')", (owner, day, fh, source))
+    con.commit()
+
+
+def list_owner_daily_capacity(con, owner: str, from_day: str, to_day: str) -> dict:
+    """[from_day, to_day]（両端含む、YYYY-MM-DD）の実測/手修正値のみを {day: hours} で返す
+    （既定値へのフォールバックはcapacity_at側の責務。ここは「明示的に設定済みの日」だけ）。"""
+    rows = con.execute(
+        "SELECT day, hours FROM owner_daily_capacity WHERE owner=? AND day BETWEEN ? AND ? ORDER BY day",
+        (owner, from_day, to_day)).fetchall()
+    return {r["day"]: r["hours"] for r in rows}
 
 
 def get_industry_target_map(con) -> dict:
@@ -3307,7 +3428,7 @@ def delete_deal_issue_memo(con, memo_id: int) -> None:
 TASK_FIELDS = [
     "title", "detail", "project", "next_action", "assignee", "due_date", "status",
     "priority", "category", "is_admin", "requester", "link_type", "link_id", "source",
-    "slack_channel", "slack_ts", "slack_permalink", "created_by", "effort_level",
+    "slack_channel", "slack_ts", "slack_permalink", "created_by", "effort_level", "effort_hours",
 ]
 
 
