@@ -101,7 +101,7 @@ def test_pinned_only_filter_and_aggregate_count(con):
     con.commit()
 
     all_html = webapp.tasks_page(con)
-    assert "最優先ピン <b>1</b>" in all_html
+    assert '最優先ピン <b data-agg-count="pinned">1</b>' in all_html
 
     pinned_html = webapp.tasks_page(con, pinned=True)
     assert "最優先タスク" in pinned_html

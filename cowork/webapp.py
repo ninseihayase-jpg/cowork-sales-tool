@@ -4082,12 +4082,24 @@ function tcActions(id,status){
 function tcRenderActions(card){var id=card.id.slice(3); var st=card.getAttribute('data-status'); var a=card.querySelector('.tc-actions'); if(a)a.innerHTML=tcActions(id,st);}
 function tcCounts(){_TC_STATUSES.forEach(function(s){var body=document.querySelector('[data-col="'+s+'"]'); var cnt=document.querySelector('[data-count="'+s+'"]'); if(body&&cnt)cnt.textContent=body.querySelectorAll('.task-card').length;});}
 function tcMove(id,status){var card=document.getElementById('tc-'+id); if(!card)return; var body=document.querySelector('[data-col="'+status+'"]'); if(!body)return; card.setAttribute('data-status',status); body.appendChild(card); tcRenderActions(card); tcCounts();}
+// 上部集計ボックス（期限超過/開始遅延/今日まで/明日まで/保留中/最優先ピン）を、サーバから返る
+// 最新件数でその場更新する（ユーザー報告2026-08-25: 「完了を押しても上部のカード数が
+// 自動計算されない・再読込が必要」。/task/{id}/fieldがstatus等の変更時にcountsを返すので
+// それをDOMへ反映するだけ＝ページ全体のリロードは不要）。
+function tcApplyCounts(counts){
+  if(!counts) return;
+  Object.keys(counts).forEach(function(k){
+    var el=document.querySelector('[data-agg-count="'+k+'"]');
+    if(el) el.textContent = counts[k];
+  });
+}
 function taskField(id,field,value){
   return fetch('/task/'+id+'/field',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)})
    .then(function(r){return r.json();}).then(function(d){
      if(!d.ok){ alert('更新エラー: '+(d.error||'')); return; }
      _tcFlash(id);
+     tcApplyCounts(d.counts);
      var card=document.getElementById('tc-'+id);
      if(field==='next_action'&&card){ var na=card.querySelector('.tc-na'); if(na)na.classList.toggle('empty',!(value||'').trim()); }
      if(d.status&&card&&card.getAttribute('data-status')!==d.status){ tcMove(id,d.status); }
@@ -4289,6 +4301,31 @@ def _task_auto_start(con, tid: int) -> str | None:
         sfa_db.set_task_status(con, tid, "対応中")
         return "対応中"
     return t.get("status")
+
+
+def _task_urgency_counts(con, *, admin: bool, include_start_overdue: bool = False) -> dict:
+    """タスク看板の上部集計ボックス件数（期限超過/開始遅延/今日まで/明日まで/保留中/最優先ピン）。
+    ページ本体(tasks_page/desk_tasks_page)と、/task/{id}/fieldのAJAXレスポンス（完了等の
+    ステータス変更後にリロード無しでこの集計を更新するため。ユーザー報告2026-08-25:
+    「完了を押しても上部のカード数が自動計算されない」）の両方から呼ぶ共通実装。"""
+    today = _today_jst()
+    today_s = today.isoformat()
+    tomorrow_s = (today + timedelta(days=1)).isoformat()
+    all_tasks = sfa_db.list_tasks(con, admin=admin)
+    open_tasks = [t for t in all_tasks if (t.get("status") or "") != "完了"]
+    due_pool = [t for t in open_tasks if (t.get("status") or "") != "保留"]
+    counts = {
+        "overdue": sum(1 for t in due_pool if (t.get("due_date") or "") and (t.get("due_date") or "") < today_s),
+        "today": sum(1 for t in due_pool if (t.get("due_date") or "") == today_s),
+        "tomorrow": sum(1 for t in due_pool if (t.get("due_date") or "") == tomorrow_s),
+        "hold": sum(1 for t in open_tasks if (t.get("status") or "") == "保留"),
+        "pinned": sum(1 for t in all_tasks if t.get("pinned")),
+    }
+    if include_start_overdue:
+        _late_starts = {t["id"]: (sfa_db.latest_start_date(con, t) or "") for t in due_pool}
+        counts["start_overdue"] = sum(
+            1 for t in due_pool if _late_starts[t["id"]] and _late_starts[t["id"]] < today_s)
+    return counts
 
 
 def _task_urgency(due: str, today: str, d3: str, weekend: str) -> tuple:
@@ -4562,17 +4599,15 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     # 集計ボックス（上部）は全フィルタ非適用の全通常タスク・未完了ベース（desk-tasksと同仕様）。
     all_tasks = sfa_db.list_tasks(con, admin=False)
     open_tasks = [t for t in all_tasks if (t.get("status") or "") != "完了"]
-    _due_pool = [t for t in open_tasks if (t.get("status") or "") != "保留"]
-    overdue_n = sum(1 for t in _due_pool if (t.get("due_date") or "") and (t.get("due_date") or "") < today)
-    today_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == today)
-    tmr_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == tomorrow)
-    hold_n = sum(1 for t in open_tasks if (t.get("status") or "") == "保留")
-    pinned_n = sum(1 for t in all_tasks if t.get("pinned"))
-    # 最遅開始日（容量から算出。容量未設定の担当者はtask_gantt_rangeへ自動フォールバック）を
-    # 過ぎているタスクの件数。期限そのものへの超過(overdue_n)とは別の、早期警告アラート
-    # （ユーザー要望2026-08-24）。
-    _late_starts = {t["id"]: (sfa_db.latest_start_date(con, t) or "") for t in _due_pool}
-    start_overdue_n = sum(1 for t in _due_pool if _late_starts[t["id"]] and _late_starts[t["id"]] < today)
+    # 上部集計ボックスの件数は_task_urgency_countsに集約（/task/{id}/fieldのAJAXレスポンスとも
+    # 共有し、完了等のステータス変更後にリロード無しで反映できるようにするため）。
+    _counts = _task_urgency_counts(con, admin=False, include_start_overdue=True)
+    overdue_n = _counts["overdue"]
+    today_n = _counts["today"]
+    tmr_n = _counts["tomorrow"]
+    hold_n = _counts["hold"]
+    pinned_n = _counts["pinned"]
+    start_overdue_n = _counts["start_overdue"]
 
     if assignee == "__none__":
         tasks = sfa_db.list_tasks(con, category=category or None, admin=False,
@@ -4841,12 +4876,12 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     # 上部集計ボックス（期限アラート＋最優先ピン件数。desk-tasksと同仕様・依頼者別内訳は無し）。
     agg = f"""
       <div class="desk-agg">
-        <a class="box desk-alert-over{' active' if overdue_n else ''}" href="/tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b>{overdue_n}</b></a>
-        <a class="box desk-alert-over{' active' if start_overdue_n else ''}" href="/tasks?urgency=start_overdue" style="text-decoration:none;color:inherit" title="容量から算出した最遅開始日（＝これより後に始めると期限に間に合わない日）を過ぎているタスク">⏱ 開始遅延 <b>{start_overdue_n}</b></a>
-        <a class="box desk-alert-today{' active' if today_n else ''}" href="/tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
-        <a class="box desk-alert-tmr{' active' if tmr_n else ''}" href="/tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
-        <a class="box desk-alert-hold" href="/tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b>{hold_n}</b></a>
-        <a class="box desk-alert-pin{' on' if pinned else ''}" href="/tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b>{pinned_n}</b></a>
+        <a class="box desk-alert-over{' active' if overdue_n else ''}" href="/tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b data-agg-count="overdue">{overdue_n}</b></a>
+        <a class="box desk-alert-over{' active' if start_overdue_n else ''}" href="/tasks?urgency=start_overdue" style="text-decoration:none;color:inherit" title="容量から算出した最遅開始日（＝これより後に始めると期限に間に合わない日）を過ぎているタスク">⏱ 開始遅延 <b data-agg-count="start_overdue">{start_overdue_n}</b></a>
+        <a class="box desk-alert-today{' active' if today_n else ''}" href="/tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b data-agg-count="today">{today_n}</b></a>
+        <a class="box desk-alert-tmr{' active' if tmr_n else ''}" href="/tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b data-agg-count="tomorrow">{tmr_n}</b></a>
+        <a class="box desk-alert-hold" href="/tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b data-agg-count="hold">{hold_n}</b></a>
+        <a class="box desk-alert-pin{' on' if pinned else ''}" href="/tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b data-agg-count="pinned">{pinned_n}</b></a>
       </div>"""
     return f"""
     <div class="card">
@@ -5233,12 +5268,14 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         r = (t.get("requester") or "").strip() or "（依頼者未設定）"
         req_counts[r] = req_counts.get(r, 0) + 1
     # 保留中は期限管理の対象外（アラートに出さない）。別枠で件数だけ表示する。
-    _due_pool = [t for t in open_admin if (t.get("status") or "") != "保留"]
-    overdue_n = sum(1 for t in _due_pool if (t.get("due_date") or "") and (t.get("due_date") or "") < today)
-    today_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == today)
-    tmr_n = sum(1 for t in _due_pool if (t.get("due_date") or "") == tomorrow)
-    hold_n = sum(1 for t in open_admin if (t.get("status") or "") == "保留")
-    pinned_n = sum(1 for t in all_admin if t.get("pinned"))  # 最優先ピン件数（全体）
+    # 集計は_task_urgency_countsに集約（/task/{id}/fieldのAJAXレスポンスとも共有し、完了等の
+    # ステータス変更後にリロード無しで反映できるようにするため。ユーザー報告2026-08-25）。
+    _counts = _task_urgency_counts(con, admin=True)
+    overdue_n = _counts["overdue"]
+    today_n = _counts["today"]
+    tmr_n = _counts["tomorrow"]
+    hold_n = _counts["hold"]
+    pinned_n = _counts["pinned"]  # 最優先ピン件数（全体）
     requesters_all = sorted({(t.get("requester") or "").strip() for t in all_admin if (t.get("requester") or "").strip()})
 
     # 表示対象（フィルタ適用）
@@ -5430,11 +5467,11 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         '<span class="muted" style="font-size:12px">未完了の事務タスクはありません。</span>'
     agg = f"""
       <div class="desk-agg">
-        <a class="box desk-alert-over{' active' if overdue_n else ''}" href="/desk-tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b>{overdue_n}</b></a>
-        <a class="box desk-alert-today{' active' if today_n else ''}" href="/desk-tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b>{today_n}</b></a>
-        <a class="box desk-alert-tmr{' active' if tmr_n else ''}" href="/desk-tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b>{tmr_n}</b></a>
-        <a class="box desk-alert-hold" href="/desk-tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b>{hold_n}</b></a>
-        <a class="box desk-alert-pin{' on' if pinned else ''}" href="/desk-tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b>{pinned_n}</b></a>
+        <a class="box desk-alert-over{' active' if overdue_n else ''}" href="/desk-tasks?urgency=overdue" style="text-decoration:none;color:inherit">🔴 期限超過 <b data-agg-count="overdue">{overdue_n}</b></a>
+        <a class="box desk-alert-today{' active' if today_n else ''}" href="/desk-tasks?urgency=today" style="text-decoration:none;color:inherit">🟠 今日まで <b data-agg-count="today">{today_n}</b></a>
+        <a class="box desk-alert-tmr{' active' if tmr_n else ''}" href="/desk-tasks?urgency=tomorrow" style="text-decoration:none;color:inherit">🟡 明日まで <b data-agg-count="tomorrow">{tmr_n}</b></a>
+        <a class="box desk-alert-hold" href="/desk-tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b data-agg-count="hold">{hold_n}</b></a>
+        <a class="box desk-alert-pin{' on' if pinned else ''}" href="/desk-tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b data-agg-count="pinned">{pinned_n}</b></a>
       </div>
       <div style="font-size:12px;color:#475569;margin:2px 0 4px">依頼者別 未完了：</div>
       <div class="desk-agg">{req_boxes}</div>"""
@@ -14870,10 +14907,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     elif _field == "effort_hours" and _value and not _is_float_str(_value):
                         self._send(json.dumps({"ok": False, "error": "不正な所要時間"}).encode(), ctype="application/json")
                     elif _field == "status":
-                        _prev_st = (sfa_db.get_task(con, _tid) or {}).get("status") or ""
+                        _prev_task = sfa_db.get_task(con, _tid) or {}
+                        _prev_st = _prev_task.get("status") or ""
+                        _is_admin_task = bool(_prev_task.get("is_admin"))
                         sfa_db.set_task_status(con, _tid, _value)
-                        self._send(json.dumps({"ok": True, "status": _value}, ensure_ascii=False).encode(),
-                                   ctype="application/json")
+                        # 完了/保留等の遷移で上部集計ボックスが変わるため、AJAXレスポンスで
+                        # 最新件数を返しリロード無しで反映する（ユーザー報告2026-08-25:
+                        # 「完了を押しても上部のカード数が自動計算されない」）。
+                        _counts = _task_urgency_counts(con, admin=_is_admin_task,
+                                                       include_start_overdue=not _is_admin_task)
+                        self._send(json.dumps({"ok": True, "status": _value, "counts": _counts},
+                                              ensure_ascii=False).encode(), ctype="application/json")
                         # 事務タスクが「完了」へ遷移したらOpe Botから完了通知（依頼者/担当者メンション）。
                         # Slack APIのレイテンシで応答を止めないよう別スレッドで実行。冪等（遷移時のみ）。
                         if _value == "完了" and _prev_st != "完了":
@@ -14893,15 +14937,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con.execute("UPDATE tasks SET pinned=?, updated_at=datetime('now') WHERE id=?",
                                     (1 if _value in ("1", "true", "on") else 0, _tid))
                         con.commit()
-                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                        _is_admin_task = bool((sfa_db.get_task(con, _tid) or {}).get("is_admin"))
+                        _counts = _task_urgency_counts(con, admin=_is_admin_task,
+                                                       include_start_overdue=not _is_admin_task)
+                        self._send(json.dumps({"ok": True, "counts": _counts}, ensure_ascii=False).encode(),
+                                   ctype="application/json")
                     else:
                         con.execute(f"UPDATE tasks SET {_field}=?, updated_at=datetime('now') WHERE id=?",
                                     (_value or None, _tid))
                         con.commit()
                         # 担当＋期限が揃ったら受信箱→未着手へ自動整理。現在のstatusを返す。
                         _st = _task_auto_triage(con, _tid)
-                        self._send(json.dumps({"ok": True, "status": _st}, ensure_ascii=False).encode(),
-                                   ctype="application/json")
+                        _resp = {"ok": True, "status": _st}
+                        # 上部集計ボックスに影響しうるフィールドのみ、AJAXレスポンスで最新件数を返す
+                        # （due_date=期限アラート・effort_level/effort_hours/assignee=開始遅延アラート）。
+                        if _field in ("due_date", "effort_level", "effort_hours", "assignee"):
+                            _is_admin_task = bool((sfa_db.get_task(con, _tid) or {}).get("is_admin"))
+                            _resp["counts"] = _task_urgency_counts(
+                                con, admin=_is_admin_task, include_start_overdue=not _is_admin_task)
+                        self._send(json.dumps(_resp, ensure_ascii=False).encode(), ctype="application/json")
 
                 elif (path.startswith("/task/") and path.endswith("/recur")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
