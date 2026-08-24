@@ -353,3 +353,30 @@ def test_post_jamie_slack_candidates_helper_calls_slack_bot_when_matched(monkeyp
     finally:
         con.close()
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_candidate_buttons_have_unique_action_ids(monkeypatch):
+    """回帰テスト(2026-08-24): 候補ボタンが2件以上あると、同一actions block内で全ボタンが
+    同じaction_id("jamie_pick_deal")を共有し、Slackのchat.postMessageがinvalid_blocksで
+    拒否して投稿自体が（無言で）消えていた不具合。ボタンごとにaction_idが一意であることを確認する
+    （TaskBotのtask_effortボタンでも同種の不具合があった＝cowork/slack_tasks.pyの
+    test_task_effort_block_has_unique_action_ids参照）。"""
+    d, con = _fresh()
+    try:
+        store = {}
+        monkeypatch.setattr(slack_bot, "_slack_post", _fake_poster(store))
+        acc = sfa_db.upsert_account(con, name="複数候補社")
+        d1 = sfa_db.upsert_deal(con, account_id=acc, deal_name="複数候補案件A", stage="提案")
+        d2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="複数候補案件B", stage="提案")
+        candidates = [(f"deal:{d1}", "複数候補社/複数候補案件A"), (f"deal:{d2}", "複数候補社/複数候補案件B")]
+        slack_bot.post_jamie_candidate_prompt(
+            con, inbox_id=1, title="T", occurred_on="2026-08-15",
+            candidates=candidates, channel="D0TESTDM")
+        actions_block = next(b for b in store["kwargs"]["blocks"] if b.get("type") == "actions")
+        action_ids = [el["action_id"] for el in actions_block["elements"]]
+        assert len(action_ids) == len(set(action_ids)), f"action_idが重複している: {action_ids}"
+        pick_ids = [a for a in action_ids if a.startswith("jamie_pick_deal")]
+        assert len(pick_ids) == 2 and len(set(pick_ids)) == 2
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)

@@ -632,9 +632,15 @@ def _task_action_block(task_id: int) -> dict:
 def _task_effort_block(task_id: int) -> dict:
     """コンサルタスクのガントチャート用「工数感」をSlackから即時設定するボタン行。
     3秒制約のある起票フロー(dartリアクション/@メンション)では、その場でモーダルを
-    挟まず、起票直後の返信にこのボタンを添えて後から1クリックで設定してもらう。"""
+    挟まず、起票直後の返信にこのボタンを添えて後から1クリックで設定してもらう。
+
+    action_idは各ボタンで一意にする必要がある（レベルごとに末尾を分けて付与）。
+    以前は全ボタンが同じ"task_effort:{task_id}"を共有していたため、Slackの
+    chat.postMessageがinvalid_blocksで拒否し、タスク自体は作成されるのに確認の
+    返信だけが（無言で）消えるという不具合になっていた（2026-08-20の導入時から
+    2026-08-24のユーザー報告まで気づかれずに残っていた）。"""
     return {"type": "actions", "block_id": f"tef_{task_id}", "elements": [
-        {"type": "button", "action_id": f"task_effort:{task_id}", "value": lvl,
+        {"type": "button", "action_id": f"task_effort:{task_id}:{lvl}", "value": lvl,
          "text": {"type": "plain_text", "text": f"工数感:{lvl}"}}
         for lvl in sfa_db.TASK_EFFORT_LEVELS
     ]}
@@ -742,9 +748,11 @@ def _handle_block_action(con, payload: dict) -> None:
     trigger_id = payload.get("trigger_id", "")
     resp_url = payload.get("response_url", "")
     try:
-        name, sid = action_id.split(":", 1)
-        tid = int(sid)
-    except (ValueError, TypeError):
+        # task_effortのみ action_id が "task_effort:{tid}:{level}" と3分割（ボタンごとに
+        # action_idを一意にするため。値自体は act["value"] から別途取得するので3つ目は無視）。
+        parts = action_id.split(":")
+        name, tid = parts[0], int(parts[1])
+    except (ValueError, TypeError, IndexError):
         return
     tk = sfa_db.get_task(con, tid)
     if not tk:

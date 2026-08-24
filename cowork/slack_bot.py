@@ -222,8 +222,13 @@ def post_jamie_candidate_prompt(con: sqlite3.Connection, *, inbox_id: int, title
     channel = channel or _resolve_jamie_dm_channel()
     if not channel:
         return None
+    # action_idは各候補ボタンで一意にする必要がある（同じactions block内で複数要素が同じ
+    # action_idを共有すると、Slackのchat.postMessageがinvalid_blocksで拒否する。以前は
+    # 候補全ボタンが同じ"jamie_pick_deal"を共有しており、候補が2件以上あると本メッセージ自体が
+    # 投稿されずに消えていた不具合と同種＝TaskBotのtask_effortボタンでも発生していたもの）。
     buttons = [{
-        "type": "button", "action_id": "jamie_pick_deal", "value": f"{inbox_id}:{v.split(':', 1)[1]}",
+        "type": "button", "action_id": f"jamie_pick_deal:{v.split(':', 1)[1]}",
+        "value": f"{inbox_id}:{v.split(':', 1)[1]}",
         "text": {"type": "plain_text", "text": lbl[:75]},
     } for v, lbl in candidates[:5]]
     buttons.append({
@@ -263,7 +268,7 @@ def handle_interactive(con: sqlite3.Connection, payload: dict) -> None:
     channel = (payload.get("channel") or {}).get("id") or ""
     msg_ts = (payload.get("message") or {}).get("ts") or ""
 
-    if action_id == "jamie_pick_deal":
+    if action_id == "jamie_pick_deal" or action_id.startswith("jamie_pick_deal:"):
         try:
             inbox_id_s, deal_id_s = value.split(":", 1)
             inbox_id, deal_id = int(inbox_id_s), int(deal_id_s)

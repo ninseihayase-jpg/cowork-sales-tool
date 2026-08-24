@@ -139,6 +139,34 @@ def test_task_effort_button_click_updates_effort_level(con, monkeypatch):
     assert sfa_db.get_task(con, tid)["effort_level"] == "重"
 
 
+def test_task_effort_block_has_unique_action_ids():
+    """回帰テスト(2026-08-24、根本原因確定): 4つの工数感ボタンが全て同じaction_id
+    ("task_effort:{tid}")を共有していたため、Slackのchat.postMessageがinvalid_blocksで
+    拒否し、タスク自体は作成されるのに確認の返信だけが（無言で）消えていた（2026-08-20の
+    導入から気づかれずに残っていたバグ）。ボタンごとにaction_idが一意であることを確認する。"""
+    block = slack_tasks._task_effort_block(123)
+    action_ids = [el["action_id"] for el in block["elements"]]
+    assert len(action_ids) == len(sfa_db.TASK_EFFORT_LEVELS)
+    assert len(action_ids) == len(set(action_ids)), f"action_idが重複している: {action_ids}"
+
+
+def test_task_effort_button_click_still_works_with_new_action_id_format(con, monkeypatch):
+    """_task_effort_blockが生成する新形式(task_effort:{tid}:{level})のaction_idでも
+    _handle_block_actionが正しくtidと工数感を反映できること（value経由でlevelを取得するため、
+    action_id側の追加サフィックスは無視してよい）。"""
+    tid = sfa_db.upsert_task(con, title="新形式テスト", effort_level="軽")
+    responses = []
+    monkeypatch.setattr(slack_tasks, "_respond_url", lambda url, text: responses.append(text))
+
+    block = slack_tasks._task_effort_block(tid)
+    button = next(el for el in block["elements"] if el["value"] == "重")
+    slack_tasks._handle_block_action(con, {
+        "actions": [button], "trigger_id": "", "response_url": "https://example.com/respond",
+    })
+    assert sfa_db.get_task(con, tid)["effort_level"] == "重"
+    assert responses and "重" in responses[0]
+
+
 def test_task_effort_button_click_rejects_invalid_level(con, monkeypatch):
     tid = sfa_db.upsert_task(con, title="不正値テスト用タスク", effort_level="軽")
     responses = []
