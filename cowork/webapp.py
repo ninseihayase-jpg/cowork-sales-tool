@@ -17647,13 +17647,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── Slack インタラクティブ（ボタン・モーダル送信）──
                 elif path == "/slack/interactive":
+                    # ボタン(block_actions)・モーダル送信(view_submission)は、NegoCollection・
+                    # 事務Bot・TaskBotの3アプリすべてがこの1エンドポイントへ送ってくる（アプリごとに
+                    # 個別のInteractivity Request URLは無い）。各アプリは自分のSigning Secretで
+                    # 署名するため、検証は3つの候補secretを順に試す（どれか1つに一致すればOK）。
+                    # 以前はデフォルト(NegoCollection)のsecretしか試しておらず、事務Bot/TaskBotの
+                    # ボタンはSlack側で「インタラクティビティURL未設定」表示になる（そもそも
+                    # Slack App側でオンにしていない場合）か、設定しても署名不一致で401拒否される
+                    # 状態だった（ユーザー報告2026-08-25: TaskBotのボタンでインタラクティビティ未設定
+                    # の警告が出る）。
                     import threading as _threading
                     from cowork import slack_bot as _sb
-                    if not _sb.verify_signature(
-                        raw.encode("utf-8"),
-                        self.headers.get("X-Slack-Request-Timestamp", ""),
-                        self.headers.get("X-Slack-Signature", ""),
-                    ):
+                    _raw_bytes = raw.encode("utf-8")
+                    _sig_ts = self.headers.get("X-Slack-Request-Timestamp", "")
+                    _sig_val = self.headers.get("X-Slack-Signature", "")
+                    _verified = any(
+                        _secret and _sb.verify_signature(_raw_bytes, _sig_ts, _sig_val, secret=_secret)
+                        for _secret in (_sb.SLACK_SIGNING_SECRET, _sb.SLACK_DESK_SIGNING_SECRET,
+                                       _sb.SLACK_TASK_SIGNING_SECRET))
+                    if not _verified:
                         self._send(b'{"error":"invalid signature"}', 401, ctype="application/json")
                         return
                     import urllib.parse as _up2
