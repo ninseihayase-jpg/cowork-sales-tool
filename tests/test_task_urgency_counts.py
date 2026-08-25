@@ -169,3 +169,13 @@ def test_desk_tasks_page_boxes_carry_data_agg_count_attrs(con):
     html = webapp.desk_tasks_page(con)
     for key in ("overdue", "today", "tomorrow", "hold", "pinned"):
         assert f'data-agg-count="{key}"' in html
+
+
+def test_pinned_count_excludes_completed_tasks(con):
+    """ユーザー報告2026-08-25: 完了した優先ピンがカウントされてしまう。"""
+    open_id = sfa_db.upsert_task(con, title="未完了ピン")
+    done_id = sfa_db.upsert_task(con, title="完了済みピン", status="完了")
+    con.execute("UPDATE tasks SET pinned=1 WHERE id IN (?,?)", (open_id, done_id))
+    con.commit()
+    counts = webapp._task_urgency_counts(con, admin=False)
+    assert counts["pinned"] == 1

@@ -104,3 +104,17 @@ def test_gantt_bar_link_points_to_kanban_card_anchor(con):
                              due_date=today, effort_level="軽")
     html = webapp.tasks_gantt_page(con)
     assert f"/tasks#tc-{tid}" in html
+
+
+def test_gantt_shows_at_least_three_weeks_and_fills_width(con):
+    """ユーザー要望2026-08-25: 横軸の日付が3週間くらいは表示され、画面いっぱいを使って
+    可視性を高める。タスクの実期間が短くても最低21日(3週間)分の列を確保し、
+    列幅は固定pxではなくminmax(...,1fr)で画面幅まで伸びるようにする。"""
+    today = webapp._today_jst().isoformat()
+    sfa_db.upsert_task(con, title="短期タスク", due_date=today, effort_level="軽")  # 1営業日のみ
+    html = webapp.tasks_gantt_page(con)
+    import re
+    m = re.search(r"repeat\((\d+), minmax\(28px, 1fr\)\)", html)
+    assert m, "minmax(28px,1fr)の列テンプレートが見つからない"
+    assert int(m.group(1)) >= 21
+    assert "width:100%" in html or "width: 100%" in html

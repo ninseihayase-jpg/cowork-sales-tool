@@ -4319,7 +4319,9 @@ def _task_urgency_counts(con, *, admin: bool, include_start_overdue: bool = Fals
         "today": sum(1 for t in due_pool if (t.get("due_date") or "") == today_s),
         "tomorrow": sum(1 for t in due_pool if (t.get("due_date") or "") == tomorrow_s),
         "hold": sum(1 for t in open_tasks if (t.get("status") or "") == "保留"),
-        "pinned": sum(1 for t in all_tasks if t.get("pinned")),
+        # 完了済みは最優先ピンの集計対象外（ユーザー報告2026-08-25: 完了した優先ピンが
+        # カウントされてしまう）。
+        "pinned": sum(1 for t in open_tasks if t.get("pinned")),
     }
     if include_start_overdue:
         _late_starts = {t["id"]: (sfa_db.latest_start_date(con, t) or "") for t in due_pool}
@@ -4673,6 +4675,13 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         ai_btn = (f'<button type="button" class="tc-ai" title="AIで種類を判定" '
                   f'onclick="tcAiCat({tid})">🤖種類</button>')
         effort_sel = _tc_sel(tid, "effort_level", sfa_db.TASK_EFFORT_LEVELS, t.get("effort_level"), "工数感")
+        # 所要時間(h)。task_form(編集フォーム)には既にあったが、カードのその場編集からは
+        # 設定できなかった（ユーザー報告2026-08-25「ある機能だけどここには無い」）ので追加。
+        effort_hours_input = (
+            f'<input type="number" class="tc-sel" style="width:60px" step="0.5" min="0" '
+            f'title="所要時間(h)。未入力は工数感から自動換算" placeholder="所要h" '
+            f'value="{"" if t.get("effort_hours") is None else t.get("effort_hours")}" '
+            f'onchange="taskField({tid},&#39;effort_hours&#39;,this.value)">')
         due_input = (f'<input type="date" class="tc-due" style="color:{ucolor}" value="{_esc(due)}" '
                      f'title="期限" onchange="tcDue({tid},this.value)">')
         quick = "".join(
@@ -4781,7 +4790,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'<div class="tc-na{" empty" if not na else ""}"><span>▶</span>'
             f'<input value="{_esc(na)}" placeholder="次アクション未設定" title="次アクション" '
             f'onchange="taskField({tid},&#39;next_action&#39;,this.value)"></div>'
-            f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{effort_sel}{link_html}{slack_html}</div>'
+            f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{effort_sel}{effort_hours_input}{link_html}{slack_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}{rec}</div>'
             f'<div class="tc-notes" onclick="openNotes({tid},&#39;progress&#39;)" title="進捗ログを見る・追記">📝 {note_snip}</div>'
             f'{summary_html}'
@@ -4909,7 +4918,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
 
 _GANTT_CSS = """<style>
 .gantt-wrap{overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px;margin-top:6px}
-.gantt-grid{display:grid;grid-auto-rows:26px;align-items:center;font-size:11px;min-width:max-content;position:relative}
+.gantt-grid{display:grid;grid-auto-rows:26px;align-items:center;font-size:11px;width:100%;position:relative}
 .gantt-daycell{border-left:1px solid #f1f5f9;height:100%}
 .gantt-daycell.weekend{background:#f8fafc}
 .gantt-daycell.today{background:#fef3c7}
@@ -4984,7 +4993,11 @@ def tasks_gantt_page(con) -> str:
         min_d = min(min_d, today)
         max_d = max(date.fromisoformat(t["_end"]) for t in ready)
         n_days = (max_d - min_d).days + 1
-        col_tpl = f"220px repeat({n_days}, 22px)"
+        # 横軸は3週間(21日)以上を確保し、画面幅いっぱいに広げて見やすくする
+        # （ユーザー要望2026-08-25）。タスクの実際の期間がそれより短くても、近い将来の
+        # 見通しが常に見えるようにする。列は固定22pxではなくminmaxで画面幅まで伸ばす。
+        n_days = max(n_days, 21)
+        col_tpl = f"220px repeat({n_days}, minmax(28px, 1fr))"
 
         def _col_of(d: date) -> int:
             return (d - min_d).days + 2  # 列1=ラベル列。列2=min_d

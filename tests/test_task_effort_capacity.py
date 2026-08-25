@@ -302,3 +302,13 @@ def test_tasks_capacity_page_omits_load_row_without_capacity_data(con):
     html = webapp.tasks_capacity_page(con)
     # 中島には容量データが無いため必要工数行(必要/容量(h))自体が出ない
     assert "必要/容量(h)" not in html
+
+
+def test_tasks_page_card_offers_inline_effort_hours_input(con):
+    """ユーザー報告2026-08-25: task_form(編集フォーム)には所要時間(h)欄があったが、
+    看板カードのその場編集からは設定できなかった。カード上にも同じ欄を追加。"""
+    tid = sfa_db.upsert_task(con, title="X", effort_hours=3.5, effort_level="中")
+    html = webapp.tasks_page(con)
+    assert 'placeholder="所要h"' in html
+    assert 'value="3.5"' in html
+    assert f"taskField({tid},&#39;effort_hours&#39;,this.value)" in html
