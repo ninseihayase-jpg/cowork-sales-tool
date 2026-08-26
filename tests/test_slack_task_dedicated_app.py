@@ -139,6 +139,43 @@ def test_task_effort_button_click_updates_effort_level(con, monkeypatch):
     assert sfa_db.get_task(con, tid)["effort_level"] == "重"
 
 
+def test_task_action_block_offers_today_and_plus1_business_day():
+    """ユーザー要望2026-08-26: Slackのタスク返信ボタンに「当日」「+1営業日」を追加
+    （Web側の/tasksカードの当日/+1営/+3営...と揃える）。"""
+    block = slack_tasks._task_action_block(123)
+    labels = [el["text"]["text"] for el in block["elements"]]
+    assert "⏰当日" in labels
+    assert "⏰+1営業日" in labels
+    assert "⏰+3営業日" in labels
+    action_ids = [el["action_id"] for el in block["elements"]]
+    assert len(action_ids) == len(set(action_ids)), f"action_idが重複している: {action_ids}"
+
+
+def test_task_snooze_today_resets_due_date_regardless_of_current_due(con):
+    import datetime
+    tid = sfa_db.upsert_task(con, title="X", due_date="2026-08-20")
+    responses = []
+    slack_tasks._respond_url = lambda url, text: responses.append(text)
+    slack_tasks._handle_block_action(con, {
+        "actions": [{"action_id": f"task_snooze:{tid}:0", "value": "0"}],
+        "trigger_id": "", "response_url": "https://example.com/respond",
+    })
+    assert sfa_db.get_task(con, tid)["due_date"] == datetime.date.today().isoformat()
+    assert "当日" in responses[-1]
+
+
+def test_task_snooze_plus1_business_day_from_current_due(con):
+    import datetime
+    tid = sfa_db.upsert_task(con, title="X", due_date="2026-08-24")  # 月曜
+    slack_tasks._respond_url = lambda url, text: None
+    slack_tasks._handle_block_action(con, {
+        "actions": [{"action_id": f"task_snooze:{tid}:1", "value": "1"}],
+        "trigger_id": "", "response_url": "https://example.com/respond",
+    })
+    expected = sfa_db.add_business_days(datetime.date(2026, 8, 24), 1).isoformat()
+    assert sfa_db.get_task(con, tid)["due_date"] == expected
+
+
 def test_task_effort_block_has_unique_action_ids():
     """回帰テスト(2026-08-24、根本原因確定): 4つの工数感ボタンが全て同じaction_id
     ("task_effort:{tid}")を共有していたため、Slackのchat.postMessageがinvalid_blocksで

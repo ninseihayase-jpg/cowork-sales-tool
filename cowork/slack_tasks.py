@@ -617,6 +617,10 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
 # ── ボタン付きブロック（消込UI） ───────────────────────────────────────────
 
 def _task_action_block(task_id: int) -> dict:
+    """タスクカード返信の基本アクション行。期限クイック設定は当日/+1営業日/+3営業日の3種
+    （ユーザー要望2026-08-26。Web側/tasksカードの当日/+1営/+3営/+5営/+8営と揃え、Slackでは
+    ボタン数を抑えるため主要な3種のみ）。各ボタンのaction_idは末尾にオフセットを付けて
+    一意にする（task_effortボタンで踏んだ重複action_id→invalid_blocksの再発防止）。"""
     return {"type": "actions", "block_id": f"tab_{task_id}", "elements": [
         {"type": "button", "action_id": f"task_done:{task_id}", "value": str(task_id),
          "style": "primary", "text": {"type": "plain_text", "text": "✓完了"}},
@@ -624,7 +628,11 @@ def _task_action_block(task_id: int) -> dict:
          "text": {"type": "plain_text", "text": "▶開始"}},
         {"type": "button", "action_id": f"task_progress:{task_id}", "value": str(task_id),
          "text": {"type": "plain_text", "text": "💬進捗"}},
-        {"type": "button", "action_id": f"task_snooze:{task_id}", "value": str(task_id),
+        {"type": "button", "action_id": f"task_snooze:{task_id}:0", "value": "0",
+         "text": {"type": "plain_text", "text": "⏰当日"}},
+        {"type": "button", "action_id": f"task_snooze:{task_id}:1", "value": "1",
+         "text": {"type": "plain_text", "text": "⏰+1営業日"}},
+        {"type": "button", "action_id": f"task_snooze:{task_id}:3", "value": "3",
          "text": {"type": "plain_text", "text": "⏰+3営業日"}},
     ]}
 
@@ -771,12 +779,24 @@ def _handle_block_action(con, payload: dict) -> None:
         sfa_db.set_task_status(con, tid, "対応中")
         _respond_url(resp_url, f"▶ 対応中にしました: {tk.get('title')}")
     elif name == "task_snooze":
-        due = (tk.get("due_date") or "").strip()
-        base = date.fromisoformat(due) if due else date.today()
-        nd = sfa_db.add_business_days(base, 3).isoformat()
+        # valueにオフセット(営業日数)。0=当日（現在の期限に関係なく今日にリセット）、
+        # 1/3等は現在の期限（無ければ今日）からその営業日数だけ後ろへずらす（従来の+3営業日と
+        # 同じ「押すたびにさらに延ばせる」挙動）。旧形式(action_id="task_snooze:{tid}"の
+        # 1本のみ・valueがtask_id文字列)のメッセージを万一クリックした場合はデフォルト3扱い。
+        try:
+            _n = int(act.get("value") or "3")
+        except (TypeError, ValueError):
+            _n = 3
+        if _n <= 0:
+            nd = date.today().isoformat()
+        else:
+            due = (tk.get("due_date") or "").strip()
+            base = date.fromisoformat(due) if due else date.today()
+            nd = sfa_db.add_business_days(base, _n).isoformat()
         con.execute("UPDATE tasks SET due_date=?, updated_at=datetime('now') WHERE id=?", (nd, tid))
         con.commit()
-        _respond_url(resp_url, f"⏰ 期限を {nd} に延ばしました: {tk.get('title')}")
+        _label = "当日" if _n <= 0 else f"+{_n}営業日"
+        _respond_url(resp_url, f"⏰ 期限を {nd}（{_label}）に変更しました: {tk.get('title')}")
     elif name == "task_progress":
         view = build_progress_modal(tid, "progress", tk.get("title", ""))
         _slack_post("views.open", trigger_id=trigger_id, view=view)
