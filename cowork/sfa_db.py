@@ -1278,6 +1278,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # 所要作業時間(h)。effort_levelの明示的な上書き（2026-08-24、工数時間ベースのスケジューリング）。
         if _task_cols and "effort_hours" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN effort_hours REAL")
+        # 事務タスクの期限確認プロセス（2026-08-27）。Slack起票時のAI抽出/既定値はあくまで提案で、
+        # 依頼者本人の「OK」または期限の返信で確定するまでは0（未確定）。既定1＝確認不要
+        # （通常タスク・Web手入力等、そもそもこのフローの対象外のものは常に確定扱い）。
+        if _task_cols and "due_date_confirmed" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN due_date_confirmed INTEGER DEFAULT 1")
         # project列が存在する状態でインデックスを作る（SCHEMAではなくここで＝既存DBでも安全）
         if _task_cols:
             con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project)")

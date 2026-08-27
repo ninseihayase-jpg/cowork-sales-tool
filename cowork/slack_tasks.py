@@ -387,11 +387,16 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
             requester=requester or None,
             slack_channel=slack_channel, slack_ts=slack_ts, slack_permalink=slack_permalink,
             created_by=created_by, effort_level=(effort_level if not is_admin else None))
+        # 事務タスク×Slack起票は、期限がAI抽出/既定値のどちらであっても「提案」に過ぎず、
+        # 依頼者本人がスレッドで確定するまでは未確定扱い（期限確認プロセス、2026-08-27）。
+        if is_admin and slack_channel and slack_ts:
+            con.execute("UPDATE tasks SET due_date_confirmed=0 WHERE id=?", (tid,))
         # 担当＋期限が揃えば受信箱→未着手へ自動整理（通常/事務とも）。事務タスクはSlack起票時に
         # 既定担当あみ＋期限3営業日後が入るため、実質すぐ未着手に上がる。担当未割当（担当空欄）の
         # 受付だけが受信箱に留まる。
         if (assignee or "").strip() and (due_date or "").strip():
             sfa_db.set_task_status(con, tid, "未着手")
+        con.commit()
     return (tid, True) if return_created else tid
 
 
@@ -423,14 +428,67 @@ def _admin_default_due() -> str:
 
 
 def _admin_due_context(con, tid: int) -> dict:
-    """事務タスク起票コメントに添える期限の注記ブロック。既定＝起票から3営業日後である旨と、
-    締め切りが決まっている場合はカードで直接編集する案内を出す。"""
+    """事務タスク起票コメントに添える期限確認ブロック（2026-08-27・期限確認プロセス）。
+    AI抽出/既定値(起票から3営業日後)はあくまで提案であり、依頼者本人の返信で確定するまで
+    タスクは due_date_confirmed=0（未確定）のまま。このスレッドへの返信「OK」で提案どおり確定、
+    別の日付を書けばその日付で確定（下のクイックボタンでも確定扱いになる）。"""
     t = sfa_db.get_task(con, tid)
     due = ((t or {}).get("due_date") or "").strip()
     due_txt = f"*{due}*" if due else "未設定"
     return {"type": "context", "elements": [{"type": "mrkdwn",
-            "text": f"📅 期限は {due_txt}（既定＝起票から3営業日後）。"
-                    "締め切り日が決まっている場合は、カードで直接編集してください。"}]}
+            "text": f"📅 期限は {due_txt} でよろしいですか？"
+                    "このスレッドに「OK」と返信、または正しい期限を返信してください"
+                    "（例: 9/5, 来週金曜, 明後日 等）。下のボタンでも設定できます。"}]}
+
+
+_AFFIRMATIVE_RE = re.compile(
+    r"^(ok+|okay|okey|オッケー+|おっけー+|おけ|オケ|それで(いい|良い|お願いします?)?|"
+    r"はい|了解|承知(しました)?|good|👍+|うん|そのままで(いい|お願いします?)?|"
+    r"問題(ない|なし)|大丈夫)(です|でした)?[!！。\.\s]*$", re.IGNORECASE)
+
+
+def _is_affirmative_reply(text: str) -> bool:
+    """期限確認スレッドへの返信が「提案どおりでOK」の意味かどうかを判定する。
+    様々な表記揺れ（オッケー/了解/大丈夫です等）に対応する簡易パターンマッチ。
+    ここに当てはまらないものは全て「別の期限を指定した」とみなしAIで日付抽出する。"""
+    return bool(_AFFIRMATIVE_RE.match((text or "").strip()))
+
+
+def handle_admin_due_reply(con, event: dict, token: str | None = None) -> None:
+    """事務タスクの期限確認スレッドへの人間の返信を処理（message イベント）。
+    channel+thread_ts が一致し、is_admin=1 かつ due_date_confirmed=0 のタスクが対象
+    （無ければ何もしない＝無関係なスレッド返信では反応しない）。
+    「OK」等の肯定語なら提案中の期限をそのまま確定。それ以外は自由文の期限としてAI抽出
+    （ai_extract_task の期限抽出をそのまま流用＝人間の表記揺れに強い）。抽出できなければ
+    確定せず再度尋ね返す（無言で諦めない）。"""
+    channel = (event.get("channel") or "").strip()
+    ts = (event.get("ts") or "").strip()
+    thread_ts = (event.get("thread_ts") or "").strip()
+    text = (event.get("text") or "").strip()
+    # スレッド内の返信のみ対象（thread_tsがルート自身＝新規投稿は対象外）。本文が無ければ無視。
+    if not channel or not thread_ts or thread_ts == ts or not text:
+        return
+    row = con.execute(
+        "SELECT id, due_date FROM tasks WHERE slack_channel=? AND slack_ts=? "
+        "AND COALESCE(is_admin,0)=1 AND COALESCE(due_date_confirmed,1)=0 "
+        "AND (deleted_at IS NULL OR deleted_at='') ORDER BY id DESC LIMIT 1",
+        (channel, thread_ts)).fetchone()
+    if not row:
+        return
+    tid, proposed = row["id"], row["due_date"]
+    if _is_affirmative_reply(text):
+        nd = proposed
+    else:
+        nd = (ai_extract_task(text).get("due_date") or "").strip()
+        if not nd:
+            _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
+                        text="🙏 期限が読み取れませんでした。日付でお答えください（例: 9/5, 来週金曜, 明後日 等）。")
+            return
+    con.execute("UPDATE tasks SET due_date=?, due_date_confirmed=1, updated_at=datetime('now') WHERE id=?",
+                (nd, tid))
+    con.commit()
+    _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
+               text=f"✅ 期限を {nd} に設定しました。")
 
 
 def _message_permalink(channel: str, ts: str, token: str | None = None) -> str | None:
@@ -793,7 +851,9 @@ def _handle_block_action(con, payload: dict) -> None:
             due = (tk.get("due_date") or "").strip()
             base = date.fromisoformat(due) if due else date.today()
             nd = sfa_db.add_business_days(base, _n).isoformat()
-        con.execute("UPDATE tasks SET due_date=?, updated_at=datetime('now') WHERE id=?", (nd, tid))
+        # ボタンでの期限設定も人間による明示的な確定として扱う（事務タスクの期限確認プロセス）。
+        con.execute("UPDATE tasks SET due_date=?, due_date_confirmed=1, updated_at=datetime('now') "
+                   "WHERE id=?", (nd, tid))
         con.commit()
         _label = "当日" if _n <= 0 else f"+{_n}営業日"
         _respond_url(resp_url, f"⏰ 期限を {nd}（{_label}）に変更しました: {tk.get('title')}")

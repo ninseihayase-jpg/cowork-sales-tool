@@ -14955,6 +14955,19 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                                        include_start_overdue=not _is_admin_task)
                         self._send(json.dumps({"ok": True, "counts": _counts}, ensure_ascii=False).encode(),
                                    ctype="application/json")
+                    elif _field == "due_date":
+                        # カード/フォームでの直接編集も人間による明示的な確定として扱う
+                        # （事務タスクの期限確認プロセス。Slack側の未確定フラグをここでも解除する）。
+                        con.execute("UPDATE tasks SET due_date=?, due_date_confirmed=1, "
+                                   "updated_at=datetime('now') WHERE id=?", (_value or None, _tid))
+                        con.commit()
+                        _st = _task_auto_triage(con, _tid)
+                        _is_admin_task = bool((sfa_db.get_task(con, _tid) or {}).get("is_admin"))
+                        self._send(json.dumps({
+                            "ok": True, "status": _st,
+                            "counts": _task_urgency_counts(con, admin=_is_admin_task,
+                                                           include_start_overdue=not _is_admin_task),
+                        }, ensure_ascii=False).encode(), ctype="application/json")
                     else:
                         con.execute(f"UPDATE tasks SET {_field}=?, updated_at=datetime('now') WHERE id=?",
                                     (_value or None, _tid))
@@ -14963,8 +14976,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _st = _task_auto_triage(con, _tid)
                         _resp = {"ok": True, "status": _st}
                         # 上部集計ボックスに影響しうるフィールドのみ、AJAXレスポンスで最新件数を返す
-                        # （due_date=期限アラート・effort_level/effort_hours/assignee=開始遅延アラート）。
-                        if _field in ("due_date", "effort_level", "effort_hours", "assignee"):
+                        # （due_dateは専用の elif 分岐で処理済み・ここは effort_level/effort_hours/
+                        # assignee=開始遅延アラートに影響するもののみ）。
+                        if _field in ("effort_level", "effort_hours", "assignee"):
                             _is_admin_task = bool((sfa_db.get_task(con, _tid) or {}).get("is_admin"))
                             _resp["counts"] = _task_urgency_counts(
                                 con, admin=_is_admin_task, include_start_overdue=not _is_admin_task)
@@ -17849,6 +17863,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 _uid = _inner.get("user", "")
                                 if _text and _ch and _ts:
                                     _st.handle_admin_mention_task(_con, _ch, _ts, _text, _uid, token=_tok)
+                            elif (_etype == "message" and not _inner.get("subtype")
+                                  and not _inner.get("bot_id")):
+                                # 事務タスクの期限確認プロセス（2026-08-27）: 起票スレッドへの
+                                # 人間の返信を拾い、「OK」/期限の自由文を確定処理する。
+                                # 要Slackアプリ設定: Event SubscriptionsにOpeBotのBot Events
+                                # message.channels（プライベートチャンネルなら message.groups も）
+                                # の購読が必要（channels:history/groups:history スコープ込み）。
+                                _st.handle_admin_due_reply(_con, _inner, token=_tok)
                         except Exception as _e:  # noqa: BLE001
                             print(f"[slack_desk_events] error: {_e}", flush=True)
                         finally:
