@@ -5451,6 +5451,11 @@ _DAILY_PLAN_CSS = f"""<style>
 .dp-col{{min-height:60px;border:1px dashed #cbd5e1;border-radius:6px;padding:6px;flex:1}}
 .dp-pick-row{{display:block;padding:4px 2px;font-size:13px;cursor:pointer}}
 .dp-pick-row:hover{{background:#f8fafc}}
+/* カレンダー上のブロックをクリックするとタスク詳細をフローティング表示（ユーザー要望2026-08-27）。
+   エリア外(背景)クリックで閉じる。既存の#notesPop/#linkPopと同じ様式。 */
+#dpDetailBackdrop{{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}}
+#dpDetailPop{{position:fixed;z-index:9999;display:none;background:#fff;border:1px solid #cbd5e1;
+  border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.18);width:320px;max-width:92vw;padding:12px}}
 </style>"""
 
 
@@ -5494,7 +5499,8 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
     ]
     tasks_by_id = {
         str(t["id"]): {"id": t["id"], "title": t.get("title") or "(無題)",
-                       "due_date": t.get("due_date") or "", "effort_level": t.get("effort_level") or ""}
+                       "due_date": t.get("due_date") or "", "effort_level": t.get("effort_level") or "",
+                       "effort_hours": t.get("effort_hours")}
         for t in tasks
     }
     latest = sfa_db.get_latest_daily_task_plan(con, assignee, base_date=today.isoformat())
@@ -5554,6 +5560,8 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         <button class="btn" type="button" onclick="dpConfirm()" style="margin-top:10px">✅ 確定して保存</button>
       </div>
     </div>
+    <div id="dpDetailBackdrop" onclick="closeDpDetail()"></div>
+    <div id="dpDetailPop"></div>
     <script>
     window.DP_ASSIGNEE = {json.dumps(assignee, ensure_ascii=False)};
     window.DP_TASKS_BY_ID = {json.dumps(tasks_by_id, ensure_ascii=False)};
@@ -5585,17 +5593,58 @@ _DAILY_PLAN_JS = f"""<script>
     if (t) t.innerHTML = blockLabelHtml(PLACED[uid]);
   }}
 
+  // ブロッククリック→タスク詳細をフローティング表示、エリア外クリックで閉じる
+  // （ユーザー要望2026-08-27）。
+  window.openDpDetail = function(uid){{
+    var p = PLACED[uid]; if (!p) return;
+    var t = window.DP_TASKS_BY_ID[p.taskId] || {{}};
+    var dayLabel = (p.dayOffset === 0) ? '今日' : '明日';
+    var timeLabel = fmtTime(p.startMin) + '-' + fmtTime(p.startMin + p.durationMin);
+    var pop = document.getElementById('dpDetailPop'), bd = document.getElementById('dpDetailBackdrop');
+    var rows = '<div class="muted" style="font-size:12px;margin-top:6px">'
+      + dayLabel + ' ' + timeLabel + '（' + esc(p.bucket) + '）</div>';
+    if (t.due_date) rows += '<div class="muted" style="font-size:12px">期限: ' + esc(t.due_date) + '</div>';
+    if (t.effort_level) rows += '<div class="muted" style="font-size:12px">工数感: ' + esc(t.effort_level) + '</div>';
+    if (t.effort_hours != null && t.effort_hours !== '')
+      rows += '<div class="muted" style="font-size:12px">所要時間(設定): ' + esc(String(t.effort_hours)) + 'h</div>';
+    pop.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center">'
+      + '<b style="font-size:13px">' + esc(p.title) + '</b>'
+      + '<span onclick="closeDpDetail()" style="cursor:pointer;color:#94a3b8">✕</span></div>'
+      + rows
+      + '<div style="margin-top:10px"><a class="btn sec" style="font-size:11px;text-decoration:none" '
+      + 'href="/tasks#tc-' + p.taskId + '">看板で開く</a></div>';
+    bd.style.display = 'block'; pop.style.display = 'block';
+    pop.style.left = Math.max(8, (window.innerWidth - pop.offsetWidth) / 2) + 'px';
+    pop.style.top = Math.max(8, (window.innerHeight - pop.offsetHeight) / 2) + 'px';
+  }};
+  window.closeDpDetail = function(){{
+    var pop = document.getElementById('dpDetailPop'), bd = document.getElementById('dpDetailBackdrop');
+    if (pop) pop.style.display = 'none';
+    if (bd) bd.style.display = 'none';
+  }};
+
   function dpMakeChip(t, bucket){{
     var el = document.createElement('div');
     el.className = 'dp-chip'; el.draggable = true;
     el.dataset.taskId = t.id; el.dataset.bucket = bucket; el.dataset.title = t.title;
+    el.dataset.effortHours = (t.effort_hours != null && t.effort_hours !== '') ? t.effort_hours : '';
     el.textContent = t.title;
     el.ondragstart = function(e){{
       DRAGGING_CHIP = el;
       e.dataTransfer.setData('text/plain', JSON.stringify({{
-        type:'chip', taskId:el.dataset.taskId, bucket:el.dataset.bucket, title:el.dataset.title}}));
+        type:'chip', taskId:el.dataset.taskId, bucket:el.dataset.bucket, title:el.dataset.title,
+        effortHours:el.dataset.effortHours}}));
     }};
     return el;
+  }}
+  // #103と揃える: 設定工数(h)があれば分単位に換算し、その仕分け(軽い/重い)の既定時間より
+  // 短い場合だけ採用する（長い場合は既定時間のまま。ユーザー要望2026-08-27）。
+  function effectiveDuration(bucket, effortHoursStr){{
+    var def = DEFAULT_DUR[bucket] || 30;
+    var h = parseFloat(effortHoursStr);
+    if (isNaN(h) || h <= 0) return def;
+    var mins = Math.max(SLOT_MIN, Math.round(h * 60 / SLOT_MIN) * SLOT_MIN);
+    return mins < def ? mins : def;
   }}
 
   ['dpLight','dpHeavy'].forEach(function(colId){{
@@ -5614,9 +5663,11 @@ _DAILY_PLAN_JS = f"""<script>
     var trayLight = document.getElementById('dpTrayLight'), trayHeavy = document.getElementById('dpTrayHeavy');
     trayLight.innerHTML = ''; trayHeavy.innerHTML = '';
     document.querySelectorAll('#dpLight .dp-chip').forEach(function(c){{
-      trayLight.appendChild(dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title}}, '軽い')); }});
+      trayLight.appendChild(dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title,
+        effort_hours:c.dataset.effortHours}}, '軽い')); }});
     document.querySelectorAll('#dpHeavy .dp-chip').forEach(function(c){{
-      trayHeavy.appendChild(dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title}}, '重い')); }});
+      trayHeavy.appendChild(dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title,
+        effort_hours:c.dataset.effortHours}}, '重い')); }});
     document.getElementById('dpStep3').style.display = 'none';
     document.getElementById('dpStep4').style.display = '';
   }};
@@ -5666,18 +5717,23 @@ _DAILY_PLAN_JS = f"""<script>
       DRAGGING_BLOCK_UID = uid;
       e.dataTransfer.setData('text/plain', JSON.stringify({{type:'block', uid:uid}}));
     }};
-    el.querySelector('.dp-x').onclick = function(){{ removePlacement(uid); }};
+    el.querySelector('.dp-x').onclick = function(e){{ e.stopPropagation(); removePlacement(uid); }};
+    // クリック(ドラッグを伴わない)でタスク詳細をフローティング表示。×・リサイズハンドルは除外。
+    el.onclick = function(e){{
+      if (e.target.closest('.dp-x') || e.target.closest('.dp-grip')) return;
+      window.openDpDetail(uid);
+    }};
     wireResize(el, uid);
     row.appendChild(el);
     relayoutDay(p.dayOffset);
   }}
 
-  function addPlacement(taskId, title, bucket, dayOffset, startMin){{
+  function addPlacement(taskId, title, bucket, dayOffset, startMin, effortHours){{
     var uid = 'p' + (NEXT_UID++);
-    var durationMin = DEFAULT_DUR[bucket] || 30;
+    var durationMin = effectiveDuration(bucket, effortHours);
     var lane = findFreeLane(dayOffset, startMin, durationMin);
     PLACED[uid] = {{taskId:taskId, title:title, bucket:bucket, dayOffset:dayOffset, startMin:startMin,
-                    durationMin:durationMin, lane:lane}};
+                    durationMin:durationMin, lane:lane, effortHours:effortHours}};
     renderBlock(uid);
   }}
 
@@ -5700,7 +5756,7 @@ _DAILY_PLAN_JS = f"""<script>
     if (el) el.remove();
     relayoutDay(p.dayOffset);
     var tray = document.getElementById(p.bucket === '軽い' ? 'dpTrayLight' : 'dpTrayHeavy');
-    tray.appendChild(dpMakeChip({{id:p.taskId, title:p.title}}, p.bucket));
+    tray.appendChild(dpMakeChip({{id:p.taskId, title:p.title, effort_hours:p.effortHours}}, p.bucket));
   }}
 
   function wireResize(el, uid){{
@@ -5737,7 +5793,7 @@ _DAILY_PLAN_JS = f"""<script>
       var slot = Math.max(0, Math.min(SLOTS - 1, Math.round(y / SLOT_PX)));
       var startMin = slot * SLOT_MIN;
       if (data.type === 'chip' && DRAGGING_CHIP) {{
-        addPlacement(data.taskId, data.title, data.bucket, dayOffset, startMin);
+        addPlacement(data.taskId, data.title, data.bucket, dayOffset, startMin, data.effortHours);
         DRAGGING_CHIP.remove(); DRAGGING_CHIP = null;
       }} else if (data.type === 'block') {{
         movePlacement(data.uid, dayOffset, startMin);

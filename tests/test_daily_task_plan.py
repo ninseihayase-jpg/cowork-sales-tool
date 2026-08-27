@@ -223,6 +223,29 @@ def test_daily_plan_calendar_block_shows_time_and_readable_even_at_15min(con):
     assert webapp._DAILY_PLAN_SLOT_PX >= 20
 
 
+def test_daily_plan_page_embeds_effort_hours_for_default_duration_logic(con):
+    """ユーザー要望2026-08-27: 設定工数がデフォルト時間より短ければ設定工数を既定表示に使う。
+    JS側でその判定をするため、embedされるタスク情報にeffort_hoursが含まれること。"""
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手",
+                             effort_level="中", effort_hours=1.0)
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
+    data = json.loads(html.split("window.DP_TASKS_BY_ID = ", 1)[1].split(";\n", 1)[0])
+    assert data[str(tid)]["effort_hours"] == 1.0
+    assert "function effectiveDuration" in html
+    assert "effortHours" in html
+
+
+def test_daily_plan_page_has_task_detail_popup_wired(con):
+    """ユーザー要望2026-08-27: カレンダー上でクリックするとタスク詳細をフローティング表示、
+    エリア外クリックで消える。"""
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
+    assert 'id="dpDetailPop"' in html
+    assert 'id="dpDetailBackdrop" onclick="closeDpDetail()"' in html
+    assert "window.openDpDetail" in html
+    assert "window.closeDpDetail" in html
+
+
 def test_daily_task_plan_view_page_uses_vertical_time_layout(con):
     """ユーザー要望2026-08-27: カレンダーは縦方向に時間が進む形（日付は横2列）。"""
     tid = sfa_db.upsert_task(con, title="X", assignee="早瀬")
