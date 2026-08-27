@@ -5451,6 +5451,11 @@ _DAILY_PLAN_CSS = f"""<style>
 .dp-col{{min-height:60px;border:1px dashed #cbd5e1;border-radius:6px;padding:6px;flex:1}}
 .dp-pick-row{{display:block;padding:4px 2px;font-size:13px;cursor:pointer}}
 .dp-pick-row:hover{{background:#f8fafc}}
+/* ドラッグ配置・長さ変更のスナップ可視化（ユーザー要望2026-08-27: 15分線に近づくと枠が
+   表示されカチッとはまるように）。dragover中に日列へこのプレビュー枠を出す。 */
+.dp-snap-preview{{position:absolute;left:0;right:0;border:2px dashed #4f46e5;
+  background:rgba(79,70,229,.12);border-radius:4px;pointer-events:none;z-index:6;display:none}}
+.dp-block.dp-resizing{{outline:2px dashed #4f46e5;outline-offset:1px}}
 /* カレンダー上のブロックをクリックするとタスク詳細をフローティング表示（ユーザー要望2026-08-27）。
    エリア外(背景)クリックで閉じる。既存の#notesPop/#linkPopと同じ様式。 */
 #dpDetailBackdrop{{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}}
@@ -5764,6 +5769,7 @@ _DAILY_PLAN_JS = f"""<script>
     grip.onmousedown = function(e){{
       e.preventDefault(); e.stopPropagation();
       el.draggable = false;
+      el.classList.add('dp-resizing');  // ユーザー要望2026-08-27: スナップ中を枠で明示
       var startY = e.clientY, startDur = PLACED[uid].durationMin;
       function onMove(ev){{
         var deltaSlots = Math.round((ev.clientY - startY) / SLOT_PX);
@@ -5774,6 +5780,8 @@ _DAILY_PLAN_JS = f"""<script>
       }}
       function onUp(){{
         el.draggable = true;
+        el.classList.remove('dp-resizing');
+        relayoutDay(PLACED[uid].dayOffset);
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
       }}
@@ -5782,11 +5790,41 @@ _DAILY_PLAN_JS = f"""<script>
     }};
   }}
 
+  // ドラッグ中の所要時間（プレビュー枠の高さ用）。dataTransferの中身はdragover中は読めない
+  // ブラウザ制約があるため、drag開始時に控えておいたJS変数(DRAGGING_CHIP/DRAGGING_BLOCK_UID)
+  // から求める（ユーザー要望2026-08-27: 15分線に近づくと枠が表示されカチッとはまるように）。
+  function currentDragDurationMin(){{
+    if (DRAGGING_CHIP) return effectiveDuration(DRAGGING_CHIP.dataset.bucket, DRAGGING_CHIP.dataset.effortHours);
+    if (DRAGGING_BLOCK_UID && PLACED[DRAGGING_BLOCK_UID]) return PLACED[DRAGGING_BLOCK_UID].durationMin;
+    return SLOT_MIN;
+  }}
+  function hideAllSnapPreviews(){{
+    [0,1].forEach(function(d){{ var r = document.getElementById('dpDay' + d);
+      if (r && r._dpPreview) r._dpPreview.style.display = 'none'; }});
+  }}
+  document.addEventListener('dragend', hideAllSnapPreviews);
+
   [0,1].forEach(function(dayOffset){{
     var row = document.getElementById('dpDay' + dayOffset);
-    row.ondragover = function(e){{ e.preventDefault(); }};
+    var preview = document.createElement('div');
+    preview.className = 'dp-snap-preview';
+    row.appendChild(preview);
+    row._dpPreview = preview;
+    row.ondragover = function(e){{
+      e.preventDefault();
+      var rect = row.getBoundingClientRect();
+      var y = e.clientY - rect.top;
+      var slot = Math.max(0, Math.min(SLOTS - 1, Math.round(y / SLOT_PX)));
+      var startMin = slot * SLOT_MIN;
+      var dur = currentDragDurationMin();
+      preview.style.top = (startMin / SLOT_MIN * SLOT_PX) + 'px';
+      preview.style.height = (dur / SLOT_MIN * SLOT_PX - 2) + 'px';
+      preview.style.display = 'block';
+    }};
+    row.ondragleave = function(){{ preview.style.display = 'none'; }};
     row.ondrop = function(e){{
       e.preventDefault();
+      preview.style.display = 'none';
       var data; try {{ data = JSON.parse(e.dataTransfer.getData('text/plain')||'{{}}'); }} catch(_e){{ return; }}
       var rect = row.getBoundingClientRect();
       var y = e.clientY - rect.top;

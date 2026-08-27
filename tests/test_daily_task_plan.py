@@ -246,6 +246,18 @@ def test_daily_plan_page_has_task_detail_popup_wired(con):
     assert "window.closeDpDetail" in html
 
 
+def test_daily_plan_page_has_drag_snap_preview_wired(con):
+    """ユーザー要望2026-08-27: ドラッグして15分線に近づくと枠が表示されカチッとはまるUI
+    （新規配置・移動・長さ変更のいずれも）。"""
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
+    assert "dp-snap-preview" in html
+    assert "function currentDragDurationMin" in html
+    assert "dp-resizing" in html
+    assert "row.ondragover" in html
+    assert "row.ondragleave" in html
+
+
 def test_daily_task_plan_view_page_uses_vertical_time_layout(con):
     """ユーザー要望2026-08-27: カレンダーは縦方向に時間が進む形（日付は横2列）。"""
     tid = sfa_db.upsert_task(con, title="X", assignee="早瀬")
