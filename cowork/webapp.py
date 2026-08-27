@@ -2138,14 +2138,14 @@ def delivery_form(con, delivery_id: int) -> str:
         <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
           <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
           <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。</p>
-          <div style="overflow:auto;flex:1">{role_rows}</div>
           <form method="post" action="/delivery/{delivery_id}/role/add"
-                style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-top:6px">
+                style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-bottom:8px">
             <label style="font-size:11px">役割<br><input type="text" name="role" required placeholder="PM/エンジニア等" style="width:130px"></label>
             <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="100" style="width:76px"></label>
             <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="100" style="width:76px"></label>
             <button class="btn sec" style="font-size:12px">＋役割追加（アサイン行も生成）</button>
           </form>
+          <div style="overflow:auto;flex:1">{role_rows}</div>
         </div>
       </div>
 
@@ -7548,7 +7548,11 @@ def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, labe
     （HTML5のform属性。バー自体は<form>の外にあってよい）。
     extra: タイトルとボタンの間に差し込む任意HTML（ステータス表示などの固定表示用・rawで挿入）。"""
     t = f'<span class="sb-title">{_esc(title)}</span>' if title else ""
-    ex = f'<span class="sb-extra" style="margin-right:12px;display:flex;align-items:center;gap:6px">{extra}</span>' if extra else ""
+    # flex-wrap:wrap＝中身（サブグループ）が入りきらない時は"グループ単位"で次行へ折り返す。
+    # 各サブグループ側でwhite-space:nowrapにしておくことで、折り返し時も個々の文字が
+    # 変な位置で割れて崩れない（ユーザー報告2026-08-28: ボタンの高さ/折返しがバラバラで崩れる）。
+    ex = (f'<span class="sb-extra" style="margin-right:12px;display:flex;flex-wrap:wrap;'
+          f'align-items:center;gap:8px 14px">{extra}</span>') if extra else ""
     cancel = f'<a class="btn sec" href="{_esc(cancel_url)}">キャンセル</a>' if cancel_url else ""
     # 二重送信防止: フォームが妥当なら送信後にボタンを無効化（連打で多重登録されるのを防ぐ）。
     # 未入力等でバリデーションに落ちる場合はロックしない。
@@ -9640,6 +9644,10 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         _sb_title = f"SFA#{deal['id']}　{_acc_nm}／{deal.get('deal_name') or ''}"
         _st_label = "クローズ済" if deal.get("status") == "closed" else "進行中"
         _did_js = deal["id"]
+        # 保存バーの各操作は「グループ単位」でnowrap(sb-group)にまとめる。ボタン/セレクトの
+        # 高さ・フォントサイズを統一(12px/padding5px 12px)し、折り返し時もグループごと丸ごと
+        # 次の行へ落ちるようにして、文字が変な位置で割れて崩れるのを防ぐ（ユーザー報告2026-08-28）。
+        _sb_btn_style = "font-size:12px;padding:5px 12px;white-space:nowrap"
         if deal.get("status") == "closed":
             # クローズ済みは「終了理由」をその場で修正できる（リード化時の理由選択ミスを直す導線）。
             _cr_cur = deal.get("close_reason") or ""
@@ -9648,34 +9656,41 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
                 for v in sfa_db.CLOSE_REASONS)
             _reopen_ret = urllib.parse.quote(return_to or f"/deal/{_did_js}", safe="")
             _reopen_btn = (
-                f'<form method="post" action="/deal/{_did_js}/reopen" style="display:inline;margin-left:8px" '
+                f'<form method="post" action="/deal/{_did_js}/reopen" style="display:inline-flex;margin:0" '
                 f'onsubmit="return confirm(\'この商談を再開（進行中に戻す）します。リードに戻していた場合は、そのリードを商談へ再紐付けします。よろしいですか？\');">'
                 f'<input type="hidden" name="return_to" value="{_reopen_ret}">'
-                f'<button class="btn" style="font-size:11px;padding:4px 10px;background:#047857;color:#fff;border-color:#047857">↩ 商談に戻す（再開）</button>'
+                f'<button class="btn" style="{_sb_btn_style};background:#047857;color:#fff;'
+                f'border-color:#047857">↩ 商談に戻す（再開）</button>'
                 f'</form>')
-            _cr_ctl = (f'<span class="muted" style="font-size:11px">終了理由</span>'
+            _cr_ctl = (f'<span class="sb-group" style="display:inline-flex;align-items:center;'
+                       f'gap:6px;white-space:nowrap">'
+                       f'<span class="muted" style="font-size:11px;white-space:nowrap">終了理由</span>'
                        f"<select onchange=\"updateDealField({_did_js}, 'close_reason', this.value)\" "
-                       f'style="font-size:12px;padding:1px 4px"><option value=""></option>{_cr_opts}</select>'
-                       + _reopen_btn)
+                       f'style="font-size:12px;padding:4px 6px"><option value=""></option>{_cr_opts}</select>'
+                       f'{_reopen_btn}</span>')
         elif (deal.get("stage") or "") == "受注":
             # 受注ステージは自動クローズしない（契約処理完了まではopenのまま）。
             # 契約処理が終わったら、ここから明示的にクローズする。
             _cr_ctl = (
-                f'<form method="post" action="/deal/{_did_js}/close-won" style="display:inline" '
+                f'<span class="sb-group" style="display:inline-flex;align-items:center;'
+                f'gap:8px;white-space:nowrap">'
+                f'<form method="post" action="/deal/{_did_js}/close-won" style="display:inline-flex;margin:0" '
                 f'onsubmit="return confirm(\'受注・契約処理完了として、この商談をクローズします。'
                 f'Delivery稼働予定には影響しません（stage=受注のまま確定として残ります）。よろしいですか？\');">'
                 f'<input type="hidden" name="return_to" value="/deal/{_did_js}">'
-                f'<button type="submit" class="btn" style="font-size:11px;padding:4px 10px;'
+                f'<button type="submit" class="btn" style="{_sb_btn_style};'
                 f'background:#047857;color:#fff;border-color:#047857">✅ 受注・契約処理完了（クローズ）</button>'
                 f'</form>'
-                f'<span class="muted" style="font-size:11px;margin-left:8px">'
-                f'失注等でのクローズは画面下部の「クローズ」ボタンから</span>')
+                f'<span class="muted" style="font-size:11px;white-space:nowrap">'
+                f'失注等でのクローズは画面下部の「クローズ」ボタンから</span></span>')
         else:
-            _cr_ctl = '<span class="muted" style="font-size:11px">クローズは画面下部の「クローズ」ボタンから</span>'
+            _cr_ctl = ('<span class="muted" style="font-size:11px;white-space:nowrap">'
+                       'クローズは画面下部の「クローズ」ボタンから</span>')
         # 📝ノートはステータスの左に小さく（固定エリア）。クリックで大画面フローティング編集。
-        _sb_extra = (f'{_rich_note_chip("deal", deal["id"])}'
-                     f'<span class="muted" style="font-size:11px">ステータス</span>'
-                     f'<span class="stage">{_st_label}</span>{_cr_ctl}')
+        _sb_extra = (f'<span class="sb-group" style="display:inline-flex;align-items:center;'
+                     f'gap:6px;white-space:nowrap">{_rich_note_chip("deal", deal["id"])}'
+                     f'<span class="muted" style="font-size:11px;white-space:nowrap">ステータス</span>'
+                     f'<span class="stage">{_st_label}</span></span>{_cr_ctl}')
     if not deal.get("id"):
         new_acc_html = (
             '<div style="margin-top:5px;text-align:left">'

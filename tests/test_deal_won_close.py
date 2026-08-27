@@ -203,6 +203,27 @@ def test_deal_form_shows_close_won_button_only_for_open_won_stage(db_path):
     con.close()
 
 
+def test_deal_form_save_bar_groups_wrap_as_units_without_squishing(db_path):
+    """#116: 保存バーの各操作（📝ノート/ステータス/終了理由選択+再開ボタン等）は
+    white-space:nowrapの単位(sb-group)でまとまり、外枠(sb-extra)はflex-wrapで
+    グループごと折り返す。ボタンの文字が途中で折れて高さがバラバラになる崩れを防ぐ
+    （ユーザー報告2026-08-28: 上部ボタンのUIが崩れている）。"""
+    con = sfa_db.connect(db_path)
+    acc = sfa_db.upsert_account(con, name="テスト社")
+    d_closed = sfa_db.upsert_deal(con, account_id=acc, deal_name="A", stage="提案", status="closed",
+                                  close_reason="失注")
+    d_won_open = sfa_db.upsert_deal(con, account_id=acc, deal_name="B", stage="受注", status="open")
+
+    html_closed = webapp.deal_form(con, sfa_db.get_deal(con, d_closed))
+    assert 'class="sb-extra" style="margin-right:12px;display:flex;flex-wrap:wrap;' in html_closed
+    assert 'class="sb-group" style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap"' in html_closed
+    assert "商談に戻す（再開）</button>" in html_closed
+
+    html_won = webapp.deal_form(con, sfa_db.get_deal(con, d_won_open))
+    assert 'class="sb-group" style="display:inline-flex;align-items:center;gap:8px;white-space:nowrap"' in html_won
+    con.close()
+
+
 def test_deal_hygiene_lists_won_open_deals_with_new_wording(db_path):
     con = sfa_db.connect(db_path)
     acc = sfa_db.upsert_account(con, name="テスト社")

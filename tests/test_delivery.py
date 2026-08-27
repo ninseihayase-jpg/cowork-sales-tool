@@ -304,6 +304,20 @@ def test_delivery_fee_both_present_is_trusted_as_is_manual_override():
     assert (mo, to) == (999, 300)
 
 
+def test_delivery_form_role_add_row_appears_above_existing_roles(con):
+    """#117: 役割追加の入力欄は体制エリアの一番上（既存の役割一覧より前）に出す
+    （ユーザー要望2026-08-28: 役割数が増えると追加欄が下に流れて見えづらいため）。"""
+    acc = con.execute("INSERT INTO accounts(name) VALUES('A社')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件Y", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="納品Y")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="テストロール123", fte_billing=100, fte_pct=100)
+    html = webapp.delivery_form(con, dvid)
+    add_form_pos = html.index(f'/delivery/{dvid}/role/add')
+    existing_role_pos = html.index("テストロール123")
+    assert add_form_pos < existing_role_pos
+
+
 def test_delivery_form_fee_fields_allow_manual_edit_via_shared_js(con):
     """新規タスク: 灰色側(自動算出側)がreadOnlyでなくなり、手修正用のJSに委譲していること。"""
     from cowork import webapp
