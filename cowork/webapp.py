@@ -4135,7 +4135,13 @@ function tcPickChanged(){
 function tcToggleDailyPick(){
   var board=document.getElementById('taskBoard'), bar=document.getElementById('dpPickBar');
   if(!board||!bar) return false;
-  var on=!board.classList.contains('picking');
+  var already=board.classList.contains('picking');
+  if(!already){
+    // #104: 担当が未確定のままチェックボックスは出さない。まず担当を選んでボードを
+    // フィルタしてから始める（担当が既に絞り込み中ならそのまま即座にピック開始）。
+    if(!window.TC_ASSIGNEE){ location.href='/tasks?pick=1'; return false; }
+  }
+  var on=!already;
   board.classList.toggle('picking',on);
   bar.style.display=on?'flex':'none';
   if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); tcPickChanged(); }
@@ -4144,9 +4150,8 @@ function tcToggleDailyPick(){
 function tcGoDailyPlan(){
   var ids=Array.prototype.map.call(document.querySelectorAll('.tc-pick-cb:checked'),function(cb){return cb.dataset.tid;});
   if(!ids.length){ alert('タスクを1つ以上選んでください'); return; }
-  var ownerSel=document.getElementById('dpPickOwner');
-  var owner=ownerSel?ownerSel.value:'';
-  if(!owner){ alert('担当を選んでください'); return; }
+  var owner=window.TC_ASSIGNEE||'';
+  if(!owner){ alert('担当が未選択です'); return; }
   location.href='/tasks/daily-plan?assignee='+encodeURIComponent(owner)+'&picked='+ids.join(',');
 }
 function taskDelete(id){ if(!confirm('このタスクを削除しますか？')) return;
@@ -4255,6 +4260,14 @@ function saveLinkPop(){
      if(card){
        card.dataset.linkType=d.link_type||''; card.dataset.linkId=d.link_id?String(d.link_id):'';
        card.dataset.linkLabel=d.label||'';
+       // 紐づけ先フィルタ適用中(紐づけ無しのみ/特定の商談等)に、関連付けの結果その条件に
+       // 合わなくなったカードは一覧から消す（ユーザー要望2026-08-27）。
+       var filt=window.TC_LINK_FILTER||{};
+       if(filt.type){
+         var matches=(filt.type==='__none__') ? !d.link_type
+           : (d.link_type===filt.type && String(d.link_id||'')===String(filt.id||''));
+         if(!matches){ card.remove(); tcCounts(); closeLinkPop(); return; }
+       }
        var slot=card.querySelector('.tc-link-slot');
        if(slot) slot.innerHTML=d.label
          ? ('<a href="'+d.href+'" style="font-size:10px" title="'+d.label+'">'+d.icon+d.label.slice(0,20)+'</a>') : '';
@@ -5061,7 +5074,10 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                 '<button class="btn sec" type="submit" title="検証用の【テスト】サンプルを投入">🧪 テストデータ投入</button></form>')
     filt_note = (f'<span class="muted" style="font-size:12px">📁 {_esc("・".join(sel_projects))} で絞り込み中 '
                  f'<a href="{_tasks_url([])}">解除</a></span>' if sel_projects else "")
-    quick_js = (f'<script>window._TC={{today:"{today}",d3:"{d3}",weekend:"{weekend}"}};</script>')
+    quick_js = (
+        f'<script>window._TC={{today:"{today}",d3:"{d3}",weekend:"{weekend}"}};'
+        f'window.TC_LINK_FILTER={json.dumps({"type": link_type or "", "id": link_id or ""}, ensure_ascii=False)};'
+        f'window.TC_ASSIGNEE={json.dumps(assignee or "", ensure_ascii=False)};</script>')
     # 上部集計ボックス（期限アラート＋最優先ピン件数。desk-tasksと同仕様・依頼者別内訳は無し）。
     agg = f"""
       <div class="desk-agg">
@@ -5072,16 +5088,28 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         <a class="box desk-alert-hold" href="/tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b data-agg-count="hold">{hold_n}</b></a>
         <a class="box desk-alert-pin{' on' if pinned else ''}" href="/tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b data-agg-count="pinned">{pinned_n}</b></a>
       </div>"""
-    # #101「今日明日のタスク」ピックバー。看板から離れず選ぶ（ユーザー要望2026-08-27）。
-    # 現在の担当フィルタがあれば既定選択（ほぼ確認だけで進められる）、無ければ選ばせる。
-    _pick_owner_opts = "".join(
-        f'<option value="{_esc(o)}"{" selected" if o == assignee else ""}>{_esc(o)}</option>' for o in owners)
-    pick_bar = (f'<div id="dpPickBar" style="{"display:flex" if pick else ""}">'
-                f'<b>📆 今日明日のタスクを選択中: <span id="dpPickCount">0</span>件</b>'
-                f'<label style="font-size:12px">担当: <select id="dpPickOwner">'
-                f'<option value="">選択</option>{_pick_owner_opts}</select></label>'
-                f'<button class="btn" type="button" onclick="tcGoDailyPlan()">次へ（仕分けへ）</button>'
-                f'<button class="btn sec" type="button" onclick="tcToggleDailyPick()">キャンセル</button></div>')
+    # #101/#104「今日明日のタスク」ピックバー。看板から離れず選ぶ（ユーザー要望2026-08-27）。
+    # フロー: 「今日明日」クリック→担当を選ぶ(ボードがその担当でフィルタされる)→
+    # フィルタされたカードにチェックボックスが出る、の順に変更（旧: ピックバー内で担当選択）。
+    # 担当が未確定のまま(pick=1のみ)の間はチェックボックスを出さず、担当選択ゲートだけを表示する。
+    _real_assignee = assignee if (assignee and assignee != "__none__") else None
+    _picking_active = bool(pick and _real_assignee)
+    if pick and not _real_assignee:
+        _gate_owner_opts = "".join(f'<option value="{_esc(o)}">{_esc(o)}</option>' for o in owners)
+        pick_bar = (
+            f'<div id="dpPickBar" style="display:flex">'
+            f'<b>📆 今日明日のタスク — まず担当を選んでください</b>'
+            f'<select onchange="if(this.value) location.href=&#39;/tasks?assignee=&#39;+'
+            f'encodeURIComponent(this.value)+&#39;&pick=1&#39;">'
+            f'<option value="">担当を選択</option>{_gate_owner_opts}</select>'
+            f'<button class="btn sec" type="button" onclick="location.href=&#39;/tasks&#39;">キャンセル</button></div>')
+    else:
+        pick_bar = (
+            f'<div id="dpPickBar" style="{"display:flex" if _picking_active else ""}">'
+            f'<b>📆 今日明日のタスクを選択中（担当: {_esc(_real_assignee or "")}）: '
+            f'<span id="dpPickCount">0</span>件</b>'
+            f'<button class="btn" type="button" onclick="tcGoDailyPlan()">次へ（仕分けへ）</button>'
+            f'<button class="btn sec" type="button" onclick="tcToggleDailyPick()">キャンセル</button></div>')
     # 関連付けポップアップ(2026-08-27): カード上の「🔗関連」から商談/論点/Delivery/開発案件へ
     # 紐づけできるように、task_formと同じピッカーをページに1回だけ埋め込む（prefix="tcLink"）。
     _link_dev_opts = '<option value="">（なし）</option>' + "".join(
@@ -5126,7 +5154,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
       {strip}
       {link_strip}
       {filter_row}
-      <div id="taskBoard"{' class="picking"' if pick else ''}>{columns}</div>
+      <div id="taskBoard"{' class="picking"' if _picking_active else ''}>{columns}</div>
       {pick_bar}
     </div>{link_pop}{quick_js}{_TASKS_JS}{_DESK_CSS}{_DESK_RECUR_JS}"""
 
@@ -5370,31 +5398,35 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
 
 # 「今日明日のタスク」機能（#101, 2026-08-27）。06:00〜21:00・15分刻みの2日分(当日/翌日)
 # カレンダーへドラッグ&ドロップでタスクを配置する日次プランニングツール。
-_DAILY_PLAN_SLOT_PX = 20
+# 時間軸は縦方向（ユーザー要望2026-08-27）。日付を横2列にして画面幅いっぱいまで広げ、
+# 重なりは各日列内でレーン(横)を動的に分割して表現する（幅は毎回JS側でclientWidthから再計算）。
+_DAILY_PLAN_SLOT_PX = 16  # 15分あたりの高さ(px)
 _DAILY_PLAN_SLOT_MIN = 15
 _DAILY_PLAN_START_H = 6
 _DAILY_PLAN_END_H = 21
 _DAILY_PLAN_SLOTS = (_DAILY_PLAN_END_H - _DAILY_PLAN_START_H) * 60 // _DAILY_PLAN_SLOT_MIN  # 60
-_DAILY_PLAN_DAY_W = _DAILY_PLAN_SLOTS * _DAILY_PLAN_SLOT_PX  # 1200
+_DAILY_PLAN_DAY_H = _DAILY_PLAN_SLOTS * _DAILY_PLAN_SLOT_PX  # 960
 _JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 
 _DAILY_PLAN_CSS = f"""<style>
-.dp-wrap{{overflow-x:auto}}
-.dp-hourbar{{position:relative;height:16px;width:{_DAILY_PLAN_DAY_W}px;margin-left:96px}}
-.dp-dayrow{{display:flex;align-items:flex-start;margin-bottom:6px}}
-.dp-daylabel{{width:90px;flex:0 0 90px;font-size:12px;font-weight:600;padding-top:4px;color:#334155}}
-.dp-day{{position:relative;width:{_DAILY_PLAN_DAY_W}px;min-height:32px;border:1px solid #e2e8f0;
-  border-radius:4px;background-image:
-  repeating-linear-gradient(to right,#f1f5f9 0,#f1f5f9 1px,transparent 1px,transparent {_DAILY_PLAN_SLOT_PX}px),
-  repeating-linear-gradient(to right,#e2e8f0 0,#e2e8f0 1px,transparent 1px,transparent {_DAILY_PLAN_SLOT_PX*4}px)}}
-.dp-block{{position:absolute;top:2px;height:24px;border-radius:4px;font-size:11px;color:#fff;
-  padding:0 4px;box-sizing:border-box;overflow:hidden;white-space:nowrap;cursor:grab;display:flex;
-  align-items:center;gap:3px}}
+.dp-wrap{{width:100%}}
+.dp-cal{{display:grid;grid-template-columns:56px 1fr 1fr;width:100%;column-gap:8px}}
+.dp-daylabel-h{{font-size:13px;font-weight:600;padding:4px 0 6px;text-align:center;color:#334155;
+  border-bottom:2px solid #e2e8f0}}
+.dp-gutter{{position:relative;height:{_DAILY_PLAN_DAY_H}px}}
+.dp-gutter span{{position:absolute;left:0;right:6px;font-size:10px;color:#94a3b8;text-align:right;
+  transform:translateY(-50%)}}
+.dp-day{{position:relative;height:{_DAILY_PLAN_DAY_H}px;border:1px solid #e2e8f0;border-radius:4px;
+  background-image:
+  repeating-linear-gradient(to bottom,#f1f5f9 0,#f1f5f9 1px,transparent 1px,transparent {_DAILY_PLAN_SLOT_PX}px),
+  repeating-linear-gradient(to bottom,#e2e8f0 0,#e2e8f0 1px,transparent 1px,transparent {_DAILY_PLAN_SLOT_PX * 4}px)}}
+.dp-block{{position:absolute;border-radius:4px;font-size:11px;color:#fff;padding:1px 4px;
+  box-sizing:border-box;overflow:hidden;cursor:grab;display:flex;flex-direction:column}}
 .dp-light{{background:#38bdf8}}
 .dp-heavy{{background:#6366f1}}
-.dp-block-t{{flex:1;overflow:hidden;text-overflow:ellipsis}}
-.dp-grip{{width:6px;align-self:stretch;cursor:ew-resize;background:rgba(255,255,255,.5);border-radius:2px;flex:0 0 auto}}
-.dp-x{{cursor:pointer;flex:0 0 auto;opacity:.85}}
+.dp-block-t{{flex:1;overflow:hidden;line-height:1.2}}
+.dp-grip{{height:6px;margin-top:auto;cursor:ns-resize;background:rgba(255,255,255,.5);border-radius:2px}}
+.dp-x{{cursor:pointer;align-self:flex-end;font-size:10px;opacity:.85;line-height:1}}
 .dp-chip{{padding:4px 8px;margin:2px;border-radius:6px;font-size:12px;cursor:grab;display:inline-block;color:#fff}}
 .dp-chip[data-bucket="軽い"]{{background:#38bdf8}}
 .dp-chip[data-bucket="重い"]{{background:#6366f1}}
@@ -5452,8 +5484,7 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
                    f'<a href="/tasks/daily-plan/plan/{latest["id"]}">{_esc(latest["label"])}</a></p>'
                    if latest else "")
     hour_labels = "".join(
-        f'<span style="position:absolute;left:{(h - _DAILY_PLAN_START_H) * 4 * _DAILY_PLAN_SLOT_PX}px;'
-        f'top:0;font-size:10px;color:#94a3b8">{h}:00</span>'
+        f'<span style="top:{(h - _DAILY_PLAN_START_H) * 4 * _DAILY_PLAN_SLOT_PX}px">{h}:00</span>'
         for h in range(_DAILY_PLAN_START_H, _DAILY_PLAN_END_H + 1))
 
     return f"""
@@ -5482,16 +5513,21 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
 
       <div id="dpStep4" style="display:none">
         <h3 style="font-size:14px;margin:10px 0 4px">② カレンダーへドラッグ&ドロップで配置</h3>
-        <p class="muted" style="font-size:12px">下のチップをカレンダーへドラッグ。配置後は右端をドラッグで長さ変更、
+        <p class="muted" style="font-size:12px">下のチップをカレンダーへドラッグ。配置後は下端をドラッグで長さ変更、
           再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <div id="dpTrayLight" class="dp-col" style="flex:1;min-height:40px"></div>
           <div id="dpTrayHeavy" class="dp-col" style="flex:1;min-height:40px"></div>
         </div>
         <div class="dp-wrap">
-          <div class="dp-hourbar">{hour_labels}</div>
-          <div class="dp-dayrow"><div class="dp-daylabel">{_esc(day_labels[0])}</div><div id="dpDay0" class="dp-day"></div></div>
-          <div class="dp-dayrow"><div class="dp-daylabel">{_esc(day_labels[1])}</div><div id="dpDay1" class="dp-day"></div></div>
+          <div class="dp-cal">
+            <div></div>
+            <div class="dp-daylabel-h">{_esc(day_labels[0])}</div>
+            <div class="dp-daylabel-h">{_esc(day_labels[1])}</div>
+            <div class="dp-gutter">{hour_labels}</div>
+            <div id="dpDay0" class="dp-day"></div>
+            <div id="dpDay1" class="dp-day"></div>
+          </div>
         </div>
         <button class="btn" type="button" onclick="dpConfirm()" style="margin-top:10px">✅ 確定して保存</button>
       </div>
@@ -5506,7 +5542,6 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
 _DAILY_PLAN_JS = f"""<script>
 (function(){{
   var SLOT_PX = {_DAILY_PLAN_SLOT_PX}, SLOT_MIN = {_DAILY_PLAN_SLOT_MIN}, SLOTS = {_DAILY_PLAN_SLOTS};
-  var LANE_PX = 28;
   var DEFAULT_DUR = {{'軽い':30,'重い':90}};
   var PLACED = {{}};
   var NEXT_UID = 1;
@@ -5562,11 +5597,22 @@ _DAILY_PLAN_JS = f"""<script>
     return lane;
   }}
 
-  function growRow(dayOffset){{
-    var row = document.getElementById('dpDay' + dayOffset);
+  // 時間軸は縦方向（ユーザー要望2026-08-27）。重なりは日列内で横にレーン分割し、
+  // レーン幅は列の実際のclientWidthから毎回再計算する（画面幅いっぱいに使うため固定px不可）。
+  function relayoutDay(dayOffset){{
+    var col = document.getElementById('dpDay' + dayOffset);
+    var uids = Object.keys(PLACED).filter(function(uid){{ return PLACED[uid].dayOffset === dayOffset; }});
     var maxLane = 0;
-    Object.keys(PLACED).forEach(function(uid){{ var p = PLACED[uid]; if (p.dayOffset === dayOffset) maxLane = Math.max(maxLane, p.lane); }});
-    row.style.height = ((maxLane + 1) * LANE_PX + 8) + 'px';
+    uids.forEach(function(uid){{ maxLane = Math.max(maxLane, PLACED[uid].lane); }});
+    var lanes = maxLane + 1;
+    var laneW = col.clientWidth / lanes;
+    uids.forEach(function(uid){{
+      var el = document.querySelector('.dp-block[data-uid="' + uid + '"]');
+      if (!el) return;
+      var p = PLACED[uid];
+      el.style.left = (p.lane * laneW + 1) + 'px';
+      el.style.width = Math.max(20, laneW - 3) + 'px';
+    }});
   }}
 
   function renderBlock(uid){{
@@ -5575,12 +5621,11 @@ _DAILY_PLAN_JS = f"""<script>
     var el = document.createElement('div');
     el.className = 'dp-block ' + (p.bucket === '軽い' ? 'dp-light' : 'dp-heavy');
     el.dataset.uid = uid; el.draggable = true;
-    el.style.left = (p.startMin / SLOT_MIN * SLOT_PX) + 'px';
-    el.style.width = (p.durationMin / SLOT_MIN * SLOT_PX) + 'px';
-    el.style.top = (p.lane * LANE_PX) + 'px';
+    el.style.top = (p.startMin / SLOT_MIN * SLOT_PX) + 'px';
+    el.style.height = (p.durationMin / SLOT_MIN * SLOT_PX - 2) + 'px';
     el.innerHTML = '<span class="dp-block-t">' + esc(p.title) + '</span>'
-      + '<span class="dp-grip" title="ドラッグで長さ変更"></span>'
-      + '<span class="dp-x" title="削除">×</span>';
+      + '<span class="dp-x" title="削除">×</span>'
+      + '<span class="dp-grip" title="ドラッグで長さ変更"></span>';
     el.ondragstart = function(e){{
       DRAGGING_BLOCK_UID = uid;
       e.dataTransfer.setData('text/plain', JSON.stringify({{type:'block', uid:uid}}));
@@ -5588,7 +5633,7 @@ _DAILY_PLAN_JS = f"""<script>
     el.querySelector('.dp-x').onclick = function(){{ removePlacement(uid); }};
     wireResize(el, uid);
     row.appendChild(el);
-    growRow(p.dayOffset);
+    relayoutDay(p.dayOffset);
   }}
 
   function addPlacement(taskId, title, bucket, dayOffset, startMin){{
@@ -5606,10 +5651,9 @@ _DAILY_PLAN_JS = f"""<script>
     p.dayOffset = dayOffset; p.startMin = startMin;
     p.lane = findFreeLane(dayOffset, startMin, p.durationMin, uid);
     var el = document.querySelector('.dp-block[data-uid="' + uid + '"]');
-    el.style.left = (startMin / SLOT_MIN * SLOT_PX) + 'px';
-    el.style.top = (p.lane * LANE_PX) + 'px';
+    el.style.top = (startMin / SLOT_MIN * SLOT_PX) + 'px';
     document.getElementById('dpDay' + dayOffset).appendChild(el);
-    growRow(oldDay); growRow(dayOffset);
+    relayoutDay(oldDay); relayoutDay(dayOffset);
   }}
 
   function removePlacement(uid){{
@@ -5617,6 +5661,7 @@ _DAILY_PLAN_JS = f"""<script>
     delete PLACED[uid];
     var el = document.querySelector('.dp-block[data-uid="' + uid + '"]');
     if (el) el.remove();
+    relayoutDay(p.dayOffset);
     var tray = document.getElementById(p.bucket === '軽い' ? 'dpTrayLight' : 'dpTrayHeavy');
     tray.appendChild(dpMakeChip({{id:p.taskId, title:p.title}}, p.bucket));
   }}
@@ -5626,12 +5671,12 @@ _DAILY_PLAN_JS = f"""<script>
     grip.onmousedown = function(e){{
       e.preventDefault(); e.stopPropagation();
       el.draggable = false;
-      var startX = e.clientX, startDur = PLACED[uid].durationMin;
+      var startY = e.clientY, startDur = PLACED[uid].durationMin;
       function onMove(ev){{
-        var deltaSlots = Math.round((ev.clientX - startX) / SLOT_PX);
+        var deltaSlots = Math.round((ev.clientY - startY) / SLOT_PX);
         var newDur = Math.max(SLOT_MIN, startDur + deltaSlots * SLOT_MIN);
         PLACED[uid].durationMin = newDur;
-        el.style.width = (newDur / SLOT_MIN * SLOT_PX) + 'px';
+        el.style.height = (newDur / SLOT_MIN * SLOT_PX - 2) + 'px';
       }}
       function onUp(){{
         el.draggable = true;
@@ -5650,8 +5695,8 @@ _DAILY_PLAN_JS = f"""<script>
       e.preventDefault();
       var data; try {{ data = JSON.parse(e.dataTransfer.getData('text/plain')||'{{}}'); }} catch(_e){{ return; }}
       var rect = row.getBoundingClientRect();
-      var x = e.clientX - rect.left;
-      var slot = Math.max(0, Math.min(SLOTS - 1, Math.round(x / SLOT_PX)));
+      var y = e.clientY - rect.top;
+      var slot = Math.max(0, Math.min(SLOTS - 1, Math.round(y / SLOT_PX)));
       var startMin = slot * SLOT_MIN;
       if (data.type === 'chip' && DRAGGING_CHIP) {{
         addPlacement(data.taskId, data.title, data.bucket, dayOffset, startMin);
@@ -5703,25 +5748,26 @@ def daily_task_plan_view_page(con, plan_id: int) -> str:
     days = [base, base + timedelta(days=1)]
     day_labels = [f'{d.month}/{d.day}({_JP_WEEKDAYS[d.weekday()]})' for d in days]
     hour_labels = "".join(
-        f'<span style="position:absolute;left:{(h - _DAILY_PLAN_START_H) * 4 * _DAILY_PLAN_SLOT_PX}px;'
-        f'top:0;font-size:10px;color:#94a3b8">{h}:00</span>'
+        f'<span style="top:{(h - _DAILY_PLAN_START_H) * 4 * _DAILY_PLAN_SLOT_PX}px">{h}:00</span>'
         for h in range(_DAILY_PLAN_START_H, _DAILY_PLAN_END_H + 1))
 
     def day_html(day_offset):
+        day_items = [it for it in items if it["day_offset"] == day_offset]
+        lanes = max((it["lane"] for it in day_items), default=0) + 1
         blocks = ""
-        for it in items:
-            if it["day_offset"] != day_offset:
-                continue
-            left = it["start_min"] / _DAILY_PLAN_SLOT_MIN * _DAILY_PLAN_SLOT_PX
-            width = it["duration_min"] / _DAILY_PLAN_SLOT_MIN * _DAILY_PLAN_SLOT_PX
-            top = it["lane"] * 28
+        for it in day_items:
+            top = it["start_min"] / _DAILY_PLAN_SLOT_MIN * _DAILY_PLAN_SLOT_PX
+            height = it["duration_min"] / _DAILY_PLAN_SLOT_MIN * _DAILY_PLAN_SLOT_PX - 2
+            left_pct = it["lane"] / lanes * 100
+            width_pct = 100 / lanes
             cls = "dp-light" if it["bucket"] == "軽い" else "dp-heavy"
             title = it.get("task_title") or "(削除済みタスク)"
             link = f'/tasks#tc-{it["task_id"]}'
-            blocks += (f'<a class="dp-block {cls}" style="left:{left}px;width:{width}px;top:{top}px;'
+            blocks += (f'<a class="dp-block {cls}" style="top:{top}px;height:{height}px;'
+                       f'left:calc({left_pct}% + 1px);width:calc({width_pct}% - 3px);'
                        f'text-decoration:none" href="{link}" title="{_esc(title)}">'
                        f'<span class="dp-block-t">{_esc(title)}</span></a>')
-        return f'<div class="dp-day">{blocks}</div>'
+        return f'<div id="dpDay{day_offset}" class="dp-day">{blocks}</div>'
 
     return f"""
     <div class="card">
@@ -5731,9 +5777,14 @@ def daily_task_plan_view_page(con, plan_id: int) -> str:
       <p class="muted" style="font-size:12px">確定済みプラン（読み取り専用）。
         <a href="/tasks/daily-plan?assignee={_esc(plan['owner'])}">再計画する</a></p>
       <div class="dp-wrap">
-        <div class="dp-hourbar">{hour_labels}</div>
-        <div class="dp-dayrow"><div class="dp-daylabel">{_esc(day_labels[0])}</div>{day_html(0)}</div>
-        <div class="dp-dayrow"><div class="dp-daylabel">{_esc(day_labels[1])}</div>{day_html(1)}</div>
+        <div class="dp-cal">
+          <div></div>
+          <div class="dp-daylabel-h">{_esc(day_labels[0])}</div>
+          <div class="dp-daylabel-h">{_esc(day_labels[1])}</div>
+          <div class="dp-gutter">{hour_labels}</div>
+          {day_html(0)}
+          {day_html(1)}
+        </div>
       </div>
     </div>{_DAILY_PLAN_CSS}"""
 

@@ -158,10 +158,19 @@ def test_tasks_page_completed_cards_have_no_pick_checkbox(con):
     assert "tc-pick-cb" not in card_html
 
 
-def test_tasks_page_pick_query_param_auto_enables_picking_mode(con):
+def test_tasks_page_pick_without_assignee_shows_gate_not_checkboxes(con):
+    """ユーザー要望2026-08-27: 今日明日クリック→まず担当を選ぶ(フィルタされる)→
+    その後にチェックボックス、の順に変更。担当未確定の間はpicking classを付けない。"""
     html = webapp.tasks_page(con, pick=True)
+    assert 'id="taskBoard" class="picking"' not in html
+    assert "まず担当を選んでください" in html
+
+
+def test_tasks_page_pick_with_assignee_enables_picking_mode(con):
+    html = webapp.tasks_page(con, pick=True, assignee="早瀬")
     assert 'id="taskBoard" class="picking"' in html
     assert 'id="dpPickBar" style="display:flex"' in html
+    assert "担当: 早瀬" in html
 
 
 def test_tasks_page_without_pick_param_starts_hidden(con):
@@ -185,6 +194,36 @@ def test_daily_task_plan_view_page_renders_blocks_with_kanban_link(con):
 def test_daily_task_plan_view_page_missing_plan(con):
     html = webapp.daily_task_plan_view_page(con, 999999)
     assert "見つかりません" in html
+
+
+def test_daily_task_plan_view_page_uses_vertical_time_layout(con):
+    """ユーザー要望2026-08-27: カレンダーは縦方向に時間が進む形（日付は横2列）。"""
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬")
+    plan_id = sfa_db.create_daily_task_plan(
+        con, owner="早瀬", base_date="2026-08-27", label="L",
+        items=[{"task_id": tid, "day_offset": 0, "start_min": 60, "duration_min": 90,
+                "lane": 0, "bucket": "重い"}])
+    html = webapp.daily_task_plan_view_page(con, plan_id)
+    assert "dp-cal" in html
+    assert "dp-gutter" in html
+    assert "dp-daylabel-h" in html
+    # top/heightで縦位置・所要時間を表す（横位置のleft/widthはレーン用途のみ）
+    assert "top:64.0px" in html or "top:64px" in html
+    assert "height:" in html
+
+
+def test_daily_task_plan_view_page_splits_overlapping_tasks_into_lanes(con):
+    tid1 = sfa_db.upsert_task(con, title="タスクA", assignee="早瀬")
+    tid2 = sfa_db.upsert_task(con, title="タスクB", assignee="早瀬")
+    plan_id = sfa_db.create_daily_task_plan(
+        con, owner="早瀬", base_date="2026-08-27", label="L",
+        items=[
+            {"task_id": tid1, "day_offset": 0, "start_min": 0, "duration_min": 60, "lane": 0, "bucket": "重い"},
+            {"task_id": tid2, "day_offset": 0, "start_min": 0, "duration_min": 60, "lane": 1, "bucket": "軽い"},
+        ])
+    html = webapp.daily_task_plan_view_page(con, plan_id)
+    assert "left:calc(0.0% + 1px)" in html or "left:calc(0% + 1px)" in html
+    assert "left:calc(50.0% + 1px)" in html
 
 
 # ── サーバ経由の保存ルート ─────────────────────────────────────────────────
