@@ -833,6 +833,46 @@ def test_delivery_duplicate_route_creates_new_delivery_and_redirects(server, db_
     con2.close()
 
 
+def test_issue_page_shows_rich_note_links_strip(server, db_path):
+    """論点編集ページに、論点メモへ貼ったリンクがボタンとして表示されること(#112 2026-08-27)。"""
+    con = sfa_db.connect(db_path)
+    iid = sfa_db.upsert_deal_issue(con, deal_id=None, issue="請求フロー", status="議論中")
+    sfa_db.create_rich_note(con, kind="issue", entity_id=iid, title="",
+                             body='<a href="https://slack.com/x" class="rn-linkchip" '
+                                  'title="https://slack.com/x">🔗 請求方法の議論</a>')
+    con.close()
+
+    code, resp = _get(server + f"/deal-issue/{iid}", headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert "https://slack.com/x" in body
+    assert "請求方法の議論" in body
+
+
+def test_issue_page_hides_rich_note_links_when_locked(server, db_path):
+    """論点メモがロック中のときは、リンク一覧も本文プレビュー同様に一切出さない(#112)。"""
+    con = sfa_db.connect(db_path)
+    iid = sfa_db.upsert_deal_issue(con, deal_id=None, issue="請求フロー", status="議論中")
+    sfa_db.create_rich_note(con, kind="issue", entity_id=iid, title="",
+                             body='<a href="https://slack.com/x" class="rn-linkchip">🔗 請求方法の議論</a>')
+    sfa_db.set_issue_note_lock(con, iid, "pw1234", "owner@example.com")
+    con.close()
+
+    code, resp = _get(server + f"/deal-issue/{iid}", headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert "https://slack.com/x" not in body
+
+
+def test_viewport_meta_allows_pinch_zoom(server):
+    """スマホでピンチイン/アウトできるよう、maximum-scale/user-scalableを明示する(#113 2026-08-27)。"""
+    code, resp = _get(server + "/deals", headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert 'maximum-scale=5' in body
+    assert 'user-scalable=yes' in body
+
+
 def test_slack_desk_events_not_configured(server):
     """事務Bot未設定(環境変数なし)なら /slack/desk-events は503（500/例外にならない）。"""
     code, _ = _post(server + "/slack/desk-events", {"dummy": "1"}, headers=_auth_header())

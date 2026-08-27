@@ -132,3 +132,21 @@ def test_deleted_tasks_view_and_restore_link(con):
     sfa_db.restore_task(con, tid)
     restored_html = webapp.tasks_page(con)
     assert "消したタスク" in restored_html
+
+
+def test_tasks_page_self_heals_stuck_inbox_tasks_with_assignee_and_due_date(con):
+    """#111: 何らかの理由で担当＋期限が既に揃ったまま受信箱に固着した既存行があっても、
+    看板を開くたびに自己修復で未着手へ整理する（書き込み経路ごとの個別対策とは別の保険。
+    ユーザー報告2026-08-27: 担当・期限が入っているのに受信箱から動かないカードがあった）。"""
+    tid = sfa_db.upsert_task(con, title="test", assignee="早瀬", due_date="2026-08-28", status="受信箱")
+    webapp.tasks_page(con)
+    assert sfa_db.get_task(con, tid)["status"] == "未着手"
+
+
+def test_tasks_page_leaves_inbox_tasks_missing_assignee_or_due_date(con):
+    """担当・期限のどちらかが未設定なら、自己修復スイープでも受信箱のまま維持する。"""
+    only_assignee = sfa_db.upsert_task(con, title="担当のみ", assignee="早瀬", status="受信箱")
+    only_due = sfa_db.upsert_task(con, title="期限のみ", due_date="2026-08-28", status="受信箱")
+    webapp.tasks_page(con)
+    assert sfa_db.get_task(con, only_assignee)["status"] == "受信箱"
+    assert sfa_db.get_task(con, only_due)["status"] == "受信箱"

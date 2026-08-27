@@ -657,8 +657,9 @@ def test_delivery_form_renders_business_type_override_selects(con, acc_id):
     html = webapp.delivery_form(con, dvid)
     assert 'name="business_type_l1_override"' in html
     assert 'name="business_type_l2_override"' in html
-    assert "自動（商談を継承: コスト削減）" in html
-    assert "自動（商談を継承: コスト診断(無償)）" in html
+    # 2026-08-27: 「自動（現在: X）」→「X（自動: 商談を継承）」に表記順を変更（値が先頭に出る）
+    assert "コスト削減（自動: 商談を継承）" in html
+    assert "コスト診断(無償)（自動: 商談を継承）" in html
 
 
 def test_build_deliveries_xlsx_includes_business_type_columns(con, acc_id):
@@ -736,3 +737,20 @@ def test_duplicate_delivery_copies_plan_fields_but_not_execution_data(con, acc_i
 
 def test_duplicate_delivery_missing_source_returns_none(con):
     assert sfa_db.duplicate_delivery(con, 999999) is None
+
+
+def test_delivery_confidence_and_business_type_auto_option_label_shows_value_first(con, acc_id):
+    """自動判定の選択肢は「自動（現在: X）」ではなく「X（自動判定）」の順で表示する
+    （ユーザー要望2026-08-27: カッコの内外が逆で分かりにくいとの指摘）。"""
+    did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="案件X", stage="受注", status="open")
+    con.commit()
+    dv = sfa_db.get_delivery(con, sfa_db.create_delivery(con, deal_id=did, title="納品X"))
+
+    html = webapp.delivery_form(con, dv["id"])
+    assert "自動（現在" not in html
+    assert "確定（自動判定）" in html  # stage=受注→自動判定は「確定」が先頭に出る
+
+    l1_opts = webapp._delivery_biz_l1_opts(con, dv)
+    l2_opts = webapp._delivery_biz_l2_opts(con, dv)
+    assert "自動（商談を継承" not in l1_opts and "自動（商談を継承" not in l2_opts
+    assert "（自動: 商談を継承）" in l1_opts and "（自動: 商談を継承）" in l2_opts

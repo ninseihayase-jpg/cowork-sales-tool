@@ -87,7 +87,7 @@ def login_page(next_url: str = "/", error: str = "") -> bytes:
     err_html = (f'<p style="color:#b91c1c;font-size:13px;margin:0 0 10px">{html.escape(error)}</p>'
                 if error else "")
     body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">
 <title>ログイン ・ Inproc Salesforce</title>
 <style>
  body{{font-family:system-ui,'Hiragino Kaku Gothic ProN',sans-serif;background:#f4f6f9;margin:0;
@@ -355,7 +355,7 @@ def _ai_prompt_block(prompt_text: str, download_url: str) -> str:
 
 
 PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">
 <title>Inproc Salesforce</title>
 <style>
  body{{font-family:system-ui,'Segoe UI','Hiragino Kaku Gothic ProN',sans-serif;margin:0;background:#f4f6f9;color:#1d2430}}
@@ -922,7 +922,7 @@ def _cover_bg(data_uri: str) -> str:
 def _reports_doc(inner: str, *, page_title: str) -> str:
     """読み物サイト共通のガワ（standalone HTML）。一覧・記事の両方をこれで包む。"""
     return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">
 <title>{_esc(page_title)}</title>
 <style>{_REPORTS_CSS}</style>
 </head><body>
@@ -1084,7 +1084,7 @@ def report_article_html(rep: dict, rail_html: str = "") -> str:
     title = _esc(rep.get("title") or rep.get("slug"))
     return (
         '<!doctype html><html lang="ja"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">'
         f'<title>{title}｜InProc 営業レポート</title>'
         f'<style>{_REPORT_ARTICLE_CSS}</style></head><body>'
         '<div class="wrap">'
@@ -1315,7 +1315,7 @@ def _delivery_biz_l1_opts(con, dv: dict) -> str:
     未選択＝商談のL1を継承（ユーザー要望2026-08-23）。"""
     _inherited = dv.get("deal_business_type_l1") or "未設定"
     _cur = dv.get("business_type_l1_override") or ""
-    opts = [f'<option value=""{" selected" if not _cur else ""}>自動（商談を継承: {_esc(_inherited)}）</option>']
+    opts = [f'<option value=""{" selected" if not _cur else ""}>{_esc(_inherited)}（自動: 商談を継承）</option>']
     for v in sfa_db.get_master_list(con, "business_type_l1"):
         opts.append(f'<option value="{_esc(v)}"{" selected" if v == _cur else ""}>{_esc(v)}</option>')
     return "".join(opts)
@@ -1326,7 +1326,7 @@ def _delivery_biz_l2_opts(con, dv: dict) -> str:
     _eff_l1, _ = sfa_db.delivery_business_type_effective(dv)
     _inherited = dv.get("deal_business_type_l2") or "未設定"
     _cur = dv.get("business_type_l2_override") or ""
-    opts = [f'<option value=""{" selected" if not _cur else ""}>自動（商談を継承: {_esc(_inherited)}）</option>']
+    opts = [f'<option value=""{" selected" if not _cur else ""}>{_esc(_inherited)}（自動: 商談を継承）</option>']
     for v in sfa_db.business_type_l2_of(con, _eff_l1):
         opts.append(f'<option value="{_esc(v)}"{" selected" if v == _cur else ""}>{_esc(v)}</option>')
     return "".join(opts)
@@ -1914,7 +1914,7 @@ def delivery_form(con, delivery_id: int) -> str:
     # 確度の手修正（自動＝商談ステージ連動に対する上書き。空選択=自動に戻す）。
     _auto_conf = sfa_db.delivery_confidence_auto(dv.get("deal_stage") or "", dv.get("deal_status") or "open")
     _conf_override = dv.get("confidence_override") or ""
-    conf_opts = f'<option value=""{" selected" if not _conf_override else ""}>自動（現在: {_esc(_auto_conf)}）</option>' + "".join(
+    conf_opts = f'<option value=""{" selected" if not _conf_override else ""}>{_esc(_auto_conf)}（自動判定）</option>' + "".join(
         f'<option value="{_esc(c)}"{" selected" if _conf_override == c else ""}>{_esc(c)}</option>'
         for c in sfa_db.DELIVERY_CONFIDENCE_LEVELS)
     # 総アサイン工数(%/月)。実想定=稼働負荷表示用。請求ベース(請求未入力行は実想定)=平均単価の分母。
@@ -4420,6 +4420,22 @@ def _task_auto_triage(con, tid: int) -> str | None:
     return t.get("status")
 
 
+def _task_auto_triage_sweep(con, tasks: list[dict]) -> bool:
+    """看板を開くたびに、受信箱のまま止まっている既存タスクのうち担当＋期限が既に揃っている
+    ものを一括で未着手へ整理する（自己修復）。_task_auto_triageは書き込み経路のたびに
+    個別実行されるが、それ以前に何らかの理由で取りこぼされ受信箱に固着した行があっても、
+    看板を開けば自動で直る保険（ユーザー報告2026-08-27: 担当・期限が入っているのに
+    受信箱から動かないカードがあった）。渡したtasks（list_tasksの結果）もその場で更新する。"""
+    changed = False
+    for t in tasks:
+        if (t.get("status") == "受信箱" and (t.get("assignee") or "").strip()
+                and (t.get("due_date") or "").strip()):
+            sfa_db.set_task_status(con, t["id"], "未着手")
+            t["status"] = "未着手"
+            changed = True
+    return changed
+
+
 def _task_auto_start(con, tid: int) -> str | None:
     """進捗を追記＝着手の合図。受信箱/未着手/保留なら自動で「対応中」へ。現在のstatusを返す。"""
     t = sfa_db.get_task(con, tid)
@@ -4760,6 +4776,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     # 事務タスク(is_admin=1)は専用ビュー(/desk-tasks)に分離。通常ボードには出さない。
     # 集計ボックス（上部）は全フィルタ非適用の全通常タスク・未完了ベース（desk-tasksと同仕様）。
     all_tasks = sfa_db.list_tasks(con, admin=False)
+    _task_auto_triage_sweep(con, all_tasks)  # 受信箱に固着した既存行があれば自己修復
     open_tasks = [t for t in all_tasks if (t.get("status") or "") != "完了"]
     # 上部集計ボックスの件数は_task_urgency_countsに集約（/task/{id}/fieldのAJAXレスポンスとも
     # 共有し、完了等のステータス変更後にリロード無しで反映できるようにするため）。
@@ -8568,6 +8585,69 @@ def _rich_note_btn(kind: str, entity_id: int, has_note: bool) -> str:
             f'title="{_esc(ttl)}" onclick="rnOpen(&#39;{kind}&#39;,{entity_id})">📝</button>')
 
 
+class _RichNoteLinkExtractor(html.parser.HTMLParser):
+    """リッチメモ本文からリンクチップ(class=rn-linkchip)のhref/表示名を抽出する。
+    個別ページ（商談・論点等）にリンク一覧ボタンを出すため（ユーザー要望2026-08-27）。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self._cur_href: str | None = None
+        self._buf: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "a":
+            return
+        d = dict(attrs)
+        if "rn-linkchip" not in (d.get("class") or "").split():
+            return
+        href = d.get("href") or ""
+        if not href:
+            return
+        self._cur_href = href
+        self._buf = []
+
+    def handle_data(self, data):
+        if self._cur_href is not None:
+            self._buf.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._cur_href is not None:
+            text = re.sub(r"^\U0001F517\s*", "", "".join(self._buf).strip())
+            self.links.append((self._cur_href, text or self._cur_href))
+            self._cur_href = None
+            self._buf = []
+
+
+def _extract_rich_note_links(body: str) -> list[tuple[str, str]]:
+    """ノート本文HTMLから (URL, 表示名) のリストを抽出。壊れたHTMLでも例外を出さない。"""
+    p = _RichNoteLinkExtractor()
+    try:
+        p.feed(body or "")
+        p.close()
+    except Exception:
+        pass
+    return p.links
+
+
+def _rich_note_links_html(con, kind: str, entity_id: int) -> str:
+    """kind+entity_idに紐づく全ノートから貼られたリンクを集約し、個別ページ本体に出す
+    ボタン行を返す（1件も無ければ空文字）。エディタ内(#rnEdit)のクリックはポップアップに
+    横取りされるが、ここは通常ページの表示なのでクリックでそのまま新規タブへ遷移させる。"""
+    seen: dict[str, str] = {}
+    for n in sfa_db.list_rich_notes(con, kind, entity_id):
+        for href, label in _extract_rich_note_links(n.get("body") or ""):
+            seen.setdefault(href, label)
+    if not seen:
+        return ""
+    chips = "".join(
+        f'<a href="{_esc(href)}" target="_blank" rel="noopener" class="rn-linkchip" '
+        f'title="{_esc(href)}">🔗 {_esc(label)}</a>'
+        for href, label in seen.items()
+    )
+    return f'<div class="rn-links-strip"><span class="rn-links-lbl">🔗 リンク</span>{chips}</div>'
+
+
 # 全ページ共通のOneNote風ノート フローティングエディタ（#70）。render()で全ページに1回だけ差し込む。
 # rnOpen(id)でGET /deal/{id}/rich-note を読み、編集内容は /deal/{id}/field(field=rich_note) へ自動保存。
 _RICH_NOTE_ASSETS = """
@@ -8622,13 +8702,26 @@ _RICH_NOTE_ASSETS = """
 .rn-edit ul,.rn-edit ol{margin:1px 0;padding-left:24px}
 .rn-edit li{margin:1px 0}
 .rn-edit a{color:#2563eb}
-/* リンクを大きめのボタン(チップ)として表示（ユーザー要望2026-08-27）。ホバーでtitle属性の
-   URLがブラウザ標準ツールチップとして出る。ツールバー「🔗」挿入・URLのみの貼付、両方で使う。 */
-.rn-edit a.rn-linkchip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;
+/* リンクは大きめのボタン(チップ)として表示（ユーザー要望2026-08-27）。エディタ内チップと、
+   個別ページ本体のリンク一覧ボタン(.rn-links-strip)とで見た目を共有するため.rn-editにスコープ
+   しない。編集中(#rnEdit)のクリックは直接遷移させず、名前/URLを見せるポップアップを出す
+   （rnLinkPopOpen）。ページ本体側は通常のリンクとしてそのまま新規タブへ遷移する。 */
+.rn-linkchip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;
   margin:1px 2px;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;border-radius:16px;
   font-size:12px;font-weight:600;text-decoration:none;vertical-align:middle;max-width:280px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rn-edit a.rn-linkchip:hover{background:#e0e7ff}
+.rn-linkchip:hover{background:#e0e7ff}
+.rn-links-strip{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.rn-links-lbl{font-size:12px;font-weight:600;color:#64748b;margin-right:2px}
+/* リンクチップのクリック時ポップアップ（名前を編集・URLを確認してから開く） */
+.rn-link-pop{display:none;position:fixed;z-index:2147483001;background:#fff;border:1px solid #c7d2fe;
+  border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.25);padding:10px 12px;width:260px}
+.rn-link-pop.open{display:block}
+.rn-link-pop-lbl{font-size:11px;color:#64748b;margin:0 0 2px}
+.rn-link-pop input{width:100%;font-size:13px;padding:4px 6px;margin-bottom:8px;box-sizing:border-box}
+.rn-link-pop a{display:block;font-size:12px;color:#2563eb;word-break:break-all;margin-bottom:8px;text-decoration:none}
+.rn-link-pop a:hover{text-decoration:underline}
+.rn-link-pop-btns{display:flex;gap:6px;justify-content:flex-end}
 /* チェックリスト（行ごと li.cl。旧データ互換で ul.cl>li も同じ見た目に）。
    ☐は通常のブレット(•)/番号(1.)と同じ左ガター(-16px)に置いて横位置を揃える。 */
 .rn-edit li.cl,.rn-edit ul.cl>li{list-style:none;position:relative}
@@ -8683,6 +8776,17 @@ _RICH_NOTE_ASSETS = """
     </div>
   </div>
 </div>
+<div id="rnLinkPop" class="rn-link-pop">
+  <div class="rn-link-pop-lbl">名前</div>
+  <input id="rnLinkPopName" type="text" placeholder="リンク名"
+    onkeydown="if(event.key==='Enter'){event.preventDefault();rnLinkPopSave();}">
+  <div class="rn-link-pop-lbl">URL（クリックで開く）</div>
+  <a id="rnLinkPopUrl" href="#" target="_blank" rel="noopener"></a>
+  <div class="rn-link-pop-btns">
+    <button type="button" class="btn sec" style="font-size:11px;padding:3px 8px" onclick="rnLinkPopClose()">閉じる</button>
+    <button type="button" class="btn" style="font-size:11px;padding:3px 8px" onclick="rnLinkPopSave()">名前を保存</button>
+  </div>
+</div>
 <script>
 var _rnT=null,_rnDirty=false,_rnKind=null,_rnId=null,_rnNotes=[],_rnCur=0,_rnPw='';
 function _rnEl(){return document.getElementById('rnEdit');}
@@ -8727,7 +8831,7 @@ function rnRenderRail(){ var rail=document.getElementById('rnRail'); if(!rail)re
   rail.innerHTML=h; }
 function rnStash(){ if(_rnCur<0||_rnCur>=_rnNotes.length)return;
   _rnNotes[_rnCur].title=_rnTitleEl().value; _rnNotes[_rnCur].body=_rnEl().innerHTML; }
-function rnLoadCur(){ if(typeof rnDeselectImg==='function')rnDeselectImg(); var n=_rnNotes[_rnCur]||{title:'',body:''};
+function rnLoadCur(){ if(typeof rnDeselectImg==='function')rnDeselectImg(); rnLinkPopClose(); var n=_rnNotes[_rnCur]||{title:'',body:''};
   _rnTitleEl().value=n.title||''; _rnEl().innerHTML=n.body||'';
   var sl=document.getElementById('rnSrcLink');
   if(sl){ if(n.intake_transcript_id){ sl.href='/intake-transcript/'+n.intake_transcript_id+'/view'; sl.style.display='inline'; }
@@ -8747,7 +8851,7 @@ function rnSyncTriggers(){ var has=false;
   for(var i=0;i<_rnNotes.length;i++){ var n=_rnNotes[i];
     if((n.title||'').trim()||((n.body||'').replace(/<[^>]+>/g,'').replace(/&nbsp;/g,'').trim())){has=true;break;} }
   document.querySelectorAll('.rn-trg[data-kind="'+_rnKind+'"][data-id="'+_rnId+'"]').forEach(function(b){ b.classList.toggle('on',has); }); }
-function rnClose(){ var wasDirty=_rnDirty; if(_rnDirty)rnSave(); document.getElementById('rnModal').classList.remove('open');
+function rnClose(){ rnLinkPopClose(); var wasDirty=_rnDirty; if(_rnDirty)rnSave(); document.getElementById('rnModal').classList.remove('open');
   document.getElementById('rnBackdrop').style.display='none';
   // 論点詳細ページ等では、閉じた後にノートカードを最新化するためリロード（保存fetchの完了を少し待つ）。
   if(window._rnReloadOnClose){ setTimeout(function(){ location.reload(); }, wasDirty?450:60); } }
@@ -8778,6 +8882,41 @@ function rnLink(ev){ ev.preventDefault(); var url=prompt('リンクURL'); if(!ur
   _rnEl().focus();
   var sel=window.getSelection(); var label=(sel&&sel.toString().trim())||'';
   document.execCommand('insertHTML',false,rnLinkChipHtml(url,label)); rnDirty(); return false; }
+// リンクチップは編集中クリックで即遷移させず、名前/URLを見せるポップアップを出す
+// （ユーザー要望2026-08-27: クリックしていきなり飛ぶのではなく確認してから開く／後から改名できる）。
+var _rnLinkPopEl=null;
+function rnLinkPopOpen(a){
+  _rnLinkPopEl=a;
+  var pop=document.getElementById('rnLinkPop'); if(!pop)return;
+  var url=a.getAttribute('href')||'';
+  var name=(a.textContent||'').replace(/^\s*🔗\s*/,'').trim();
+  document.getElementById('rnLinkPopName').value=name;
+  var urlEl=document.getElementById('rnLinkPopUrl'); urlEl.href=url; urlEl.textContent=url;
+  var r=a.getBoundingClientRect();
+  pop.style.left=Math.max(8,Math.min(window.innerWidth-268,r.left))+'px';
+  pop.style.top=Math.min(window.innerHeight-180,(r.bottom+6))+'px';
+  pop.classList.add('open');
+  document.getElementById('rnLinkPopName').focus();
+  setTimeout(function(){ document.addEventListener('mousedown', _rnLinkPopOutside); },0);
+}
+function _rnLinkPopOutside(ev){
+  var pop=document.getElementById('rnLinkPop');
+  if(pop && !pop.contains(ev.target)) rnLinkPopClose();
+}
+function rnLinkPopClose(){
+  var pop=document.getElementById('rnLinkPop'); if(pop)pop.classList.remove('open');
+  document.removeEventListener('mousedown', _rnLinkPopOutside);
+  _rnLinkPopEl=null;
+}
+function rnLinkPopSave(){
+  if(!_rnLinkPopEl)return;
+  var name=(document.getElementById('rnLinkPopName').value||'').trim();
+  var url=_rnLinkPopEl.getAttribute('href')||'';
+  _rnLinkPopEl.textContent='🔗 '+(name||rnLinkLabel(url));
+  _rnLinkPopEl.setAttribute('title', url);
+  rnDirty();
+  rnLinkPopClose();
+}
 function rnNorm(){ /* 互換用: 現在は独自indent/outdentで構造を保つため何もしない */ }
 function rnCurrentLi(){ var s=window.getSelection(); if(!s.rangeCount)return null;
   var n=s.anchorNode,e=_rnEl(); while(n&&n!==e){ if(n.nodeName==='LI')return n; n=n.parentNode; } return null; }
@@ -8978,11 +9117,13 @@ function rnKey(ev){
     if(ev.shiftKey&&ev.code==='Digit7'){ ev.preventDefault(); document.execCommand('insertOrderedList'); rnDirty(); return; }
     if(ev.shiftKey&&ev.code==='Digit9'){ ev.preventDefault(); rnToggleChecklist(); return; }
     if(ev.shiftKey&&ev.code==='KeyX'){ ev.preventDefault(); document.execCommand('strikeThrough'); rnDirty(); return; }
-    if(!ev.shiftKey&&!ev.altKey&&ev.code==='KeyK'){ ev.preventDefault(); var u=prompt('リンクURL'); if(u){document.execCommand('createLink',false,u);rnDirty();} return; }
+    if(!ev.shiftKey&&!ev.altKey&&ev.code==='KeyK'){ rnLink(ev); return; }
   }
 }
 function rnEditClick(ev){
   var t=ev.target;
+  var chip=t.closest && t.closest('a.rn-linkchip');
+  if(chip){ ev.preventDefault(); rnLinkPopOpen(chip); return; }  // リンクは直接遷移させずポップアップ
   if(t && t.nodeName==='IMG'){ rnSelectImg(t); return; }   // 画像クリック=選択（右下グリップでリサイズ）
   rnDeselectImg();
   var li=t.closest('li');
@@ -9013,7 +9154,10 @@ function rnSave(){ if(!_rnDirty||_rnKind==null)return; _rnDirty=false; clearTime
        if(s)setTimeout(function(){if(!_rnDirty)s.textContent='';},1600); }
      else if(s)s.textContent='保存エラー'; })
    .catch(function(){ if(s)s.textContent='通信エラー'; _rnDirty=true; }); }
-document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ var m=document.getElementById('rnModal');
+document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){
+  var p=document.getElementById('rnLinkPop');
+  if(p&&p.classList.contains('open')){ ev.preventDefault(); rnLinkPopClose(); return; }
+  var m=document.getElementById('rnModal');
   if(m&&m.classList.contains('open')){ ev.preventDefault(); rnClose(); } } });
 window.addEventListener('beforeunload',function(){ if(_rnDirty)rnSave(); });
 // 論点メモのパスワードロック管理（ユーザー要望2026-08-23）。
@@ -9411,6 +9555,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             f'</span>'
         )
     top_action_buttons = ""
+    _rn_links_html = ""
     if deal.get("id"):
         _did = deal["id"]
         # #75: Delivery追加は下部カードと同条件（既存Deliveryあり or 提案以降のステージ）の時だけ
@@ -9433,6 +9578,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             <button class="btn sec" type="submit">📋 この商談を複製</button>
           </form>
         </div>"""
+        _rn_links_html = _rich_note_links_html(con, "deal", _did)
     acc_req = "required" if deal.get("id") else ""
     new_acc_html = ""
     new_acc_js = ""
@@ -9539,6 +9685,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     </h2>
     {_save_bar('dealForm', title=_sb_title, extra=_sb_extra, cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
     {top_action_buttons}
+    {_rn_links_html}
     {lead_picker_html}
     <form id="dealForm" method="post" action="/deal/save">
       <input type="hidden" name="id" value="{_esc(deal.get('id'))}">
@@ -9608,6 +9755,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     </form>
     {revert_btn}{close_btn}{delete_btn}
     <script>
+    window._rnReloadOnClose = true;
     {new_acc_js}
     const L2_MAP = {json.dumps(sfa_db.get_business_type_tree(con), ensure_ascii=False)};
     function updateL2() {{
@@ -10678,6 +10826,8 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
         if _locked else
         f'<button type="button" class="btn sec" style="font-size:12px" onclick="diLockSet({iid})" '
         f'title="論点メモにパスワードロックをかける">🔒 鍵をかける</button>')
+    # ロック中はリンク一覧も内容が読めてしまうため出さない（サマリ・プレビューと同じ扱い）。
+    _rn_links_html = "" if _locked else _rich_note_links_html(con, "issue", iid)
     intake_html = _intake_originals_html(con, "issue", iid, self_url)
     right = f"""
       <div class="card" style="flex:1;min-width:320px">
@@ -10700,6 +10850,7 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
           </span>
         </div>
         <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">{note_cards}</div>
+        {_rn_links_html}
         {intake_html}
       </div>"""
     return f"""
@@ -12041,10 +12192,12 @@ def hearing_template_form(con, tmpl=None) -> str:
     items_data = json.dumps(items, ensure_ascii=False)
     # 既存テンプレのみメモ起票可（新規は保存でidが付くため）
     _note_chip = f'{_rich_note_chip("htmpl", tid)}' if tid else ""
+    _rn_links_html = _rich_note_links_html(con, "htmpl", tid) if tid else ""
     return f"""
     <div class="card" style="max-width:1000px">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>{title}</span>{_note_chip}</h2>
+      {_rn_links_html}
       <form method="post" action="{action}" onsubmit="return serializeItems()">
         <label>テンプレート名</label>
         <input name="name" required value="{_esc(tmpl.get('name') if tmpl else '')}">
@@ -12425,6 +12578,7 @@ def hearing_template_form(con, tmpl=None) -> str:
         else box.insertBefore(_drag, over.nextSibling);
       }});
     }})();
+    window._rnReloadOnClose = true;
     </script>"""
 
 

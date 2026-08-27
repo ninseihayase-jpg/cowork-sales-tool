@@ -65,6 +65,49 @@ def test_rich_note_assets_include_link_chip_js():
     assert "RN_URL_RE" in webapp._RICH_NOTE_ASSETS
 
 
+def test_rich_note_assets_include_link_click_popup_js():
+    """リンクチップは編集中クリックで即遷移させず、名前編集＋URL確認のポップアップを出す
+    （ユーザー要望2026-08-27続き: いきなり飛ばない・後から名前を付けられる）。"""
+    assert 'id="rnLinkPop"' in webapp._RICH_NOTE_ASSETS
+    assert "function rnLinkPopOpen" in webapp._RICH_NOTE_ASSETS
+    assert "function rnLinkPopSave" in webapp._RICH_NOTE_ASSETS
+
+
+def test_extract_rich_note_links_from_body():
+    body = ('<p>text</p>'
+            '<a href="https://ok.com/x" rel="noopener" target="_blank" class="rn-linkchip" '
+            'contenteditable="false" title="https://ok.com/x">🔗 請求方法の議論</a>')
+    assert webapp._extract_rich_note_links(body) == [("https://ok.com/x", "請求方法の議論")]
+
+
+def test_extract_rich_note_links_ignores_non_chip_anchors():
+    assert webapp._extract_rich_note_links('<a href="https://ok.com">plain</a>') == []
+    assert webapp._extract_rich_note_links("") == []
+
+
+def test_rich_note_links_html_aggregates_dedups_and_labels_untitled_by_url():
+    d = tempfile.mkdtemp(prefix="sfa_rnlink_")
+    try:
+        path = str(Path(d) / "rn.db")
+        sfa_db.init_db(path)
+        con = sfa_db.connect(path)
+        acc = sfa_db.upsert_account(con, name="社")
+        did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="提案")
+        sfa_db.create_rich_note(con, kind="deal", entity_id=did, title="A",
+                                 body='<a href="https://a.com" class="rn-linkchip">🔗 A社</a>')
+        sfa_db.create_rich_note(con, kind="deal", entity_id=did, title="B",
+                                 body='<a href="https://a.com" class="rn-linkchip">🔗 dup</a>'
+                                      '<a href="https://b.com" class="rn-linkchip">🔗 B</a>')
+        out = webapp._rich_note_links_html(con, "deal", did)
+        assert out.count('href="https://a.com"') == 1  # 同一URLは先勝ちで重複排除
+        assert "A社" in out
+        assert 'href="https://b.com"' in out and ">🔗 B<" in out
+        assert webapp._rich_note_links_html(con, "deal", 999999) == ""  # 紐づくノートが無ければ空
+        con.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 @pytest.mark.parametrize("raw", [
     "<script>alert(1)</script>",
     '<div onclick="evil()" style="color:red">x</div>',
