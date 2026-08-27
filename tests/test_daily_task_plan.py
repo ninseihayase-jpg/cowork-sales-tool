@@ -197,11 +197,18 @@ def test_daily_task_plan_view_page_missing_plan(con):
 
 
 def test_daily_plan_calendar_day_header_is_sticky(con):
-    """ユーザー要望2026-08-27: 下スクロール時、日付ヘッダーを固定表示に。"""
+    """ユーザー要望2026-08-27: 下スクロール時、日付ヘッダーを固定表示に。
+    さらにトレイ(チップ置き場)も一緒に固定表示にする（ユーザー追加要望）。"""
     tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
     html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
-    assert "dp-gutter-head" in html
+    assert "dp-sticky-top" in html
     assert "position:sticky;top:50px" in html
+    # トレイと日付ヘッダーが同じsticky塊の中にある（トレイが先・見出しが後）
+    sticky_start = html.index('class="dp-sticky-top"')
+    sticky_end = html.index("</div>\n        <div class=\"dp-wrap\">")
+    sticky_block = html[sticky_start:sticky_end]
+    assert "dpTrayLight" in sticky_block
+    assert "dp-daylabel-h" in sticky_block
 
 
 def test_daily_task_plan_view_page_uses_vertical_time_layout(con):

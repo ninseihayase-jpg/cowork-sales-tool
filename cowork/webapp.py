@@ -5411,8 +5411,14 @@ _JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 _DAILY_PLAN_CSS = f"""<style>
 .dp-wrap{{width:100%}}
 .dp-cal{{display:grid;grid-template-columns:56px 1fr 1fr;width:100%;column-gap:8px}}
-.dp-daylabel-h,.dp-gutter-head{{font-size:13px;font-weight:600;padding:4px 0 6px;text-align:center;
-  color:#334155;border-bottom:2px solid #e2e8f0;position:sticky;top:50px;z-index:15;background:#fff}}
+/* トレイ(チップ置き場)＋日付ヘッダーを1つの塊としてスクロール時に固定表示にする
+   （ユーザー要望2026-08-27）。ヘッダー用グリッドは本体(.dp-cal)と同じ列定義にして
+   縦位置を揃える。トレイの高さが可変でも、まとめて1つのsticky要素にすることで
+   個別にtopオフセットを計算する必要をなくしている。 */
+.dp-sticky-top{{position:sticky;top:50px;z-index:20;background:#fff;padding-bottom:6px}}
+.dp-cal-header{{display:grid;grid-template-columns:56px 1fr 1fr;width:100%;column-gap:8px}}
+.dp-daylabel-h{{font-size:13px;font-weight:600;padding:4px 0 6px;text-align:center;
+  color:#334155;border-bottom:2px solid #e2e8f0}}
 .dp-gutter{{position:relative;height:{_DAILY_PLAN_DAY_H}px}}
 .dp-gutter span{{position:absolute;left:0;right:6px;font-size:10px;color:#94a3b8;text-align:right;
   transform:translateY(-50%)}}
@@ -5515,15 +5521,19 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         <h3 style="font-size:14px;margin:10px 0 4px">② カレンダーへドラッグ&ドロップで配置</h3>
         <p class="muted" style="font-size:12px">下のチップをカレンダーへドラッグ。配置後は下端をドラッグで長さ変更、
           再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
-          <div id="dpTrayLight" class="dp-col" style="flex:1;min-height:40px"></div>
-          <div id="dpTrayHeavy" class="dp-col" style="flex:1;min-height:40px"></div>
+        <div class="dp-sticky-top">
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <div id="dpTrayLight" class="dp-col" style="flex:1;min-height:40px"></div>
+            <div id="dpTrayHeavy" class="dp-col" style="flex:1;min-height:40px"></div>
+          </div>
+          <div class="dp-cal-header">
+            <div></div>
+            <div class="dp-daylabel-h">{_esc(day_labels[0])}</div>
+            <div class="dp-daylabel-h">{_esc(day_labels[1])}</div>
+          </div>
         </div>
         <div class="dp-wrap">
           <div class="dp-cal">
-            <div class="dp-gutter-head"></div>
-            <div class="dp-daylabel-h">{_esc(day_labels[0])}</div>
-            <div class="dp-daylabel-h">{_esc(day_labels[1])}</div>
             <div class="dp-gutter">{hour_labels}</div>
             <div id="dpDay0" class="dp-day"></div>
             <div id="dpDay1" class="dp-day"></div>
@@ -5776,11 +5786,15 @@ def daily_task_plan_view_page(con, plan_id: int) -> str:
       </h2>
       <p class="muted" style="font-size:12px">確定済みプラン（読み取り専用）。
         <a href="/tasks/daily-plan?assignee={_esc(plan['owner'])}">再計画する</a></p>
-      <div class="dp-wrap">
-        <div class="dp-cal">
-          <div class="dp-gutter-head"></div>
+      <div class="dp-sticky-top">
+        <div class="dp-cal-header">
+          <div></div>
           <div class="dp-daylabel-h">{_esc(day_labels[0])}</div>
           <div class="dp-daylabel-h">{_esc(day_labels[1])}</div>
+        </div>
+      </div>
+      <div class="dp-wrap">
+        <div class="dp-cal">
           <div class="dp-gutter">{hour_labels}</div>
           {day_html(0)}
           {day_html(1)}
