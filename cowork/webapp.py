@@ -5400,13 +5400,19 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
 # カレンダーへドラッグ&ドロップでタスクを配置する日次プランニングツール。
 # 時間軸は縦方向（ユーザー要望2026-08-27）。日付を横2列にして画面幅いっぱいまで広げ、
 # 重なりは各日列内でレーン(横)を動的に分割して表現する（幅は毎回JS側でclientWidthから再計算）。
-_DAILY_PLAN_SLOT_PX = 16  # 15分あたりの高さ(px)
+_DAILY_PLAN_SLOT_PX = 22  # 15分あたりの高さ(px)。15分1コマでも時刻付きラベルが1行読める高さを確保
 _DAILY_PLAN_SLOT_MIN = 15
 _DAILY_PLAN_START_H = 6
 _DAILY_PLAN_END_H = 21
 _DAILY_PLAN_SLOTS = (_DAILY_PLAN_END_H - _DAILY_PLAN_START_H) * 60 // _DAILY_PLAN_SLOT_MIN  # 60
 _DAILY_PLAN_DAY_H = _DAILY_PLAN_SLOTS * _DAILY_PLAN_SLOT_PX  # 960
 _JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
+
+
+def _dp_fmt_time(min_from_start: int) -> str:
+    """06:00起点の経過分をHH:MM表記に変換（ユーザー要望2026-08-27: 設定された時間を表記）。"""
+    total = _DAILY_PLAN_START_H * 60 + min_from_start
+    return f"{total // 60}:{total % 60:02d}"
 
 _DAILY_PLAN_CSS = f"""<style>
 .dp-wrap{{width:100%}}
@@ -5426,13 +5432,19 @@ _DAILY_PLAN_CSS = f"""<style>
   background-image:
   repeating-linear-gradient(to bottom,#f1f5f9 0,#f1f5f9 1px,transparent 1px,transparent {_DAILY_PLAN_SLOT_PX}px),
   repeating-linear-gradient(to bottom,#e2e8f0 0,#e2e8f0 1px,transparent 1px,transparent {_DAILY_PLAN_SLOT_PX * 4}px)}}
-.dp-block{{position:absolute;border-radius:4px;font-size:11px;color:#fff;padding:1px 4px;
-  box-sizing:border-box;overflow:hidden;cursor:grab;display:flex;flex-direction:column}}
+/* ブロックは15分(1コマ)でも1行だけは必ず読めるように、×/リサイズハンドルを絶対配置の
+   オーバーレイにして、本文行の高さを消費しないようにする（ユーザー要望2026-08-27：
+   文字が小さい・15分だと潰れて読めない・設定時間を表記してほしい）。 */
+.dp-block{{position:absolute;border-radius:4px;font-size:12px;color:#fff;
+  padding:1px 20px 1px 4px;box-sizing:border-box;overflow:hidden;cursor:grab;
+  line-height:1.35;display:flex;align-items:center}}
 .dp-light{{background:#38bdf8}}
 .dp-heavy{{background:#6366f1}}
-.dp-block-t{{flex:1;overflow:hidden;line-height:1.2}}
-.dp-grip{{height:6px;margin-top:auto;cursor:ns-resize;background:rgba(255,255,255,.5);border-radius:2px}}
-.dp-x{{cursor:pointer;align-self:flex-end;font-size:10px;opacity:.85;line-height:1}}
+.dp-block-t{{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;width:100%}}
+.dp-block-time{{font-weight:600;opacity:.9;margin-right:3px}}
+.dp-grip{{position:absolute;left:0;right:0;bottom:0;height:5px;cursor:ns-resize;
+  background:rgba(255,255,255,.35)}}
+.dp-x{{position:absolute;top:1px;right:3px;cursor:pointer;font-size:12px;opacity:.85;line-height:1}}
 .dp-chip{{padding:4px 8px;margin:2px;border-radius:6px;font-size:12px;cursor:grab;display:inline-block;color:#fff}}
 .dp-chip[data-bucket="軽い"]{{background:#38bdf8}}
 .dp-chip[data-bucket="重い"]{{background:#6366f1}}
@@ -5558,6 +5570,20 @@ _DAILY_PLAN_JS = f"""<script>
   var DRAGGING_CHIP = null, DRAGGING_BLOCK_UID = null;
 
   function esc(s){{ var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }}
+  var START_H = {_DAILY_PLAN_START_H};
+  function fmtTime(minFromStart){{
+    var total = START_H * 60 + minFromStart, hh = Math.floor(total / 60), mm = total % 60;
+    return hh + ':' + (mm < 10 ? '0' : '') + mm;
+  }}
+  function blockLabelHtml(p){{
+    return '<span class="dp-block-time">' + fmtTime(p.startMin) + '-' + fmtTime(p.startMin + p.durationMin)
+      + '</span>' + esc(p.title);
+  }}
+  function updateBlockLabel(uid){{
+    var el = document.querySelector('.dp-block[data-uid="' + uid + '"]');
+    var t = el && el.querySelector('.dp-block-t');
+    if (t) t.innerHTML = blockLabelHtml(PLACED[uid]);
+  }}
 
   function dpMakeChip(t, bucket){{
     var el = document.createElement('div');
@@ -5633,7 +5659,7 @@ _DAILY_PLAN_JS = f"""<script>
     el.dataset.uid = uid; el.draggable = true;
     el.style.top = (p.startMin / SLOT_MIN * SLOT_PX) + 'px';
     el.style.height = (p.durationMin / SLOT_MIN * SLOT_PX - 2) + 'px';
-    el.innerHTML = '<span class="dp-block-t">' + esc(p.title) + '</span>'
+    el.innerHTML = '<span class="dp-block-t">' + blockLabelHtml(p) + '</span>'
       + '<span class="dp-x" title="削除">×</span>'
       + '<span class="dp-grip" title="ドラッグで長さ変更"></span>';
     el.ondragstart = function(e){{
@@ -5664,6 +5690,7 @@ _DAILY_PLAN_JS = f"""<script>
     el.style.top = (startMin / SLOT_MIN * SLOT_PX) + 'px';
     document.getElementById('dpDay' + dayOffset).appendChild(el);
     relayoutDay(oldDay); relayoutDay(dayOffset);
+    updateBlockLabel(uid);
   }}
 
   function removePlacement(uid){{
@@ -5687,6 +5714,7 @@ _DAILY_PLAN_JS = f"""<script>
         var newDur = Math.max(SLOT_MIN, startDur + deltaSlots * SLOT_MIN);
         PLACED[uid].durationMin = newDur;
         el.style.height = (newDur / SLOT_MIN * SLOT_PX - 2) + 'px';
+        updateBlockLabel(uid);
       }}
       function onUp(){{
         el.draggable = true;
@@ -5773,10 +5801,13 @@ def daily_task_plan_view_page(con, plan_id: int) -> str:
             cls = "dp-light" if it["bucket"] == "軽い" else "dp-heavy"
             title = it.get("task_title") or "(削除済みタスク)"
             link = f'/tasks#tc-{it["task_id"]}'
+            time_label = (f'{_dp_fmt_time(it["start_min"])}-'
+                         f'{_dp_fmt_time(it["start_min"] + it["duration_min"])}')
             blocks += (f'<a class="dp-block {cls}" style="top:{top}px;height:{height}px;'
                        f'left:calc({left_pct}% + 1px);width:calc({width_pct}% - 3px);'
-                       f'text-decoration:none" href="{link}" title="{_esc(title)}">'
-                       f'<span class="dp-block-t">{_esc(title)}</span></a>')
+                       f'text-decoration:none" href="{link}" title="{time_label} {_esc(title)}">'
+                       f'<span class="dp-block-t"><span class="dp-block-time">{time_label}</span>'
+                       f'{_esc(title)}</span></a>')
         return f'<div id="dpDay{day_offset}" class="dp-day">{blocks}</div>'
 
     return f"""

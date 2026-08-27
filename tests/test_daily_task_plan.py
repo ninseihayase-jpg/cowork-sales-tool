@@ -211,6 +211,18 @@ def test_daily_plan_calendar_day_header_is_sticky(con):
     assert "dp-daylabel-h" in sticky_block
 
 
+def test_daily_plan_calendar_block_shows_time_and_readable_even_at_15min(con):
+    """ユーザー報告2026-08-27: 文字が小さくて見づらい/設定時間を表記してほしい/
+    15分だと潰れて読めない。時刻表記の追加とJS側ヘルパー・1コマの最小高さ確保で対応。"""
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
+    assert "function fmtTime" in html
+    assert "function blockLabelHtml" in html
+    assert "dp-block-time" in html
+    # 15分(1コマ)でも判読できるよう、1コマの高さは20px以上を確保する
+    assert webapp._DAILY_PLAN_SLOT_PX >= 20
+
+
 def test_daily_task_plan_view_page_uses_vertical_time_layout(con):
     """ユーザー要望2026-08-27: カレンダーは縦方向に時間が進む形（日付は横2列）。"""
     tid = sfa_db.upsert_task(con, title="X", assignee="早瀬")
@@ -223,8 +235,11 @@ def test_daily_task_plan_view_page_uses_vertical_time_layout(con):
     assert "dp-gutter" in html
     assert "dp-daylabel-h" in html
     # top/heightで縦位置・所要時間を表す（横位置のleft/widthはレーン用途のみ）
-    assert "top:64.0px" in html or "top:64px" in html
+    expected_top = 60 / webapp._DAILY_PLAN_SLOT_MIN * webapp._DAILY_PLAN_SLOT_PX
+    assert f"top:{expected_top}px" in html
     assert "height:" in html
+    # 設定された時間帯(HH:MM-HH:MM)を表記する（ユーザー要望2026-08-27）
+    assert "7:00-8:30" in html
 
 
 def test_daily_task_plan_view_page_splits_overlapping_tasks_into_lanes(con):
