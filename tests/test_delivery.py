@@ -693,6 +693,57 @@ def test_build_deliveries_xlsx_includes_cashflow_sheet(con, acc_id):
     assert any(r[0] == dvid and r[3] == "2026-09" and r[4] == 100 for r in rows)
 
 
+def test_payment_schedule_xlsx_receipt_mode_pivots_by_month(con, acc_id):
+    """#115: 検収/入金はモードで切替、1案件1行×月別金額の一覧表になること。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="A社支援", start_week="2026-09-07",
+                                  end_week="2026-11-01", status="進行中")
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
+    sfa_db.set_delivery_receipt(con, dvid, "2026-10", 200)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
+                                   to_week="2026-09-14", role="コンサルタント", fte_pct=50)
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con, mode="receipt")))
+    ws = wb.active
+    assert ws.title == "検収ベース"
+    hdr = [c.value for c in ws[1]]
+    assert hdr[:7] == ["#", "クライアント", "案件", "状態", "開始週", "終了週", "アサイン"]
+    assert "26/09" in hdr and "26/10" in hdr
+    row = [c.value for c in ws[2]]
+    row_map = dict(zip(hdr, row))
+    assert row_map["#"] == dvid and row_map["案件"] == "A社支援" and row_map["アサイン"] == "早瀬"
+    assert row_map["26/09"] == 100 and row_map["26/10"] == 200
+
+
+def test_payment_schedule_xlsx_payment_mode_shifts_by_cycle(con, acc_id):
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="B社支援", start_week="2026-09-07",
+                                  end_week="2026-10-04")
+    sfa_db.update_delivery(con, dvid, payment_cycle_months=2)
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con, mode="payment")))
+    ws = wb.active
+    assert ws.title == "入金ベース"
+    hdr = [c.value for c in ws[1]]
+    row_map = dict(zip(hdr, [c.value for c in ws[2]]))
+    assert row_map.get("26/09") is None  # 検収額の月自体は入金ベースには出ない
+    assert row_map["26/11"] == 100  # 2ヶ月後に入金
+
+
+def test_payment_schedule_xlsx_skips_deliveries_without_any_amount(con, acc_id):
+    """検収も入金も1件も登録が無い案件は行として出さない（空行で埋めない）。"""
+    d = _deal(con, acc_id, "受注")
+    sfa_db.create_delivery(con, deal_id=d, title="登録なし案件")
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con, mode="receipt")))
+    ws = wb.active
+    assert ws.max_row == 1  # ヘッダのみ
+
+
 # ── Delivery複製（ユーザー要望2026-08-27） ────────────────────────────────
 
 def test_duplicate_delivery_copies_plan_fields_but_not_execution_data(con, acc_id):

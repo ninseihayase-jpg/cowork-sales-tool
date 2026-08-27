@@ -864,6 +864,26 @@ def test_issue_page_hides_rich_note_links_when_locked(server, db_path):
     assert "https://slack.com/x" not in body
 
 
+def test_delivery_payment_schedule_xlsx_route_returns_workbook(server, db_path):
+    """#115: /deliveries/payment-schedule.xlsx がmode指定(検収/入金・既定=入金)で
+    xlsxを返すこと。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('加藤製作所')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="制御システム部", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="制御システム部支援")
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 50)
+    con.close()
+
+    code, resp = _get(server + "/deliveries/payment-schedule.xlsx", headers=_auth_header())
+    assert code == 200
+    assert resp.headers.get("Content-Type") == \
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    code2, resp2 = _get(server + "/deliveries/payment-schedule.xlsx?mode=receipt", headers=_auth_header())
+    assert code2 == 200
+
+
 def test_viewport_meta_allows_pinch_zoom(server):
     """スマホでピンチイン/アウトできるよう、maximum-scale/user-scalableを明示する(#113 2026-08-27)。"""
     code, resp = _get(server + "/deals", headers=_auth_header())

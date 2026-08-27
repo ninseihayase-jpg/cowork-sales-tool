@@ -1665,6 +1665,50 @@ def build_deliveries_xlsx(con) -> bytes:
     return buf.getvalue()
 
 
+def build_delivery_payment_schedule_xlsx(con, mode: str = "payment") -> bytes:
+    """検収/入金ベースの月別金額一覧（1案件1行のピボット形式）をxlsxで出力する
+    （ユーザー要望2026-08-28: 「入金予定」として検収/入金をフラグで選べる一覧表が欲しい）。
+    mode='receipt'は検収額（検収月ベース）・'payment'は入金額（支払いサイクル分ずらした入金月
+    ベース、既定）。月列は実際に金額が登録されている月のみ（案件期間全体を機械的に広げない）。"""
+    import openpyxl
+    from openpyxl.styles import Font
+    from io import BytesIO
+
+    key = "receipts" if mode == "receipt" else "payments"
+    per_delivery = []
+    all_months: set[str] = set()
+    for dv in sfa_db.list_deliveries(con):
+        vals = sfa_db.delivery_cashflow(con, dv["id"]).get(key) or {}
+        if not vals:
+            continue
+        per_delivery.append((dv, vals))
+        all_months.update(vals.keys())
+    months = sorted(all_months)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "検収ベース" if mode == "receipt" else "入金ベース"
+    hdr = (["#", "クライアント", "案件", "状態", "開始週", "終了週", "アサイン"]
+           + [f"{m[2:4]}/{m[5:7]}" for m in months])
+    for c, h in enumerate(hdr, 1):
+        ws.cell(row=1, column=c, value=h).font = Font(bold=True)
+    r = 2
+    for dv, vals in per_delivery:
+        blocks = sfa_db.list_delivery_assignments(con, dv["id"])
+        who = "、".join(sorted({b["owner"] for b in blocks})) or ""
+        row = [dv["id"], dv.get("account_name") or "", dv.get("title") or "",
+               dv.get("status") or "", dv.get("start_week") or "", dv.get("end_week") or "", who]
+        row += [vals.get(m) for m in months]
+        for c, v in enumerate(row, 1):
+            ws.cell(row=r, column=c, value=v)
+        r += 1
+    ws.freeze_panes = "H2"
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def build_deals_full_xlsx(con) -> bytes:
     """商談・アカウント・活動履歴を全カラムJOINしたxlsx（1商談1活動=1行、活動がない商談も1行残す）。
     カラムはPRAGMA table_infoで動的取得するため、スキーマ変更が入っても手直し不要。"""
@@ -1787,7 +1831,13 @@ def deliveries_page(con) -> str:
         <select id="dvConfF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全確度</option>
           {"".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in sfa_db.DELIVERY_CONFIDENCE_LEVELS)}</select>
         <span id="dvCount" class="muted" style="font-size:12px"></span>
-        <a class="btn sec" href="/deliveries/export.xlsx" style="font-size:12px;margin-left:auto">📥 xlsx出力（全件・全テーブル）</a>
+        <span style="margin-left:auto;display:inline-flex;gap:6px;flex-wrap:wrap">
+          <a class="btn sec" href="/deliveries/payment-schedule.xlsx?mode=receipt" style="font-size:12px"
+             title="案件×月の一覧表（検収額ベース）">📥 入金予定表(検収)</a>
+          <a class="btn sec" href="/deliveries/payment-schedule.xlsx?mode=payment" style="font-size:12px"
+             title="案件×月の一覧表（支払いサイクル分ずらした入金額ベース）">📥 入金予定表(入金)</a>
+          <a class="btn sec" href="/deliveries/export.xlsx" style="font-size:12px">📥 xlsx出力（全件・全テーブル）</a>
+        </span>
       </div>
       <form id="dv_bulk" method="post" action="/deliveries/bulk_delete"
             onsubmit="return confirm('選択したDeliveryを削除します。アサインも消えます。よろしいですか？')">
@@ -15181,6 +15231,24 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     try:
                         _xls = build_deliveries_xlsx(con)
                         _name = f"delivery_export_{_today_jst().isoformat()}.xlsx"
+                        self.send_response(200)
+                        self.send_header("Content-Type",
+                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                        self.send_header("Content-Disposition", _content_disposition(_name))
+                        self.send_header("Content-Length", str(len(_xls)))
+                        self.end_headers()
+                        self.wfile.write(_xls)
+                    except Exception as _e:  # noqa: BLE001
+                        import traceback as _tb; _tb.print_exc()
+                        self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
+                elif path == "/deliveries/payment-schedule.xlsx":
+                    try:
+                        _mode = self._qs().get("mode", ["payment"])[0]
+                        if _mode not in ("receipt", "payment"):
+                            _mode = "payment"
+                        _xls = build_delivery_payment_schedule_xlsx(con, mode=_mode)
+                        _label = "検収ベース" if _mode == "receipt" else "入金ベース"
+                        _name = f"delivery_payment_schedule_{_label}_{_today_jst().isoformat()}.xlsx"
                         self.send_response(200)
                         self.send_header("Content-Type",
                                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
