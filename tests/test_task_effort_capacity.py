@@ -312,3 +312,22 @@ def test_tasks_page_card_offers_inline_effort_hours_input(con):
     assert 'placeholder="所要h"' in html
     assert 'value="3.5"' in html
     assert f"taskField({tid},&#39;effort_hours&#39;,this.value)" in html
+
+
+def test_tasks_page_card_effort_level_select_triggers_default_hours_fill(con):
+    """ユーザー要望2026-08-27: 工数感を選ぶと所要h(空欄時のみ)にデフォルト値
+    （軽=0.25/中=2/重=5）を自動入力する。"""
+    tid = sfa_db.upsert_task(con, title="X")
+    html = webapp.tasks_page(con)
+    assert f'id="tc-eh-{tid}"' in html
+    assert f"tcEffortDefaultHours({tid},this.value)" in html
+    assert "function tcEffortDefaultHours" in html
+    assert "'軽':0.25,'中':2,'重':5" in html
+
+
+def test_task_form_effort_level_select_triggers_default_hours_fill(con):
+    tid = sfa_db.upsert_task(con, title="X")
+    html = webapp.task_form(con, sfa_db.get_task(con, tid))
+    assert 'id="tfEffortHours"' in html
+    assert 'onchange="tfEffortDefaultHours(this.value)"' in html
+    assert "function tfEffortDefaultHours" in html

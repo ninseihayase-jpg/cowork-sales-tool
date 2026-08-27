@@ -1013,6 +1013,26 @@ CREATE TABLE IF NOT EXISTS weekly_workload_note (
     updated_at  TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (owner, week)
 );
+-- コンサルタスク「今日明日のタスク」機能（#101, 2026-08-27）。担当が今日/明日やる分を
+-- 軽い/重いに仕分けて15分刻みカレンダーへ配置し、確定した状態をスナップショットとして
+-- 追記保存する（上書きしない＝再計画のたびに新しい行が増える）。
+CREATE TABLE IF NOT EXISTS daily_task_plans (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner       TEXT NOT NULL,
+    label       TEXT NOT NULL,             -- "早瀬/8/27 09:30時点"
+    base_date   TEXT NOT NULL,             -- 当日基準日 YYYY-MM-DD（翌日はbase_date+1日）
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS daily_task_plan_items (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id       INTEGER NOT NULL REFERENCES daily_task_plans(id) ON DELETE CASCADE,
+    task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    day_offset    INTEGER NOT NULL,        -- 0=当日 / 1=翌日
+    start_min     INTEGER NOT NULL,        -- 06:00からの経過分（0〜899、15分刻み）
+    duration_min  INTEGER NOT NULL,
+    lane          INTEGER NOT NULL DEFAULT 0,
+    bucket        TEXT NOT NULL            -- '軽い' / '重い'
+);
 """
 
 
@@ -3631,6 +3651,54 @@ def restore_task(con, id: int) -> None:
 def hard_delete_task(con, id: int) -> None:
     con.execute("DELETE FROM tasks WHERE id=?", (int(id),))
     con.commit()
+
+
+# ---- 「今日明日のタスク」日次プラン（#101）----
+# 担当が選んだタスクを軽い/重いに仕分け、当日+翌日の15分刻みカレンダーへ配置した結果を
+# 確定スナップショットとして保存する。上書きせず毎回新しい行を追加する（再計画の履歴として残す）。
+
+def create_daily_task_plan(con, *, owner: str, base_date: str, label: str, items: list[dict]) -> int:
+    """1件の確定プラン＋配置済みタスク群をまとめて保存する。itemsは各要素
+    {task_id, day_offset(0/1), start_min, duration_min, lane, bucket} の辞書。"""
+    cur = con.execute(
+        "INSERT INTO daily_task_plans (owner, label, base_date) VALUES (?, ?, ?)",
+        (owner, label, base_date))
+    plan_id = cur.lastrowid
+    for it in items:
+        con.execute(
+            "INSERT INTO daily_task_plan_items "
+            "(plan_id, task_id, day_offset, start_min, duration_min, lane, bucket) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (plan_id, int(it["task_id"]), int(it["day_offset"]), int(it["start_min"]),
+             int(it["duration_min"]), int(it.get("lane") or 0), it["bucket"]))
+    con.commit()
+    return plan_id
+
+
+def get_daily_task_plan(con, plan_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM daily_task_plans WHERE id=?", (int(plan_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def get_latest_daily_task_plan(con, owner: str, base_date: str | None = None) -> dict | None:
+    """指定担当の直近のプラン（base_date指定時はその日限定）。確認表示用。"""
+    q = "SELECT * FROM daily_task_plans WHERE owner=?"
+    params: list = [owner]
+    if base_date:
+        q += " AND base_date=?"
+        params.append(base_date)
+    q += " ORDER BY id DESC LIMIT 1"
+    r = con.execute(q, params).fetchone()
+    return dict(r) if r else None
+
+
+def list_daily_task_plan_items(con, plan_id: int) -> list[dict]:
+    """プランの配置済みアイテムに、対象タスクのtitle/due_dateを添えて返す（表示用）。"""
+    rows = con.execute(
+        "SELECT i.*, t.title AS task_title, t.due_date AS task_due_date, t.status AS task_status "
+        "FROM daily_task_plan_items i LEFT JOIN tasks t ON t.id=i.task_id "
+        "WHERE i.plan_id=? ORDER BY i.day_offset, i.start_min", (int(plan_id),)).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---- 繰り返し発生（定期複製）（#事務タスク） ----

@@ -4105,6 +4105,15 @@ function taskField(id,field,value){
      if(d.status&&card&&card.getAttribute('data-status')!==d.status){ tcMove(id,d.status); }
    }).catch(function(){ alert('通信エラー'); });
 }
+var TC_EFFORT_HOURS_DEFAULT={'軽':0.25,'中':2,'重':5};   // ユーザー確定値2026-08-27（超重は対象外）
+function tcEffortDefaultHours(id,level){
+  var def=TC_EFFORT_HOURS_DEFAULT[level];
+  if(def===undefined) return;                 // 未選択/超重は自動入力しない
+  var inp=document.getElementById('tc-eh-'+id);
+  if(!inp||(inp.value||'').trim()) return;     // 既に所要hが入っていれば上書きしない
+  inp.value=def;
+  taskField(id,'effort_hours',def);
+}
 function taskDelete(id){ if(!confirm('このタスクを削除しますか？')) return;
   fetch('/task/'+id+'/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})
    .then(function(r){return r.json();}).then(function(d){ if(d.ok){ var c=document.getElementById('tc-'+id); if(c)c.remove(); tcCounts(); } });
@@ -4531,8 +4540,8 @@ def task_form(con, task=None) -> str:
           <div><label>期限</label><input type="date" name="due_date" value="{_esc(task.get('due_date'))}"></div>
           <div><label>種類（空ならAIが自動判定）</label><select name="category"><option value=""></option>{_task_cat_optgroups(cats, task.get('category'))}</select></div>
           <div><label>状態</label><select name="status">{_opt(sfa_db.TASK_STATUSES, task.get('status') or ('未着手' if is_edit else '受信箱'))}</select></div>
-          {'' if is_admin_task else f'<div><label>工数感（ガント表示用）</label><select name="effort_level">{_opt(sfa_db.TASK_EFFORT_LEVELS, task.get("effort_level"))}</select></div>'}
-          {'' if is_admin_task else f'<div><label>所要時間(h)<span class="muted" style="font-weight:normal"> ※未入力は工数感から自動換算</span></label><input type="number" step="0.5" min="0" name="effort_hours" value="{"" if task.get("effort_hours") is None else task.get("effort_hours")}"></div>'}
+          {'' if is_admin_task else f'<div><label>工数感（ガント表示用）</label><select name="effort_level" onchange="tfEffortDefaultHours(this.value)">{_opt(sfa_db.TASK_EFFORT_LEVELS, task.get("effort_level"))}</select></div>'}
+          {'' if is_admin_task else f'<div><label>所要時間(h)<span class="muted" style="font-weight:normal"> ※未入力は工数感から自動換算</span></label><input type="number" id="tfEffortHours" step="0.5" min="0" name="effort_hours" value="{"" if task.get("effort_hours") is None else task.get("effort_hours")}"></div>'}
           <div class="full"><label>関連（商談・論点・開発案件）</label>
             {_task_link_picker_html(con, prefix="tfLink", cur_type=task.get("link_type"),
                                     cur_id=task.get("link_id"), include_dev=True, dev_opts=dev_opts)}</div>
@@ -4540,7 +4549,16 @@ def task_form(con, task=None) -> str:
         <div style="margin-top:14px"><button class="btn" type="submit">保存</button>
           <a class="btn sec" href="/tasks">キャンセル</a></div>
       </form>
-    </div>{notes_block}"""
+    </div>{notes_block}
+    <script>
+    function tfEffortDefaultHours(level){{
+      var DEF={{'軽':0.25,'中':2,'重':5}};   // ユーザー確定値2026-08-27（超重は対象外）
+      if(!(level in DEF)) return;
+      var inp=document.getElementById('tfEffortHours');
+      if(!inp||(inp.value||'').trim()) return;   // 既に所要hが入っていれば上書きしない
+      inp.value=DEF[level];
+    }}
+    </script>"""
 
 
 def tasks_deleted_page(con) -> str:
@@ -4675,10 +4693,18 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         ai_btn = (f'<button type="button" class="tc-ai" title="AIで種類を判定" '
                   f'onclick="tcAiCat({tid})">🤖種類</button>')
         effort_sel = _tc_sel(tid, "effort_level", sfa_db.TASK_EFFORT_LEVELS, t.get("effort_level"), "工数感")
+        # 工数感を選ぶと所要h(空欄時のみ)にデフォルト値を自動入力する（ユーザー要望2026-08-27）。
+        # _tc_selの共通onchangeに追記する形にし、_tc_sel自体（他の多くのフィールドが使う汎用ヘルパー）
+        # は変更しない。
+        effort_sel = effort_sel.replace(
+            f'onchange="taskField({tid},&#39;effort_level&#39;,this.value)"',
+            f'onchange="taskField({tid},&#39;effort_level&#39;,this.value);'
+            f'tcEffortDefaultHours({tid},this.value)"')
         # 所要時間(h)。task_form(編集フォーム)には既にあったが、カードのその場編集からは
         # 設定できなかった（ユーザー報告2026-08-25「ある機能だけどここには無い」）ので追加。
         effort_hours_input = (
-            f'<input type="number" class="tc-sel" style="width:60px" step="0.5" min="0" '
+            f'<input type="number" id="tc-eh-{tid}" data-field="effort_hours" class="tc-sel" '
+            f'style="width:60px" step="0.5" min="0" '
             f'title="所要時間(h)。未入力は工数感から自動換算" placeholder="所要h" '
             f'value="{"" if t.get("effort_hours") is None else t.get("effort_hours")}" '
             f'onchange="taskField({tid},&#39;effort_hours&#39;,this.value)">')
@@ -4901,6 +4927,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             <a href="/tasks" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">🗂 看板</a>
             <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
+            <a href="/tasks/daily-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
           </span>
           <a class="btn sec" href="/tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
           {seed_btn}
@@ -5069,6 +5096,7 @@ def tasks_gantt_page(con) -> str:
             <a href="/tasks" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗂 看板</a>
             <a href="/tasks/gantt" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📊 ガント</a>
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
+            <a href="/tasks/daily-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
           </span>
           <a class="btn" href="/tasks/new">＋新規コンサルタスク</a>
         </span>
@@ -5131,6 +5159,7 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
           <a href="/tasks" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗂 看板</a>
           <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
           <a href="/tasks/capacity" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📅 容量</a>
+          <a href="/tasks/daily-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
         </span>
       </h2>
       <p class="muted" style="font-size:12px;margin:0 0 10px">担当者ごとの1日あたり作業可能時間（打ち合わせ除く）を、当日〜直近{horizon_days}営業日分で
@@ -5149,6 +5178,391 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
         .then(function(){{ location.reload(); }}).catch(function(){{}});
     }}
     </script>"""
+
+
+# 「今日明日のタスク」機能（#101, 2026-08-27）。06:00〜21:00・15分刻みの2日分(当日/翌日)
+# カレンダーへドラッグ&ドロップでタスクを配置する日次プランニングツール。
+_DAILY_PLAN_SLOT_PX = 20
+_DAILY_PLAN_SLOT_MIN = 15
+_DAILY_PLAN_START_H = 6
+_DAILY_PLAN_END_H = 21
+_DAILY_PLAN_SLOTS = (_DAILY_PLAN_END_H - _DAILY_PLAN_START_H) * 60 // _DAILY_PLAN_SLOT_MIN  # 60
+_DAILY_PLAN_DAY_W = _DAILY_PLAN_SLOTS * _DAILY_PLAN_SLOT_PX  # 1200
+_JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
+
+_DAILY_PLAN_CSS = f"""<style>
+.dp-wrap{{overflow-x:auto}}
+.dp-hourbar{{position:relative;height:16px;width:{_DAILY_PLAN_DAY_W}px;margin-left:96px}}
+.dp-dayrow{{display:flex;align-items:flex-start;margin-bottom:6px}}
+.dp-daylabel{{width:90px;flex:0 0 90px;font-size:12px;font-weight:600;padding-top:4px;color:#334155}}
+.dp-day{{position:relative;width:{_DAILY_PLAN_DAY_W}px;min-height:32px;border:1px solid #e2e8f0;
+  border-radius:4px;background-image:
+  repeating-linear-gradient(to right,#f1f5f9 0,#f1f5f9 1px,transparent 1px,transparent {_DAILY_PLAN_SLOT_PX}px),
+  repeating-linear-gradient(to right,#e2e8f0 0,#e2e8f0 1px,transparent 1px,transparent {_DAILY_PLAN_SLOT_PX*4}px)}}
+.dp-block{{position:absolute;top:2px;height:24px;border-radius:4px;font-size:11px;color:#fff;
+  padding:0 4px;box-sizing:border-box;overflow:hidden;white-space:nowrap;cursor:grab;display:flex;
+  align-items:center;gap:3px}}
+.dp-light{{background:#38bdf8}}
+.dp-heavy{{background:#6366f1}}
+.dp-block-t{{flex:1;overflow:hidden;text-overflow:ellipsis}}
+.dp-grip{{width:6px;align-self:stretch;cursor:ew-resize;background:rgba(255,255,255,.5);border-radius:2px;flex:0 0 auto}}
+.dp-x{{cursor:pointer;flex:0 0 auto;opacity:.85}}
+.dp-chip{{padding:4px 8px;margin:2px;border-radius:6px;font-size:12px;cursor:grab;display:inline-block;color:#fff}}
+.dp-chip[data-bucket="軽い"]{{background:#38bdf8}}
+.dp-chip[data-bucket="重い"]{{background:#6366f1}}
+.dp-col{{min-height:60px;border:1px dashed #cbd5e1;border-radius:6px;padding:6px;flex:1}}
+.dp-pick-row{{display:block;padding:4px 2px;font-size:13px;cursor:pointer}}
+.dp-pick-row:hover{{background:#f8fafc}}
+</style>"""
+
+
+def _daily_plan_nav(active: str) -> str:
+    def item(href, label, key):
+        on = key == active
+        return (f'<a href="{href}" style="padding:6px 12px;{"background:#4f46e5;color:#fff" if on else "color:#4338ca"};'
+                f'text-decoration:none">{label}</a>')
+    return (f'<span style="display:inline-flex;gap:4px;background:#eef0ff;border-radius:8px;padding:2px">'
+            f'{item("/tasks", "🗂 看板", "board")}{item("/tasks/gantt", "📊 ガント", "gantt")}'
+            f'{item("/tasks/capacity", "📅 容量", "capacity")}'
+            f'{item("/tasks/daily-plan", "📆 今日明日", "daily")}</span>')
+
+
+def daily_plan_page(con, assignee: str | None = None) -> str:
+    """「今日明日のタスク」ピック→仕分け(軽い/重い)→当日+翌日カレンダーへドラッグ配置、
+    という日次プランニングのStep1〜4を1ページで完結させる（サーバは初期データを渡すのみ、
+    以降はクライアントJSで状態遷移し、確定時のみPOST /tasks/daily-plan/save で保存）。"""
+    owners = sfa_db.get_master_list(con, "owners")
+    nav = _daily_plan_nav("daily")
+    if not assignee:
+        opts = "".join(f'<option value="{_esc(o)}">{_esc(o)}</option>' for o in owners)
+        return f"""
+        <div class="card">
+          <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <span>📆 今日明日のタスク</span>{nav}
+          </h2>
+          <p class="muted" style="font-size:13px">担当を選ぶと、今日/明日やるタスクを選んでカレンダーに配置できます。</p>
+          <form method="get" action="/tasks/daily-plan">
+            <select name="assignee" required><option value="">担当を選択</option>{opts}</select>
+            <button class="btn" type="submit">開始</button>
+          </form>
+        </div>{_DAILY_PLAN_CSS}"""
+
+    tasks = sfa_db.list_tasks(con, assignee=assignee, admin=False, exclude_done=True)
+    today = _today_jst()
+    tomorrow = today + timedelta(days=1)
+    day_labels = [
+        f'{today.month}/{today.day}({_JP_WEEKDAYS[today.weekday()]}) 今日',
+        f'{tomorrow.month}/{tomorrow.day}({_JP_WEEKDAYS[tomorrow.weekday()]}) 明日',
+    ]
+    pick_rows = "".join(
+        f'<label class="dp-pick-row"><input type="checkbox" value="{t["id"]}"> '
+        f'{_esc(t.get("title") or "(無題)")} '
+        f'<span class="muted" style="font-size:11px">'
+        f'{_esc(t.get("due_date") or "期限なし")}・{_esc(t.get("effort_level") or "工数感未設定")}</span></label>'
+        for t in tasks
+    ) or '<p class="muted">未完了のタスクがありません。</p>'
+    tasks_by_id = {
+        str(t["id"]): {"id": t["id"], "title": t.get("title") or "(無題)",
+                       "due_date": t.get("due_date") or "", "effort_level": t.get("effort_level") or ""}
+        for t in tasks
+    }
+    latest = sfa_db.get_latest_daily_task_plan(con, assignee, base_date=today.isoformat())
+    latest_html = (f'<p class="muted" style="font-size:12px">直近の確定プラン: '
+                   f'<a href="/tasks/daily-plan/plan/{latest["id"]}">{_esc(latest["label"])}</a></p>'
+                   if latest else "")
+    hour_labels = "".join(
+        f'<span style="position:absolute;left:{(h - _DAILY_PLAN_START_H) * 4 * _DAILY_PLAN_SLOT_PX}px;'
+        f'top:0;font-size:10px;color:#94a3b8">{h}:00</span>'
+        for h in range(_DAILY_PLAN_START_H, _DAILY_PLAN_END_H + 1))
+
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>📆 今日明日のタスク — {_esc(assignee)}</span>{nav}
+      </h2>
+      <p class="muted" style="font-size:12px"><a href="/tasks/daily-plan">担当を変更</a></p>
+      {latest_html}
+
+      <div id="dpStep2">
+        <h3 style="font-size:14px;margin:10px 0 4px">① 今日/明日やるタスクを選ぶ</h3>
+        <div id="dpPickList">{pick_rows}</div>
+        <button class="btn" type="button" onclick="dpToStep3()" style="margin-top:8px">次へ（仕分け）</button>
+      </div>
+
+      <div id="dpStep3" style="display:none">
+        <h3 style="font-size:14px;margin:10px 0 4px">② 軽い/重いに仕分ける（ドラッグで修正可）</h3>
+        <div style="display:flex;gap:12px">
+          <div style="flex:1">
+            <div class="muted" style="font-size:12px;margin-bottom:4px">🩵 軽い（作業的・既定30分）</div>
+            <div id="dpLight" class="dp-col"></div>
+          </div>
+          <div style="flex:1">
+            <div class="muted" style="font-size:12px;margin-bottom:4px">🟣 重い（集中・既定90分）</div>
+            <div id="dpHeavy" class="dp-col"></div>
+          </div>
+        </div>
+        <button class="btn" type="button" onclick="dpToStep4()" style="margin-top:8px">次へ（カレンダーへ配置）</button>
+      </div>
+
+      <div id="dpStep4" style="display:none">
+        <h3 style="font-size:14px;margin:10px 0 4px">③ カレンダーへドラッグ&ドロップで配置</h3>
+        <p class="muted" style="font-size:12px">下のチップをカレンダーへドラッグ。配置後は右端をドラッグで長さ変更、
+          再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <div id="dpTrayLight" class="dp-col" style="flex:1;min-height:40px"></div>
+          <div id="dpTrayHeavy" class="dp-col" style="flex:1;min-height:40px"></div>
+        </div>
+        <div class="dp-wrap">
+          <div class="dp-hourbar">{hour_labels}</div>
+          <div class="dp-dayrow"><div class="dp-daylabel">{_esc(day_labels[0])}</div><div id="dpDay0" class="dp-day"></div></div>
+          <div class="dp-dayrow"><div class="dp-daylabel">{_esc(day_labels[1])}</div><div id="dpDay1" class="dp-day"></div></div>
+        </div>
+        <button class="btn" type="button" onclick="dpConfirm()" style="margin-top:10px">✅ 確定して保存</button>
+      </div>
+    </div>
+    <script>
+    window.DP_ASSIGNEE = {json.dumps(assignee, ensure_ascii=False)};
+    window.DP_TASKS_BY_ID = {json.dumps(tasks_by_id, ensure_ascii=False)};
+    </script>
+    {_DAILY_PLAN_CSS}{_DAILY_PLAN_JS}"""
+
+
+_DAILY_PLAN_JS = f"""<script>
+(function(){{
+  var SLOT_PX = {_DAILY_PLAN_SLOT_PX}, SLOT_MIN = {_DAILY_PLAN_SLOT_MIN}, SLOTS = {_DAILY_PLAN_SLOTS};
+  var LANE_PX = 28;
+  var DEFAULT_DUR = {{'軽い':30,'重い':90}};
+  var PLACED = {{}};
+  var NEXT_UID = 1;
+  var DRAGGING_CHIP = null, DRAGGING_BLOCK_UID = null;
+
+  function esc(s){{ var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }}
+
+  window.dpToStep3 = function(){{
+    var checked = document.querySelectorAll('#dpPickList input[type=checkbox]:checked');
+    if (!checked.length) {{ alert('タスクを1つ以上選んでください'); return; }}
+    var light = document.getElementById('dpLight'), heavy = document.getElementById('dpHeavy');
+    light.innerHTML = ''; heavy.innerHTML = '';
+    checked.forEach(function(cb){{
+      var t = window.DP_TASKS_BY_ID[cb.value];
+      if (!t) return;
+      var bucket = (t.effort_level === '軽') ? '軽い' : '重い';
+      (bucket === '軽い' ? light : heavy).appendChild(dpMakeChip(t, bucket));
+    }});
+    document.getElementById('dpStep2').style.display = 'none';
+    document.getElementById('dpStep3').style.display = '';
+  }};
+
+  function dpMakeChip(t, bucket){{
+    var el = document.createElement('div');
+    el.className = 'dp-chip'; el.draggable = true;
+    el.dataset.taskId = t.id; el.dataset.bucket = bucket; el.dataset.title = t.title;
+    el.textContent = t.title;
+    el.ondragstart = function(e){{
+      DRAGGING_CHIP = el;
+      e.dataTransfer.setData('text/plain', JSON.stringify({{
+        type:'chip', taskId:el.dataset.taskId, bucket:el.dataset.bucket, title:el.dataset.title}}));
+    }};
+    return el;
+  }}
+
+  ['dpLight','dpHeavy'].forEach(function(colId){{
+    var col = document.getElementById(colId);
+    col.ondragover = function(e){{ e.preventDefault(); }};
+    col.ondrop = function(e){{
+      e.preventDefault();
+      var data; try {{ data = JSON.parse(e.dataTransfer.getData('text/plain')||'{{}}'); }} catch(_e){{ return; }}
+      if (data.type !== 'chip' || !DRAGGING_CHIP) return;
+      DRAGGING_CHIP.dataset.bucket = (colId === 'dpLight' ? '軽い' : '重い');
+      col.appendChild(DRAGGING_CHIP);
+    }};
+  }});
+
+  window.dpToStep4 = function(){{
+    var trayLight = document.getElementById('dpTrayLight'), trayHeavy = document.getElementById('dpTrayHeavy');
+    trayLight.innerHTML = ''; trayHeavy.innerHTML = '';
+    document.querySelectorAll('#dpLight .dp-chip').forEach(function(c){{
+      trayLight.appendChild(dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title}}, '軽い')); }});
+    document.querySelectorAll('#dpHeavy .dp-chip').forEach(function(c){{
+      trayHeavy.appendChild(dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title}}, '重い')); }});
+    document.getElementById('dpStep3').style.display = 'none';
+    document.getElementById('dpStep4').style.display = '';
+  }};
+
+  function findFreeLane(dayOffset, startMin, durationMin, excludeUid){{
+    var used = {{}};
+    Object.keys(PLACED).forEach(function(uid){{
+      if (uid === excludeUid) return;
+      var p = PLACED[uid];
+      if (p.dayOffset !== dayOffset) return;
+      if (startMin < (p.startMin + p.durationMin) && p.startMin < (startMin + durationMin)) used[p.lane] = true;
+    }});
+    var lane = 0; while (used[lane]) lane++;
+    return lane;
+  }}
+
+  function growRow(dayOffset){{
+    var row = document.getElementById('dpDay' + dayOffset);
+    var maxLane = 0;
+    Object.keys(PLACED).forEach(function(uid){{ var p = PLACED[uid]; if (p.dayOffset === dayOffset) maxLane = Math.max(maxLane, p.lane); }});
+    row.style.height = ((maxLane + 1) * LANE_PX + 8) + 'px';
+  }}
+
+  function renderBlock(uid){{
+    var p = PLACED[uid];
+    var row = document.getElementById('dpDay' + p.dayOffset);
+    var el = document.createElement('div');
+    el.className = 'dp-block ' + (p.bucket === '軽い' ? 'dp-light' : 'dp-heavy');
+    el.dataset.uid = uid; el.draggable = true;
+    el.style.left = (p.startMin / SLOT_MIN * SLOT_PX) + 'px';
+    el.style.width = (p.durationMin / SLOT_MIN * SLOT_PX) + 'px';
+    el.style.top = (p.lane * LANE_PX) + 'px';
+    el.innerHTML = '<span class="dp-block-t">' + esc(p.title) + '</span>'
+      + '<span class="dp-grip" title="ドラッグで長さ変更"></span>'
+      + '<span class="dp-x" title="削除">×</span>';
+    el.ondragstart = function(e){{
+      DRAGGING_BLOCK_UID = uid;
+      e.dataTransfer.setData('text/plain', JSON.stringify({{type:'block', uid:uid}}));
+    }};
+    el.querySelector('.dp-x').onclick = function(){{ removePlacement(uid); }};
+    wireResize(el, uid);
+    row.appendChild(el);
+    growRow(p.dayOffset);
+  }}
+
+  function addPlacement(taskId, title, bucket, dayOffset, startMin){{
+    var uid = 'p' + (NEXT_UID++);
+    var durationMin = DEFAULT_DUR[bucket] || 30;
+    var lane = findFreeLane(dayOffset, startMin, durationMin);
+    PLACED[uid] = {{taskId:taskId, title:title, bucket:bucket, dayOffset:dayOffset, startMin:startMin,
+                    durationMin:durationMin, lane:lane}};
+    renderBlock(uid);
+  }}
+
+  function movePlacement(uid, dayOffset, startMin){{
+    var p = PLACED[uid]; if (!p) return;
+    var oldDay = p.dayOffset;
+    p.dayOffset = dayOffset; p.startMin = startMin;
+    p.lane = findFreeLane(dayOffset, startMin, p.durationMin, uid);
+    var el = document.querySelector('.dp-block[data-uid="' + uid + '"]');
+    el.style.left = (startMin / SLOT_MIN * SLOT_PX) + 'px';
+    el.style.top = (p.lane * LANE_PX) + 'px';
+    document.getElementById('dpDay' + dayOffset).appendChild(el);
+    growRow(oldDay); growRow(dayOffset);
+  }}
+
+  function removePlacement(uid){{
+    var p = PLACED[uid]; if (!p) return;
+    delete PLACED[uid];
+    var el = document.querySelector('.dp-block[data-uid="' + uid + '"]');
+    if (el) el.remove();
+    var tray = document.getElementById(p.bucket === '軽い' ? 'dpTrayLight' : 'dpTrayHeavy');
+    tray.appendChild(dpMakeChip({{id:p.taskId, title:p.title}}, p.bucket));
+  }}
+
+  function wireResize(el, uid){{
+    var grip = el.querySelector('.dp-grip');
+    grip.onmousedown = function(e){{
+      e.preventDefault(); e.stopPropagation();
+      el.draggable = false;
+      var startX = e.clientX, startDur = PLACED[uid].durationMin;
+      function onMove(ev){{
+        var deltaSlots = Math.round((ev.clientX - startX) / SLOT_PX);
+        var newDur = Math.max(SLOT_MIN, startDur + deltaSlots * SLOT_MIN);
+        PLACED[uid].durationMin = newDur;
+        el.style.width = (newDur / SLOT_MIN * SLOT_PX) + 'px';
+      }}
+      function onUp(){{
+        el.draggable = true;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }}
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }};
+  }}
+
+  [0,1].forEach(function(dayOffset){{
+    var row = document.getElementById('dpDay' + dayOffset);
+    row.ondragover = function(e){{ e.preventDefault(); }};
+    row.ondrop = function(e){{
+      e.preventDefault();
+      var data; try {{ data = JSON.parse(e.dataTransfer.getData('text/plain')||'{{}}'); }} catch(_e){{ return; }}
+      var rect = row.getBoundingClientRect();
+      var x = e.clientX - rect.left;
+      var slot = Math.max(0, Math.min(SLOTS - 1, Math.round(x / SLOT_PX)));
+      var startMin = slot * SLOT_MIN;
+      if (data.type === 'chip' && DRAGGING_CHIP) {{
+        addPlacement(data.taskId, data.title, data.bucket, dayOffset, startMin);
+        DRAGGING_CHIP.remove(); DRAGGING_CHIP = null;
+      }} else if (data.type === 'block') {{
+        movePlacement(data.uid, dayOffset, startMin);
+        DRAGGING_BLOCK_UID = null;
+      }}
+    }};
+  }});
+
+  window.dpConfirm = function(){{
+    var items = Object.keys(PLACED).map(function(uid){{
+      var p = PLACED[uid];
+      return {{task_id:p.taskId, day_offset:p.dayOffset, start_min:p.startMin,
+               duration_min:p.durationMin, lane:p.lane, bucket:p.bucket}};
+    }});
+    if (!items.length) {{ alert('カレンダーに1件も配置されていません'); return; }}
+    fetch('/tasks/daily-plan/save', {{method:'POST', headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+      body:'assignee=' + encodeURIComponent(window.DP_ASSIGNEE) + '&items=' + encodeURIComponent(JSON.stringify(items))}})
+      .then(function(r){{ return r.json(); }}).then(function(d){{
+        if (d.ok) {{ location.href = '/tasks/daily-plan/plan/' + d.plan_id; }}
+        else {{ alert('保存エラー: ' + (d.error||'')); }}
+      }}).catch(function(){{ alert('通信エラー'); }});
+  }};
+}})();
+</script>"""
+
+
+def daily_task_plan_view_page(con, plan_id: int) -> str:
+    """確定済み「今日明日のタスク」プランの読み取り専用表示（ドラッグ不可）。"""
+    plan = sfa_db.get_daily_task_plan(con, plan_id)
+    if not plan:
+        return '<div class="card">プランが見つかりません（削除済み？）。</div>'
+    items = sfa_db.list_daily_task_plan_items(con, plan_id)
+    base = date.fromisoformat(plan["base_date"])
+    days = [base, base + timedelta(days=1)]
+    day_labels = [f'{d.month}/{d.day}({_JP_WEEKDAYS[d.weekday()]})' for d in days]
+    hour_labels = "".join(
+        f'<span style="position:absolute;left:{(h - _DAILY_PLAN_START_H) * 4 * _DAILY_PLAN_SLOT_PX}px;'
+        f'top:0;font-size:10px;color:#94a3b8">{h}:00</span>'
+        for h in range(_DAILY_PLAN_START_H, _DAILY_PLAN_END_H + 1))
+
+    def day_html(day_offset):
+        blocks = ""
+        for it in items:
+            if it["day_offset"] != day_offset:
+                continue
+            left = it["start_min"] / _DAILY_PLAN_SLOT_MIN * _DAILY_PLAN_SLOT_PX
+            width = it["duration_min"] / _DAILY_PLAN_SLOT_MIN * _DAILY_PLAN_SLOT_PX
+            top = it["lane"] * 28
+            cls = "dp-light" if it["bucket"] == "軽い" else "dp-heavy"
+            title = it.get("task_title") or "(削除済みタスク)"
+            link = f'/tasks#tc-{it["task_id"]}'
+            blocks += (f'<a class="dp-block {cls}" style="left:{left}px;width:{width}px;top:{top}px;'
+                       f'text-decoration:none" href="{link}" title="{_esc(title)}">'
+                       f'<span class="dp-block-t">{_esc(title)}</span></a>')
+        return f'<div class="dp-day">{blocks}</div>'
+
+    return f"""
+    <div class="card">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>📆 {_esc(plan["label"])}</span>{_daily_plan_nav("daily")}
+      </h2>
+      <p class="muted" style="font-size:12px">確定済みプラン（読み取り専用）。
+        <a href="/tasks/daily-plan?assignee={_esc(plan['owner'])}">再計画する</a></p>
+      <div class="dp-wrap">
+        <div class="dp-hourbar">{hour_labels}</div>
+        <div class="dp-dayrow"><div class="dp-daylabel">{_esc(day_labels[0])}</div>{day_html(0)}</div>
+        <div class="dp-dayrow"><div class="dp-daylabel">{_esc(day_labels[1])}</div>{day_html(1)}</div>
+      </div>
+    </div>{_DAILY_PLAN_CSS}"""
 
 
 # 通常タスク看板(/tasks)・事務タスク看板(/desk-tasks)共通の「上部集計ボックス」CSS
@@ -14094,6 +14508,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(tasks_gantt_page(con)))
                 elif path == "/tasks/capacity":
                     self._send(render(tasks_capacity_page(con)))
+                elif path == "/tasks/daily-plan":
+                    _dpq = self._qs()
+                    self._send(render(daily_plan_page(con, assignee=(_dpq.get("assignee", [""])[0] or None))))
+                elif (path.startswith("/tasks/daily-plan/plan/")
+                      and path.split("/")[-1].isdigit()):
+                    self._send(render(daily_task_plan_view_page(con, int(path.split("/")[-1]))))
                 elif path == "/desk-tasks":
                     _dq = self._qs()
                     self._send(render(desk_tasks_page(
@@ -14858,6 +15278,36 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
                     else:
                         self._send(json.dumps({"ok": False}).encode(), ctype="application/json")
+
+                elif path == "/tasks/daily-plan/save":
+                    # 「今日明日のタスク」確定保存（#101）。上書きせず毎回新規プランを追加する。
+                    _dp_owner = (f.get("assignee") or "").strip()
+                    try:
+                        _dp_items = json.loads(f.get("items") or "[]")
+                    except (ValueError, TypeError):
+                        _dp_items = None
+                    if not _dp_owner or not isinstance(_dp_items, list) or not _dp_items:
+                        self._send(json.dumps({"ok": False, "error": "担当または配置内容が不正です"},
+                                              ensure_ascii=False).encode(), ctype="application/json")
+                    else:
+                        try:
+                            _dp_clean = [{
+                                "task_id": int(it["task_id"]), "day_offset": int(it["day_offset"]),
+                                "start_min": int(it["start_min"]), "duration_min": int(it["duration_min"]),
+                                "lane": int(it.get("lane") or 0),
+                                "bucket": it["bucket"] if it.get("bucket") in ("軽い", "重い") else "重い",
+                            } for it in _dp_items]
+                        except (KeyError, TypeError, ValueError):
+                            self._send(json.dumps({"ok": False, "error": "配置データの形式が不正です"},
+                                                  ensure_ascii=False).encode(), ctype="application/json")
+                        else:
+                            _dp_now = datetime.now(_JST)
+                            _dp_label = f"{_dp_owner}/{_dp_now.month}/{_dp_now.day} {_dp_now:%H:%M}時点"
+                            _dp_plan_id = sfa_db.create_daily_task_plan(
+                                con, owner=_dp_owner, base_date=_today_jst().isoformat(),
+                                label=_dp_label, items=_dp_clean)
+                            self._send(json.dumps({"ok": True, "plan_id": _dp_plan_id}).encode(),
+                                       ctype="application/json")
 
                 elif path == "/tasks/seed-test":
                     _n = sfa_db.seed_sample_tasks(con)
