@@ -55,29 +55,11 @@ services:
       mountPath: /data
       sizeGB: 1
 
-  # ── 週次商談確認通知（機能5）── 水曜 17:30 JST ───────────────────────
-  - type: cron
-    name: sfa-weekly-notify
-    env: python
-    region: singapore
-    schedule: "30 8 * * 3"
-    buildCommand: pip install -r requirements.txt
-    startCommand: python scripts/weekly_slack_notify.py
-    envVars:
-      - key: SFA_DB_PATH
-        value: /data/cowork_sfa.db
-      - key: COWORK_SFA_DB
-        value: /data/cowork_sfa.db
-      - key: SLACK_BOT_TOKEN
-        sync: false
-      - key: WEEKLY_SHEET_ID
-        sync: false
-      - key: SFA_TOOL_URL
-        sync: false
-      - key: SFA_API_TOKEN
-        sync: false
-      - key: SLACK_BOT_TOKEN
-        sync: false
+  # ── 週次商談確認通知（機能5）は2026-08-27にユーザー要望で停止。
+  # Renderダッシュボード側のCron Job "sfa-weekly-notify" は手動作成運用（Blueprint非同期）
+  # のため、この記述を消すだけでは止まらない。ユーザーがRenderダッシュボードで
+  # "sfa-weekly-notify" を一時停止/削除する必要あり（scripts/weekly_slack_notify.py 自体は
+  # コードとして残す。再開時はこのブロックをrender.yaml履歴から復元して手動再作成すればよい）。
 
   # ── 翌日アポSlack自動スレ立て（日次 06:00 JST）────────────────────────
   - type: cron
