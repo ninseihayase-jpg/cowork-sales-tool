@@ -267,8 +267,8 @@ DESK_ASSIGNEES = [x.strip() for x in
                   os.environ.get("DESK_ASSIGNEE", "").replace("、", ",").replace(" ", ",").split(",")
                   if x.strip()]
 DESK_ASSIGNEE_DEFAULT = DESK_ASSIGNEES[0] if DESK_ASSIGNEES else ""
-TASK_LINK_TYPES = ["dev_project", "deal", "issue", "org", "personal"]
-TASK_LINK_LABELS = {"dev_project": "開発案件", "deal": "商談", "issue": "論点",
+TASK_LINK_TYPES = ["dev_project", "deal", "issue", "delivery", "org", "personal"]
+TASK_LINK_LABELS = {"dev_project": "開発案件", "deal": "商談", "issue": "論点", "delivery": "Delivery",
                     "org": "全社", "personal": "個人"}
 
 
@@ -3587,9 +3587,12 @@ def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
         conds.append("category = ?"); params.append(category)
     if project:
         conds.append("project = ?"); params.append(project)
-    if link_type:
+    if link_type == "__none__":
+        # 紐づけ無しのみ（ユーザー要望2026-08-27）。link_idは無視する。
+        conds.append("(link_type IS NULL OR link_type = '')")
+    elif link_type:
         conds.append("link_type = ?"); params.append(link_type)
-    if link_id is not None:
+    if link_id is not None and link_type != "__none__":
         conds.append("link_id = ?"); params.append(int(link_id))
     if conds:
         q += " WHERE " + " AND ".join(conds)
@@ -3605,8 +3608,9 @@ def get_task(con, id: int) -> dict | None:
 
 
 def task_link_label(con, link_type: str | None, link_id: int | None) -> str | None:
-    """タスクのlink_type/link_id（deal/issue）の表示ラベル。対象が消えていたらNone。
-    ユーザー要望2026-08-24: コンサルタスクを商談/論点に紐づけられるようにする機能で使用。"""
+    """タスクのlink_type/link_id（deal/issue/delivery）の表示ラベル。対象が消えていたらNone。
+    ユーザー要望2026-08-24: コンサルタスクを商談/論点に紐づけられるようにする機能で使用。
+    2026-08-27にDeliveryを追加。"""
     if not link_type or not link_id:
         return None
     if link_type == "deal":
@@ -3622,6 +3626,11 @@ def task_link_label(con, link_type: str | None, link_id: int | None) -> str | No
         if it.get("deal_name"):
             return f'{base}（{it.get("account_name") or "—"}：{it["deal_name"]}）'
         return f"{base}（商談共通）"
+    if link_type == "delivery":
+        dv = get_delivery(con, link_id)
+        if not dv:
+            return None
+        return f'{dv.get("account_name") or "—"}：{dv.get("title") or dv.get("deal_name") or "—"}'
     return None
 
 
@@ -3914,6 +3923,31 @@ def delete_task_project(con, id: int) -> None:
     """プロジェクト定義を削除（タスクのproject名文字列はそのまま残る＝孤立表示になるだけ）。"""
     con.execute("DELETE FROM task_projects WHERE id=?", (int(id),))
     con.commit()
+
+
+def task_link_summary(con) -> dict:
+    """コンサルタスクの紐づけ先(商談/論点/Delivery)ごとの未完了/完了件数集計
+    （看板上部の「紐づけられている案件」一覧用、ユーザー要望2026-08-27）。
+    未完了タスクが1件も無い紐づけ先（完了にしか登場しない案件）は結果に含めない。"""
+    out: dict = {"deal": [], "issue": [], "delivery": []}
+    rows = con.execute(
+        "SELECT link_type, link_id, "
+        "SUM(CASE WHEN status!='完了' THEN 1 ELSE 0 END) open_n, "
+        "SUM(CASE WHEN status='完了' THEN 1 ELSE 0 END) done_n "
+        "FROM tasks WHERE COALESCE(is_admin,0)=0 AND (deleted_at IS NULL OR deleted_at='') "
+        "AND link_type IN ('deal','issue','delivery') AND link_id IS NOT NULL "
+        "GROUP BY link_type, link_id")
+    for r in rows:
+        if not r["open_n"]:
+            continue
+        label = task_link_label(con, r["link_type"], r["link_id"])
+        if not label:
+            continue
+        out[r["link_type"]].append({"id": r["link_id"], "label": label,
+                                    "open_n": r["open_n"], "done_n": r["done_n"]})
+    for k in out:
+        out[k].sort(key=lambda x: -x["open_n"])
+    return out
 
 
 def task_counts_by_project_status(con) -> dict:

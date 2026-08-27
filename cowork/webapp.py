@@ -485,21 +485,24 @@ function taskLinkKindChanged(prefix) {{
   var devWrap = document.getElementById(prefix + 'DevWrap');
   var dealWrap = document.getElementById(prefix + 'DealWrap');
   var issueWrap = document.getElementById(prefix + 'IssueWrap');
+  var deliveryWrap = document.getElementById(prefix + 'DeliveryWrap');
   if (devWrap) devWrap.style.display = (kind === 'dev_project') ? '' : 'none';
   if (dealWrap) dealWrap.style.display = (kind === 'deal') ? '' : 'none';
   if (issueWrap) issueWrap.style.display = (kind === 'issue') ? '' : 'none';
+  if (deliveryWrap) deliveryWrap.style.display = (kind === 'delivery') ? '' : 'none';
   var devSel = document.getElementById(prefix + 'DevSel');
   if (kind !== 'dev_project' && devSel) devSel.value = '';
-  if (kind === 'deal' || kind === 'issue') {{
+  if (kind === 'deal' || kind === 'issue' || kind === 'delivery') {{
     taskLinkResolve(prefix, kind);
   }} else {{
     var typeEl = document.getElementById(prefix + 'Type'), idEl = document.getElementById(prefix + 'Id');
-    if (typeEl) typeEl.value = ''; if (idEl) idEl.value = '';
+    if (typeEl) typeEl.value = (kind === '__none__') ? '__none__' : '';
+    if (idEl) idEl.value = '';
   }}
 }}
 function taskLinkResolve(prefix, kind) {{
-  var inputId = (kind === 'deal') ? prefix + 'DealQ' : prefix + 'IssueQ';
-  var dlId = (kind === 'deal') ? prefix + 'DealsDL' : prefix + 'IssuesDL';
+  var inputId = (kind === 'deal') ? prefix + 'DealQ' : (kind === 'delivery') ? prefix + 'DeliveryQ' : prefix + 'IssueQ';
+  var dlId = (kind === 'deal') ? prefix + 'DealsDL' : (kind === 'delivery') ? prefix + 'DeliveryDL' : prefix + 'IssuesDL';
   var input = document.getElementById(inputId), dl = document.getElementById(dlId);
   var typeEl = document.getElementById(prefix + 'Type'), idEl = document.getElementById(prefix + 'Id');
   if (!input || !dl || !typeEl || !idEl) return;
@@ -518,7 +521,7 @@ function taskLinkFilterResolve(prefix, kind, formId) {{
 function taskLinkFilterKindChanged(prefix, formId) {{
   taskLinkKindChanged(prefix);
   var kind = (document.getElementById(prefix + 'Kind') || {{}}).value || '';
-  if (!kind) {{ var f = document.getElementById(formId); if (f) f.submit(); }}
+  if (!kind || kind === '__none__') {{ var f = document.getElementById(formId); if (f) f.submit(); }}
 }}
 /* 全SFA共通: フィルタ適用中の項目に .filter-active を付けて薄くハイライトする。
    対象は .filter-row 内のコントロール（js-nofilter を付けた入力/作成フォームは除外）。
@@ -4011,7 +4014,12 @@ _TASKS_JS = """
 .task-col{flex:1 1 0;min-width:185px;background:#f1f4f9;border-radius:10px;padding:8px 7px 10px;display:flex;flex-direction:column;max-height:calc(100vh - 200px)}
 .task-col h3{font-size:13px;margin:0 0 6px;flex:none}
 .tc-col-body{overflow-y:auto;flex:1 1 auto;min-height:18px}
-.task-card{background:#fff;border:1px solid #e6e9f0;border-radius:8px;padding:5px 8px;margin-bottom:6px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.task-card{position:relative;background:#fff;border:1px solid #e6e9f0;border-radius:8px;padding:5px 8px;margin-bottom:6px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.tc-pick{display:none;position:absolute;top:4px;left:4px;z-index:5;line-height:1}
+#taskBoard.picking .tc-pick{display:block}
+#taskBoard.picking .task-card{padding-left:24px}
+#dpPickBar{display:none;align-items:center;gap:10px;flex-wrap:wrap;background:#eef2ff;border:1px solid #c7d2fe;
+  border-radius:8px;padding:8px 12px;margin-top:8px;position:sticky;bottom:8px;z-index:20}
 .task-card.saved{outline:2px solid #10b981;transition:outline .15s}
 .task-card.pinned{border-color:#f59e0b}
 .task-card[data-status="完了"]{background:#f1f5f9;border-color:#e2e8f0}
@@ -4066,6 +4074,8 @@ _TASKS_JS = """
 .tc-edit{font-size:10px;color:#94a3b8;text-decoration:none}
 #notesBackdrop{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}
 #notesPop{position:fixed;z-index:9999;display:none;background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.18);width:340px;max-width:92vw;max-height:70vh;overflow:auto;padding:12px}
+#linkBackdrop{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}
+#linkPop{position:fixed;z-index:9999;display:none;background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.18);width:380px;max-width:92vw;max-height:70vh;overflow:auto;padding:12px}
 </style>
 <script>
 var _TC_STATUSES=["受信箱","未着手","対応中","保留","完了"];
@@ -4113,6 +4123,31 @@ function tcEffortDefaultHours(id,level){
   if(!inp||(inp.value||'').trim()) return;     // 既に所要hが入っていれば上書きしない
   inp.value=def;
   taskField(id,'effort_hours',def);
+}
+// #101「今日明日のタスク」: 別画面へ遷移せず、看板のまま各カードにチェックボックスを出して
+// ピックする（ユーザー要望2026-08-27）。picked=タスクid群を持って/tasks/daily-planへ進み、
+// そちらで仕分け(軽い/重い)→カレンダー配置を行う。
+function tcPickChanged(){
+  var n=document.querySelectorAll('.tc-pick-cb:checked').length;
+  var el=document.getElementById('dpPickCount');
+  if(el) el.textContent=n;
+}
+function tcToggleDailyPick(){
+  var board=document.getElementById('taskBoard'), bar=document.getElementById('dpPickBar');
+  if(!board||!bar) return false;
+  var on=!board.classList.contains('picking');
+  board.classList.toggle('picking',on);
+  bar.style.display=on?'flex':'none';
+  if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); tcPickChanged(); }
+  return false;
+}
+function tcGoDailyPlan(){
+  var ids=Array.prototype.map.call(document.querySelectorAll('.tc-pick-cb:checked'),function(cb){return cb.dataset.tid;});
+  if(!ids.length){ alert('タスクを1つ以上選んでください'); return; }
+  var ownerSel=document.getElementById('dpPickOwner');
+  var owner=ownerSel?ownerSel.value:'';
+  if(!owner){ alert('担当を選んでください'); return; }
+  location.href='/tasks/daily-plan?assignee='+encodeURIComponent(owner)+'&picked='+ids.join(',');
 }
 function taskDelete(id){ if(!confirm('このタスクを削除しますか？')) return;
   fetch('/task/'+id+'/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})
@@ -4172,6 +4207,64 @@ function closeNotes(){ var i=document.getElementById('noteInput');
   if(i&&(i.value||'').trim()&&!confirm('入力中のメモを破棄して閉じますか？')) return;
   document.getElementById('notesPop').style.display='none'; document.getElementById('notesBackdrop').style.display='none'; }
 document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ var p=document.getElementById('notesPop'); if(p&&p.style.display==='block'){ e.preventDefault(); closeNotes(); } } });
+// 関連付けポップアップ(2026-08-27): カード上の「🔗関連」から商談/論点/Delivery/開発案件へ
+// 紐づけできる。ピッカー本体はページに1回だけ埋め込み済み(prefix="tcLink")で、開く時に
+// そのタスクの現在の紐づけ値を差し込む（taskLinkKindChangedは共通スクリプト側で定義済み）。
+function openLinkPop(id){
+  var card=document.getElementById('tc-'+id); if(!card) return;
+  var curType=card.dataset.linkType||'', curLabel=card.dataset.linkLabel||'';
+  var pop=document.getElementById('linkPop'), bd=document.getElementById('linkBackdrop');
+  if(!pop||!bd) return;
+  pop.setAttribute('data-tid',id);
+  var kindSel=document.getElementById('tcLinkKind');
+  if(kindSel) kindSel.value=curType;
+  taskLinkKindChanged('tcLink');
+  if(curType==='deal'||curType==='issue'||curType==='delivery'){
+    var qId=(curType==='deal')?'tcLinkDealQ':(curType==='issue')?'tcLinkIssueQ':'tcLinkDeliveryQ';
+    var qInp=document.getElementById(qId);
+    if(qInp) qInp.value=curLabel;
+    taskLinkResolve('tcLink',curType);
+  } else if(curType==='dev_project'){
+    var devSel=document.getElementById('tcLinkDevSel');
+    if(devSel) devSel.value='dev_project:'+(card.dataset.linkId||'');
+  }
+  bd.style.display='block'; pop.style.display='block';
+  pop.style.left=Math.max(8,(window.innerWidth-pop.offsetWidth)/2)+'px';
+  pop.style.top=Math.max(8,(window.innerHeight-pop.offsetHeight)/2)+'px';
+}
+function closeLinkPop(){
+  document.getElementById('linkPop').style.display='none';
+  document.getElementById('linkBackdrop').style.display='none';
+}
+function saveLinkPop(){
+  var pop=document.getElementById('linkPop'), id=pop.getAttribute('data-tid');
+  var kind=(document.getElementById('tcLinkKind')||{}).value||'';
+  var lt='', li='';
+  if(kind==='dev_project'){
+    var v=(document.getElementById('tcLinkDevSel')||{}).value||'';
+    if(v.indexOf('dev_project:')===0){ lt='dev_project'; li=v.split(':')[1]; }
+  } else if(kind==='deal'||kind==='issue'||kind==='delivery'){
+    lt=(document.getElementById('tcLinkType')||{}).value||'';
+    li=(document.getElementById('tcLinkId')||{}).value||'';
+  }
+  fetch('/task/'+id+'/link',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'link_type='+encodeURIComponent(lt)+'&link_id='+encodeURIComponent(li)})
+   .then(function(r){return r.json();}).then(function(d){
+     if(!d.ok){ alert('保存エラー: '+(d.error||'')); return; }
+     var card=document.getElementById('tc-'+id);
+     if(card){
+       card.dataset.linkType=d.link_type||''; card.dataset.linkId=d.link_id?String(d.link_id):'';
+       card.dataset.linkLabel=d.label||'';
+       var slot=card.querySelector('.tc-link-slot');
+       if(slot) slot.innerHTML=d.label
+         ? ('<a href="'+d.href+'" style="font-size:10px" title="'+d.label+'">'+d.icon+d.label.slice(0,20)+'</a>') : '';
+       var btn=card.querySelector('.tc-meta button[onclick^="openLinkPop"]');
+       if(btn) btn.innerHTML=d.label?'✎':'🔗 関連';
+     }
+     closeLinkPop();
+   }).catch(function(){ alert('通信エラー'); });
+}
+document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ var p=document.getElementById('linkPop'); if(p&&p.style.display==='block'){ e.preventDefault(); closeLinkPop(); } } });
 function taskFilter(){ var q=(document.getElementById('taskSearch').value||'').toLowerCase().trim();
   document.querySelectorAll('.task-card').forEach(function(c){ c.style.display=(!q||(c.getAttribute('data-search')||'').indexOf(q)>=0)?'':'none'; }); }
 // ピン切替時: その列を元のルールで並べ直す（ピン優先→期限昇順(未設定は末尾)→id降順）。
@@ -4427,8 +4520,8 @@ def _ai_summarize_project(pname: str, meta: str, task_lines: list) -> str | None
 
 
 def _task_link_datalists_html(con, prefix: str) -> str:
-    """タスクの商談/論点紐づけ用<datalist>（検索して選ぶと自動でdata-idを解決する、ユーザー要望
-    2026-08-24）。deals/deal_issuesの候補一覧を1ページに1回だけ埋め込む想定。"""
+    """タスクの商談/論点/Delivery紐づけ用<datalist>（検索して選ぶと自動でdata-idを解決する、
+    ユーザー要望2026-08-24。Deliveryは2026-08-27追加）。1ページに1回だけ埋め込む想定。"""
     deals = sfa_db.list_deals(con, status="open")
     deal_opts = "".join(
         f'<option value="{_esc(d.get("account_name") or "—")}：{_esc(d.get("deal_name") or "—")}" '
@@ -4439,37 +4532,56 @@ def _task_link_datalists_html(con, prefix: str) -> str:
         f'<option value="{_esc(sfa_db.task_link_label(con, "issue", it["id"]) or it.get("issue") or "")}" '
         f'data-id="{it["id"]}">'
         for it in issues)
+    deliveries = sfa_db.list_deliveries(con)
+    delivery_opts = "".join(
+        f'<option value="{_esc(dv.get("account_name") or "—")}：{_esc(dv.get("title") or dv.get("deal_name") or "—")}" '
+        f'data-id="{dv["id"]}">'
+        for dv in deliveries)
     return (f'<datalist id="{prefix}DealsDL">{deal_opts}</datalist>'
-            f'<datalist id="{prefix}IssuesDL">{issue_opts}</datalist>')
+            f'<datalist id="{prefix}IssuesDL">{issue_opts}</datalist>'
+            f'<datalist id="{prefix}DeliveryDL">{delivery_opts}</datalist>')
 
 
 def _task_link_picker_html(con, *, prefix: str, cur_type: str | None, cur_id, include_dev: bool = False,
-                           dev_opts: str = "", auto_submit_form_id: str | None = None) -> str:
-    """タスクの「関連（商談/論点/開発案件）」ピッカー。種別を選ぶ→単語で検索→候補から選ぶ
+                           dev_opts: str = "", auto_submit_form_id: str | None = None,
+                           allow_none_filter: bool = False) -> str:
+    """タスクの「関連（商談/論点/開発案件/Delivery）」ピッカー。種別を選ぶ→単語で検索→候補から選ぶ
     （ネイティブ<datalist>なので、候補が自動表示されドロップダウンを開く必要がない）。
     include_dev=Trueの時だけ開発案件<select>（呼び出し側でdev_optsを渡す）も選択肢に含める。
+    Delivery(2026-08-27追加)は商談/論点と同じ検索式。
+    allow_none_filter=True（一覧の絞り込み専用、ユーザー要望2026-08-27）で
+    「紐づけ無しのみ」(__none__)を選択肢に追加する（タスク編集フォームでは使わない）。
     auto_submit_form_id指定時（一覧の絞り込み用）は、候補が確定した瞬間にそのform_idのフォームを
     自動送信する。JS本体は共通スクリプト(PAGE定数)のtaskLinkKindChanged/taskLinkResolve等を参照。"""
-    cur_type = cur_type if cur_type in ("deal", "issue", "dev_project") else None
+    _valid_types = ("deal", "issue", "dev_project", "delivery") + (("__none__",) if allow_none_filter else ())
+    cur_type = cur_type if cur_type in _valid_types else None
     deal_label = sfa_db.task_link_label(con, "deal", cur_id) if cur_type == "deal" else ""
     issue_label = sfa_db.task_link_label(con, "issue", cur_id) if cur_type == "issue" else ""
-    kind_opts = ['<option value="">（なし）</option>',
-                 f'<option value="deal"{" selected" if cur_type == "deal" else ""}>商談</option>',
-                 f'<option value="issue"{" selected" if cur_type == "issue" else ""}>論点</option>']
+    delivery_label = sfa_db.task_link_label(con, "delivery", cur_id) if cur_type == "delivery" else ""
+    kind_opts = ['<option value="">（なし）</option>']
+    if allow_none_filter:
+        kind_opts.append(f'<option value="__none__"{" selected" if cur_type == "__none__" else ""}>'
+                         f'📥 紐づけ無しのみ</option>')
+    kind_opts += [
+        f'<option value="deal"{" selected" if cur_type == "deal" else ""}>商談</option>',
+        f'<option value="issue"{" selected" if cur_type == "issue" else ""}>論点</option>',
+        f'<option value="delivery"{" selected" if cur_type == "delivery" else ""}>Delivery</option>']
     if include_dev:
         kind_opts.append(f'<option value="dev_project"{" selected" if cur_type == "dev_project" else ""}>開発案件</option>')
     dev_wrap = (f'<span id="{prefix}DevWrap" style="display:{"" if cur_type == "dev_project" else "none"}">'
                 f'<select id="{prefix}DevSel" name="link">{dev_opts}</select></span>') if include_dev else ""
-    _hidden_type = cur_type if cur_type in ("deal", "issue") else None
+    _hidden_type = cur_type if cur_type in ("deal", "issue", "delivery") else None
     _hidden_id = cur_id if _hidden_type else None
     if auto_submit_form_id:
         kind_onchange = f"taskLinkFilterKindChanged(&#39;{prefix}&#39;,&#39;{auto_submit_form_id}&#39;)"
         deal_oninput = f"taskLinkFilterResolve(&#39;{prefix}&#39;,&#39;deal&#39;,&#39;{auto_submit_form_id}&#39;)"
         issue_oninput = f"taskLinkFilterResolve(&#39;{prefix}&#39;,&#39;issue&#39;,&#39;{auto_submit_form_id}&#39;)"
+        delivery_oninput = f"taskLinkFilterResolve(&#39;{prefix}&#39;,&#39;delivery&#39;,&#39;{auto_submit_form_id}&#39;)"
     else:
         kind_onchange = f"taskLinkKindChanged(&#39;{prefix}&#39;)"
         deal_oninput = f"taskLinkResolve(&#39;{prefix}&#39;,&#39;deal&#39;)"
         issue_oninput = f"taskLinkResolve(&#39;{prefix}&#39;,&#39;issue&#39;)"
+        delivery_oninput = f"taskLinkResolve(&#39;{prefix}&#39;,&#39;delivery&#39;)"
     return (
         f'<select id="{prefix}Kind" onchange="{kind_onchange}">{"".join(kind_opts)}</select> '
         f'{dev_wrap}'
@@ -4479,6 +4591,9 @@ def _task_link_picker_html(con, *, prefix: str, cur_type: str | None, cur_id, in
         f'<span id="{prefix}IssueWrap" style="display:{"" if cur_type == "issue" else "none"}">'
         f'<input type="text" id="{prefix}IssueQ" list="{prefix}IssuesDL" value="{_esc(issue_label)}" '
         f'placeholder="🔍 論点名・会社名で検索" autocomplete="off" oninput="{issue_oninput}"></span>'
+        f'<span id="{prefix}DeliveryWrap" style="display:{"" if cur_type == "delivery" else "none"}">'
+        f'<input type="text" id="{prefix}DeliveryQ" list="{prefix}DeliveryDL" value="{_esc(delivery_label)}" '
+        f'placeholder="🔍 会社名・Delivery名で検索" autocomplete="off" oninput="{delivery_oninput}"></span>'
         f'<input type="hidden" id="{prefix}Type" name="link_type" value="{_esc(cur_type or "")}">'
         f'<input type="hidden" id="{prefix}Id" name="link_id" value="{cur_id if cur_type else ""}">'
         + _task_link_datalists_html(con, prefix))
@@ -4596,7 +4711,8 @@ def tasks_deleted_page(con) -> str:
 def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                project: str | None = None, urgency: str | None = None,
                pinned: bool = False, deleted: bool = False,
-               link_type: str | None = None, link_id: int | None = None) -> str:
+               link_type: str | None = None, link_id: int | None = None,
+               pick: bool = False) -> str:
     """タスクボード（状態別カンバン）。コンパクト折りたたみカード＋その場編集＋緊急度自動＋
     プロジェクト一覧（期限・状態別内訳）＋期限クイック/逆算推奨（#30）。"""
     if deleted:
@@ -4725,19 +4841,29 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                        f'onclick="tcDue({tid},&#39;{rec_d.isoformat()}&#39;)">推奨 {rec_d.isoformat()[5:]}</button>')
             except ValueError:
                 rec = ""
-        link_html = ""
+        link_chip = ""
+        _link_type_attr, _link_id_attr, _link_label_attr = "", "", ""
         if t.get("link_type") == "dev_project" and t.get("link_id") in dev_map:
             dp = dev_map[t["link_id"]]
-            link_html = (f'<a href="/dev-project/{dp["id"]}/edit" style="font-size:10px" '
-                         f'title="{_esc(dp.get("account_name") or "")}">🛠{_esc(dp.get("theme") or "開発案件")}</a>')
-        elif t.get("link_type") in ("deal", "issue") and t.get("link_id"):
+            _link_type_attr, _link_id_attr = "dev_project", str(dp["id"])
+            _link_label_attr = dp.get("theme") or "開発案件"
+            link_chip = (f'<a href="/dev-project/{dp["id"]}/edit" style="font-size:10px" '
+                         f'title="{_esc(dp.get("account_name") or "")}">🛠{_esc(_link_label_attr)}</a>')
+        elif t.get("link_type") in ("deal", "issue", "delivery") and t.get("link_id"):
             _link_lbl = sfa_db.task_link_label(con, t["link_type"], t["link_id"])
             if _link_lbl:
-                _link_href = (f'/deal/{t["link_id"]}' if t["link_type"] == "deal"
-                              else f'/deal-issue/{t["link_id"]}')
-                _link_icon = "🤝" if t["link_type"] == "deal" else "📌"
-                link_html = (f'<a href="{_link_href}" style="font-size:10px" title="{_esc(_link_lbl)}">'
+                _link_type_attr, _link_id_attr, _link_label_attr = t["link_type"], str(t["link_id"]), _link_lbl
+                _link_href = {"deal": f'/deal/{t["link_id"]}', "issue": f'/deal-issue/{t["link_id"]}',
+                             "delivery": f'/delivery/{t["link_id"]}'}[t["link_type"]]
+                _link_icon = {"deal": "🤝", "issue": "📌", "delivery": "🚚"}[t["link_type"]]
+                link_chip = (f'<a href="{_link_href}" style="font-size:10px" title="{_esc(_link_lbl)}">'
                              f'{_link_icon}{_esc(_link_lbl[:20])}</a>')
+        # #関連付けポップアップ(2026-08-27): カード上から「🔗関連」で商談/論点/Delivery/開発案件へ
+        # 紐づけできるようにする（従来はtask_form=別画面の編集フォームでしか設定できなかった）。
+        link_edit_btn = (f'<button type="button" class="tc-edit" style="border:none;background:none;'
+                         f'cursor:pointer;color:#94a3b8" title="関連を設定" onclick="openLinkPop({tid})">'
+                         f'{"✎" if link_chip else "🔗 関連"}</button>')
+        link_html = f'<span class="tc-link-slot">{link_chip}</span>{link_edit_btn}'
         _plink = (t.get("slack_permalink") or "").strip()
         if _plink:
             slack_html = (
@@ -4799,11 +4925,21 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         m_due = (f'<span class="m-due" style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
                  if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
         _urg_border = f'border-left:4px solid {ucolor};' if status != "完了" else ""
+        # #101「今日明日のタスク」のピック用チェックボックス。既定は非表示(.tc-pick)で、
+        # #taskBoard.picking の間だけCSSで表示する（看板画面から離れず選択するための仕組み。
+        # ユーザー要望2026-08-27: 別画面の一覧ではなく看板のままチェックを付けたい）。
+        pick_cb = "" if status == "完了" else (
+            f'<label class="tc-pick" onclick="event.stopPropagation()" '
+            f'title="今日明日のタスクとして選択"><input type="checkbox" class="tc-pick-cb" '
+            f'data-tid="{tid}" onchange="tcPickChanged()"></label>')
         return (
             f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
             f'style="{_urg_border}" '
             f'data-status="{_esc(status)}" data-pinned="{1 if pinned else 0}" data-search="{search}" '
+            f'data-link-type="{_esc(_link_type_attr)}" data-link-id="{_esc(_link_id_attr)}" '
+            f'data-link-label="{_esc(_link_label_attr)}" '
             f'onclick="tcCardClick(event,this)">'
+            f'{pick_cb}'
             f'<div class="tc-head">'
             f'<span class="tc-dot" style="background:{ucolor}" title="{ulabel}"></span>'
             f'<span class="tc-ttl">{_esc(t.get("title"))}</span>'
@@ -4869,6 +5005,24 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         strip = (f'<div class="pj-strip">{chips}{clear}'
                  f'<a class="pj-chip mng" href="/task-projects">⚙ PJ管理</a></div>')
 
+    # 紐づけられている案件一覧（商談/論点/Deliveryを分けて表示。ユーザー要望2026-08-27）。
+    # 完了にしか登場しない紐づけ先はtask_link_summary側で除外済み。デフォルトで上部に出すが、
+    # PJストリップと同じ横スクロールチップ行×最大3段に留め、全体の可視性を崩さないようにする。
+    _link_summary = sfa_db.task_link_summary(con)
+    _link_strip_rows = ""
+    for _lt, _lbl_prefix, _lt_icon in (("deal", "商談", "🤝"), ("issue", "論点", "📌"), ("delivery", "Delivery", "🚚")):
+        _entries = _link_summary.get(_lt) or []
+        if not _entries:
+            continue
+        _chips = "".join(
+            f'<a class="pj-chip{" active" if (link_type == _lt and link_id == e["id"]) else ""}" '
+            f'href="/tasks?link_type={_lt}&link_id={e["id"]}">'
+            f'{_lt_icon}{_esc(e["label"][:24])}<span class="pj-cnt">{e["open_n"]}件</span></a>'
+            for e in _entries[:30])
+        _link_strip_rows += (f'<div class="pj-strip"><span class="muted" style="font-size:11px;flex:none;'
+                             f'padding:3px 4px">{_lbl_prefix}:</span>{_chips}</div>')
+    link_strip = _link_strip_rows
+
     def _fopt(values, cur, alllabel):
         return f'<option value="">{alllabel}</option>' + "".join(
             f'<option value="{html.escape(v)}"{" selected" if v == cur else ""}>{html.escape(v)}</option>'
@@ -4885,7 +5039,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                   for a in owners))
     _link_filter_html = _task_link_picker_html(
         con, prefix="tfFilterLink", cur_type=link_type, cur_id=link_id,
-        auto_submit_form_id="tasksFilterForm")
+        auto_submit_form_id="tasksFilterForm", allow_none_filter=True)
     filter_row = f"""<form method="get" action="/tasks" class="filter-row" id="tasksFilterForm">
       <input type="hidden" name="project" value="{_esc(','.join(sel_projects))}">
       <select name="assignee" onchange="this.form.submit()">{_asg_fopt}</select>
@@ -4918,6 +5072,37 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         <a class="box desk-alert-hold" href="/tasks?urgency=hold" style="text-decoration:none;color:inherit" title="保留中は期限管理の対象外">⏸ 保留中 <b data-agg-count="hold">{hold_n}</b></a>
         <a class="box desk-alert-pin{' on' if pinned else ''}" href="/tasks?pinned=1" style="text-decoration:none;color:inherit" title="最優先ピンのみ表示">⭐ 最優先ピン <b data-agg-count="pinned">{pinned_n}</b></a>
       </div>"""
+    # #101「今日明日のタスク」ピックバー。看板から離れず選ぶ（ユーザー要望2026-08-27）。
+    # 現在の担当フィルタがあれば既定選択（ほぼ確認だけで進められる）、無ければ選ばせる。
+    _pick_owner_opts = "".join(
+        f'<option value="{_esc(o)}"{" selected" if o == assignee else ""}>{_esc(o)}</option>' for o in owners)
+    pick_bar = (f'<div id="dpPickBar" style="{"display:flex" if pick else ""}">'
+                f'<b>📆 今日明日のタスクを選択中: <span id="dpPickCount">0</span>件</b>'
+                f'<label style="font-size:12px">担当: <select id="dpPickOwner">'
+                f'<option value="">選択</option>{_pick_owner_opts}</select></label>'
+                f'<button class="btn" type="button" onclick="tcGoDailyPlan()">次へ（仕分けへ）</button>'
+                f'<button class="btn sec" type="button" onclick="tcToggleDailyPick()">キャンセル</button></div>')
+    # 関連付けポップアップ(2026-08-27): カード上の「🔗関連」から商談/論点/Delivery/開発案件へ
+    # 紐づけできるように、task_formと同じピッカーをページに1回だけ埋め込む（prefix="tcLink"）。
+    _link_dev_opts = '<option value="">（なし）</option>' + "".join(
+        f'<option value="dev_project:{dp["id"]}">🛠 {_esc(dp.get("theme") or "開発案件")}'
+        f'（{_esc(dp.get("account_name") or "-")}）</option>' for dp in dev_map.values())
+    link_pop = f"""
+    <div id="linkBackdrop" onclick="closeLinkPop()"></div>
+    <div id="linkPop">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:13px">🔗 関連を設定</b>
+        <span onclick="closeLinkPop()" style="cursor:pointer;color:#94a3b8">✕</span>
+      </div>
+      <div style="margin-top:8px">
+        {_task_link_picker_html(con, prefix="tcLink", cur_type=None, cur_id=None,
+                                include_dev=True, dev_opts=_link_dev_opts)}
+      </div>
+      <div style="margin-top:10px;text-align:right">
+        <button type="button" class="btn sec" onclick="closeLinkPop()">キャンセル</button>
+        <button type="button" class="btn" onclick="saveLinkPop()">保存</button>
+      </div>
+    </div>"""
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -4927,7 +5112,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             <a href="/tasks" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">🗂 看板</a>
             <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
-            <a href="/tasks/daily-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
+            <a href="/tasks/daily-plan" onclick="return tcToggleDailyPick()" id="navDailyPickBtn"
+               style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
           </span>
           <a class="btn sec" href="/tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
           {seed_btn}
@@ -4938,9 +5124,11 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
       {agg}
       {test_bar}
       {strip}
+      {link_strip}
       {filter_row}
-      <div id="taskBoard">{columns}</div>
-    </div>{quick_js}{_TASKS_JS}{_DESK_CSS}{_DESK_RECUR_JS}"""
+      <div id="taskBoard"{' class="picking"' if pick else ''}>{columns}</div>
+      {pick_bar}
+    </div>{link_pop}{quick_js}{_TASKS_JS}{_DESK_CSS}{_DESK_RECUR_JS}"""
 
 
 _GANTT_CSS = """<style>
@@ -5096,7 +5284,7 @@ def tasks_gantt_page(con) -> str:
             <a href="/tasks" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗂 看板</a>
             <a href="/tasks/gantt" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📊 ガント</a>
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
-            <a href="/tasks/daily-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
+            <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
           </span>
           <a class="btn" href="/tasks/new">＋新規コンサルタスク</a>
         </span>
@@ -5159,7 +5347,7 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
           <a href="/tasks" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗂 看板</a>
           <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
           <a href="/tasks/capacity" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📅 容量</a>
-          <a href="/tasks/daily-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
+          <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
         </span>
       </h2>
       <p class="muted" style="font-size:12px;margin:0 0 10px">担当者ごとの1日あたり作業可能時間（打ち合わせ除く）を、当日〜直近{horizon_days}営業日分で
@@ -5224,43 +5412,36 @@ def _daily_plan_nav(active: str) -> str:
     return (f'<span style="display:inline-flex;gap:4px;background:#eef0ff;border-radius:8px;padding:2px">'
             f'{item("/tasks", "🗂 看板", "board")}{item("/tasks/gantt", "📊 ガント", "gantt")}'
             f'{item("/tasks/capacity", "📅 容量", "capacity")}'
-            f'{item("/tasks/daily-plan", "📆 今日明日", "daily")}</span>')
+            f'{item("/tasks?pick=1", "📆 今日明日", "daily")}</span>')
 
 
-def daily_plan_page(con, assignee: str | None = None) -> str:
-    """「今日明日のタスク」ピック→仕分け(軽い/重い)→当日+翌日カレンダーへドラッグ配置、
-    という日次プランニングのStep1〜4を1ページで完結させる（サーバは初期データを渡すのみ、
-    以降はクライアントJSで状態遷移し、確定時のみPOST /tasks/daily-plan/save で保存）。"""
-    owners = sfa_db.get_master_list(con, "owners")
+def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None = None) -> str:
+    """「今日明日のタスク」仕分け(軽い/重い)→当日+翌日カレンダーへドラッグ配置、という
+    日次プランニングをStep3〜4で1ページ完結させる（サーバは初期データを渡すのみ、
+    以降はクライアントJSで状態遷移し、確定時のみPOST /tasks/daily-plan/save で保存）。
+    タスクのピック（旧Step1/2）は看板(/tasks?pick=1)でカード上のチェックボックスから行う
+    （ユーザー要望2026-08-27: 別画面の一覧ではなく看板のままチェックを付けたい）。picked=
+    看板から渡されたタスクid群が無ければ、看板へ誘導するだけの案内を表示する。"""
     nav = _daily_plan_nav("daily")
-    if not assignee:
-        opts = "".join(f'<option value="{_esc(o)}">{_esc(o)}</option>' for o in owners)
+    if not assignee or not picked:
         return f"""
         <div class="card">
           <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
             <span>📆 今日明日のタスク</span>{nav}
           </h2>
-          <p class="muted" style="font-size:13px">担当を選ぶと、今日/明日やるタスクを選んでカレンダーに配置できます。</p>
-          <form method="get" action="/tasks/daily-plan">
-            <select name="assignee" required><option value="">担当を選択</option>{opts}</select>
-            <button class="btn" type="submit">開始</button>
-          </form>
+          <p class="muted" style="font-size:13px">
+            <a href="/tasks?pick=1">看板</a>で「📆 今日明日」を押すと、カードにチェックボックスが
+            表示されます。今日/明日やるタスクを選び、下部の「次へ（仕分けへ）」でここに進みます。
+          </p>
         </div>{_DAILY_PLAN_CSS}"""
 
-    tasks = sfa_db.list_tasks(con, assignee=assignee, admin=False, exclude_done=True)
+    tasks = [t for t in (sfa_db.get_task(con, tid) for tid in picked) if t]
     today = _today_jst()
     tomorrow = today + timedelta(days=1)
     day_labels = [
         f'{today.month}/{today.day}({_JP_WEEKDAYS[today.weekday()]}) 今日',
         f'{tomorrow.month}/{tomorrow.day}({_JP_WEEKDAYS[tomorrow.weekday()]}) 明日',
     ]
-    pick_rows = "".join(
-        f'<label class="dp-pick-row"><input type="checkbox" value="{t["id"]}"> '
-        f'{_esc(t.get("title") or "(無題)")} '
-        f'<span class="muted" style="font-size:11px">'
-        f'{_esc(t.get("due_date") or "期限なし")}・{_esc(t.get("effort_level") or "工数感未設定")}</span></label>'
-        for t in tasks
-    ) or '<p class="muted">未完了のタスクがありません。</p>'
     tasks_by_id = {
         str(t["id"]): {"id": t["id"], "title": t.get("title") or "(無題)",
                        "due_date": t.get("due_date") or "", "effort_level": t.get("effort_level") or ""}
@@ -5280,17 +5461,12 @@ def daily_plan_page(con, assignee: str | None = None) -> str:
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>📆 今日明日のタスク — {_esc(assignee)}</span>{nav}
       </h2>
-      <p class="muted" style="font-size:12px"><a href="/tasks/daily-plan">担当を変更</a></p>
+      <p class="muted" style="font-size:12px">
+        <a href="/tasks?pick=1&assignee={_esc(assignee)}">選び直す（看板へ戻る）</a></p>
       {latest_html}
 
-      <div id="dpStep2">
-        <h3 style="font-size:14px;margin:10px 0 4px">① 今日/明日やるタスクを選ぶ</h3>
-        <div id="dpPickList">{pick_rows}</div>
-        <button class="btn" type="button" onclick="dpToStep3()" style="margin-top:8px">次へ（仕分け）</button>
-      </div>
-
-      <div id="dpStep3" style="display:none">
-        <h3 style="font-size:14px;margin:10px 0 4px">② 軽い/重いに仕分ける（ドラッグで修正可）</h3>
+      <div id="dpStep3">
+        <h3 style="font-size:14px;margin:10px 0 4px">① 軽い/重いに仕分ける（ドラッグで修正可）</h3>
         <div style="display:flex;gap:12px">
           <div style="flex:1">
             <div class="muted" style="font-size:12px;margin-bottom:4px">🩵 軽い（作業的・既定30分）</div>
@@ -5305,7 +5481,7 @@ def daily_plan_page(con, assignee: str | None = None) -> str:
       </div>
 
       <div id="dpStep4" style="display:none">
-        <h3 style="font-size:14px;margin:10px 0 4px">③ カレンダーへドラッグ&ドロップで配置</h3>
+        <h3 style="font-size:14px;margin:10px 0 4px">② カレンダーへドラッグ&ドロップで配置</h3>
         <p class="muted" style="font-size:12px">下のチップをカレンダーへドラッグ。配置後は右端をドラッグで長さ変更、
           再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
         <div style="display:flex;gap:8px;margin-bottom:8px">
@@ -5337,21 +5513,6 @@ _DAILY_PLAN_JS = f"""<script>
   var DRAGGING_CHIP = null, DRAGGING_BLOCK_UID = null;
 
   function esc(s){{ var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }}
-
-  window.dpToStep3 = function(){{
-    var checked = document.querySelectorAll('#dpPickList input[type=checkbox]:checked');
-    if (!checked.length) {{ alert('タスクを1つ以上選んでください'); return; }}
-    var light = document.getElementById('dpLight'), heavy = document.getElementById('dpHeavy');
-    light.innerHTML = ''; heavy.innerHTML = '';
-    checked.forEach(function(cb){{
-      var t = window.DP_TASKS_BY_ID[cb.value];
-      if (!t) return;
-      var bucket = (t.effort_level === '軽') ? '軽い' : '重い';
-      (bucket === '軽い' ? light : heavy).appendChild(dpMakeChip(t, bucket));
-    }});
-    document.getElementById('dpStep2').style.display = 'none';
-    document.getElementById('dpStep3').style.display = '';
-  }};
 
   function dpMakeChip(t, bucket){{
     var el = document.createElement('div');
@@ -5516,6 +5677,18 @@ _DAILY_PLAN_JS = f"""<script>
         else {{ alert('保存エラー: ' + (d.error||'')); }}
       }}).catch(function(){{ alert('通信エラー'); }});
   }};
+
+  // 初期化: 看板でピックされたタスク(window.DP_TASKS_BY_ID)をeffort_levelベースで
+  // 軽い/重いに仕分けてStep3から開始する（ピック自体は看板で完了済みのため）。
+  (function dpInit(){{
+    var light = document.getElementById('dpLight'), heavy = document.getElementById('dpHeavy');
+    if (!light || !heavy) return;
+    Object.keys(window.DP_TASKS_BY_ID || {{}}).forEach(function(tid){{
+      var t = window.DP_TASKS_BY_ID[tid];
+      var bucket = (t.effort_level === '軽') ? '軽い' : '重い';
+      (bucket === '軽い' ? light : heavy).appendChild(dpMakeChip(t, bucket));
+    }});
+  }})();
 }})();
 </script>"""
 
@@ -14503,14 +14676,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         pinned=bool(_tq.get("pinned", [""])[0]),
                         deleted=bool(_tq.get("deleted", [""])[0]),
                         link_type=(_tq.get("link_type", [""])[0] or None),
-                        link_id=(int(_tq["link_id"][0]) if _tq.get("link_id", [""])[0].isdigit() else None))))
+                        link_id=(int(_tq["link_id"][0]) if _tq.get("link_id", [""])[0].isdigit() else None),
+                        pick=bool(_tq.get("pick", [""])[0]))))
                 elif path == "/tasks/gantt":
                     self._send(render(tasks_gantt_page(con)))
                 elif path == "/tasks/capacity":
                     self._send(render(tasks_capacity_page(con)))
                 elif path == "/tasks/daily-plan":
                     _dpq = self._qs()
-                    self._send(render(daily_plan_page(con, assignee=(_dpq.get("assignee", [""])[0] or None))))
+                    _dp_picked_raw = (_dpq.get("picked", [""])[0] or "").strip()
+                    _dp_picked = [int(x) for x in _dp_picked_raw.split(",") if x.isdigit()] or None
+                    self._send(render(daily_plan_page(
+                        con, assignee=(_dpq.get("assignee", [""])[0] or None), picked=_dp_picked)))
                 elif (path.startswith("/tasks/daily-plan/plan/")
                       and path.split("/")[-1].isdigit()):
                     self._send(render(daily_task_plan_view_page(con, int(path.split("/")[-1]))))
@@ -15103,10 +15280,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         except ValueError:
                             _li = None
                     else:
-                        # 商談/論点への紐づけ（_task_link_picker_html由来。ユーザー要望2026-08-24）。
+                        # 商談/論点/Deliveryへの紐づけ（_task_link_picker_html由来。
+                        # ユーザー要望2026-08-24、Deliveryは2026-08-27追加）。
                         _flt = (f.get("link_type") or "").strip()
                         _fli = (f.get("link_id") or "").strip()
-                        if _flt in ("deal", "issue") and _fli.isdigit():
+                        if _flt in ("deal", "issue", "delivery") and _fli.isdigit():
                             _lt, _li = _flt, int(_fli)
                     _cat = f.get("category") or None
                     if not _cat:  # 種類が空ならAI(Haiku)で自動判定（間違えたら手修正）
@@ -15433,6 +15611,45 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _resp["counts"] = _task_urgency_counts(
                                 con, admin=_is_admin_task, include_start_overdue=not _is_admin_task)
                         self._send(json.dumps(_resp, ensure_ascii=False).encode(), ctype="application/json")
+
+                elif (path.startswith("/task/") and path.endswith("/link")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # カード上の関連付けポップアップ(2026-08-27)。商談/論点/Delivery/開発案件への
+                    # link_type+link_idを1回のリクエストでまとめて保存する（空で送るとクリア）。
+                    _tid = int(path.split("/")[2])
+                    _lt = (f.get("link_type") or "").strip()
+                    _li = (f.get("link_id") or "").strip()
+                    if _lt and _lt not in ("deal", "issue", "delivery", "dev_project"):
+                        self._send(json.dumps({"ok": False, "error": "不正な種別"}, ensure_ascii=False).encode(),
+                                   ctype="application/json")
+                    elif _lt and not _li.isdigit():
+                        self._send(json.dumps({"ok": False, "error": "不正な選択"}, ensure_ascii=False).encode(),
+                                   ctype="application/json")
+                    else:
+                        _lt_final = _lt or None
+                        _li_final = int(_li) if _lt else None
+                        con.execute("UPDATE tasks SET link_type=?, link_id=?, updated_at=datetime('now') "
+                                   "WHERE id=?", (_lt_final, _li_final, _tid))
+                        con.commit()
+                        _label = _href = _icon = None
+                        if _lt_final == "dev_project":
+                            _dp = sfa_db.get_dev_project(con, _li_final)
+                            if _dp:
+                                _label = _dp.get("theme") or "開発案件"
+                                _href = f"/dev-project/{_li_final}/edit"
+                                _icon = "🛠"
+                        elif _lt_final in ("deal", "issue", "delivery"):
+                            _label = sfa_db.task_link_label(con, _lt_final, _li_final)
+                            if _label:
+                                _href = {"deal": f"/deal/{_li_final}", "issue": f"/deal-issue/{_li_final}",
+                                        "delivery": f"/delivery/{_li_final}"}[_lt_final]
+                                _icon = {"deal": "🤝", "issue": "📌", "delivery": "🚚"}[_lt_final]
+                            else:
+                                _lt_final = _li_final = None
+                        self._send(json.dumps({
+                            "ok": True, "link_type": _lt_final, "link_id": _li_final,
+                            "label": _label, "href": _href, "icon": _icon,
+                        }, ensure_ascii=False).encode(), ctype="application/json")
 
                 elif (path.startswith("/task/") and path.endswith("/recur")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):

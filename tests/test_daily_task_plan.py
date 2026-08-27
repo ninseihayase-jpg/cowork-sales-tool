@@ -93,22 +93,39 @@ def test_deleting_task_cascades_plan_items(con):
 
 # ── ページ・ルート ────────────────────────────────────────────────────────
 
-def test_daily_plan_page_without_assignee_shows_owner_picker(con):
+def test_daily_plan_page_without_picked_ids_guides_to_kanban(con):
+    """ユーザー要望2026-08-27: ピックは別画面ではなく看板(/tasks?pick=1)で行う。
+    ここへpicked無しで来た場合は看板への案内のみ表示する。"""
     html = webapp.daily_plan_page(con)
-    assert "担当を選択" in html
+    assert "/tasks?pick=1" in html
     assert "DP_TASKS_BY_ID" not in html
 
 
-def test_daily_plan_page_with_assignee_embeds_open_tasks_only(con):
-    open_id = sfa_db.upsert_task(con, title="アルファタスク", assignee="早瀬", status="未着手")
-    sfa_db.upsert_task(con, title="ベータタスク", assignee="早瀬", status="完了")
-    sfa_db.upsert_task(con, title="ガンマタスク", assignee="高橋", status="未着手")
+def test_daily_plan_page_without_picked_ids_even_with_assignee(con):
     html = webapp.daily_plan_page(con, assignee="早瀬")
+    assert "/tasks?pick=1" in html
+    assert "DP_TASKS_BY_ID" not in html
+
+
+def test_daily_plan_page_with_picked_ids_embeds_only_those_tasks(con):
+    picked_id = sfa_db.upsert_task(con, title="アルファタスク", assignee="早瀬", status="未着手")
+    other_id = sfa_db.upsert_task(con, title="ガンマタスク", assignee="早瀬", status="未着手")
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[picked_id])
     assert "アルファタスク" in html
-    assert "ベータタスク" not in html
     assert "ガンマタスク" not in html
     data = json.loads(html.split("window.DP_TASKS_BY_ID = ", 1)[1].split(";\n", 1)[0])
-    assert str(open_id) in data
+    assert str(picked_id) in data
+    assert str(other_id) not in data
+    # 別画面の一覧(Step1/2)は無く、いきなり仕分け(Step3)から始まる
+    assert "id=\"dpStep2\"" not in html
+    assert 'id="dpStep3">' in html  # display:noneが付いていない=最初から表示
+
+
+def test_daily_plan_page_ignores_picked_without_assignee(con):
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬")
+    html = webapp.daily_plan_page(con, picked=[tid])
+    assert "/tasks?pick=1" in html
+    assert "DP_TASKS_BY_ID" not in html
 
 
 def test_daily_plan_page_links_to_latest_plan_for_today(con):
@@ -117,9 +134,40 @@ def test_daily_plan_page_links_to_latest_plan_for_today(con):
     plan_id = sfa_db.create_daily_task_plan(
         con, owner="早瀬", base_date=today, label="早瀬/直近プラン",
         items=[{"task_id": tid, "day_offset": 0, "start_min": 0, "duration_min": 30, "lane": 0, "bucket": "軽い"}])
-    html = webapp.daily_plan_page(con, assignee="早瀬")
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
     assert f"/tasks/daily-plan/plan/{plan_id}" in html
     assert "早瀬/直近プラン" in html
+
+
+# ── 看板(/tasks)のピック機能 ─────────────────────────────────────────────
+
+def test_tasks_page_cards_carry_pick_checkbox(con):
+    tid = sfa_db.upsert_task(con, title="ピック対象", assignee="早瀬", status="未着手")
+    html = webapp.tasks_page(con)
+    assert f'data-tid="{tid}"' in html
+    assert 'class="tc-pick-cb"' in html
+    assert "function tcToggleDailyPick" in html
+    assert "function tcGoDailyPlan" in html
+
+
+def test_tasks_page_completed_cards_have_no_pick_checkbox(con):
+    tid = sfa_db.upsert_task(con, title="完了済み", assignee="早瀬", status="完了")
+    html = webapp.tasks_page(con)
+    card_start = html.find(f'id="tc-{tid}"')
+    card_html = html[card_start:card_start + 400]
+    assert "tc-pick-cb" not in card_html
+
+
+def test_tasks_page_pick_query_param_auto_enables_picking_mode(con):
+    html = webapp.tasks_page(con, pick=True)
+    assert 'id="taskBoard" class="picking"' in html
+    assert 'id="dpPickBar" style="display:flex"' in html
+
+
+def test_tasks_page_without_pick_param_starts_hidden(con):
+    html = webapp.tasks_page(con)
+    assert 'id="taskBoard">' in html  # picking クラス無し
+    assert 'id="dpPickBar" style="">' in html
 
 
 def test_daily_task_plan_view_page_renders_blocks_with_kanban_link(con):

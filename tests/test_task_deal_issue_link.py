@@ -185,3 +185,51 @@ def test_tasks_save_route_ignores_invalid_link_type(server):
     row = con.execute("SELECT * FROM tasks WHERE title=?", ("不正値テスト",)).fetchone()
     assert row["link_type"] is None and row["link_id"] is None
     con.close()
+
+
+# ── Delivery紐づけ（ユーザー要望2026-08-27） ─────────────────────────────
+
+@pytest.fixture
+def delivery(con, deal_and_issue):
+    did, _iid = deal_and_issue
+    dv = sfa_db.create_delivery(con, deal_id=did, title="コスト削減稼働案件")
+    return dv
+
+
+def test_task_link_label_delivery(con, delivery):
+    assert sfa_db.task_link_label(con, "delivery", delivery) == "ソラスト：コスト削減稼働案件"
+
+
+def test_task_form_offers_delivery_search(con, delivery):
+    task = {"link_type": "delivery", "link_id": delivery}
+    html = webapp.task_form(con, task)
+    assert "DeliveryWrap" in html
+    assert "コスト削減稼働案件" in html
+
+
+def test_tasks_page_shows_delivery_link_chip_on_card(con, delivery):
+    sfa_db.upsert_task(con, title="Delivery紐づけタスク", link_type="delivery", link_id=delivery,
+                       assignee="早瀬", status="未着手")
+    html = webapp.tasks_page(con)
+    assert "🚚" in html
+    assert "コスト削減稼働案件" in html
+    assert "/delivery/" in html
+
+
+def test_tasks_save_route_persists_delivery_link(server):
+    base, db_path = server
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('ソラスト')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="成果報酬コスト削減", stage="提案")
+    dv = sfa_db.create_delivery(con, deal_id=did, title="稼働案件A")
+    con.close()
+
+    code, _ = _post(base + "/tasks/save", {
+        "title": "Delivery紐づけ保存テスト", "link_type": "delivery", "link_id": str(dv),
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT * FROM tasks WHERE title=?", ("Delivery紐づけ保存テスト",)).fetchone()
+    assert row["link_type"] == "delivery" and row["link_id"] == dv
+    con2.close()
