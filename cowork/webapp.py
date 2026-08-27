@@ -5411,8 +5411,8 @@ _JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 _DAILY_PLAN_CSS = f"""<style>
 .dp-wrap{{width:100%}}
 .dp-cal{{display:grid;grid-template-columns:56px 1fr 1fr;width:100%;column-gap:8px}}
-.dp-daylabel-h{{font-size:13px;font-weight:600;padding:4px 0 6px;text-align:center;color:#334155;
-  border-bottom:2px solid #e2e8f0}}
+.dp-daylabel-h,.dp-gutter-head{{font-size:13px;font-weight:600;padding:4px 0 6px;text-align:center;
+  color:#334155;border-bottom:2px solid #e2e8f0;position:sticky;top:50px;z-index:15;background:#fff}}
 .dp-gutter{{position:relative;height:{_DAILY_PLAN_DAY_H}px}}
 .dp-gutter span{{position:absolute;left:0;right:6px;font-size:10px;color:#94a3b8;text-align:right;
   transform:translateY(-50%)}}
@@ -5521,7 +5521,7 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         </div>
         <div class="dp-wrap">
           <div class="dp-cal">
-            <div></div>
+            <div class="dp-gutter-head"></div>
             <div class="dp-daylabel-h">{_esc(day_labels[0])}</div>
             <div class="dp-daylabel-h">{_esc(day_labels[1])}</div>
             <div class="dp-gutter">{hour_labels}</div>
@@ -5778,7 +5778,7 @@ def daily_task_plan_view_page(con, plan_id: int) -> str:
         <a href="/tasks/daily-plan?assignee={_esc(plan['owner'])}">再計画する</a></p>
       <div class="dp-wrap">
         <div class="dp-cal">
-          <div></div>
+          <div class="dp-gutter-head"></div>
           <div class="dp-daylabel-h">{_esc(day_labels[0])}</div>
           <div class="dp-daylabel-h">{_esc(day_labels[1])}</div>
           <div class="dp-gutter">{hour_labels}</div>

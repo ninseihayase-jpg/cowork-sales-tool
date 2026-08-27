@@ -196,6 +196,14 @@ def test_daily_task_plan_view_page_missing_plan(con):
     assert "見つかりません" in html
 
 
+def test_daily_plan_calendar_day_header_is_sticky(con):
+    """ユーザー要望2026-08-27: 下スクロール時、日付ヘッダーを固定表示に。"""
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
+    assert "dp-gutter-head" in html
+    assert "position:sticky;top:50px" in html
+
+
 def test_daily_task_plan_view_page_uses_vertical_time_layout(con):
     """ユーザー要望2026-08-27: カレンダーは縦方向に時間が進む形（日付は横2列）。"""
     tid = sfa_db.upsert_task(con, title="X", assignee="早瀬")
