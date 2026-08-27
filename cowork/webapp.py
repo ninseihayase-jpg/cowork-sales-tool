@@ -438,11 +438,18 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  @media(max-width:640px){{
    .grid{{grid-template-columns:1fr}} .full{{grid-column:1}} .hide-sm{{display:none}}
    table{{display:block;overflow-x:auto}}
-   main{{margin:12px auto;padding:0 10px}}
+   main{{margin:12px auto;padding:0 10px;max-width:100%}}
    header{{position:static;padding:8px 12px;gap:8px 10px}}
    header h1{{font-size:15px;width:100%}}
    .save-bar{{position:static}}
    .card{{padding:14px 14px}}
+   /* ユーザー報告2026-08-27「枠が大きすぎて見づらい」対策: 個別ページ内のインライン
+      min-width指定（多くはPC想定の複数カラムflex/gridを崩さないための下限値）が、
+      スマホ幅では逆に横はみ出しの原因になる。デスクトップ用の各所を個別に書き換える
+      代わりに、狭幅では一括で無効化し、flex/grid項目が画面幅に合わせて自然に縮んで
+      縦積みになるようにする（レイアウトを壊さない安全な上書き＝0は「制約なし」の意）。 */
+   [style*="min-width"]{{min-width:0 !important}}
+   body{{overflow-x:hidden}}
  }}
 </style>
 <script>
@@ -2008,6 +2015,12 @@ def delivery_form(con, delivery_id: int) -> str:
       <p class="muted" style="margin:0 0 12px">
         <a href="/deal/{dv["deal_id"]}">{_esc(dv.get("account_name") or "")}：{_esc(dv.get("deal_name") or "")}</a>
         （ステージ: {_esc(dv.get("deal_stage") or "")}）</p>
+      <div style="margin:-4px 0 14px">
+        <form method="post" action="/delivery/{delivery_id}/duplicate" style="display:inline;margin:0"
+          onsubmit="return confirm('このDeliveryを複製します（体制の目標役割・報酬/外注費設定は引き継ぎ、アサインの実績・検収実額・確度の手動固定は引き継ぎません）。よろしいですか？')">
+          <button class="btn sec" type="submit">📋 このDeliveryを複製</button>
+        </form>
+      </div>
 
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;margin-bottom:14px">
         <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
@@ -8467,6 +8480,15 @@ class _RichNoteSanitizer(html.parser.HTMLParser):
             v = v or ""
             if tag == "a" and k == "href" and v.startswith(("http://", "https://", "mailto:", "/")):
                 keep += f' href="{html.escape(v, quote=True)}" rel="noopener" target="_blank"'
+            elif tag == "a" and k == "class":
+                # リンクを大きめのボタン(チップ)にする専用クラスのみ許可（2026-08-27）。
+                cls = " ".join(c for c in v.split() if c in ("rn-linkchip",))
+                if cls:
+                    keep += f' class="{html.escape(cls, quote=True)}"'
+            elif tag == "a" and k == "title":
+                keep += f' title="{html.escape(v[:500], quote=True)}"'
+            elif tag == "a" and k == "contenteditable" and v == "false":
+                keep += ' contenteditable="false"'
             elif tag == "li" and k == "data-checked":
                 keep += f' data-checked="{"1" if v == "1" else "0"}"'
             elif tag == "li" and k == "data-collapsed":
@@ -8600,6 +8622,13 @@ _RICH_NOTE_ASSETS = """
 .rn-edit ul,.rn-edit ol{margin:1px 0;padding-left:24px}
 .rn-edit li{margin:1px 0}
 .rn-edit a{color:#2563eb}
+/* リンクを大きめのボタン(チップ)として表示（ユーザー要望2026-08-27）。ホバーでtitle属性の
+   URLがブラウザ標準ツールチップとして出る。ツールバー「🔗」挿入・URLのみの貼付、両方で使う。 */
+.rn-edit a.rn-linkchip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;
+  margin:1px 2px;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;border-radius:16px;
+  font-size:12px;font-weight:600;text-decoration:none;vertical-align:middle;max-width:280px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rn-edit a.rn-linkchip:hover{background:#e0e7ff}
 /* チェックリスト（行ごと li.cl。旧データ互換で ul.cl>li も同じ見た目に）。
    ☐は通常のブレット(•)/番号(1.)と同じ左ガター(-16px)に置いて横位置を揃える。 */
 .rn-edit li.cl,.rn-edit ul.cl>li{list-style:none;position:relative}
@@ -8735,8 +8764,20 @@ function rnToggleChecklist(){ var e=_rnEl(); e.focus();
 function rnChecklist(ev){ ev.preventDefault(); rnToggleChecklist(); return false; }
 function rnIndent(ev,out){ ev.preventDefault(); var e=_rnEl(); e.focus();
   if(out){ rnDoOutdent(); } else { rnDoIndent(); } rnDirty(); return false; }
-function rnLink(ev){ ev.preventDefault(); var url=prompt('リンクURL'); if(url){ _rnEl().focus();
-  document.execCommand('createLink',false,url); rnDirty(); } return false; }
+// リンクは通常の下線テキストではなく、大きめのボタン(チップ)として挿入する
+// （ユーザー要望2026-08-27: 貼るとボタンができ、カーソルを合わせるとURL表示、押すと飛ぶ）。
+var RN_URL_RE = /^https?:\/\/[^\s<>"]+$/i;
+function rnLinkLabel(url){ try{ var u=new URL(url); return u.hostname.replace(/^www\./,''); }catch(e){ return 'リンク'; } }
+function rnLinkChipHtml(url,label){
+  var safeUrl=_rnEsc(url), safeLabel=_rnEsc(label||rnLinkLabel(url));
+  return '<a href="'+safeUrl+'" target="_blank" rel="noopener" class="rn-linkchip" '
+    +'contenteditable="false" title="'+safeUrl+'">🔗 '+safeLabel+'</a> ';
+}
+function rnLink(ev){ ev.preventDefault(); var url=prompt('リンクURL'); if(!url) return false;
+  url=url.trim(); if(!/^https?:\/\//i.test(url)) url='https://'+url;
+  _rnEl().focus();
+  var sel=window.getSelection(); var label=(sel&&sel.toString().trim())||'';
+  document.execCommand('insertHTML',false,rnLinkChipHtml(url,label)); rnDirty(); return false; }
 function rnNorm(){ /* 互換用: 現在は独自indent/outdentで構造を保つため何もしない */ }
 function rnCurrentLi(){ var s=window.getSelection(); if(!s.rangeCount)return null;
   var n=s.anchorNode,e=_rnEl(); while(n&&n!==e){ if(n.nodeName==='LI')return n; n=n.parentNode; } return null; }
@@ -8870,7 +8911,14 @@ function rnPaste(ev){
   // 二重に見える上に消せなくなる不具合（ユーザー報告2026-08-23）があったため。
   var cd=ev.clipboardData; var txt=cd&&cd.getData?cd.getData('text/plain'):'';
   ev.preventDefault();
-  if(txt) document.execCommand('insertText', false, txt);
+  var trimmed=(txt||'').trim();
+  if(RN_URL_RE.test(trimmed)){
+    // URLだけを貼った場合は自動でリンクボタン化（ユーザー要望2026-08-27）。
+    _rnEl().focus();
+    document.execCommand('insertHTML', false, rnLinkChipHtml(trimmed, ''));
+  } else if(txt){
+    document.execCommand('insertText', false, txt);
+  }
   rnDirty();
 }
 function rnPickImage(ev){ if(ev)ev.preventDefault(); var inp=document.getElementById('rnImgFile'); if(inp){ inp.value=''; inp.click(); } return false; }
@@ -16187,6 +16235,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _dvid = int(path.split("/")[2])
                     sfa_db.delete_delivery(con, _dvid)
                     self._redirect("/deliveries")
+                elif (path.startswith("/delivery/") and path.endswith("/duplicate")
+                      and path.split("/")[2].isdigit() and len(path.split("/")) == 4):
+                    _dup_dv_src = int(path.split("/")[2])
+                    _dup_dv_new = sfa_db.duplicate_delivery(con, _dup_dv_src)
+                    self._redirect(f"/delivery/{_dup_dv_new}" if _dup_dv_new else "/deliveries")
                 elif path == "/base-workload/save-slots":
                     # 5スロット固定UIの自動保存: メンバーのベース工数を送信内容で総入れ替え
                     _ow = (f.get("owner", "") or "").strip()

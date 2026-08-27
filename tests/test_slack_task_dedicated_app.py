@@ -28,6 +28,24 @@ def con():
     shutil.rmtree(d, ignore_errors=True)
 
 
+def test_create_task_from_fields_auto_triages_when_assignee_and_due_date_both_present(con):
+    """ユーザー報告2026-08-27: Slackで期限指定しても(担当がセットできていても)受信箱にたまる。
+    起票時の担当＋期限そろい判定を、渡されたローカル変数ではなく実際に保存された行の
+    再読み込み(_task_auto_triage)に一本化。担当・期限どちらも揃っていれば起票直後に
+    「未着手」へ自動整理されること。"""
+    tid = slack_tasks.create_task_from_fields(
+        con, title="資料を金曜までに作成する", assignee="早瀬", due_date="2026-08-28",
+        slack_channel="C1", slack_ts="100.1")
+    assert sfa_db.get_task(con, tid)["status"] == "未着手"
+
+
+def test_create_task_from_fields_stays_inbox_when_assignee_missing(con):
+    tid = slack_tasks.create_task_from_fields(
+        con, title="資料を金曜までに作成する", assignee=None, due_date="2026-08-28",
+        slack_channel="C1", slack_ts="100.1")
+    assert sfa_db.get_task(con, tid)["status"] == "受信箱"
+
+
 def test_handle_mention_task_passes_token_to_slack_calls(con, monkeypatch):
     """#93: handle_mention_taskにtokenを渡すと、返信(_slack_post)・担当者解決
     (owner_from_slack_user)の両方にそのtokenが伝播すること（通常タスクBot専用トークン）。"""

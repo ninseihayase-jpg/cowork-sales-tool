@@ -36,9 +36,33 @@ def test_rich_notes_table_exists():
     # 安全なリンクは target/rel を付与して保持
     ('<a href="https://ok.com">ok</a>',
      '<a href="https://ok.com" rel="noopener" target="_blank">ok</a>'),
+    # リンクチップ(2026-08-27): class="rn-linkchip"・title・contenteditable="false" は保持する
+    ('<a href="https://ok.com" class="rn-linkchip" title="https://ok.com" contenteditable="false">🔗 ok.com</a>',
+     '<a href="https://ok.com" rel="noopener" target="_blank" class="rn-linkchip" '
+     'title="https://ok.com" contenteditable="false">🔗 ok.com</a>'),
 ])
 def test_sanitizer_keeps_allowed(raw, expected):
     assert webapp._sanitize_rich_html(raw) == expected
+
+
+def test_sanitizer_link_class_only_allows_rn_linkchip():
+    """任意のclass名を通されるとスタイル汚染・CSS経由の攻撃余地になるため、
+    aタグのclassは"rn-linkchip"のみ通す（他は落とす）。"""
+    out = webapp._sanitize_rich_html('<a href="https://ok.com" class="evil-class">x</a>')
+    assert 'class=' not in out
+
+
+def test_sanitizer_link_contenteditable_only_allows_false():
+    out = webapp._sanitize_rich_html('<a href="https://ok.com" contenteditable="true">x</a>')
+    assert "contenteditable" not in out
+
+
+def test_rich_note_assets_include_link_chip_js():
+    """ユーザー要望2026-08-27: 各メモ機能(論点メモ・商談ノート等)は_RICH_NOTE_ASSETSを
+    共有しているため、ここに1回追加すれば全箇所に反映される。"""
+    assert "rn-linkchip" in webapp._RICH_NOTE_ASSETS
+    assert "function rnLinkChipHtml" in webapp._RICH_NOTE_ASSETS
+    assert "RN_URL_RE" in webapp._RICH_NOTE_ASSETS
 
 
 @pytest.mark.parametrize("raw", [

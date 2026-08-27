@@ -4324,6 +4324,31 @@ def update_delivery(con, delivery_id: int, **fields) -> None:
     con.commit()
 
 
+def duplicate_delivery(con, delivery_id: int) -> int | None:
+    """Deliveryを複製する（ユーザー要望2026-08-27）。deal_duplicateと同じ思想：
+    計画情報（体制の目標役割・報酬/外注費設定・期間の初期値）は引き継ぎ、実行済みの
+    実績データ（アサイン=誰がいつ稼働したか・月別検収額）と確度の手動固定は引き継がず、
+    ステータスは「進行中」から真っ白に始める。戻り値は新規Delivery id（元が無ければNone）。"""
+    src = get_delivery(con, delivery_id)
+    if not src:
+        return None
+    new_id = create_delivery(
+        con, deal_id=src["deal_id"], title=(src.get("title") or "(無題)") + "（コピー）",
+        start_week=src.get("start_week"), end_week=src.get("end_week"),
+        status="進行中", overview=src.get("overview") or "")
+    update_delivery(
+        con, new_id,
+        fee_mode=src.get("fee_mode"), fee_monthly=src.get("fee_monthly"), fee_total=src.get("fee_total"),
+        cost_mode=src.get("cost_mode"), cost_monthly=src.get("cost_monthly"), cost_total=src.get("cost_total"),
+        cost_vendor=src.get("cost_vendor"), payment_cycle_months=src.get("payment_cycle_months"),
+        business_type_l1_override=src.get("business_type_l1_override"),
+        business_type_l2_override=src.get("business_type_l2_override"))
+    for role in list_delivery_roles(con, delivery_id):
+        add_delivery_role(con, delivery_id=new_id, role=role["role"],
+                          fte_billing=role.get("fte_billing"), fte_pct=role.get("fte_pct"))
+    return new_id
+
+
 def delete_delivery(con, delivery_id: int) -> None:
     # delivery_assignments/delivery_receipts は ON DELETE CASCADE。念のためFK ON前提でなくても消す。
     con.execute("DELETE FROM delivery_assignments WHERE delivery_id=?", (int(delivery_id),))

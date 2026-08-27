@@ -813,6 +813,26 @@ def test_deal_duplicate_route_creates_new_deal_and_redirects(server, db_path):
     con2.close()
 
 
+def test_delivery_duplicate_route_creates_new_delivery_and_redirects(server, db_path):
+    """Delivery複製ボタン(/delivery/{id}/duplicate)がPOSTだけで新規Deliveryを作成し、
+    その編集画面へリダイレクトすること（ユーザー要望2026-08-27）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('加藤製作所')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="制御システム部", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="制御システム部支援")
+    con.close()
+
+    code, body = _post(server + f"/delivery/{dvid}/duplicate", {}, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    rows = con2.execute("SELECT * FROM deliveries WHERE deal_id=? ORDER BY id", (did,)).fetchall()
+    assert len(rows) == 2
+    assert dict(rows[-1])["title"] == "制御システム部支援（コピー）"
+    con2.close()
+
+
 def test_slack_desk_events_not_configured(server):
     """事務Bot未設定(環境変数なし)なら /slack/desk-events は503（500/例外にならない）。"""
     code, _ = _post(server + "/slack/desk-events", {"dummy": "1"}, headers=_auth_header())
@@ -823,3 +843,14 @@ def test_slack_task_events_not_configured(server):
     """#93 通常タスクBot未設定(環境変数なし)なら /slack/task-events は503（500/例外にならない）。"""
     code, _ = _post(server + "/slack/task-events", {"dummy": "1"}, headers=_auth_header())
     assert code == 503
+
+
+def test_mobile_media_query_neutralizes_inline_min_width(server):
+    """ユーザー報告2026-08-27「スマホで見ると枠が大きすぎて見づらい」への対策。
+    各ページ個別のinline min-width指定(PC想定の複数カラムflex/gridの下限値)が狭幅では
+    横はみ出しの原因になるため、640px以下では一括で無効化してflex/gridを縦積みにする。"""
+    code, resp = _get(server + "/", headers=_auth_header())
+    assert code == 200
+    html = resp.read().decode("utf-8", "ignore")
+    assert '@media(max-width:640px)' in html
+    assert '[style*="min-width"]{min-width:0 !important}' in html

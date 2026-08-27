@@ -391,12 +391,16 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
         # 依頼者本人がスレッドで確定するまでは未確定扱い（期限確認プロセス、2026-08-27）。
         if is_admin and slack_channel and slack_ts:
             con.execute("UPDATE tasks SET due_date_confirmed=0 WHERE id=?", (tid,))
-        # 担当＋期限が揃えば受信箱→未着手へ自動整理（通常/事務とも）。事務タスクはSlack起票時に
-        # 既定担当あみ＋期限3営業日後が入るため、実質すぐ未着手に上がる。担当未割当（担当空欄）の
-        # 受付だけが受信箱に留まる。
-        if (assignee or "").strip() and (due_date or "").strip():
-            sfa_db.set_task_status(con, tid, "未着手")
         con.commit()
+        # 担当＋期限が揃えば受信箱→未着手へ自動整理（通常/事務とも）。ユーザー報告2026-08-27
+        # 「Slackで期限指定しても(担当がセットできていても)受信箱にたまる」対策として、ローカル
+        # 変数(assignee/due_date)を信頼せず、実際に保存された行を読み直して判定するように変更
+        # （webapp.pyの/task/{id}/fieldと全く同じ_task_auto_triageに判定ロジックを一本化）。
+        try:
+            from .webapp import _task_auto_triage  # 遅延import（循環回避）
+            _task_auto_triage(con, tid)
+        except Exception as _e:  # noqa: BLE001
+            print(f"[slack_tasks] _task_auto_triage failed: {_e}", flush=True)
     return (tid, True) if return_created else tid
 
 

@@ -690,3 +690,49 @@ def test_build_deliveries_xlsx_includes_cashflow_sheet(con, acc_id):
     assert ws.cell(row=1, column=1).value == "Delivery ID"
     rows = [tuple(r) for r in ws.iter_rows(min_row=2, values_only=True)]
     assert any(r[0] == dvid and r[3] == "2026-09" and r[4] == 100 for r in rows)
+
+
+# ── Delivery複製（ユーザー要望2026-08-27） ────────────────────────────────
+
+def test_duplicate_delivery_copies_plan_fields_but_not_execution_data(con, acc_id):
+    """deal_duplicateと同じ思想: 体制(目標役割)・報酬/外注費設定は引き継ぐが、
+    実行済みのアサイン実績・検収実額・確度の手動固定は引き継がず、真っ白から始める。"""
+    d = _deal(con, acc_id, "受注")
+    src_id = sfa_db.create_delivery(con, deal_id=d, title="A社支援", start_week="2026-09-07",
+                                    end_week="2026-10-04", status="完了",
+                                    overview="概要テキスト", confidence_override="確定")
+    sfa_db.update_delivery(con, src_id, fee_mode="monthly", fee_monthly=100, cost_mode="monthly",
+                           cost_monthly=20, cost_vendor="外注先X", payment_cycle_months=2,
+                           business_type_l1_override="コスト削減", business_type_l2_override="診断")
+    sfa_db.add_delivery_role(con, delivery_id=src_id, role="リード", fte_billing=15, fte_pct=5)
+    sfa_db.add_delivery_role(con, delivery_id=src_id, role="コンサルタント", fte_billing=50, fte_pct=30)
+    sfa_db.add_delivery_assignment(con, delivery_id=src_id, owner="高橋", from_week="2026-09-07",
+                                   to_week="2026-09-14", role="コンサルタント", fte_pct=50)
+    sfa_db.set_delivery_receipt(con, src_id, "2026-09", 100)
+
+    new_id = sfa_db.duplicate_delivery(con, src_id)
+    assert new_id and new_id != src_id
+    new = sfa_db.get_delivery(con, new_id)
+    assert new["title"] == "A社支援（コピー）"
+    assert new["deal_id"] == d
+    assert new["status"] == "進行中"  # 真っ白から始める
+    assert new["confidence_override"] is None  # 手動固定は引き継がない→自動導出に戻る
+    assert new["overview"] == "概要テキスト"
+    assert new["fee_mode"] == "monthly" and new["fee_monthly"] == 100
+    assert new["cost_vendor"] == "外注先X"
+    assert new["payment_cycle_months"] == 2
+    assert new["business_type_l1_override"] == "コスト削減"
+
+    new_roles = sfa_db.list_delivery_roles(con, new_id)
+    assert {(r["role"], r["fte_billing"], r["fte_pct"]) for r in new_roles} == {
+        ("リード", 15.0, 5.0), ("コンサルタント", 50.0, 30.0)}
+
+    # アサイン実績・検収実額はコピーしない
+    assert sfa_db.list_delivery_assignments(con, new_id) == []
+    assert sfa_db.list_delivery_receipts(con, new_id) == []
+    # 元Deliveryは変更されない
+    assert sfa_db.list_delivery_assignments(con, src_id) != []
+
+
+def test_duplicate_delivery_missing_source_returns_none(con):
+    assert sfa_db.duplicate_delivery(con, 999999) is None
