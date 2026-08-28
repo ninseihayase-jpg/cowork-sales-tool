@@ -11135,6 +11135,58 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
     </script>"""
 
 
+def _issue_materials_html(con, iid: int, self_url: str) -> str:
+    """論点の検討材料ボックス（社内資料の体系化・層1、2026-08-28）。論点メモ(人が書く)とは
+    別に、調査結果・AIレポート等を貼り付け／.md・.txtファイルのドラッグ&ドロップで雑に
+    投げ込めるだけの置き場。整形はしない（層2=検討資料の生成時にAIがまとめて読む前提）。"""
+    materials = sfa_db.list_issue_materials(con, iid)
+    cards = "".join(
+        f'<details class="im-card">'
+        f'<summary><b>{_esc(m.get("title") or "無題")}</b> '
+        f'<span class="muted" style="font-size:10px">{_esc((m.get("created_at") or "")[:16])}'
+        f'{" ・" + _esc(m["added_by"]) if m.get("added_by") else ""}</span></summary>'
+        + (f'<p style="margin:6px 0 0"><a href="{_esc(m["source_url"])}" target="_blank" '
+           f'rel="noopener" style="font-size:11px">🔗 元リンク</a></p>' if m.get("source_url") else "")
+        + f'<pre class="im-content">{_esc(m.get("content") or "")}</pre>'
+        + f'<form method="post" action="/issue-material/{m["id"]}/delete" style="margin-top:4px" '
+        f'onsubmit="return confirm(\'この検討材料を削除しますか？\')">'
+        f'<input type="hidden" name="return_to" value="{_esc(self_url)}">'
+        f'<button type="submit" class="btn sec" style="font-size:11px;color:#c53030">削除</button></form>'
+        f'</details>'
+        for m in materials
+    ) or '<p class="muted" style="font-size:12px;margin:0">まだ検討材料はありません。</p>'
+    return f"""
+      <div class="card" style="flex:1 1 100%">
+        <h2 style="margin:0 0 4px">📚 検討材料</h2>
+        <p class="muted" style="font-size:11px;margin:0 0 8px">調査結果・AIレポート等をそのまま貼り付け、
+          または.md/.txtファイルを下の枠にドラッグ&ドロップしてください。ここは論点メモと違い整形しません
+          （検討資料を生成する際にAIがまとめて読みます）。</p>
+        <div id="matList-{iid}">{cards}</div>
+        <form method="post" action="/deal-issue/{iid}/material/add" id="matForm-{iid}" style="margin-top:8px"
+              ondragover="event.preventDefault();this.querySelector('.im-drop').style.borderColor='#2563eb'"
+              ondragleave="this.querySelector('.im-drop').style.borderColor='#cbd5e1'"
+              ondrop="matDrop(event,{iid})">
+          <input type="hidden" name="return_to" value="{_esc(self_url)}">
+          <div class="im-drop" style="border:2px dashed #cbd5e1;border-radius:8px;padding:10px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <label style="font-size:11px;flex:1;min-width:160px">タイトル（任意）<br>
+                <input type="text" name="title" id="matTitle-{iid}" style="width:100%"></label>
+              <label style="font-size:11px;flex:1;min-width:160px">投げ込んだ人（任意）<br>
+                <input type="text" name="added_by" style="width:100%"></label>
+            </div>
+            <label style="font-size:11px;display:block;margin-top:6px">内容（貼り付け、またはファイルをここへドロップ）<br>
+              <textarea name="content" id="matContent-{iid}" rows="4"
+                style="width:100%;box-sizing:border-box" placeholder="調査結果・AIレポートの内容を貼り付け"></textarea></label>
+            <label style="font-size:11px;display:block;margin-top:6px">元リンク（任意。ChatGPT会話・ドキュメント等）<br>
+              <input type="text" name="source_url" style="width:100%" placeholder="https://..."></label>
+          </div>
+          <div style="margin-top:8px;text-align:right">
+            <button class="btn sec" type="submit" style="font-size:12px">＋ 検討材料を追加</button>
+          </div>
+        </form>
+      </div>"""
+
+
 def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> str:
     """論点の詳細ページ。左＝編集項目（保存/削除）、右＝AIサマリ＋論点メモ（クリックで大画面編集）。"""
     it = issue
@@ -11246,6 +11298,7 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
         {_rn_links_html}
         {intake_html}
       </div>"""
+    materials_html = _issue_materials_html(con, iid, self_url)
     return f"""
     <style>
     {AI_SUMMARY_HOVER_CSS}
@@ -11254,14 +11307,32 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
     .di-note-card:hover{{background:#f8fafc;border-color:#bfdbfe}}
     .di-note-ttl{{font-weight:600;font-size:13px;color:#334155;margin-bottom:2px}}
     .di-note-pv{{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+    .im-card{{border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;margin-bottom:6px;background:#fff}}
+    .im-card summary{{cursor:pointer;font-size:12px}}
+    .im-content{{white-space:pre-wrap;font-size:12px;background:#f8fafc;padding:8px;border-radius:6px;
+      max-height:280px;overflow:auto;margin:6px 0 0}}
     </style>
     <div class="card"><p style="margin:0"><a class="btn sec" href="{_esc(back_href)}">← 戻る</a></p></div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
       {left}
       {right}
+      {materials_html}
     </div>
     <script>window._rnReloadOnClose = true;
     {DEAL_ISSUE_INLINE_EDIT_JS}
+    function matDrop(ev,iid){{
+      ev.preventDefault();
+      var form=ev.currentTarget; var dz=form.querySelector('.im-drop'); if(dz)dz.style.borderColor='#cbd5e1';
+      var files=(ev.dataTransfer||{{}}).files; if(!files||!files.length) return;
+      var f=files[0];
+      var reader=new FileReader();
+      reader.onload=function(e){{
+        var ta=document.getElementById('matContent-'+iid); if(ta) ta.value=e.target.result;
+        var ti=document.getElementById('matTitle-'+iid);
+        if(ti&&!ti.value) ti.value=f.name.replace(/\\.[^.]+$/,'');
+      }};
+      reader.readAsText(f);
+    }}
     </script>"""
 
 
@@ -17691,6 +17762,29 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _return_to = f.get("return_to") or ""
                     self._redirect(_return_to if _return_to.startswith("/")
                                    else (f"/deal/{existing['deal_id']}" if existing else "/deal-issues"))
+
+                elif path.startswith("/deal-issue/") and path.endswith("/material/add"):
+                    # 論点の検討材料を追加（社内資料の体系化・層1、2026-08-28）。
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues")
+                        return
+                    sfa_db.add_issue_material(
+                        con, iid, f.get("content", ""), title=f.get("title"),
+                        source_url=f.get("source_url"), added_by=f.get("added_by"))
+                    _return_to = f.get("return_to") or ""
+                    self._redirect(_return_to if _return_to.startswith("/") else f"/deal-issue/{iid}")
+
+                elif path.startswith("/issue-material/") and path.endswith("/delete"):
+                    try:
+                        mid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues")
+                        return
+                    sfa_db.delete_issue_material(con, mid)
+                    _return_to = f.get("return_to") or ""
+                    self._redirect(_return_to if _return_to.startswith("/") else "/deal-issues")
 
                 elif path.startswith("/deal-issue/") and path.endswith("/field"):
                     _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "responsible", "due_date"}

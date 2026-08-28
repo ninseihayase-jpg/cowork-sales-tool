@@ -1063,6 +1063,45 @@ def test_task_link_add_route_rejects_blank_url(server, db_path):
     assert json.loads(body)["ok"] is False
 
 
+def test_issue_material_add_and_delete_routes(server, db_path):
+    """#128: /deal-issue/{id}/material/add で検討材料を追加でき、
+    /issue-material/{id}/delete で削除できる（社内資料の体系化・層1）。"""
+    con = sfa_db.connect(db_path)
+    iid = sfa_db.upsert_deal_issue(con, deal_id=None, issue="論点確認用", status="議論中")
+    con.close()
+
+    code, _ = _post(server + f"/deal-issue/{iid}/material/add", {
+        "title": "調査メモ", "content": "本文テキスト", "source_url": "https://example.com",
+        "added_by": "早瀬",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    materials = sfa_db.list_issue_materials(con2, iid)
+    assert len(materials) == 1
+    assert materials[0]["title"] == "調査メモ" and materials[0]["content"] == "本文テキスト"
+    mid = materials[0]["id"]
+    con2.close()
+
+    code2, _ = _post(server + f"/issue-material/{mid}/delete", {}, headers=_auth_header())
+    assert code2 in (200, 303)
+
+    con3 = sfa_db.connect(db_path)
+    assert sfa_db.list_issue_materials(con3, iid) == []
+    con3.close()
+
+
+def test_issue_material_add_route_ignores_blank_content(server, db_path):
+    con = sfa_db.connect(db_path)
+    iid = sfa_db.upsert_deal_issue(con, deal_id=None, issue="論点確認用2", status="議論中")
+    con.close()
+    code, _ = _post(server + f"/deal-issue/{iid}/material/add", {"content": ""}, headers=_auth_header())
+    assert code in (200, 303)
+    con2 = sfa_db.connect(db_path)
+    assert sfa_db.list_issue_materials(con2, iid) == []
+    con2.close()
+
+
 def test_task_form_related_label_mentions_delivery(server, db_path):
     """#125: 「関連」欄のラベルにDeliveryが明記されていない（実際には選択肢は既に存在する）
     という報告への対応。ラベル文言にDeliveryを追加。"""

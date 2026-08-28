@@ -716,6 +716,19 @@ CREATE TABLE IF NOT EXISTS deal_issues (
 );
 CREATE INDEX IF NOT EXISTS idx_deal_issues_deal ON deal_issues(deal_id);
 
+-- 論点の検討材料（社内資料の体系化・層1、2026-08-28）。論点メモ(人が書く)とは別の、
+-- 調査結果・AIレポート等を雑に投げ込むだけの置き場。層2(検討資料)生成時にAIがまとめて読む。
+CREATE TABLE IF NOT EXISTS issue_materials (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id   INTEGER NOT NULL REFERENCES deal_issues(id) ON DELETE CASCADE,
+    title      TEXT,                 -- 表示名（未入力ならcontent先頭から自動生成）
+    content    TEXT NOT NULL,        -- 生の中身（markdown/プレーンテキスト想定）
+    source_url TEXT,                 -- 元になったAIチャット/ドキュメントへのリンク（任意）
+    added_by   TEXT,                 -- 投げ込んだ人
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_issue_materials_issue ON issue_materials(issue_id);
+
 -- 論点メモ（論点ごとの追記型ディスカッションログ）
 CREATE TABLE IF NOT EXISTS deal_issue_memos (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3555,6 +3568,35 @@ def add_deal_issue_memo(con, *, issue_id: int, body: str, author: str | None = N
 def get_deal_issue_memo(con, memo_id: int) -> dict | None:
     r = con.execute("SELECT * FROM deal_issue_memos WHERE id=?", (int(memo_id),)).fetchone()
     return dict(r) if r else None
+
+
+def list_issue_materials(con, issue_id: int) -> list[dict]:
+    """論点の検討材料（社内資料の体系化・層1）を追加順で返す。"""
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM issue_materials WHERE issue_id=? ORDER BY id", (int(issue_id),))]
+
+
+def add_issue_material(con, issue_id: int, content: str, *, title: str | None = None,
+                       source_url: str | None = None, added_by: str | None = None) -> int | None:
+    """検討材料を1件追加。contentが空なら何もしない（Noneを返す）。
+    titleが空ならcontent先頭30文字から自動生成する。"""
+    content = (content or "").strip()
+    if not content:
+        return None
+    title = (title or "").strip()
+    if not title:
+        _first_line = content.splitlines()[0].strip().lstrip("#").strip()
+        title = (_first_line or content)[:30]
+    cur = con.execute(
+        "INSERT INTO issue_materials (issue_id, title, content, source_url, added_by) VALUES (?,?,?,?,?)",
+        (int(issue_id), title, content, (source_url or "").strip() or None, (added_by or "").strip() or None))
+    con.commit()
+    return cur.lastrowid
+
+
+def delete_issue_material(con, material_id: int) -> None:
+    con.execute("DELETE FROM issue_materials WHERE id=?", (int(material_id),))
+    con.commit()
 
 
 def delete_deal_issue_memo(con, memo_id: int) -> None:
