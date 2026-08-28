@@ -3562,6 +3562,7 @@ def upsert_deal_issue(con, *, id=None, commit: bool = True, **fields) -> int:
 def delete_deal_issue(con, id: int) -> None:
     con.execute("DELETE FROM deal_issues WHERE id=?", (int(id),))
     con.commit()
+    clear_orphaned_task_links(con)
 
 
 def list_deal_issue_memos(con, issue_id: int) -> list[dict]:
@@ -4073,10 +4074,36 @@ def delete_task_project(con, id: int) -> None:
     con.commit()
 
 
+def clear_orphaned_task_links(con) -> int:
+    """紐づけ先(商談/論点/Delivery)が削除済みで参照切れになっているタスクのlink_type/link_idを
+    クリアする（自己修復）。返り値はクリアした件数。
+    ユーザー報告2026-08-29: 商談/論点/Deliveryを削除すると、それを参照していたタスクの
+    link_type/link_idが残ったままになり、看板上部の「紐づけられている案件」一覧から
+    静かに消えてしまっていた（task_link_labelが参照先を解決できずNoneを返すため）。
+    delete_deal/delete_deal_issue/delete_deliveryの直後、およびtask_link_summary計算時に
+    呼んで自己修復する。"""
+    cleared = 0
+    for link_type, table in (("deal", "deals"), ("issue", "deal_issues"), ("delivery", "deliveries")):
+        rows = con.execute(
+            f"SELECT id FROM tasks WHERE link_type=? AND link_id IS NOT NULL "
+            f"AND NOT EXISTS (SELECT 1 FROM {table} x WHERE x.id = tasks.link_id)",
+            (link_type,)).fetchall()
+        if rows:
+            ids = [r["id"] for r in rows]
+            con.execute(
+                f"UPDATE tasks SET link_type=NULL, link_id=NULL WHERE id IN ({','.join('?' for _ in ids)})",
+                ids)
+            cleared += len(ids)
+    if cleared:
+        con.commit()
+    return cleared
+
+
 def task_link_summary(con) -> dict:
     """コンサルタスクの紐づけ先(商談/論点/Delivery)ごとの未完了/完了件数集計
     （看板上部の「紐づけられている案件」一覧用、ユーザー要望2026-08-27）。
     未完了タスクが1件も無い紐づけ先（完了にしか登場しない案件）は結果に含めない。"""
+    clear_orphaned_task_links(con)  # 参照切れの紐づけがあれば自己修復してから集計
     out: dict = {"deal": [], "issue": [], "delivery": []}
     rows = con.execute(
         "SELECT link_type, link_id, "
@@ -4228,9 +4255,12 @@ def delete_deal(con, deal_id: int) -> None:
     deal_attachments/deliveries(+assignments)）は ON DELETE CASCADE で連鎖削除、leads.deal_id は
     SET NULL（＝そのリードは「未商談化」に戻る）。foreign_keys=ON 前提（connect()で常時ON）。
     slack_threads.deal_id はFK未設定のため孤児として残るが害はない（Botのスレッド状態のみ）。
-    Hisho側（todos/dev_projects）のクリーンアップは呼び出し側でtheme_client経由の best-effort。"""
+    Hisho側（todos/dev_projects）のクリーンアップは呼び出し側でtheme_client経由の best-effort。
+    タスクの紐づけ(link_type/link_id)がこの商談・配下の論点・Deliveryを参照していた場合は
+    clear_orphaned_task_linksで自己修復する（削除後に静かに参照切れになるのを防ぐ）。"""
     con.execute("DELETE FROM deals WHERE id=?", (int(deal_id),))
     con.commit()
+    clear_orphaned_task_links(con)
 
 
 # ---- OneNote風リッチメモ（rich_notes・#70）: (kind, entity_id)に複数ノート ----
@@ -4510,6 +4540,7 @@ def delete_delivery(con, delivery_id: int) -> None:
     con.execute("DELETE FROM delivery_receipts WHERE delivery_id=?", (int(delivery_id),))
     con.execute("DELETE FROM deliveries WHERE id=?", (int(delivery_id),))
     con.commit()
+    clear_orphaned_task_links(con)
 
 
 def list_delivery_receipts(con, delivery_id: int) -> list[dict]:

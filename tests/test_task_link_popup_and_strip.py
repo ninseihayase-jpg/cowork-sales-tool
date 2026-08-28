@@ -258,3 +258,78 @@ def test_task_link_picker_offers_none_filter_option_only_when_requested(con):
     assert "紐づけ無しのみ" in filter_html
     form_html = webapp._task_link_picker_html(con, prefix="y", cur_type=None, cur_id=None)
     assert "紐づけ無しのみ" not in form_html
+
+
+# ── 紐づけ先削除で参照切れになったタスクの自己修復（ユーザー報告2026-08-29） ──────
+# 商談/論点/Deliveryを削除しても、参照していたタスクのlink_type/link_idが残ったままだと、
+# task_link_label が解決できずNoneを返し、看板上部の「紐づけられている案件」一覧から
+# タスクが静かに消えて見えなくなっていた（タスク自体はカンバン内には残る）。
+
+def test_clear_orphaned_task_links_clears_dangling_references(con, deal_issue_delivery):
+    did, iid, dv = deal_issue_delivery
+    t_deal = sfa_db.upsert_task(con, title="商談紐づけ", link_type="deal", link_id=did)
+    t_issue = sfa_db.upsert_task(con, title="論点紐づけ", link_type="issue", link_id=iid)
+    t_delivery = sfa_db.upsert_task(con, title="Delivery紐づけ", link_type="delivery", link_id=dv)
+    # 削除関数を経由せず、参照切れを直接作って自己修復ロジック単体を確認する
+    con.execute("DELETE FROM deals WHERE id=?", (did,))
+    con.execute("DELETE FROM deal_issues WHERE id=?", (iid,))
+    con.execute("DELETE FROM deliveries WHERE id=?", (dv,))
+    con.commit()
+
+    cleared = sfa_db.clear_orphaned_task_links(con)
+    assert cleared == 3
+    for tid in (t_deal, t_issue, t_delivery):
+        t = sfa_db.get_task(con, tid)
+        assert t["link_type"] is None and t["link_id"] is None
+
+
+def test_clear_orphaned_task_links_leaves_valid_links_untouched(con, deal_issue_delivery):
+    did, iid, dv = deal_issue_delivery
+    tid = sfa_db.upsert_task(con, title="有効な紐づけ", link_type="deal", link_id=did)
+    assert sfa_db.clear_orphaned_task_links(con) == 0
+    t = sfa_db.get_task(con, tid)
+    assert t["link_type"] == "deal" and t["link_id"] == did
+
+
+def test_delete_delivery_clears_task_links_pointing_to_it(con, deal_issue_delivery):
+    _did, _iid, dv = deal_issue_delivery
+    tid = sfa_db.upsert_task(con, title="Delivery紐づけ", link_type="delivery", link_id=dv)
+    sfa_db.delete_delivery(con, dv)
+    t = sfa_db.get_task(con, tid)
+    assert t["link_type"] is None and t["link_id"] is None
+
+
+def test_delete_deal_issue_clears_task_links_pointing_to_it(con, deal_issue_delivery):
+    _did, iid, _dv = deal_issue_delivery
+    tid = sfa_db.upsert_task(con, title="論点紐づけ", link_type="issue", link_id=iid)
+    sfa_db.delete_deal_issue(con, iid)
+    t = sfa_db.get_task(con, tid)
+    assert t["link_type"] is None and t["link_id"] is None
+
+
+def test_delete_deal_clears_task_links_pointing_to_deal_and_its_issue_and_delivery(con, deal_issue_delivery):
+    """商談を削除すると、配下の論点・Deliveryもcascadeで消える。それらへ直接紐づいていた
+    タスクも、商談を消した1回の呼び出しで一括して自己修復されること。"""
+    did, iid, dv = deal_issue_delivery
+    t_deal = sfa_db.upsert_task(con, title="商談紐づけ", link_type="deal", link_id=did)
+    t_issue = sfa_db.upsert_task(con, title="論点紐づけ", link_type="issue", link_id=iid)
+    t_delivery = sfa_db.upsert_task(con, title="Delivery紐づけ", link_type="delivery", link_id=dv)
+    sfa_db.delete_deal(con, did)
+    for tid in (t_deal, t_issue, t_delivery):
+        t = sfa_db.get_task(con, tid)
+        assert t["link_type"] is None and t["link_id"] is None
+
+
+def test_task_link_summary_self_heals_stale_data_from_before_the_fix(con, deal_issue_delivery):
+    """#111と同じ自己修復の考え方: task_link_summary(看板上部の集計)を呼ぶだけで、
+    過去にこの不具合で残ってしまった参照切れデータも直る（本番DBに直接手を入れられない
+    ため、既存データの救済策として集計関数自体に自己修復を仕込んでいる）。"""
+    did, _iid, _dv = deal_issue_delivery
+    tid = sfa_db.upsert_task(con, title="商談紐づけ", link_type="deal", link_id=did)
+    con.execute("DELETE FROM deals WHERE id=?", (did,))
+    con.commit()
+
+    sfa_db.task_link_summary(con)  # 集計を呼ぶだけで自己修復される
+
+    t = sfa_db.get_task(con, tid)
+    assert t["link_type"] is None and t["link_id"] is None
