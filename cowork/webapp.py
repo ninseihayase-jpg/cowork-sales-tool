@@ -5557,7 +5557,10 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
             "title": t.get("title") or "", "next_action": t.get("next_action") or "",
             "assignee": t.get("assignee") or "", "due_date": t.get("due_date") or "",
             "category": t.get("category") or "", "effort_level": t.get("effort_level") or "",
+            "effort_hours": ("" if t.get("effort_hours") is None else t.get("effort_hours")),
             "status": t.get("status") or "",
+            "links": [{"id": l["id"], "url": l["url"], "label": l.get("label") or ""}
+                      for l in sfa_db.list_task_links(con, t["id"])],
         } for t in ready
     }
     _gantt_js = f"""
@@ -5565,7 +5568,13 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
     #gtBackdrop{{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}}
     #gtPop{{position:fixed;z-index:9999;display:none;left:50%;top:50%;transform:translate(-50%,-50%);
       background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.25);
-      padding:14px;width:340px;max-width:92vw}}
+      padding:14px;width:380px;max-width:92vw;max-height:88vh;overflow:auto}}
+    .gt-link-chip{{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;margin:1px 3px 1px 0;
+      background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;border-radius:14px;font-size:11px}}
+    .gt-link-chip a{{color:inherit;text-decoration:none;max-width:160px;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap}}
+    .gt-link-del{{cursor:pointer;color:#94a3b8;font-weight:700;padding:0 2px}}
+    .gt-link-del:hover{{color:#c53030}}
     </style>
     <div id="gtBackdrop" onclick="closeGtTask()"></div>
     <div id="gtPop"></div>
@@ -5574,16 +5583,30 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
     var GANTT_OWNERS = {json.dumps(owners, ensure_ascii=False)};
     var GANTT_CATS = {json.dumps(cats, ensure_ascii=False)};
     var GANTT_EFFORT_LEVELS = {json.dumps(sfa_db.TASK_EFFORT_LEVELS, ensure_ascii=False)};
+    var GANTT_STATUSES = {json.dumps(sfa_db.TASK_STATUSES, ensure_ascii=False)};
     function _gtEsc(s){{ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;')
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }}
     function _gtOpt(list,cur){{ var h='<option value=""></option>';
       for(var i=0;i<list.length;i++){{ var v=list[i];
         h+='<option value="'+_gtEsc(v)+'"'+(v===cur?' selected':'')+'>'+_gtEsc(v)+'</option>'; }}
       return h; }}
+    function _gtDomainOf(url){{ try{{ return new URL(url).hostname.replace(/^www\\./,''); }}catch(e){{ return 'リンク'; }} }}
+    function _gtLinkChipHtml(l){{
+      var lbl=l.label||_gtDomainOf(l.url);
+      return '<span class="gt-link-chip" id="gtLink-'+l.id+'">'
+        +'<a href="'+_gtEsc(l.url)+'" target="_blank" rel="noopener" title="'+_gtEsc(l.url)+'">🔗 '+_gtEsc(lbl)+'</a>'
+        +'<span class="gt-link-del" onclick="gtDeleteLink('+l.id+')" title="削除">×</span></span>';
+    }}
+    function _gtLinksHtml(id){{
+      var t=GANTT_TASKS[id];
+      if(!t||!t.links||!t.links.length) return '<span class="muted" style="font-size:11px">まだありません</span>';
+      var h=''; for(var i=0;i<t.links.length;i++) h+=_gtLinkChipHtml(t.links[i]); return h;
+    }}
     function gtPopHtml(id,t){{
-      return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-        +'<b style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px">'
-        +_gtEsc(t.title)+'</b><span onclick="closeGtTask()" style="cursor:pointer;color:#94a3b8">✕</span></div>'
+      return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:8px">'
+        +'<input type="text" style="flex:1;font-size:13px;font-weight:700;border:none;border-bottom:1px solid #eef1f5;'
+        +'padding:2px 0" value="'+_gtEsc(t.title)+'" onchange="gtField('+id+',\\'title\\',this.value)">'
+        +'<span onclick="closeGtTask()" style="cursor:pointer;color:#94a3b8;flex:none">✕</span></div>'
         +'<label style="font-size:11px;display:block">次アクション<br>'
         +'<input type="text" style="width:100%;box-sizing:border-box" value="'+_gtEsc(t.next_action)+'" '
         +'onchange="gtField('+id+',\\'next_action\\',this.value)"></label>'
@@ -5597,8 +5620,26 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
         +'onchange="gtField('+id+',\\'category\\',this.value)">'+_gtOpt(GANTT_CATS,t.category)+'</select></label>'
         +'<label style="font-size:11px;flex:1">工数感<br><select style="width:100%" '
         +'onchange="gtField('+id+',\\'effort_level\\',this.value)">'+_gtOpt(GANTT_EFFORT_LEVELS,t.effort_level)+'</select></label></div>'
-        +'<div style="margin-top:8px;font-size:11px;color:#64748b">状態: '+_gtEsc(t.status)
-        +'　<a href="/tasks/'+id+'/edit" style="color:#2563eb">フル編集画面を開く</a></div>'
+        +'<div style="display:flex;gap:8px;margin-top:8px">'
+        +'<label style="font-size:11px;flex:1">所要時間(h)<br><input type="number" step="0.5" min="0" '
+        +'style="width:100%;box-sizing:border-box" value="'+_gtEsc(t.effort_hours)+'" '
+        +'onchange="gtField('+id+',\\'effort_hours\\',this.value)"></label>'
+        +'<label style="font-size:11px;flex:1">状態<br><select style="width:100%" '
+        +'onchange="gtField('+id+',\\'status\\',this.value)">'+_gtOpt(GANTT_STATUSES,t.status)+'</select></label></div>'
+        +'<div style="margin-top:8px"><label style="font-size:11px;display:block">🔗 関連リンク</label>'
+        +'<div id="gtLinks-'+id+'">'+_gtLinksHtml(id)+'</div>'
+        +'<div style="display:flex;gap:4px;margin-top:4px">'
+        +'<input type="text" id="gtLinkUrl-'+id+'" placeholder="URL" style="flex:1;font-size:11px">'
+        +'<input type="text" id="gtLinkName-'+id+'" placeholder="名前(任意)" style="flex:1;font-size:11px">'
+        +'<button type="button" class="btn sec" style="font-size:11px;padding:2px 8px" '
+        +'onclick="gtAddLink('+id+')">追加</button></div></div>'
+        +'<div style="margin-top:8px"><label style="font-size:11px;display:block">📝 進捗を追記</label>'
+        +'<textarea id="gtNote-'+id+'" rows="2" style="width:100%;box-sizing:border-box;font-size:12px" '
+        +'placeholder="今日やったこと・状況を追記"></textarea>'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">'
+        +'<span id="gtNoteMsg-'+id+'" style="font-size:10px;color:#059669"></span>'
+        +'<button type="button" class="btn sec" style="font-size:11px" onclick="gtAddNote('+id+')">＋追記</button></div></div>'
+        +'<div style="margin-top:8px;font-size:11px"><a href="/tasks/'+id+'/edit" style="color:#2563eb">フル編集画面を開く</a></div>'
         +'<div style="margin-top:10px;text-align:right"><button type="button" class="btn" '
         +'onclick="closeGtTask()">保存して閉じる</button></div>';
     }}
@@ -5620,6 +5661,43 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
         body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)}})
        .then(function(r){{return r.json();}}).then(function(d){{
          if(!d.ok) alert('更新エラー: '+(d.error||''));
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function gtAddLink(id){{
+      var u=document.getElementById('gtLinkUrl-'+id), n=document.getElementById('gtLinkName-'+id);
+      var url=(u.value||'').trim(); if(!url) return;
+      var label=(n.value||'').trim();
+      fetch('/task/'+id+'/link/add',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'url='+encodeURIComponent(url)+'&label='+encodeURIComponent(label)}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok){{ alert('リンク追加エラー: '+(d.error||'')); return; }}
+         if(!GANTT_TASKS[id].links) GANTT_TASKS[id].links=[];
+         GANTT_TASKS[id].links.push({{id:d.id,url:d.url,label:d.label}});
+         document.getElementById('gtLinks-'+id).innerHTML=_gtLinksHtml(id);
+         u.value=''; n.value='';
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function gtDeleteLink(linkId){{
+      if(!confirm('このリンクを削除しますか？')) return;
+      fetch('/task-link/'+linkId+'/delete',{{method:'POST'}})
+       .then(function(){{
+         for(var tid in GANTT_TASKS){{ var links=GANTT_TASKS[tid].links; if(!links) continue;
+           for(var i=0;i<links.length;i++){{ if(links[i].id===linkId){{ links.splice(i,1);
+             var box=document.getElementById('gtLinks-'+tid); if(box) box.innerHTML=_gtLinksHtml(tid);
+             return; }} }} }}
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function gtAddNote(id){{
+      var ta=document.getElementById('gtNote-'+id); var body=(ta.value||'').trim();
+      if(!body) return;
+      fetch('/task/'+id+'/note',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'body='+encodeURIComponent(body)+'&ajax=1'}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok){{ alert('追記エラー'); return; }}
+         ta.value='';
+         if(d.status&&GANTT_TASKS[id]) GANTT_TASKS[id].status=d.status;
+         var m=document.getElementById('gtNoteMsg-'+id);
+         if(m){{ m.textContent='✓ 追記しました'; setTimeout(function(){{ m.textContent=''; }},2000); }}
        }}).catch(function(){{ alert('通信エラー'); }});
     }}
     document.addEventListener('keydown',function(ev){{
@@ -16267,6 +16345,25 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             ensure_ascii=False).encode(), ctype="application/json")
                     else:
                         self._redirect(f"/tasks/{_tid}/edit")
+
+                elif (path.startswith("/task/") and path.endswith("/link/add")
+                      and len(path.split("/")) == 5 and path.split("/")[2].isdigit()):
+                    # タスクへの関連リンク追加（名前付き。ガントのフローティング編集から使用。
+                    # ユーザー要望2026-08-28）。
+                    _tid = int(path.split("/")[2])
+                    _lid = sfa_db.add_task_link(con, _tid, f.get("url", ""), f.get("label"))
+                    if _lid is None:
+                        self._send(json.dumps({"ok": False, "error": "URLを入力してください"}).encode(),
+                                   ctype="application/json")
+                    else:
+                        _link = next((l for l in sfa_db.list_task_links(con, _tid) if l["id"] == _lid), None)
+                        self._send(json.dumps({"ok": True, "id": _lid,
+                                              "url": (_link or {}).get("url"), "label": (_link or {}).get("label")},
+                                              ensure_ascii=False).encode(), ctype="application/json")
+                elif (path.startswith("/task-link/") and path.endswith("/delete")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    sfa_db.delete_task_link(con, int(path.split("/")[2]))
+                    self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
 
                 elif (path.startswith("/task/") and path.endswith("/field")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):

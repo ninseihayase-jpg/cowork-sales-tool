@@ -7,6 +7,7 @@ ThreadingHTTPServerに載せ、実際にHTTPリクエストを送って200/303/4
 from __future__ import annotations
 
 import base64
+import json
 import shutil
 import tempfile
 import urllib.error
@@ -1023,6 +1024,43 @@ def test_tasks_gantt_route_defaults_to_link_grouping_and_wide_main(server):
     body2 = resp2.read().decode("utf-8")
     assert code2 == 200
     assert "大分類（プロジェクト×種類）ごとに" in body2  # 明示指定すれば従来の作業種別ごとに戻せる
+
+
+def test_task_link_add_and_delete_routes(server, db_path):
+    """#127: /task/{id}/link/add でリンクを追加でき、/task-link/{id}/delete で削除できる。"""
+    con = sfa_db.connect(db_path)
+    tid = sfa_db.upsert_task(con, title="リンク確認用")
+    con.close()
+
+    code, body = _post(server + f"/task/{tid}/link/add",
+                       {"url": "example.com/x", "label": "参考資料"}, headers=_auth_header())
+    assert code == 200
+    data = json.loads(body)
+    assert data["ok"] is True
+    assert data["url"] == "https://example.com/x"
+    assert data["label"] == "参考資料"
+    link_id = data["id"]
+
+    con2 = sfa_db.connect(db_path)
+    assert len(sfa_db.list_task_links(con2, tid)) == 1
+    con2.close()
+
+    code2, body2 = _post(server + f"/task-link/{link_id}/delete", {}, headers=_auth_header())
+    assert code2 == 200
+    assert json.loads(body2)["ok"] is True
+
+    con3 = sfa_db.connect(db_path)
+    assert sfa_db.list_task_links(con3, tid) == []
+    con3.close()
+
+
+def test_task_link_add_route_rejects_blank_url(server, db_path):
+    con = sfa_db.connect(db_path)
+    tid = sfa_db.upsert_task(con, title="リンク確認用2")
+    con.close()
+    code, body = _post(server + f"/task/{tid}/link/add", {"url": ""}, headers=_auth_header())
+    assert code == 200
+    assert json.loads(body)["ok"] is False
 
 
 def test_task_form_related_label_mentions_delivery(server, db_path):

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -790,6 +791,16 @@ CREATE TABLE IF NOT EXISTS task_notes (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id);
+
+-- タスクに貼る関連リンク（名前付き。ガントのフローティング編集等から追加、2026-08-28）。
+CREATE TABLE IF NOT EXISTS task_links (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    url        TEXT NOT NULL,
+    label      TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_links_task ON task_links(task_id);
 
 -- タスクの大項目＝プロジェクト（取り組み）。期限＋状態を持つ管理対象（#30）。
 -- tasks.project は名前(name)で緩く参照する。
@@ -3882,6 +3893,30 @@ def list_task_notes(con, task_id: int, kind: str | None = None) -> list[dict]:
         params.append(kind)
     q += " ORDER BY created_at DESC, id DESC"
     return [dict(r) for r in con.execute(q, params)]
+
+
+def list_task_links(con, task_id: int) -> list[dict]:
+    """タスクに貼られた関連リンクを追加順で返す（ユーザー要望2026-08-28）。"""
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM task_links WHERE task_id=? ORDER BY id", (int(task_id),))]
+
+
+def add_task_link(con, task_id: int, url: str, label: str | None = None) -> int | None:
+    """関連リンクを1件追加。urlが空なら何もしない（Noneを返す）。httpスキーム無しは https:// を補う。"""
+    url = (url or "").strip()
+    if not url:
+        return None
+    if not re.match(r"^https?://", url, re.I):
+        url = "https://" + url
+    cur = con.execute("INSERT INTO task_links (task_id, url, label) VALUES (?,?,?)",
+                      (int(task_id), url, (label or "").strip() or None))
+    con.commit()
+    return cur.lastrowid
+
+
+def delete_task_link(con, link_id: int) -> None:
+    con.execute("DELETE FROM task_links WHERE id=?", (int(link_id),))
+    con.commit()
 
 
 def set_task_summary(con, task_id: int, summary: str) -> None:
