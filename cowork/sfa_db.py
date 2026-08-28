@@ -729,6 +729,20 @@ CREATE TABLE IF NOT EXISTS issue_materials (
 );
 CREATE INDEX IF NOT EXISTS idx_issue_materials_issue ON issue_materials(issue_id);
 
+-- 社内資料の体系化・層2/3「検討資料」「社内報告ペーパー」の格納庫（2026-08-28）。
+-- 週次レポート(weekly_reports)とは別立て。ナビ枠なしのシンプルHTMLページとして配信する。
+CREATE TABLE IF NOT EXISTS docs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL,        -- '検討資料' / '報告ペーパー' / 'その他'
+    template   TEXT,                 -- テンプレ種別キー（例: 'process_change'）。手動アップロード分はNULL
+    title      TEXT NOT NULL,
+    issue_id   INTEGER REFERENCES deal_issues(id) ON DELETE SET NULL,  -- 紐づく論点（任意）
+    body_html  TEXT NOT NULL,        -- 本文HTMLフラグメント（表示時に共通レイアウトで包む）
+    created_by TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_docs_issue ON docs(issue_id);
+
 -- 論点メモ（論点ごとの追記型ディスカッションログ）
 CREATE TABLE IF NOT EXISTS deal_issue_memos (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3596,6 +3610,37 @@ def add_issue_material(con, issue_id: int, content: str, *, title: str | None = 
 
 def delete_issue_material(con, material_id: int) -> None:
     con.execute("DELETE FROM issue_materials WHERE id=?", (int(material_id),))
+    con.commit()
+
+
+def create_doc(con, *, kind: str, title: str, body_html: str, template: str | None = None,
+               issue_id: int | None = None, created_by: str | None = None) -> int:
+    """社内資料の体系化・層2/3（検討資料/報告ペーパー）を1件保存する。"""
+    cur = con.execute(
+        "INSERT INTO docs (kind, template, title, issue_id, body_html, created_by) VALUES (?,?,?,?,?,?)",
+        (kind, template, title, issue_id, body_html, (created_by or "").strip() or None))
+    con.commit()
+    return cur.lastrowid
+
+
+def get_doc(con, doc_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM docs WHERE id=?", (int(doc_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def list_docs(con, *, issue_id: int | None = None) -> list[dict]:
+    """新しい順。issue_id指定でその論点分のみ。"""
+    q = "SELECT * FROM docs"
+    params: list = []
+    if issue_id is not None:
+        q += " WHERE issue_id=?"
+        params.append(int(issue_id))
+    q += " ORDER BY created_at DESC, id DESC"
+    return [dict(r) for r in con.execute(q, params)]
+
+
+def delete_doc(con, doc_id: int) -> None:
+    con.execute("DELETE FROM docs WHERE id=?", (int(doc_id),))
     con.commit()
 
 

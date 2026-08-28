@@ -281,6 +281,162 @@ def _issue_notes_text(con, issue_id: int) -> str:
     return "\n\n".join(parts).strip()
 
 
+# ── 社内資料の体系化・層2(検討資料)生成（2026-08-28） ──────────────────────
+# 層1(issue_materials＋論点メモ)を材料に、AIが「型」に沿って構造化生成する。型（見出し構成・
+# 順序）はこちらのコード側で固定し、AIには各見出しの中身だけを埋めさせることで、生成のたびに
+# 構成が崩れない（ユーザー要望: 一定の型・骨子を外さない構成に制御）。
+_DOC_TEMPLATE_SECTIONS = {
+    "process_change": [
+        ("background", "背景・課題認識"),
+        ("problem", "現状の問題点"),
+        ("proposal", "提案内容"),
+        ("effect", "期待される効果"),
+        ("plan", "実行計画（スケジュール・担当）"),
+        ("risk", "リスク・懸念事項"),
+        ("decision", "意思決定を求める事項"),
+    ],
+}
+_DOC_TEMPLATE_LABELS = {"process_change": "業務改善・社内プロセス変更提案資料"}
+
+
+def _issue_materials_text(con, issue_id: int) -> str:
+    """検討材料(issue_materials)の全文を連結する（層2生成の入力）。"""
+    parts = []
+    for m in sfa_db.list_issue_materials(con, issue_id):
+        title = (m.get("title") or "").strip()
+        content = (m.get("content") or "").strip()
+        if content:
+            parts.append((f"# {title}\n" if title else "") + content)
+    return "\n\n".join(parts).strip()
+
+
+def _parse_doc_sections(raw: str, headings: list) -> dict:
+    """AIの生の出力を見出しごとに分割する。見出しが見つからなければ空文字。"""
+    result = {}
+    for key, heading in headings:
+        m = re.search(rf"###\s*{re.escape(heading)}\s*\n(.*?)(?=\n###\s|\Z)", raw or "", re.S)
+        result[key] = (m.group(1).strip() if m else "")
+    return result
+
+
+def _simple_md_to_html(text: str) -> str:
+    """簡易Markdown→HTML変換（見出し無し・箇条書きと段落のみ対応。AI生成テキストの整形用）。"""
+    out, in_list = [], False
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            continue
+        if line.startswith(("- ", "・", "* ")):
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append(f"<li>{_esc(line[1:].strip())}</li>")
+        else:
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            out.append(f"<p>{_esc(line)}</p>")
+    if in_list:
+        out.append("</ul>")
+    return "".join(out) or "<p class=\"muted\">（材料不足のため生成されませんでした）</p>"
+
+
+def _generate_doc_body_html(con, issue: dict, template_key: str) -> str | None:
+    """検討資料の本文HTML（フラグメント）を生成する。材料が無い/AI応答が空ならNone。"""
+    headings = _DOC_TEMPLATE_SECTIONS.get(template_key)
+    if not headings:
+        return None
+    source = "\n\n".join(filter(None, [
+        _issue_materials_text(con, issue["id"]),
+        _issue_notes_text(con, issue["id"]),
+    ])).strip()
+    if not source:
+        return None
+    heading_list = "\n".join(f"### {h}" for _, h in headings)
+    label = _DOC_TEMPLATE_LABELS.get(template_key, "検討資料")
+    prompt = (
+        f"あなたは社内向け検討資料の作成者です。以下の検討材料をもとに、"
+        f"「{label}」という形式の資料を作成してください。\n\n"
+        "必ず次の見出し構成・順序をそのまま使い、各見出しの直後にその内容だけを日本語で書いて"
+        "ください（見出しの追加・削除・言い換えは禁止。前置きや結論の繰り返しは不要。"
+        "箇条書きを積極的に使い、読みやすく簡潔に。材料に無い/判断できない項目は"
+        "「（検討中・材料不足）」とだけ書いてください）。\n\n"
+        f"{heading_list}\n\n"
+        f"---検討材料ここから---\n論点: {issue.get('issue', '')}\n\n{source}\n---検討材料ここまで---"
+    )
+    raw = _call_claude_haiku(prompt, timeout=45, max_wait=50, max_tokens=3000)
+    if not (raw or "").strip():
+        return None
+    sections = _parse_doc_sections(raw, headings)
+    body = f"<h1>{_esc(issue.get('issue', '') )}</h1><p class=\"muted\">{_esc(label)}</p>"
+    for key, heading in headings:
+        body += f'<section><h2>{_esc(heading)}</h2>{_simple_md_to_html(sections.get(key, ""))}</section>'
+    return body
+
+
+_DOC_PAGE_CSS = """
+<style>
+body.doc-body{font-family:system-ui,'Hiragino Kaku Gothic ProN',sans-serif;background:#f4f6f9;
+  color:#1d2430;margin:0;padding:32px 16px}
+.doc-wrap{max-width:760px;margin:0 auto;background:#fff;border-radius:10px;
+  box-shadow:0 1px 4px rgba(0,0,0,.08);padding:32px 40px}
+.doc-wrap h1{font-size:22px;margin:0 0 4px}
+.doc-wrap section{margin-top:20px}
+.doc-wrap h2{font-size:15px;color:#3a4760;border-bottom:2px solid #e6e9f0;padding-bottom:4px;margin:0 0 8px}
+.doc-wrap p{margin:4px 0;line-height:1.7}
+.doc-wrap ul{margin:4px 0;padding-left:22px;line-height:1.7}
+.doc-meta{max-width:760px;margin:0 auto 10px;font-size:12px;color:#8893a8}
+.doc-meta a{color:#4338ca;text-decoration:none}
+</style>"""
+
+
+def docs_list_page(con, *, issue_id: int | None = None) -> str:
+    """資料庫（社内資料の体系化・層2/3）一覧。"""
+    docs = sfa_db.list_docs(con, issue_id=issue_id)
+    rows = "".join(
+        f'<tr><td>{_esc(d.get("kind") or "")}</td>'
+        f'<td><a href="/docs/{d["id"]}">{_esc(d.get("title") or "(無題)")}</a></td>'
+        f'<td class="muted" style="font-size:12px">{_esc((d.get("created_at") or "")[:16])}</td>'
+        f'<td><form method="post" action="/doc/{d["id"]}/delete" style="display:inline" '
+        f'onsubmit="return confirm(\'この資料を削除しますか？\')">'
+        f'<button class="btn sec" style="font-size:11px;color:#c53030" type="submit">削除</button></form></td></tr>'
+        for d in docs
+    ) or '<tr><td colspan=4 class="muted">まだ資料はありません。</td></tr>'
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 8px">📄 資料庫</h2>
+      <p class="muted" style="font-size:12px">検討資料・社内報告ペーパーの置き場です。論点ページの「検討材料」から生成するか、
+        既存のHTMLファイルをそのまま入稿できます。</p>
+      <form method="post" action="/docs/upload" enctype="multipart/form-data"
+            style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-bottom:12px">
+        <label style="font-size:12px">タイトル<br><input type="text" name="title" required style="width:220px"></label>
+        <label style="font-size:12px">種類<br>
+          <select name="kind"><option>検討資料</option><option>報告ペーパー</option><option>その他</option></select></label>
+        <label style="font-size:12px">HTMLファイル<br><input type="file" name="html_file" accept=".html,.htm"></label>
+        <label style="font-size:12px;flex:1;min-width:200px">またはHTMLを直接貼り付け<br>
+          <textarea name="html_text" rows="1" style="width:100%"></textarea></label>
+        <button class="btn sec" type="submit" style="font-size:12px">＋ 資料を入稿</button>
+      </form>
+      <table><tr><th>種類</th><th>タイトル</th><th>作成日</th><th></th></tr>{rows}</table>
+    </div>"""
+
+
+def doc_view_page(con, doc: dict) -> bytes:
+    """資料の閲覧ページ（CRMのナビ枠なし・シンプルなHTML。週次レポートと同じ考え方）。"""
+    html_out = (
+        "<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\">"
+        f"<title>{_esc(doc.get('title') or '資料')}｜InProc</title>{_DOC_PAGE_CSS}</head>"
+        "<body class=\"doc-body\">"
+        f"<div class=\"doc-meta\"><a href=\"/docs\">← 資料庫一覧</a></div>"
+        f"<div class=\"doc-wrap\">{doc.get('body_html') or ''}</div>"
+        "</body></html>"
+    )
+    return html_out.encode("utf-8")
+
+
 def _content_disposition(filename: str) -> str:
     """ダウンロードファイル名に日本語等を含む場合の Content-Disposition ヘッダ値を組み立てる。
     http.server はヘッダをlatin-1でエンコードするため、非ASCII文字を含む filename= だけでは
@@ -565,6 +721,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <!-- 次: ヒアリング・論点 -->
   <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
   <a href="/deal-issues" style="opacity:.85;font-size:13px">論点</a>
+  <a href="/docs" style="opacity:.85;font-size:13px">📄 資料庫</a>
   <span class="nav-sep"></span>
   <!-- クライアント管理: リード・アカウント -->
   <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
@@ -11184,7 +11341,32 @@ def _issue_materials_html(con, iid: int, self_url: str) -> str:
             <button class="btn sec" type="submit" style="font-size:12px">＋ 検討材料を追加</button>
           </div>
         </form>
+        <div style="border-top:1px solid #eef1f5;margin-top:14px;padding-top:10px">
+          <h3 style="margin:0 0 6px;font-size:13px">📄 検討資料（層2）</h3>
+          <div style="margin-bottom:8px">{_issue_docs_list_html(con, iid)}</div>
+          <form method="post" action="/deal-issue/{iid}/doc/generate">
+            <input type="hidden" name="return_to" value="{_esc(self_url)}">
+            <input type="hidden" name="template" value="process_change">
+            <button class="btn sec" type="submit" style="font-size:12px"
+              title="検討材料・論点メモをもとに「業務改善・社内プロセス変更提案資料」の型でAIが生成します">
+              📄 業務改善・社内プロセス変更提案資料を生成
+            </button>
+          </form>
+        </div>
       </div>"""
+
+
+def _issue_docs_list_html(con, iid: int) -> str:
+    """論点に紐づく生成済み検討資料の一覧（簡易版・_issue_materials_htmlから使う）。"""
+    docs = sfa_db.list_docs(con, issue_id=iid)
+    if not docs:
+        return '<p class="muted" style="font-size:12px;margin:0">まだ生成された検討資料はありません。</p>'
+    return "".join(
+        f'<div style="font-size:12px;margin:2px 0">'
+        f'<a href="/docs/{d["id"]}" target="_blank">{_esc(d.get("title") or "(無題)")}</a> '
+        f'<span class="muted" style="font-size:10px">{_esc((d.get("created_at") or "")[:16])}</span></div>'
+        for d in docs
+    )
 
 
 def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> str:
@@ -15700,6 +15882,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             '<div class="card"><h2>Delivery表示エラー</h2>'
                             f'<p class="muted">この案件の表示中にエラーが発生しました: {_esc(str(_dfe))}</p>'
                             '<p><a class="btn sec" href="/deliveries">← Delivery一覧へ戻る</a></p></div>'), 500)
+                elif path == "/docs":
+                    _di = self._qs().get("issue_id", [""])[0]
+                    self._send(render(docs_list_page(con, issue_id=int(_di) if _di.isdigit() else None)))
+                elif path.startswith("/docs/") and path[len("/docs/"):].isdigit():
+                    _doc = sfa_db.get_doc(con, int(path[len("/docs/"):]))
+                    if _doc:
+                        self._send(doc_view_page(con, _doc), ctype="text/html; charset=utf-8")
+                    else:
+                        self._send(render("<div class=card>資料が見つかりません</div>"), 404)
                 elif path == "/reports":
                     self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":
@@ -17785,6 +17976,51 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     sfa_db.delete_issue_material(con, mid)
                     _return_to = f.get("return_to") or ""
                     self._redirect(_return_to if _return_to.startswith("/") else "/deal-issues")
+
+                elif path.startswith("/deal-issue/") and path.endswith("/doc/generate"):
+                    # 検討資料(層2)をAIで生成（社内資料の体系化、2026-08-28）。
+                    try:
+                        iid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues")
+                        return
+                    _issue = sfa_db.get_deal_issue(con, iid)
+                    _return_to = f.get("return_to") or (f"/deal-issue/{iid}")
+                    if _issue:
+                        _tmpl = f.get("template") or "process_change"
+                        _body = _generate_doc_body_html(con, _issue, _tmpl)
+                        if _body:
+                            _doc_id = sfa_db.create_doc(
+                                con, kind="検討資料", template=_tmpl,
+                                title=f"{_issue.get('issue', '')}｜{_DOC_TEMPLATE_LABELS.get(_tmpl, '検討資料')}",
+                                body_html=_body, issue_id=iid)
+                            self._redirect(f"/docs/{_doc_id}")
+                            return
+                    self._redirect(_return_to)
+
+                elif path == "/docs/upload":
+                    # 資料庫への手動入稿（HTMLファイル添付 or 直接貼り付け）。
+                    _title = (f.get("title") or "").strip() or "(無題)"
+                    _kind = (f.get("kind") or "その他").strip()
+                    _html_file = f.get("html_file")
+                    if isinstance(_html_file, tuple) and _html_file[1]:
+                        _body = _html_file[1].decode("utf-8", errors="replace")
+                    else:
+                        _body = f.get("html_text") or ""
+                    if _body.strip():
+                        _doc_id = sfa_db.create_doc(con, kind=_kind, title=_title, body_html=_body)
+                        self._redirect(f"/docs/{_doc_id}")
+                    else:
+                        self._redirect("/docs")
+
+                elif path.startswith("/doc/") and path.endswith("/delete"):
+                    try:
+                        did = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/docs")
+                        return
+                    sfa_db.delete_doc(con, did)
+                    self._redirect("/docs")
 
                 elif path.startswith("/deal-issue/") and path.endswith("/field"):
                     _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "responsible", "due_date"}

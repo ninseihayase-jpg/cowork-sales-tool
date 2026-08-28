@@ -1102,6 +1102,99 @@ def test_issue_material_add_route_ignores_blank_content(server, db_path):
     con2.close()
 
 
+def test_docs_list_and_view_routes(server, db_path):
+    """#129: /docs 一覧・/docs/{id} 閲覧ページがナビ枠なしで返る。"""
+    con = sfa_db.connect(db_path)
+    did = sfa_db.create_doc(con, kind="検討資料", title="表示確認資料", body_html="<h1>本文</h1>")
+    con.close()
+
+    code, resp = _get(server + "/docs", headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert "表示確認資料" in body
+
+    code2, resp2 = _get(server + f"/docs/{did}", headers=_auth_header())
+    body2 = resp2.read().decode("utf-8")
+    assert code2 == 200
+    assert "<h1>本文</h1>" in body2
+    assert "コンサルタスク" not in body2  # CRMナビを含まない
+
+
+def test_docs_view_route_404_for_missing_doc(server):
+    code, resp = _get(server + "/docs/999999", headers=_auth_header())
+    assert code == 404
+
+
+def test_docs_upload_route_creates_doc_from_pasted_html(server, db_path):
+    code, _ = _post(server + "/docs/upload", {
+        "title": "手動入稿資料", "kind": "報告ペーパー", "html_text": "<h1>手貼りHTML</h1>",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+    con = sfa_db.connect(db_path)
+    docs = sfa_db.list_docs(con)
+    assert len(docs) == 1
+    assert docs[0]["title"] == "手動入稿資料" and docs[0]["kind"] == "報告ペーパー"
+    assert docs[0]["body_html"] == "<h1>手貼りHTML</h1>"
+    con.close()
+
+
+def test_docs_upload_route_ignores_blank_html(server, db_path):
+    code, _ = _post(server + "/docs/upload", {"title": "空資料", "kind": "その他"},
+                    headers=_auth_header())
+    assert code in (200, 303)
+    con = sfa_db.connect(db_path)
+    assert sfa_db.list_docs(con) == []
+    con.close()
+
+
+def test_doc_delete_route(server, db_path):
+    con = sfa_db.connect(db_path)
+    did = sfa_db.create_doc(con, kind="その他", title="削除確認", body_html="x")
+    con.close()
+    code, _ = _post(server + f"/doc/{did}/delete", {}, headers=_auth_header())
+    assert code in (200, 303)
+    con2 = sfa_db.connect(db_path)
+    assert sfa_db.get_doc(con2, did) is None
+    con2.close()
+
+
+def test_deal_issue_doc_generate_route_creates_doc_when_ai_available(server, db_path, monkeypatch):
+    """#129: /deal-issue/{id}/doc/generate は生成成功時に/docs/{id}へリダイレクトする。"""
+    monkeypatch.setattr(webapp, "_call_claude_haiku", lambda *a, **kw: (
+        "### 背景・課題認識\n内容\n### 現状の問題点\n内容\n### 提案内容\n内容\n"
+        "### 期待される効果\n内容\n### 実行計画（スケジュール・担当）\n内容\n"
+        "### リスク・懸念事項\n内容\n### 意思決定を求める事項\n内容\n"))
+    con = sfa_db.connect(db_path)
+    iid = sfa_db.upsert_deal_issue(con, deal_id=None, issue="生成確認論点", status="議論中")
+    sfa_db.add_issue_material(con, iid, "材料テキスト")
+    con.close()
+
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    req = urllib.request.Request(server + f"/deal-issue/{iid}/doc/generate", method="POST",
+                                 headers={**_auth_header(), "Content-Type": "application/x-www-form-urlencoded"},
+                                 data=urllib.parse.urlencode({"template": "process_change"}).encode())
+    resp = opener.open(req, timeout=10)
+    assert resp.getcode() == 303
+    loc = resp.headers.get("Location")
+    assert loc.startswith("/docs/")
+
+    con2 = sfa_db.connect(db_path)
+    docs = sfa_db.list_docs(con2, issue_id=iid)
+    assert len(docs) == 1
+    con2.close()
+
+
+def test_deal_issue_doc_generate_route_redirects_back_without_doc_when_no_material(server, db_path):
+    con = sfa_db.connect(db_path)
+    iid = sfa_db.upsert_deal_issue(con, deal_id=None, issue="材料なし論点", status="議論中")
+    con.close()
+    code, _ = _post(server + f"/deal-issue/{iid}/doc/generate", {}, headers=_auth_header())
+    assert code in (200, 303)
+    con2 = sfa_db.connect(db_path)
+    assert sfa_db.list_docs(con2, issue_id=iid) == []
+    con2.close()
+
+
 def test_task_form_related_label_mentions_delivery(server, db_path):
     """#125: 「関連」欄のラベルにDeliveryが明記されていない（実際には選択肢は既に存在する）
     という報告への対応。ラベル文言にDeliveryを追加。"""
