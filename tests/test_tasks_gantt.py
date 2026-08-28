@@ -177,3 +177,15 @@ def test_gantt_link_grouping_within_group_sorted_by_start_date(con):
                        link_type="deal", link_id=did)
     html = webapp.tasks_gantt_page(con, group_by="link")
     assert html.find("近い方") < html.find("遠い方")
+
+
+def test_gantt_day_axis_labels_every_day(con):
+    """#126: 日付ラベルは月曜/月初だけでなく毎日記載する（月初のみ月/日、他は日のみ）。"""
+    today = webapp._today_jst()
+    far = (today + timedelta(days=10)).isoformat()
+    sfa_db.upsert_task(con, title="日付ラベル確認", due_date=far, effort_level="軽")
+    html = webapp.tasks_gantt_page(con)
+    import re
+    labels = re.findall(r'class="gantt-daylabel[^"]*"[^>]*>([^<]*)</div>', html)
+    assert labels, "日付ラベルのセルが見つからない"
+    assert all(lbl.strip() != "" for lbl in labels), "全ての日に日付が入っていること"

@@ -5489,7 +5489,8 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
                 cls += " weekend"
             if dd == today:
                 cls += " today"
-            label = f"{dd.month}/{dd.day}" if (dd.day == 1 or dd.weekday() == 0) else ""
+            # 日付は毎日記載（ユーザー要望2026-08-28）。月初のみ月/日、それ以外は日のみで見やすく。
+            label = f"{dd.month}/{dd.day}" if dd.day == 1 else str(dd.day)
             cells.append(f'<div class="{cls}" style="grid-row:1;grid-column:{i + 2}">{label}</div>')
 
         row = 2
@@ -15386,8 +15387,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         pick=bool(_tq.get("pick", [""])[0]))))
                 elif path == "/tasks/gantt":
                     _gq = self._qs()
-                    _group = (_gq.get("group", ["type"])[0] or "type")
-                    self._send(render(tasks_gantt_page(con, group_by=_group if _group == "link" else "type")))
+                    _group = (_gq.get("group", ["link"])[0] or "link")
+                    self._send(render(tasks_gantt_page(con, group_by=_group if _group == "type" else "link"),
+                                      wide=True))
                 elif path == "/tasks/capacity":
                     self._send(render(tasks_capacity_page(con)))
                 elif path == "/tasks/daily-plan":

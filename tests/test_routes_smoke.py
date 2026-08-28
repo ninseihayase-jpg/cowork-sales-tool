@@ -1010,17 +1010,19 @@ def test_task_card_assignee_badge_syncs_without_reload(server, db_path):
     assert "field==='assignee'&&card" in body
 
 
-def test_tasks_gantt_route_accepts_group_query_param(server):
-    """#124: /tasks/gantt?group=link がエラー無く紐づけ単位モードで返る。"""
-    code, resp = _get(server + "/tasks/gantt?group=link", headers=_auth_header())
+def test_tasks_gantt_route_defaults_to_link_grouping_and_wide_main(server):
+    """#126（2026-08-28）: /tasks/gantt はクエリ省略時「紐づけ単位」タブが既定でアクティブ、
+    かつ画面幅いっぱい(main-wide)で表示する。?group=typeで従来の作業種別ごとにも切替可能。"""
+    code, resp = _get(server + "/tasks/gantt", headers=_auth_header())
     body = resp.read().decode("utf-8")
     assert code == 200
-    assert "background:#4f46e5;color:#fff" in body
+    assert '<main class="main-wide">' in body
+    assert "紐づけ単位（Delivery→商談→論点→紐づけ無し" in body  # 既定=紐づけ単位の説明文
 
-    code2, resp2 = _get(server + "/tasks/gantt", headers=_auth_header())
+    code2, resp2 = _get(server + "/tasks/gantt?group=type", headers=_auth_header())
     body2 = resp2.read().decode("utf-8")
     assert code2 == 200
-    assert "background:#4f46e5;color:#fff" in body2  # 既定(作業種別ごと)タブがアクティブ
+    assert "大分類（プロジェクト×種類）ごとに" in body2  # 明示指定すれば従来の作業種別ごとに戻せる
 
 
 def test_task_form_related_label_mentions_delivery(server, db_path):
