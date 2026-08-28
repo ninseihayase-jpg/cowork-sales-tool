@@ -91,6 +91,13 @@ TASK_CATEGORY_TREE = {
 TASK_PROJECT_STATUSES = ["進行中", "保留", "完了"]
 
 # マスタ編集対象キー → デフォルト値のマッピング（技術シード・プロジェクトは専用画面で編集＝ここに含めない）
+# Delivery請求関連マスタ（2026-08-28）。請求方法/請求期日はマスタで編集可能にし、
+# 経費請求有無は固定enum（ドロップダウン+自由記述の値ドロップダウン側のみ）。
+DELIVERY_BILLING_METHODS = ["請求書送付(オペレータ)", "顧客PF入力(アサイン者)", "顧客PF入力(オペレータ)"]
+DELIVERY_BILLING_DUE_OPTIONS = ["当月末日", "翌月1日", "翌月2日", "翌月3日"]
+DELIVERY_BILLING_DUE_DEFAULT = "当月末日"
+DELIVERY_EXPENSE_BILLING_OPTIONS = ["有", "無", "不明(要確認)"]
+
 MASTER_KEYS = {
     "owners":            OWNERS,
     "deal_stages":       DEAL_STAGES,
@@ -102,6 +109,8 @@ MASTER_KEYS = {
     "task_categories":   TASK_CATEGORIES,
     "owner_domains":     OWNER_DOMAINS,
     "target_domains":    TARGET_DOMAINS,
+    "delivery_billing_methods": DELIVERY_BILLING_METHODS,
+    "delivery_billing_due":     DELIVERY_BILLING_DUE_OPTIONS,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -114,6 +123,8 @@ MASTER_LABELS = {
     "task_categories":   "タスク種類",
     "owner_domains":     "担当領域",
     "target_domains":    "ターゲット領域",
+    "delivery_billing_methods": "Delivery請求方法",
+    "delivery_billing_due":     "Delivery請求期日",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -1366,6 +1377,21 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE deliveries ADD COLUMN business_type_l1_override TEXT")
         if _dv_cols and "business_type_l2_override" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN business_type_l2_override TEXT")
+        # 責任者/担当者（アサインリストから選択。2026-08-28）＋請求関連（ユーザー要望2026-08-28）。
+        if _dv_cols and "responsible_owner" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN responsible_owner TEXT")
+        if _dv_cols and "handling_owner" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN handling_owner TEXT")
+        if _dv_cols and "billing_method" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN billing_method TEXT")
+        if _dv_cols and "billing_due" not in _dv_cols:
+            con.execute(f"ALTER TABLE deliveries ADD COLUMN billing_due TEXT DEFAULT '{DELIVERY_BILLING_DUE_DEFAULT}'")
+        if _dv_cols and "billing_recipient" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN billing_recipient TEXT")
+        if _dv_cols and "expense_billing" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN expense_billing TEXT")
+        if _dv_cols and "expense_billing_note" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN expense_billing_note TEXT")
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -4311,7 +4337,9 @@ def update_delivery(con, delivery_id: int, **fields) -> None:
     allowed = {"title", "start_week", "end_week", "status", "overview",
                "fee_mode", "fee_monthly", "fee_total", "confidence_override",
                "cost_mode", "cost_monthly", "cost_total", "cost_vendor",
-               "payment_cycle_months", "business_type_l1_override", "business_type_l2_override"}
+               "payment_cycle_months", "business_type_l1_override", "business_type_l2_override",
+               "responsible_owner", "handling_owner", "billing_method", "billing_due",
+               "billing_recipient", "expense_billing", "expense_billing_note"}
     sets, args = [], []
     for k, v in fields.items():
         if k in allowed:
@@ -4342,7 +4370,12 @@ def duplicate_delivery(con, delivery_id: int) -> int | None:
         cost_mode=src.get("cost_mode"), cost_monthly=src.get("cost_monthly"), cost_total=src.get("cost_total"),
         cost_vendor=src.get("cost_vendor"), payment_cycle_months=src.get("payment_cycle_months"),
         business_type_l1_override=src.get("business_type_l1_override"),
-        business_type_l2_override=src.get("business_type_l2_override"))
+        business_type_l2_override=src.get("business_type_l2_override"),
+        # 請求関連は計画情報として引き継ぐ。責任者/担当者はアサインリストから選ぶ値のため、
+        # 複製直後はアサインが空（実行データは引き継がない方針）に合わせて引き継がない。
+        billing_method=src.get("billing_method"), billing_due=src.get("billing_due"),
+        billing_recipient=src.get("billing_recipient"), expense_billing=src.get("expense_billing"),
+        expense_billing_note=src.get("expense_billing_note"))
     for role in list_delivery_roles(con, delivery_id):
         add_delivery_role(con, delivery_id=new_id, role=role["role"],
                           fte_billing=role.get("fte_billing"), fte_pct=role.get("fte_pct"))

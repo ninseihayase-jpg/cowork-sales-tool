@@ -676,6 +676,60 @@ def test_delivery_form_renders_business_type_override_selects(con, acc_id):
     assert "コスト診断(無償)（自動: 商談を継承）" in html
 
 
+def test_delivery_form_prompts_to_add_assignees_before_choosing_responsible(con, acc_id):
+    """#121: アサインが未登録の間は責任者/担当者を選べず、アサインを促す表示を出す。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    html = webapp.delivery_form(con, dvid)
+    assert "責任者・担当者" in html
+    assert "先にアサインを入力" in html or "アサインを追加" in html
+    assert 'name="responsible_owner"' not in html
+
+
+def test_delivery_form_lets_choose_responsible_from_assignee_list(con, acc_id):
+    """#121: アサインがいれば、責任者/担当者はそのアサインリストから選ぶ<select>になり、
+    基礎情報と同じ保存ボタン(dvBaseForm)で一括保存される。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
+                                   to_week="2026-09-14", role="コンサルタント", fte_pct=50)
+    sfa_db.update_delivery(con, dvid, responsible_owner="早瀬")
+    html = webapp.delivery_form(con, dvid)
+    assert 'id="dvBaseForm"' in html
+    assert 'name="responsible_owner" form="dvBaseForm"' in html
+    assert 'name="handling_owner" form="dvBaseForm"' in html
+    assert '<option value="早瀬" selected>早瀬</option>' in html
+
+
+def test_delivery_form_includes_billing_fields_and_collapsible_effort_box(con, acc_id):
+    """#121: 基礎情報に請求方法/請求期日/請求送付先・経費請求有無/メモを追加。
+    総アサイン工数等のボックスは<details>で既定折りたたみにする。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    sfa_db.update_delivery(con, dvid, billing_method=sfa_db.DELIVERY_BILLING_METHODS[1],
+                           billing_recipient="経理部佐藤さん、PF提出", expense_billing="無")
+    html = webapp.delivery_form(con, dvid)
+    assert 'name="billing_method"' in html
+    assert f'<option value="{sfa_db.DELIVERY_BILLING_METHODS[1]}" selected>' in html
+    assert 'name="billing_recipient"' in html and "経理部佐藤さん、PF提出" in html
+    assert 'name="expense_billing"' in html
+    assert 'name="expense_billing_note"' in html
+    assert "<details" in html and "総アサイン工数" in html
+    # 既定値(当月末日)がマスタ選択肢として選択されている（自由入力欄は隠れている）
+    assert 'id="dvBillingDueOther"' in html and "display:none" in html
+
+
+def test_delivery_form_billing_due_other_shown_when_custom_value(con, acc_id):
+    """請求期日にマスタ外のカスタム文言が入っている場合は「他」を選択状態にし、
+    自由入力欄にその値を出す（隠さない）。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    sfa_db.update_delivery(con, dvid, billing_due="毎月10日")
+    html = webapp.delivery_form(con, dvid)
+    assert '<option value="__other__" selected>他</option>' in html
+    assert 'value="毎月10日"' in html
+
+
 def test_build_deliveries_xlsx_includes_business_type_columns(con, acc_id):
     d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注",
                            business_type_l1="コスト削減", business_type_l2="コスト診断(無償)")
@@ -721,24 +775,28 @@ def _ml(ym: str) -> str:
 def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable_flag(con, acc_id):
     """#115（2026-08-28修正）: 検収/入金は別ファイルではなく同一xlsx・同一シートに同居させ、
     先頭列「検収/入金」の値でExcel側のフィルタ機能から絞り込めるようにする。
-    支払いサイト・主担当/副担当・アサインN・月列(今月〜+18ヶ月固定・未登録月は0)も検証。"""
+    支払いサイト・責任者/担当者・請求関連・アサインN・月列(今月〜+18ヶ月固定・未登録月は0)も検証。"""
     d = _deal(con, acc_id, "受注")
     dvid = sfa_db.create_delivery(con, deal_id=d, title="A社支援", status="進行中")
-    sfa_db.update_delivery(con, dvid, payment_cycle_months=1)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
+                                   to_week="2026-09-14", role="コンサルタント", fte_pct=50)
+    sfa_db.update_delivery(con, dvid, payment_cycle_months=1, responsible_owner="早瀬",
+                           billing_method=sfa_db.DELIVERY_BILLING_METHODS[0], billing_due="翌月1日",
+                           billing_recipient="経理部佐藤さん、PF提出", expense_billing="有",
+                           expense_billing_note="交通費のみ")
     m0, m1, m2 = _ym(0), _ym(1), _ym(2)
     sfa_db.set_delivery_receipt(con, dvid, m0, 100)
     sfa_db.set_delivery_receipt(con, dvid, m1, 200)
-    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
-                                   to_week="2026-09-14", role="コンサルタント", fte_pct=50)
     import openpyxl
     from io import BytesIO
     wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
     ws = wb.active
     assert ws.title == "入金予定表"
     hdr = [c.value for c in ws[1]]
-    assert hdr[:11] == ["確度", "検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
-                         "支払いサイト", "主担当", "副担当"]
-    assert hdr[11] == "アサイン1"
+    assert hdr[:16] == ["確度", "検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
+                        "支払いサイト", "責任者", "担当者", "請求方法", "請求期日", "請求送付先",
+                        "経費請求有無", "経費請求メモ"]
+    assert hdr[16] == "アサイン1"
     assert _ml(m0) in hdr and _ml(m1) in hdr and _ml(m2) in hdr
     assert _ml(_ym(18)) in hdr   # 今月+18ヶ月後まで含む
     assert _ml(_ym(19)) not in hdr  # +19ヶ月後は含まない(固定19ヶ月分)
@@ -749,7 +807,11 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     assert receipt_row["#"] == dvid and receipt_row["案件"] == "A社支援"
     assert receipt_row["確度"] == "確定"  # stage=受注→自動判定は「確定」
     assert receipt_row["支払いサイト"] == 1
-    assert receipt_row["主担当"] == "早瀬" and receipt_row["副担当"] == "-"  # 1人のみ→副担当は"-"
+    assert receipt_row["責任者"] == "早瀬" and not receipt_row["担当者"]  # 未設定は空欄(openpyxlはNoneで返る)
+    assert receipt_row["請求方法"] == sfa_db.DELIVERY_BILLING_METHODS[0]
+    assert receipt_row["請求期日"] == "翌月1日"
+    assert receipt_row["請求送付先"] == "経理部佐藤さん、PF提出"
+    assert receipt_row["経費請求有無"] == "有" and receipt_row["経費請求メモ"] == "交通費のみ"
     assert receipt_row["アサイン1"] == "早瀬"
     assert receipt_row[_ml(m0)] == 100 and receipt_row[_ml(m1)] == 200
     assert receipt_row[_ml(m2)] == 0  # 登録の無い月は0
@@ -759,8 +821,7 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
 
 
 def test_payment_schedule_xlsx_multiple_assignees_get_own_columns(con, acc_id):
-    """アサインは1人1列(アサインN)。主担当/副担当は名前の昇順(sorted()既定=文字コード順)で
-    1人目/2人目。列数は全案件を通じた最大人数に揃え、少ない案件は空欄で埋める。"""
+    """アサインは1人1列(アサインN)。列数は全案件を通じた最大人数に揃え、少ない案件は空欄で埋める。"""
     d = _deal(con, acc_id, "受注")
     dvid = sfa_db.create_delivery(con, deal_id=d, title="複数アサイン案件")
     sfa_db.set_delivery_receipt(con, dvid, _ym(0), 50)
@@ -772,21 +833,27 @@ def test_payment_schedule_xlsx_multiple_assignees_get_own_columns(con, acc_id):
     wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
     ws = wb.active
     hdr = [c.value for c in ws[1]]
-    assert ["アサイン1", "アサイン2", "アサイン3"] == hdr[11:14]
+    assert ["アサイン1", "アサイン2", "アサイン3"] == hdr[16:19]
     row = dict(zip(hdr, [c.value for c in ws[2]]))
-    assert row["主担当"] == "中島" and row["副担当"] == "吉江"  # 五十音順の1人目/2人目
+    # sorted()の文字コード順（五十音順ではない）: 中島(4E2D) < 吉江(5409) < 早瀬(65E9)
     assert row["アサイン1"] == "中島" and row["アサイン2"] == "吉江" and row["アサイン3"] == "早瀬"
 
 
-def test_payment_schedule_xlsx_skips_deliveries_without_any_amount(con, acc_id):
-    """検収も入金も1件も登録が無い案件は行として出さない（空行で埋めない）。"""
+def test_payment_schedule_xlsx_includes_deliveries_with_no_amount_registered(con, acc_id):
+    """#121（2026-08-28）: 検収/入金の登録が無い案件も、月列0埋めの行として出力する
+    （以前はスキップしていたが、予定が未入力の案件も一覧できるよう変更）。"""
     d = _deal(con, acc_id, "受注")
-    sfa_db.create_delivery(con, deal_id=d, title="登録なし案件")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="登録なし案件")
     import openpyxl
     from io import BytesIO
     wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
     ws = wb.active
-    assert ws.max_row == 1  # ヘッダのみ
+    assert ws.max_row == 3  # ヘッダ+検収行+入金行
+    hdr = [c.value for c in ws[1]]
+    rows = [dict(zip(hdr, [c.value for c in ws[r]])) for r in (2, 3)]
+    assert {r["検収/入金"] for r in rows} == {"検収", "入金"}
+    assert all(r["#"] == dvid for r in rows)
+    assert all(r[_ml(_ym(0))] == 0 for r in rows)  # 登録が無い月は0埋め
 
 
 def test_deliveries_page_renders_full_width_and_wider_columns(con, acc_id):
@@ -819,6 +886,10 @@ def test_duplicate_delivery_copies_plan_fields_but_not_execution_data(con, acc_i
     sfa_db.add_delivery_role(con, delivery_id=src_id, role="コンサルタント", fte_billing=50, fte_pct=30)
     sfa_db.add_delivery_assignment(con, delivery_id=src_id, owner="高橋", from_week="2026-09-07",
                                    to_week="2026-09-14", role="コンサルタント", fte_pct=50)
+    sfa_db.update_delivery(con, src_id, responsible_owner="高橋", handling_owner="高橋",
+                           billing_method=sfa_db.DELIVERY_BILLING_METHODS[0], billing_due="翌月1日",
+                           billing_recipient="経理部佐藤さん", expense_billing="有",
+                           expense_billing_note="交通費のみ")
     sfa_db.set_delivery_receipt(con, src_id, "2026-09", 100)
 
     new_id = sfa_db.duplicate_delivery(con, src_id)
@@ -833,6 +904,13 @@ def test_duplicate_delivery_copies_plan_fields_but_not_execution_data(con, acc_i
     assert new["cost_vendor"] == "外注先X"
     assert new["payment_cycle_months"] == 2
     assert new["business_type_l1_override"] == "コスト削減"
+    # 請求関連は計画情報として引き継ぐ
+    assert new["billing_method"] == sfa_db.DELIVERY_BILLING_METHODS[0]
+    assert new["billing_due"] == "翌月1日"
+    assert new["billing_recipient"] == "経理部佐藤さん"
+    assert new["expense_billing"] == "有" and new["expense_billing_note"] == "交通費のみ"
+    # 責任者/担当者はアサインリスト由来のため、アサインが空の複製直後は引き継がない
+    assert new["responsible_owner"] is None and new["handling_owner"] is None
 
     new_roles = sfa_db.list_delivery_roles(con, new_id)
     assert {(r["role"], r["fte_billing"], r["fte_pct"]) for r in new_roles} == {

@@ -750,6 +750,40 @@ def test_delivery_save_route_persists_business_type_override(server, db_path):
     con2.close()
 
 
+def test_delivery_save_route_persists_responsible_and_billing_fields(server, db_path):
+    """#121: POST /delivery/{id}/save に責任者/担当者・請求方法/請求期日/請求送付先・
+    経費請求有無/メモを渡すと保存されること。責任者/担当者はこのDeliveryの現在のアサイン
+    リストに実在する値のみ受け付け、存在しない値はNoneへ落ちる。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
+                                   to_week="2026-09-14", role="コンサルタント", fte_pct=50)
+    con.close()
+
+    code, _ = _post(server + f"/delivery/{dvid}/save", {
+        "title": "D", "start_week": "2026-09-07", "end_week": "2026-10-04", "status": "進行中",
+        "responsible_owner": "早瀬", "handling_owner": "存在しない人",
+        "billing_method": sfa_db.DELIVERY_BILLING_METHODS[0],
+        "billing_due_sel": "__other__", "billing_due_other": "毎月10日",
+        "billing_recipient": "経理部佐藤さん、PF提出",
+        "expense_billing": "不明(要確認)", "expense_billing_note": "後で確認",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT * FROM deliveries WHERE id=?", (dvid,)).fetchone()
+    assert row["responsible_owner"] == "早瀬"
+    assert row["handling_owner"] is None  # アサインリストに無い値はNoneに落ちる
+    assert row["billing_method"] == sfa_db.DELIVERY_BILLING_METHODS[0]
+    assert row["billing_due"] == "毎月10日"  # 「他」選択時は自由入力欄の値
+    assert row["billing_recipient"] == "経理部佐藤さん、PF提出"
+    assert row["expense_billing"] == "不明(要確認)"
+    assert row["expense_billing_note"] == "後で確認"
+    con2.close()
+
+
 def test_delivery_receipt_route_persists_monthly_amount(server, db_path):
     """POST /delivery/{id}/receipt で月別検収額を保存できること（月別入金計画・ユーザー要望2026-08-23）。"""
     con = sfa_db.connect(db_path)

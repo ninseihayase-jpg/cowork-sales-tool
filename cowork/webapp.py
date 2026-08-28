@@ -1336,6 +1336,65 @@ def _delivery_biz_l2_opts(con, dv: dict) -> str:
     return "".join(opts)
 
 
+def _delivery_billing_method_opts(con, cur: str | None) -> str:
+    """請求方法(billing_method)の<option>群。選択肢はマスタ(delivery_billing_methods)。"""
+    cur = cur or ""
+    opts = ['<option value=""></option>']
+    for v in sfa_db.get_master_list(con, "delivery_billing_methods"):
+        opts.append(f'<option value="{_esc(v)}"{" selected" if v == cur else ""}>{_esc(v)}</option>')
+    return "".join(opts)
+
+
+_DELIVERY_BILLING_DUE_OTHER = "__other__"
+
+
+def _delivery_billing_due_html(con, dv: dict) -> str:
+    """請求期日(billing_due): マスタ選択肢＋「他」（選ぶと自由入力欄が出る）。
+    DBにはマスタ値かカスタム自由文どちらか1つのテキストとして保持し、現在値がマスタに
+    無ければ自動で「他」を選択状態にして自由入力欄へその値を出す。既定は当月末日。"""
+    cur = dv.get("billing_due") or sfa_db.DELIVERY_BILLING_DUE_DEFAULT
+    masters = sfa_db.get_master_list(con, "delivery_billing_due")
+    is_other = cur not in masters
+    opts = "".join(
+        f'<option value="{_esc(v)}"{" selected" if v == cur else ""}>{_esc(v)}</option>' for v in masters)
+    opts += f'<option value="{_DELIVERY_BILLING_DUE_OTHER}"{" selected" if is_other else ""}>他</option>'
+    other_val = cur if is_other else ""
+    return (
+        f'<select name="billing_due_sel" id="dvBillingDueSel" onchange="dvBillingDueChanged()">{opts}</select>'
+        f'<input type="text" name="billing_due_other" id="dvBillingDueOther" placeholder="請求期日"'
+        f' value="{_esc(other_val)}" style="width:110px;margin-left:4px;'
+        f'{"" if is_other else "display:none"}">'
+    )
+
+
+def _delivery_expense_billing_opts(cur: str | None) -> str:
+    """経費請求有無(expense_billing)の<option>群。マスタ非連動の固定選択肢。"""
+    cur = cur or ""
+    opts = ['<option value=""></option>']
+    for v in sfa_db.DELIVERY_EXPENSE_BILLING_OPTIONS:
+        opts.append(f'<option value="{_esc(v)}"{" selected" if v == cur else ""}>{_esc(v)}</option>')
+    return "".join(opts)
+
+
+def _delivery_owner_roles_box_html(dv: dict, assignees: list[str]) -> str:
+    """責任者/担当者セレクト（アサインリストから選択。2026-08-28）。form属性で基礎情報の
+    フォーム(dvBaseForm)へ送信し、同じ「保存」ボタンで一括保存する。アサインが未登録の場合は
+    選べる人がいないため、先にアサインを入力するよう促す表示を出す。"""
+    if not assignees:
+        return ('<p class="muted" style="font-size:11px">アサインが未登録のため選べません。'
+                '下の「アサイン」でメンバーを追加してください。</p>')
+
+    def _sel(field: str, cur: str) -> str:
+        opts = ['<option value=""></option>'] + [
+            f'<option value="{_esc(a)}"{" selected" if a == cur else ""}>{_esc(a)}</option>' for a in assignees]
+        return f'<select name="{field}" form="dvBaseForm">{"".join(opts)}</select>'
+
+    return (
+        f'<label style="font-size:12px">責任者<br>{_sel("responsible_owner", dv.get("responsible_owner") or "")}</label>'
+        f'<label style="font-size:12px">担当者<br>{_sel("handling_owner", dv.get("handling_owner") or "")}</label>'
+    )
+
+
 _DELIVERY_ACTIVE_CONF_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2}
 
 
@@ -1675,10 +1734,11 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
     Excelのフィルタ機能により絞り込めるようにする）。一番左は「確度」列（Delivery一覧と
     同じ_delivery_confidenceのラベル）。
     月列は実データの有無に関わらず「今月〜+18ヶ月後」の固定19ヶ月分を表示し、登録が無い月は
-    0を入力する（ユーザー要望2026-08-28続き）。検収も入金も1件も登録が無い案件は行として
-    出さない（両者は検収額から派生するため常に両方揃うか両方空かのいずれかになる）。
-    アサインは「主担当/副担当」(1人目/2人目・アルファベット順ではなく名前の昇順。副担当が
-    居なければ"-") に加え、全員を1人1列（アサインN）でも列挙する。"""
+    0を入力する。検収額の入力が無い案件も含め全Deliveryを出力する（ユーザー要望2026-08-28続き。
+    以前は検収登録が無い案件を除外していたが、予定を立てる前の案件も一覧できるよう変更）。
+    責任者/担当者(dv.responsible_owner/handling_owner。個別編集画面でアサインリストから選択)、
+    請求方法・請求期日・請求送付先・経費請求有無/メモも列挙する。アサインは全員を1人1列
+    （アサインN。全案件を通じた最大人数分の列数に揃え、足りない案件は空欄）でも列挙する。"""
     import openpyxl
     from openpyxl.styles import Font
     from io import BytesIO
@@ -1694,8 +1754,6 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
     for dv in sfa_db.list_deliveries(con):
         cf = sfa_db.delivery_cashflow(con, dv["id"])
         receipts = cf.get("receipts") or {}
-        if not receipts:
-            continue
         payments = cf.get("payments") or {}
         blocks = sfa_db.list_delivery_assignments(con, dv["id"])
         assignees = sorted({b["owner"] for b in blocks if (b.get("owner") or "").strip()})
@@ -1707,21 +1765,24 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
     ws = wb.active
     ws.title = "入金予定表"
     fixed_hdr = ["確度", "検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
-                 "支払いサイト", "主担当", "副担当"]
+                 "支払いサイト", "責任者", "担当者", "請求方法", "請求期日", "請求送付先",
+                 "経費請求有無", "経費請求メモ"]
     hdr = (fixed_hdr + [f"アサイン{i + 1}" for i in range(max_assignees)]
            + [f"{m[2:4]}/{m[5:7]}" for m in months])
     for c, h in enumerate(hdr, 1):
         ws.cell(row=1, column=c, value=h).font = Font(bold=True)
     r = 2
     for dv, flag, vals, assignees in per_delivery:
-        main_a = assignees[0] if len(assignees) >= 1 else "-"
-        sub_a = assignees[1] if len(assignees) >= 2 else "-"
         _cycle = dv.get("payment_cycle_months")
         _conf_lbl, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
                                             dv.get("confidence_override"))
         row = [_conf_lbl, flag, dv["id"], dv.get("account_name") or "", dv.get("title") or "",
                dv.get("status") or "", dv.get("start_week") or "", dv.get("end_week") or "",
-               _cycle if _cycle is not None else 1, main_a, sub_a]
+               _cycle if _cycle is not None else 1,
+               dv.get("responsible_owner") or "", dv.get("handling_owner") or "",
+               dv.get("billing_method") or "", dv.get("billing_due") or sfa_db.DELIVERY_BILLING_DUE_DEFAULT,
+               dv.get("billing_recipient") or "", dv.get("expense_billing") or "",
+               dv.get("expense_billing_note") or ""]
         row += [(assignees[i] if i < len(assignees) else "") for i in range(max_assignees)]
         row += [(vals.get(m) or 0) for m in months]
         for c, v in enumerate(row, 1):
@@ -2012,6 +2073,7 @@ def delivery_form(con, delivery_id: int) -> str:
     blocks = sfa_db.list_delivery_assignments(con, delivery_id)
     blocks.sort(key=lambda b: (_role_order.get(b.get("role") or "", 10_000),
                                b.get("role") or "￿", b.get("id") or 0))
+    _assignees = sorted({b["owner"] for b in blocks if (b.get("owner") or "").strip()})
     bedit = ""
     for b in blocks:
         bedit += f"""
@@ -2102,7 +2164,7 @@ def delivery_form(con, delivery_id: int) -> str:
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;margin-bottom:14px">
         <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
           <h3 style="margin:0 0 8px;font-size:14px">基礎情報</h3>
-          <form method="post" action="/delivery/{delivery_id}/save" style="display:flex;flex-direction:column;flex:1">
+          <form id="dvBaseForm" method="post" action="/delivery/{delivery_id}/save" style="display:flex;flex-direction:column;flex:1">
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
               <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:200px"></label>
               <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:60px" oninput="hdrCalcEnd();dvFeeRecalc();dvCostRecalc()"></label>
@@ -2148,31 +2210,54 @@ def delivery_form(con, delivery_id: int) -> str:
                        value="{"" if dv.get("cost_total") is None else dv.get("cost_total")}" oninput="dvCostFieldInput(this)"></label>
               <span class="muted" style="font-size:11px;align-self:center" id="dvCostMonths"></span>
             </div>
-            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:8px">
-              <div style="font-size:12px">総アサイン工数<br><b id="dvEffort" style="font-size:15px">{_assign_effort:g}</b> <span class="muted">%/月</span>
-                <span class="muted" style="font-size:10px">（請求 <b id="dvEffortBill">{f'{_assign_effort_bill:g}' if _assign_effort_bill > 0 else '-'}</b>%/月）</span></div>
-              <div style="font-size:12px">平均単価(月額)<br><b id="dvUnitPrice" style="font-size:15px">—</b> <span class="muted">万円/100%</span></div>
-              <div style="font-size:12px">想定利益(月額/総額)<br><b id="dvProfitMonthly" style="font-size:15px">—</b> / <b id="dvProfitTotal" style="font-size:15px">—</b> <span class="muted">万円</span>
-                <span class="muted" style="font-size:10px">（報酬額－外注費）</span></div>
-              <div class="muted" style="font-size:10px;align-self:center;max-width:320px">※総アサイン工数＝Σ(アサイン週数×稼働率)÷総期間週数（＝期間平均の合計稼働率）。請求は純粋な請求稼働（0%＝成果物ベースで稼働コミットなし＝「-」）。平均単価(月額)＝<b>月額報酬</b>÷総工数×100（請求ベース優先・請求0%は実想定で試算）を万円単位・10万円未満四捨五入で表示。アサイン編集後は保存して再読込で更新。</div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+              <label style="font-size:12px">請求方法<br><select name="billing_method">{_delivery_billing_method_opts(con, dv.get("billing_method"))}</select></label>
+              <label style="font-size:12px">請求期日<br>{_delivery_billing_due_html(con, dv)}</label>
+              <label style="font-size:12px">請求送付先<br>
+                <input type="text" name="billing_recipient" placeholder="例: 経理部佐藤さん、PF提出" style="width:220px"
+                       value="{_esc(dv.get("billing_recipient") or "")}"></label>
             </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+              <label style="font-size:12px">経費請求有無<br><select name="expense_billing">{_delivery_expense_billing_opts(dv.get("expense_billing"))}</select></label>
+              <label style="font-size:12px">経費請求メモ<br>
+                <input type="text" name="expense_billing_note" style="width:220px"
+                       value="{_esc(dv.get("expense_billing_note") or "")}"></label>
+            </div>
+            <details style="margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:8px">
+              <summary style="cursor:pointer;font-size:12px;color:#2563eb">総アサイン工数・平均単価・想定利益を表示</summary>
+              <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
+                <div style="font-size:12px">総アサイン工数<br><b id="dvEffort" style="font-size:15px">{_assign_effort:g}</b> <span class="muted">%/月</span>
+                  <span class="muted" style="font-size:10px">（請求 <b id="dvEffortBill">{f'{_assign_effort_bill:g}' if _assign_effort_bill > 0 else '-'}</b>%/月）</span></div>
+                <div style="font-size:12px">平均単価(月額)<br><b id="dvUnitPrice" style="font-size:15px">—</b> <span class="muted">万円/100%</span></div>
+                <div style="font-size:12px">想定利益(月額/総額)<br><b id="dvProfitMonthly" style="font-size:15px">—</b> / <b id="dvProfitTotal" style="font-size:15px">—</b> <span class="muted">万円</span>
+                  <span class="muted" style="font-size:10px">（報酬額－外注費）</span></div>
+                <div class="muted" style="font-size:10px;align-self:center;max-width:320px">※総アサイン工数＝Σ(アサイン週数×稼働率)÷総期間週数（＝期間平均の合計稼働率）。請求は純粋な請求稼働（0%＝成果物ベースで稼働コミットなし＝「-」）。平均単価(月額)＝<b>月額報酬</b>÷総工数×100（請求ベース優先・請求0%は実想定で試算）を万円単位・10万円未満四捨五入で表示。アサイン編集後は保存して再読込で更新。</div>
+              </div>
+            </details>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
             <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は体制「複製」で生成する行の初期値（ガイド）です。
               月額/総額は自動換算されますが、灰色側を直接編集すると手修正として保持されます（報酬形態を切り替えると自動換算に戻ります）。</p>
           </form>
         </div>
-        <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
-          <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
-          <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。</p>
-          <form method="post" action="/delivery/{delivery_id}/role/add"
-                style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-bottom:8px">
-            <label style="font-size:11px">役割<br><input type="text" name="role" required placeholder="PM/エンジニア等" style="width:130px"></label>
-            <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="100" style="width:76px"></label>
-            <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="100" style="width:76px"></label>
-            <button class="btn sec" style="font-size:12px">＋役割追加（アサイン行も生成）</button>
-          </form>
-          <div style="overflow:auto;flex:1">{role_rows}</div>
+        <div style="flex:1 1 380px;min-width:340px;display:flex;flex-direction:column;gap:14px">
+          <div style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+            <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
+            <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。</p>
+            <form method="post" action="/delivery/{delivery_id}/role/add"
+                  style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-bottom:8px">
+              <label style="font-size:11px">役割<br><input type="text" name="role" required placeholder="PM/エンジニア等" style="width:130px"></label>
+              <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="100" style="width:76px"></label>
+              <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="100" style="width:76px"></label>
+              <button class="btn sec" style="font-size:12px">＋役割追加（アサイン行も生成）</button>
+            </form>
+            <div style="overflow:auto">{role_rows}</div>
+          </div>
+          <div style="flex:1;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+            <h3 style="margin:0 0 6px;font-size:14px">責任者・担当者</h3>
+            <p class="muted" style="font-size:11px;margin:0 0 8px">アサインリストに入っている人から選びます（「保存」ボタンで基礎情報と一緒に保存されます）。</p>
+            <div style="display:flex;gap:12px;flex-wrap:wrap">{_delivery_owner_roles_box_html(dv, _assignees)}</div>
+          </div>
         </div>
       </div>
 
@@ -2287,6 +2372,12 @@ def delivery_form(con, delivery_id: int) -> str:
       var mo=document.getElementById('dvCostMonthly'), to=document.getElementById('dvCostTotal');
       mo.dataset.manual=''; to.dataset.manual='';
       dvCostRecalc();
+    }}
+    // 請求期日:「他」を選ぶと自由入力欄を出す（ユーザー要望2026-08-28）。
+    function dvBillingDueChanged(){{
+      var sel=document.getElementById('dvBillingDueSel'), other=document.getElementById('dvBillingDueOther');
+      if(!sel||!other) return;
+      other.style.display = sel.value==='{_DELIVERY_BILLING_DUE_OTHER}' ? '' : 'none';
     }}
     // 想定利益(月額/総額) = 報酬額－外注費。どちらも未入力なら「—」、片方だけ未入力は0扱い。
     function dvProfitRecalc(){{
@@ -16368,6 +16459,30 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # L2はL1override未選択（自動）ならL1override自体は商談のL1を継承する前提で判定
                     _eff_l1_for_l2 = _biz_l1_ov or _old_dv.get("deal_business_type_l1")
                     _biz_l2_ov = _biz_l2_ov if _biz_l2_ov in sfa_db.business_type_l2_of(con, _eff_l1_for_l2) else None
+                    # 責任者/担当者はこのDeliveryの現在のアサインリストに実在する値のみ受け付ける
+                    # （選択肢自体がアサインリスト由来のため、通常操作では常に一致する）。
+                    _cur_assignees = {a.get("owner") for a in sfa_db.list_delivery_assignments(con, _dvid)
+                                      if (a.get("owner") or "").strip()}
+                    _resp_owner = (f.get("responsible_owner", "") or "").strip()
+                    _resp_owner = _resp_owner if _resp_owner in _cur_assignees else None
+                    _handle_owner = (f.get("handling_owner", "") or "").strip()
+                    _handle_owner = _handle_owner if _handle_owner in _cur_assignees else None
+                    # 請求方法（マスタ照合）。
+                    _billing_method = (f.get("billing_method", "") or "").strip()
+                    _billing_method = (_billing_method
+                                       if _billing_method in sfa_db.get_master_list(con, "delivery_billing_methods")
+                                       else None)
+                    # 請求期日:「他」選択時は自由入力欄の値を使う。それ以外はマスタ照合、既定は当月末日。
+                    _due_sel = (f.get("billing_due_sel", "") or "").strip()
+                    if _due_sel == _DELIVERY_BILLING_DUE_OTHER:
+                        _billing_due = (f.get("billing_due_other", "") or "").strip() or sfa_db.DELIVERY_BILLING_DUE_DEFAULT
+                    elif _due_sel in sfa_db.get_master_list(con, "delivery_billing_due"):
+                        _billing_due = _due_sel
+                    else:
+                        _billing_due = sfa_db.DELIVERY_BILLING_DUE_DEFAULT
+                    _expense_billing = (f.get("expense_billing", "") or "").strip()
+                    _expense_billing = (_expense_billing
+                                        if _expense_billing in sfa_db.DELIVERY_EXPENSE_BILLING_OPTIONS else None)
                     sfa_db.update_delivery(
                         con, _dvid,
                         title=(f.get("title", "") or "").strip(),
@@ -16384,7 +16499,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         cost_total=_cost_total,
                         cost_vendor=(f.get("cost_vendor", "") or "").strip(),
                         business_type_l1_override=_biz_l1_ov,
-                        business_type_l2_override=_biz_l2_ov)
+                        business_type_l2_override=_biz_l2_ov,
+                        responsible_owner=_resp_owner,
+                        handling_owner=_handle_owner,
+                        billing_method=_billing_method,
+                        billing_due=_billing_due,
+                        billing_recipient=(f.get("billing_recipient", "") or "").strip(),
+                        expense_billing=_expense_billing,
+                        expense_billing_note=(f.get("expense_billing_note", "") or "").strip())
                     # 期間の変更に合わせて各アサインの週も連動スライド（開始移動＝全員スライド／週数延長＝全員の終了延長）
                     sfa_db.reschedule_delivery_assignments(
                         con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"), _sw, _ew)
