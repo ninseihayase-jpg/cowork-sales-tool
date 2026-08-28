@@ -865,8 +865,8 @@ def test_issue_page_hides_rich_note_links_when_locked(server, db_path):
 
 
 def test_delivery_payment_schedule_xlsx_route_returns_workbook(server, db_path):
-    """#115: /deliveries/payment-schedule.xlsx がmode指定(検収/入金・既定=入金)で
-    xlsxを返すこと。"""
+    """#115（2026-08-28修正）: /deliveries/payment-schedule.xlsx が検収/入金を
+    同一シートにまとめたxlsxを返すこと。"""
     con = sfa_db.connect(db_path)
     acc = con.execute("INSERT INTO accounts(name) VALUES('加藤製作所')").lastrowid
     con.commit()
@@ -880,8 +880,13 @@ def test_delivery_payment_schedule_xlsx_route_returns_workbook(server, db_path):
     assert resp.headers.get("Content-Type") == \
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-    code2, resp2 = _get(server + "/deliveries/payment-schedule.xlsx?mode=receipt", headers=_auth_header())
-    assert code2 == 200
+
+def test_deliveries_route_renders_wide_main(server):
+    """#118: /deliveries は画面幅いっぱいに表示するmain-wideクラス付きで返る。"""
+    code, resp = _get(server + "/deliveries", headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert '<main class="main-wide">' in body
 
 
 def test_viewport_meta_allows_pinch_zoom(server):

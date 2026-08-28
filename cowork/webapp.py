@@ -381,6 +381,7 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  .tb-panel a{{color:#1d2430;text-decoration:none;font-size:13px;padding:8px 10px;border-radius:6px;white-space:nowrap}}
  .tb-panel a:hover{{background:#f1f4f9}}
  main{{max-width:1440px;margin:20px auto;padding:0 16px}}
+ main.main-wide{{max-width:none}}
  .card{{background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.08)}}
  h2{{font-size:15px;margin:0 0 12px;color:#3a4760}}
  table{{width:100%;border-collapse:collapse;font-size:13px}}
@@ -606,7 +607,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <a href="/dashboard" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#cdd7ff;text-decoration:none">📊 SFA dashboard</a>
   <a href="/reports" style="background:rgba(224,178,122,.16);border:1px solid rgba(224,178,122,.4);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#f0d9be;text-decoration:none">📰 週次レポート</a>
 </header>
-<main>{flash}{body}</main></body></html>"""
+<main class="{main_class}">{flash}{body}</main></body></html>"""
 
 
 # 全ページ共通の「商談クローズ（リードに戻す）」モーダル。各画面のボタンから openCloseModal(id, returnTo)
@@ -781,7 +782,9 @@ _TOOL_MODAL_HTML = (
 )
 
 
-def render(body: str, flash: str = "") -> bytes:
+def render(body: str, flash: str = "", wide: bool = False) -> bytes:
+    """wide=True で<main>のmax-width制限(1440px)を外し、画面幅いっぱいに表示する
+    （列数の多いテーブル等、可視性のため広く使いたいページ向け。ユーザー要望2026-08-28）。"""
     flash_html = f'<div class="flash">{html.escape(flash)}</div>' if flash else ""
     _sid = os.environ.get("SALES_SHEET_ID", "")
     delivery_url = f"https://docs.google.com/spreadsheets/d/{_sid}/edit" if _sid else "#"
@@ -789,6 +792,7 @@ def render(body: str, flash: str = "") -> bytes:
         body=body + _CLOSE_MODAL_HTML + _TOOL_MODAL_HTML + _RICH_NOTE_ASSETS,
         flash=flash_html,
         delivery_url=delivery_url,
+        main_class="main-wide" if wide else "",
     ).encode("utf-8")
 
 
@@ -1665,44 +1669,48 @@ def build_deliveries_xlsx(con) -> bytes:
     return buf.getvalue()
 
 
-def build_delivery_payment_schedule_xlsx(con, mode: str = "payment") -> bytes:
-    """検収/入金ベースの月別金額一覧（1案件1行のピボット形式）をxlsxで出力する
-    （ユーザー要望2026-08-28: 「入金予定」として検収/入金をフラグで選べる一覧表が欲しい）。
-    mode='receipt'は検収額（検収月ベース）・'payment'は入金額（支払いサイクル分ずらした入金月
-    ベース、既定）。月列は実際に金額が登録されている月のみ（案件期間全体を機械的に広げない）。"""
+def build_delivery_payment_schedule_xlsx(con) -> bytes:
+    """検収/入金の月別金額一覧（1案件×検収/入金の2行のピボット形式）を1枚のxlsxで出力する
+    （ユーザー要望2026-08-28: 検収/入金は同じxlsx内に同居させ、先頭列「検収/入金」の値で
+    Excelのフィルタ機能により絞り込めるようにする）。月列は実際に金額が登録されている月のみ
+    （案件期間全体を機械的に広げない）。"""
     import openpyxl
     from openpyxl.styles import Font
     from io import BytesIO
 
-    key = "receipts" if mode == "receipt" else "payments"
-    per_delivery = []
+    per_delivery = []  # [(dv, "検収"|"入金", vals), ...]
     all_months: set[str] = set()
     for dv in sfa_db.list_deliveries(con):
-        vals = sfa_db.delivery_cashflow(con, dv["id"]).get(key) or {}
-        if not vals:
-            continue
-        per_delivery.append((dv, vals))
-        all_months.update(vals.keys())
+        cf = sfa_db.delivery_cashflow(con, dv["id"])
+        for flag, key in (("検収", "receipts"), ("入金", "payments")):
+            vals = cf.get(key) or {}
+            if not vals:
+                continue
+            per_delivery.append((dv, flag, vals))
+            all_months.update(vals.keys())
     months = sorted(all_months)
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "検収ベース" if mode == "receipt" else "入金ベース"
-    hdr = (["#", "クライアント", "案件", "状態", "開始週", "終了週", "アサイン"]
+    ws.title = "入金予定表"
+    hdr = (["検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週", "アサイン"]
            + [f"{m[2:4]}/{m[5:7]}" for m in months])
     for c, h in enumerate(hdr, 1):
         ws.cell(row=1, column=c, value=h).font = Font(bold=True)
     r = 2
-    for dv, vals in per_delivery:
+    for dv, flag, vals in per_delivery:
         blocks = sfa_db.list_delivery_assignments(con, dv["id"])
         who = "、".join(sorted({b["owner"] for b in blocks})) or ""
-        row = [dv["id"], dv.get("account_name") or "", dv.get("title") or "",
+        row = [flag, dv["id"], dv.get("account_name") or "", dv.get("title") or "",
                dv.get("status") or "", dv.get("start_week") or "", dv.get("end_week") or "", who]
         row += [vals.get(m) for m in months]
         for c, v in enumerate(row, 1):
             ws.cell(row=r, column=c, value=v)
         r += 1
-    ws.freeze_panes = "H2"
+    last_row = r - 1
+    last_col = openpyxl.utils.get_column_letter(len(hdr))
+    ws.auto_filter.ref = f"A1:{last_col}{max(last_row, 1)}"  # 「検収/入金」列等でExcel側から絞り込み可
+    ws.freeze_panes = "I2"
 
     buf = BytesIO()
     wb.save(buf)
@@ -1788,10 +1796,10 @@ def deliveries_page(con) -> str:
           <td style="width:26px"><input type="checkbox" name="ids" value="{_id}"></td>
           <td class="muted" style="font-size:.8em"><a href="/delivery/{_id}">#{_id}</a></td>
           <td>{_esc(dv.get('account_name') or '—')}</td>
-          <td><input type="text" value="{_esc(dv.get('title') or '')}" style="width:180px;font-size:12px"
+          <td><input type="text" value="{_esc(dv.get('title') or '')}" style="width:220px;font-size:12px"
                  onchange="dvField({_id},'title',this.value)"></td>
           <td style="white-space:nowrap"><span style="background:{col};color:#fff;border-radius:5px;padding:1px 7px;font-size:11px;white-space:nowrap;display:inline-block">{lbl}</span></td>
-          <td><select style="font-size:12px" onchange="dvField({_id},'status',this.value)">{_st_opts}</select></td>
+          <td><select style="font-size:12px;min-width:104px" onchange="dvField({_id},'status',this.value)">{_st_opts}</select></td>
           <td><input type="date" value="{_esc(dv.get('start_week') or '')}" style="font-size:11px"
                  onchange="dvField({_id},'start_week',this.value)"></td>
           <td><input type="date" value="{_esc(dv.get('end_week') or '')}" style="font-size:11px"
@@ -1832,16 +1840,14 @@ def deliveries_page(con) -> str:
           {"".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in sfa_db.DELIVERY_CONFIDENCE_LEVELS)}</select>
         <span id="dvCount" class="muted" style="font-size:12px"></span>
         <span style="margin-left:auto;display:inline-flex;gap:6px;flex-wrap:wrap">
-          <a class="btn sec" href="/deliveries/payment-schedule.xlsx?mode=receipt" style="font-size:12px"
-             title="案件×月の一覧表（検収額ベース）">📥 入金予定表(検収)</a>
-          <a class="btn sec" href="/deliveries/payment-schedule.xlsx?mode=payment" style="font-size:12px"
-             title="案件×月の一覧表（支払いサイクル分ずらした入金額ベース）">📥 入金予定表(入金)</a>
+          <a class="btn sec" href="/deliveries/payment-schedule.xlsx" style="font-size:12px"
+             title="案件×月の一覧表。先頭列「検収/入金」でExcel側から絞り込み可">📥 入金予定表</a>
           <a class="btn sec" href="/deliveries/export.xlsx" style="font-size:12px">📥 xlsx出力（全件・全テーブル）</a>
         </span>
       </div>
       <form id="dv_bulk" method="post" action="/deliveries/bulk_delete"
             onsubmit="return confirm('選択したDeliveryを削除します。アサインも消えます。よろしいですか？')">
-      <div style="overflow:auto;max-height:72vh"><table style="min-width:1320px">
+      <div style="overflow:auto;max-height:72vh"><table style="min-width:1380px;width:100%">
         <tr>
           <th class="sticky" style="width:26px"><input type="checkbox" id="dvAll" onclick="dvToggleAll(this)" title="表示中を全選択"></th>
           <th class="sticky">#</th><th class="sticky">クライアント</th><th class="sticky">案件</th>
@@ -15258,12 +15264,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
                 elif path == "/deliveries/payment-schedule.xlsx":
                     try:
-                        _mode = self._qs().get("mode", ["payment"])[0]
-                        if _mode not in ("receipt", "payment"):
-                            _mode = "payment"
-                        _xls = build_delivery_payment_schedule_xlsx(con, mode=_mode)
-                        _label = "検収ベース" if _mode == "receipt" else "入金ベース"
-                        _name = f"delivery_payment_schedule_{_label}_{_today_jst().isoformat()}.xlsx"
+                        _xls = build_delivery_payment_schedule_xlsx(con)
+                        _name = f"delivery_payment_schedule_{_today_jst().isoformat()}.xlsx"
                         self.send_response(200)
                         self.send_header("Content-Type",
                                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -15289,7 +15291,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         import traceback as _tb; _tb.print_exc()
                         self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
                 elif path == "/deliveries":
-                    self._send(render(deliveries_page(con)))
+                    self._send(render(deliveries_page(con), wide=True))
                 elif path == "/base-workload":
                     self._send(render(base_workload_page(con)))
                 elif (path.startswith("/delivery/") and len(path.split("/")) == 3

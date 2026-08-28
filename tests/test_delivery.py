@@ -707,44 +707,33 @@ def test_build_deliveries_xlsx_includes_cashflow_sheet(con, acc_id):
     assert any(r[0] == dvid and r[3] == "2026-09" and r[4] == 100 for r in rows)
 
 
-def test_payment_schedule_xlsx_receipt_mode_pivots_by_month(con, acc_id):
-    """#115: 検収/入金はモードで切替、1案件1行×月別金額の一覧表になること。"""
+def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable_flag(con, acc_id):
+    """#115（2026-08-28修正）: 検収/入金は別ファイルではなく同一xlsx・同一シートに同居させ、
+    先頭列「検収/入金」の値でExcel側のフィルタ機能から絞り込めるようにする。"""
     d = _deal(con, acc_id, "受注")
     dvid = sfa_db.create_delivery(con, deal_id=d, title="A社支援", start_week="2026-09-07",
                                   end_week="2026-11-01", status="進行中")
+    sfa_db.update_delivery(con, dvid, payment_cycle_months=1)
     sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
     sfa_db.set_delivery_receipt(con, dvid, "2026-10", 200)
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
                                    to_week="2026-09-14", role="コンサルタント", fte_pct=50)
     import openpyxl
     from io import BytesIO
-    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con, mode="receipt")))
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
     ws = wb.active
-    assert ws.title == "検収ベース"
+    assert ws.title == "入金予定表"
     hdr = [c.value for c in ws[1]]
-    assert hdr[:7] == ["#", "クライアント", "案件", "状態", "開始週", "終了週", "アサイン"]
-    assert "26/09" in hdr and "26/10" in hdr
-    row = [c.value for c in ws[2]]
-    row_map = dict(zip(hdr, row))
-    assert row_map["#"] == dvid and row_map["案件"] == "A社支援" and row_map["アサイン"] == "早瀬"
-    assert row_map["26/09"] == 100 and row_map["26/10"] == 200
-
-
-def test_payment_schedule_xlsx_payment_mode_shifts_by_cycle(con, acc_id):
-    d = _deal(con, acc_id, "受注")
-    dvid = sfa_db.create_delivery(con, deal_id=d, title="B社支援", start_week="2026-09-07",
-                                  end_week="2026-10-04")
-    sfa_db.update_delivery(con, dvid, payment_cycle_months=2)
-    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
-    import openpyxl
-    from io import BytesIO
-    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con, mode="payment")))
-    ws = wb.active
-    assert ws.title == "入金ベース"
-    hdr = [c.value for c in ws[1]]
-    row_map = dict(zip(hdr, [c.value for c in ws[2]]))
-    assert row_map.get("26/09") is None  # 検収額の月自体は入金ベースには出ない
-    assert row_map["26/11"] == 100  # 2ヶ月後に入金
+    assert hdr[:8] == ["検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週", "アサイン"]
+    assert "26/09" in hdr and "26/10" in hdr and "26/11" in hdr
+    rows = [dict(zip(hdr, [c.value for c in ws[r]])) for r in (2, 3)]
+    receipt_row = next(r for r in rows if r["検収/入金"] == "検収")
+    payment_row = next(r for r in rows if r["検収/入金"] == "入金")
+    assert receipt_row["#"] == dvid and receipt_row["案件"] == "A社支援" and receipt_row["アサイン"] == "早瀬"
+    assert receipt_row["26/09"] == 100 and receipt_row["26/10"] == 200
+    assert payment_row.get("26/09") is None  # 検収月自体には入金額は出ない
+    assert payment_row["26/10"] == 100 and payment_row["26/11"] == 200  # 1ヶ月後に入金
+    assert ws.auto_filter.ref == f"A1:{openpyxl.utils.get_column_letter(len(hdr))}3"
 
 
 def test_payment_schedule_xlsx_skips_deliveries_without_any_amount(con, acc_id):
@@ -753,9 +742,23 @@ def test_payment_schedule_xlsx_skips_deliveries_without_any_amount(con, acc_id):
     sfa_db.create_delivery(con, deal_id=d, title="登録なし案件")
     import openpyxl
     from io import BytesIO
-    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con, mode="receipt")))
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
     ws = wb.active
     assert ws.max_row == 1  # ヘッダのみ
+
+
+def test_deliveries_page_renders_full_width_and_wider_columns(con, acc_id):
+    """#118: Delivery一覧は画面幅いっぱいに表示（main-wide）し、状態セレクト等が
+    潰れて見えなくならないよう最低幅を確保する（ユーザー報告2026-08-28: 状態が潰れている）。"""
+    d = _deal(con, acc_id, "受注")
+    sfa_db.create_delivery(con, deal_id=d, title="案件Z")
+    html = webapp.render(webapp.deliveries_page(con), wide=True).decode("utf-8")
+    assert '<main class="main-wide">' in html
+    assert 'min-width:104px' in html  # 状態セレクトの最低幅
+    assert 'width:220px' in html  # 案件名入力欄
+
+    html_default = webapp.render("<div>x</div>").decode("utf-8")
+    assert '<main class="">' in html_default  # 他ページは従来通り(1440px上限)のまま
 
 
 # ── Delivery複製（ユーザー要望2026-08-27） ────────────────────────────────
