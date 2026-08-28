@@ -5382,12 +5382,13 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         strip = (f'<div class="pj-strip">{chips}{clear}'
                  f'<a class="pj-chip mng" href="/task-projects">⚙ PJ管理</a></div>')
 
-    # 紐づけられている案件一覧（商談/論点/Deliveryを分けて表示。ユーザー要望2026-08-27）。
+    # 紐づけられている案件一覧（Delivery/商談/論点を分けて表示。ユーザー要望2026-08-27、
+    # 2026-08-29に並び順を#124のガント紐づけ単位モードと同じDelivery→商談→論点に統一）。
     # 完了にしか登場しない紐づけ先はtask_link_summary側で除外済み。デフォルトで上部に出すが、
     # PJストリップと同じ横スクロールチップ行×最大3段に留め、全体の可視性を崩さないようにする。
     _link_summary = sfa_db.task_link_summary(con)
     _link_strip_rows = ""
-    for _lt, _lbl_prefix, _lt_icon in (("deal", "商談", "🤝"), ("issue", "論点", "📌"), ("delivery", "Delivery", "🚚")):
+    for _lt, _lbl_prefix, _lt_icon in (("delivery", "Delivery", "🚚"), ("deal", "商談", "🤝"), ("issue", "論点", "📌")):
         _entries = _link_summary.get(_lt) or []
         if not _entries:
             continue

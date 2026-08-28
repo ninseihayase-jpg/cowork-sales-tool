@@ -232,6 +232,19 @@ def test_tasks_page_link_strip_omitted_when_nothing_linked(con):
     assert strips == []
 
 
+def test_tasks_page_link_strip_order_is_delivery_deal_issue(con, deal_issue_delivery):
+    """ユーザー報告2026-08-29: 「Deliveryの位置がおかしい」。#124のガント紐づけ単位モード
+    （Delivery→商談→論点→紐づけ無し）と表示順を統一する。"""
+    did, iid, dv = deal_issue_delivery
+    sfa_db.upsert_task(con, title="商談タスク", link_type="deal", link_id=did, status="未着手")
+    sfa_db.upsert_task(con, title="論点タスク", link_type="issue", link_id=iid, status="未着手")
+    sfa_db.upsert_task(con, title="Deliveryタスク", link_type="delivery", link_id=dv, status="未着手")
+    html = webapp.tasks_page(con)
+    pos_delivery, pos_deal, pos_issue = html.find("Delivery:"), html.find("商談:"), html.find("論点:")
+    assert -1 not in (pos_delivery, pos_deal, pos_issue)
+    assert pos_delivery < pos_deal < pos_issue
+
+
 # ── 紐づけ無しのみフィルタ ────────────────────────────────────────────────
 
 def test_list_tasks_none_filter_returns_only_unlinked(con, deal_issue_delivery):
