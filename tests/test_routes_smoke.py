@@ -95,6 +95,15 @@ def _post(url, data, headers=None):
         return e.code, e.read()
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """リダイレクトを追わず、302/303応答自体をそのまま返す（Locationヘッダ検証用）。"""
+    def http_error_302(self, req, fp, code, msg, hdrs):
+        return fp
+    http_error_301 = http_error_302
+    http_error_303 = http_error_302
+    http_error_307 = http_error_302
+
+
 def test_data_tagging_route_200(server):
     code, resp = _get(server + "/data-tagging", headers=_auth_header())
     assert code == 200
@@ -921,6 +930,84 @@ def test_deliveries_route_renders_wide_main(server):
     body = resp.read().decode("utf-8")
     assert code == 200
     assert '<main class="main-wide">' in body
+
+
+def test_tasks_save_route_preserves_admin_flag_and_untouched_fields(server, db_path):
+    """#123: 事務タスク(is_admin=1)をタスク編集フォーム(/tasks/save)経由で保存しても、
+    フォームが扱わないフィールド(is_admin/priority/requester/slack_*/created_by/source)が
+    消えないこと。保存後は事務タスク看板(/desk-tasks)へリダイレクトされること
+    （ユーザー報告2026-08-28: 事務タスクを編集保存するとコンサルタスクに移動してしまう）。"""
+    con = sfa_db.connect(db_path)
+    tid = sfa_db.upsert_task(con, title="交通費精算", is_admin=1, requester="早瀬",
+                             priority="高", slack_channel="C123", slack_ts="111.222",
+                             slack_permalink="https://slack.com/archives/C123/p111", source="slack",
+                             created_by="U999", status="未着手", assignee="あみ")
+    con.close()
+
+    code, resp = _post(server + "/tasks/save", {
+        "id": str(tid), "title": "交通費精算(編集)", "assignee": "あみ", "status": "未着手",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+    assert row["title"] == "交通費精算(編集)"
+    assert row["is_admin"] == 1  # 事務タスクのままであること（旧: Noneに上書きされコンサル側へ消えていた）
+    assert row["requester"] == "早瀬"
+    assert row["priority"] == "高"
+    assert row["slack_channel"] == "C123" and row["slack_ts"] == "111.222"
+    assert row["slack_permalink"] == "https://slack.com/archives/C123/p111"
+    assert row["created_by"] == "U999"
+    assert row["source"] == "slack"
+    con2.close()
+
+    # リダイレクト先が事務タスク看板であること
+    req = urllib.request.Request(server + "/tasks/save", method="POST",
+                                 headers={**_auth_header(), "Content-Type": "application/x-www-form-urlencoded"},
+                                 data=urllib.parse.urlencode(
+                                     {"id": str(tid), "title": "再編集", "assignee": "あみ", "status": "未着手"}
+                                 ).encode())
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    resp2 = opener.open(req, timeout=10)
+    assert resp2.getcode() == 303
+    assert resp2.headers.get("Location") == "/desk-tasks"
+
+
+def test_tasks_save_route_leaves_regular_task_untouched(server, db_path):
+    """通常タスク(is_admin未設定)の編集保存は従来通りコンサルタスク看板(/tasks)へ戻ること。"""
+    con = sfa_db.connect(db_path)
+    tid = sfa_db.upsert_task(con, title="通常タスク", assignee="早瀬", status="未着手")
+    con.close()
+
+    req = urllib.request.Request(server + "/tasks/save", method="POST",
+                                 headers={**_auth_header(), "Content-Type": "application/x-www-form-urlencoded"},
+                                 data=urllib.parse.urlencode(
+                                     {"id": str(tid), "title": "通常タスク(編集)", "assignee": "早瀬", "status": "未着手"}
+                                 ).encode())
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    resp = opener.open(req, timeout=10)
+    assert resp.getcode() == 303
+    assert resp.headers.get("Location") == "/tasks"
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+    assert row["is_admin"] in (0, None)
+    con2.close()
+
+
+def test_task_card_assignee_badge_syncs_without_reload(server, db_path):
+    """#122: 看板カードの担当バッジ(.m-asg)は担当未設定でも要素自体を残し(display:none)、
+    taskField()のJSがfield==='assignee'のとき即座にテキスト/表示を更新できるようにする
+    （ユーザー報告2026-08-28: 担当を変えてもリロードしないと反映されない）。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.upsert_task(con, title="担当バッジ確認用", assignee="早瀬", status="未着手")
+    con.close()
+
+    code, resp = _get(server + "/tasks", headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert 'data-emoji="👤"' in body
+    assert "field==='assignee'&&card" in body
 
 
 def test_viewport_meta_allows_pinch_zoom(server):

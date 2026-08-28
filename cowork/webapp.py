@@ -4293,6 +4293,11 @@ function taskField(id,field,value){
      tcApplyCounts(d.counts);
      var card=document.getElementById('tc-'+id);
      if(field==='next_action'&&card){ var na=card.querySelector('.tc-na'); if(na)na.classList.toggle('empty',!(value||'').trim()); }
+     // コンパクト表示の担当バッジ(.m-asg)はサーバ描画時の固定文字列なので、変更後も
+     // リロードするまで古い担当名のままだった（ユーザー報告2026-08-28）。ここで即時同期する。
+     if(field==='assignee'&&card){ var asgEl=card.querySelector('.m-asg');
+       if(asgEl){ var vv=(value||'').trim(), emoji=asgEl.dataset.emoji||'';
+         asgEl.textContent=vv?(emoji+vv):''; asgEl.style.display=vv?'':'none'; } }
      if(d.status&&card&&card.getAttribute('data-status')!==d.status){ tcMove(id,d.status); }
    }).catch(function(){ alert('通信エラー'); });
 }
@@ -4847,10 +4852,11 @@ def task_form(con, task=None) -> str:
         </form>
         {rows}
       </div>"""
+    _tf_cancel = "/desk-tasks" if is_admin_task else "/tasks"
     return f"""
     <div class="card" style="max-width:720px">
       <h2>{'タスクを編集' if is_edit else '新規タスク'}</h2>
-      {_save_bar('taskForm', cancel_url='/tasks')}
+      {_save_bar('taskForm', cancel_url=_tf_cancel)}
       <form id="taskForm" method="post" action="/tasks/save">
         <input type="hidden" name="id" value="{_esc(task.get('id'))}">
         <label>タイトル（タスク名・中項目） *</label>
@@ -4872,7 +4878,7 @@ def task_form(con, task=None) -> str:
                                     cur_id=task.get("link_id"), include_dev=True, dev_opts=dev_opts)}</div>
         </div>
         <div style="margin-top:14px"><button class="btn" type="submit">保存</button>
-          <a class="btn sec" href="/tasks">キャンセル</a></div>
+          <a class="btn sec" href="{_tf_cancel}">キャンセル</a></div>
       </form>
     </div>{notes_block}
     <script>
@@ -5132,7 +5138,10 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         asg = (t.get("assignee") or "").strip()
         # コンパクト表示（常時）: PJ・担当・期限(7/31金)・遷移ボタン
         m_pj = f'<span class="m-pj" title="{_esc(proj)}">📁{_esc(proj)}</span>' if proj else ""
-        m_asg = f'<span class="m-asg">👤{_esc(asg)}</span>' if asg else ""
+        # 担当なしでも要素自体は残し(display:none)、taskField()での即時同期を可能にする
+        # （空だと要素ごと無い＝JS側で更新先が見つからず、リロードするまで反映されなかった不具合の修正）。
+        m_asg = (f'<span class="m-asg" data-emoji="👤" title="担当">👤{_esc(asg)}</span>' if asg
+                 else '<span class="m-asg" data-emoji="👤" title="担当" style="display:none"></span>')
         m_due = (f'<span class="m-due" style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
                  if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
         _urg_border = f'border-left:4px solid {ucolor};' if status != "完了" else ""
@@ -6373,7 +6382,10 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
         # m-req はコンパクト表示のバッジ。空でも要素は残し（display:none）、編集で即時反映できるように。
         m_req = (f'<span class="m-req" title="依頼者">👤{_esc(req)}</span>' if req
                  else '<span class="m-req" title="依頼者" style="display:none"></span>')
-        m_asg = f'<span class="m-asg">🧑‍💼{_esc(asg)}</span>' if asg else ""
+        # 担当なしでも要素自体は残し(display:none)、taskField()での即時同期を可能にする
+        # （空だと要素ごと無い＝JS側で更新先が見つからず、リロードするまで反映されなかった不具合の修正）。
+        m_asg = (f'<span class="m-asg" data-emoji="🧑‍💼" title="担当">🧑‍💼{_esc(asg)}</span>' if asg
+                 else '<span class="m-asg" data-emoji="🧑‍💼" title="担当" style="display:none"></span>')
         m_due = (f'<span class="m-due" style="color:{ucolor}" title="{ulabel}">📅{_esc(_due_compact(due))}</span>'
                  if due else '<span class="m-due" style="color:#cbd5e1">📅—</span>')
         # 繰り返し発生（定期複製）。ヘッダのアイコン🔁（ピン★の左）で表示＝コンパクトでも見える。
@@ -15860,6 +15872,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _tid = int(f["id"]) if f.get("id") else None
                     except ValueError:
                         _tid = None
+                    # このフォーム(task_form)はis_admin/priority/requester/slack_*/created_by/
+                    # sourceを直接扱わない。編集時はupsert_taskがTASK_FIELDS全カラムを丸ごと
+                    # 上書きするため、渡さなかったフィールドはNoneで消えてしまう
+                    # （ユーザー報告2026-08-28: 事務タスクを編集保存するとコンサルタスクへ
+                    #  移動してしまう＝is_adminがNoneに上書きされていたのが原因）。
+                    # 既存値を読み出して保持することで消失を防ぐ。
+                    _old_task = sfa_db.get_task(con, _tid) if _tid else None
                     _link = f.get("link", "") or ""
                     _lt, _li = None, None
                     if _link.startswith("dev_project:"):
@@ -15893,13 +15912,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         due_date=f.get("due_date") or None,
                         status=f.get("status") or "受信箱",
                         category=_cat,
-                        link_type=_lt, link_id=_li, source="web",
+                        link_type=_lt, link_id=_li,
+                        source=(_old_task or {}).get("source") or "web",
                         effort_level=f.get("effort_level") or None,
                         effort_hours=_eh,
+                        priority=(_old_task or {}).get("priority"),
+                        is_admin=(_old_task or {}).get("is_admin"),
+                        requester=(_old_task or {}).get("requester"),
+                        slack_channel=(_old_task or {}).get("slack_channel"),
+                        slack_ts=(_old_task or {}).get("slack_ts"),
+                        slack_permalink=(_old_task or {}).get("slack_permalink"),
+                        created_by=(_old_task or {}).get("created_by"),
                     )
                     # 担当＋期限が揃っていれば受信箱→未着手へ自動整理
                     _task_auto_triage(con, _saved_id)
-                    self._redirect("/tasks")
+                    # 事務タスクの編集は事務タスク看板へ、それ以外はコンサルタスク看板へ戻す
+                    _was_admin = bool((_old_task or {}).get("is_admin"))
+                    self._redirect("/desk-tasks" if _was_admin else "/tasks")
 
                 elif path == "/desk-tasks/save":
                     # 事務タスク(is_admin=1)の手入力起票。既定担当は DESK_ASSIGNEE（先頭=アミ）。
