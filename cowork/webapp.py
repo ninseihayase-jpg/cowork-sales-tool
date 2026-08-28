@@ -1671,8 +1671,9 @@ def build_deliveries_xlsx(con) -> bytes:
 
 def build_delivery_payment_schedule_xlsx(con) -> bytes:
     """検収/入金の月別金額一覧（1案件×検収/入金の2行のピボット形式）を1枚のxlsxで出力する
-    （ユーザー要望2026-08-28: 検収/入金は同じxlsx内に同居させ、先頭列「検収/入金」の値で
-    Excelのフィルタ機能により絞り込めるようにする）。
+    （ユーザー要望2026-08-28: 検収/入金は同じxlsx内に同居させ、「検収/入金」列の値で
+    Excelのフィルタ機能により絞り込めるようにする）。一番左は「確度」列（Delivery一覧と
+    同じ_delivery_confidenceのラベル）。
     月列は実データの有無に関わらず「今月〜+18ヶ月後」の固定19ヶ月分を表示し、登録が無い月は
     0を入力する（ユーザー要望2026-08-28続き）。検収も入金も1件も登録が無い案件は行として
     出さない（両者は検収額から派生するため常に両方揃うか両方空かのいずれかになる）。
@@ -1705,7 +1706,7 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "入金予定表"
-    fixed_hdr = ["検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
+    fixed_hdr = ["確度", "検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
                  "支払いサイト", "主担当", "副担当"]
     hdr = (fixed_hdr + [f"アサイン{i + 1}" for i in range(max_assignees)]
            + [f"{m[2:4]}/{m[5:7]}" for m in months])
@@ -1716,7 +1717,9 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
         main_a = assignees[0] if len(assignees) >= 1 else "-"
         sub_a = assignees[1] if len(assignees) >= 2 else "-"
         _cycle = dv.get("payment_cycle_months")
-        row = [flag, dv["id"], dv.get("account_name") or "", dv.get("title") or "",
+        _conf_lbl, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
+                                            dv.get("confidence_override"))
+        row = [_conf_lbl, flag, dv["id"], dv.get("account_name") or "", dv.get("title") or "",
                dv.get("status") or "", dv.get("start_week") or "", dv.get("end_week") or "",
                _cycle if _cycle is not None else 1, main_a, sub_a]
         row += [(assignees[i] if i < len(assignees) else "") for i in range(max_assignees)]

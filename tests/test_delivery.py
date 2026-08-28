@@ -736,9 +736,9 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     ws = wb.active
     assert ws.title == "入金予定表"
     hdr = [c.value for c in ws[1]]
-    assert hdr[:10] == ["検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
+    assert hdr[:11] == ["確度", "検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
                          "支払いサイト", "主担当", "副担当"]
-    assert hdr[10] == "アサイン1"
+    assert hdr[11] == "アサイン1"
     assert _ml(m0) in hdr and _ml(m1) in hdr and _ml(m2) in hdr
     assert _ml(_ym(18)) in hdr   # 今月+18ヶ月後まで含む
     assert _ml(_ym(19)) not in hdr  # +19ヶ月後は含まない(固定19ヶ月分)
@@ -747,6 +747,7 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     receipt_row = next(r for r in rows if r["検収/入金"] == "検収")
     payment_row = next(r for r in rows if r["検収/入金"] == "入金")
     assert receipt_row["#"] == dvid and receipt_row["案件"] == "A社支援"
+    assert receipt_row["確度"] == "確定"  # stage=受注→自動判定は「確定」
     assert receipt_row["支払いサイト"] == 1
     assert receipt_row["主担当"] == "早瀬" and receipt_row["副担当"] == "-"  # 1人のみ→副担当は"-"
     assert receipt_row["アサイン1"] == "早瀬"
@@ -771,7 +772,7 @@ def test_payment_schedule_xlsx_multiple_assignees_get_own_columns(con, acc_id):
     wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
     ws = wb.active
     hdr = [c.value for c in ws[1]]
-    assert ["アサイン1", "アサイン2", "アサイン3"] == hdr[10:13]
+    assert ["アサイン1", "アサイン2", "アサイン3"] == hdr[11:14]
     row = dict(zip(hdr, [c.value for c in ws[2]]))
     assert row["主担当"] == "中島" and row["副担当"] == "吉江"  # 五十音順の1人目/2人目
     assert row["アサイン1"] == "中島" and row["アサイン2"] == "吉江" and row["アサイン3"] == "早瀬"
