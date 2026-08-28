@@ -4873,7 +4873,7 @@ def task_form(con, task=None) -> str:
           <div><label>状態</label><select name="status">{_opt(sfa_db.TASK_STATUSES, task.get('status') or ('未着手' if is_edit else '受信箱'))}</select></div>
           {'' if is_admin_task else f'<div><label>工数感（ガント表示用）</label><select name="effort_level" onchange="tfEffortDefaultHours(this.value)">{_opt(sfa_db.TASK_EFFORT_LEVELS, task.get("effort_level"))}</select></div>'}
           {'' if is_admin_task else f'<div><label>所要時間(h)<span class="muted" style="font-weight:normal"> ※未入力は工数感から自動換算</span></label><input type="number" id="tfEffortHours" step="0.5" min="0" name="effort_hours" value="{"" if task.get("effort_hours") is None else task.get("effort_hours")}"></div>'}
-          <div class="full"><label>関連（商談・論点・開発案件）</label>
+          <div class="full"><label>関連（商談・論点・開発案件・Delivery）</label>
             {_task_link_picker_html(con, prefix="tfLink", cur_type=task.get("link_type"),
                                     cur_id=task.get("link_id"), include_dev=True, dev_opts=dev_opts)}</div>
         </div>
@@ -5384,21 +5384,26 @@ _GANTT_CSS = """<style>
 </style>"""
 
 
-def tasks_gantt_page(con) -> str:
+def tasks_gantt_page(con, group_by: str = "type") -> str:
     """コンサルタスクのガントチャートビュー（ユーザー確定仕様・2026-08-19、
-    2026-08-24に容量ベースのスケジューリングを追加）。
+    2026-08-24に容量ベースのスケジューリングを追加、2026-08-28にグルーピング切替＋
+    バークリックでのフローティング編集を追加）。
     担当者に容量データ（/tasks/capacity・管理画面の既定値）があれば、compute_owner_schedule
     （他タスクとの競合込みで容量から実際にいつ着手できるかを計算）の結果を使う。
     容量データが無い担当者は従来通りtask_gantt_range（工数感×期日→所要日数・開始日を
     期日から単純逆算、他タスクとの競合は見ない）にフォールバックする（無停止移行）。
-    大分類(project×category)ごとにグループ化。並び順:
-      グループ間＝グループ内タスクの所要日数合計が多い順。
-      グループ内＝開始日が古い順（今日以前は同列扱い）→期日が近い順。
+    group_by='type'（既定）は大分類(project×category)ごと、group_by='link'は紐づけ単位
+    （Delivery→商談→論点→紐づけ無し、の順にグループのグループを並べる）でグループ化。
+    グループ間の並び順（type/linkとも同じ）＝グループ内タスクの所要日数合計が多い順
+    （linkはさらに紐づけ種別の優先順が最優先）。
+    グループ内＝開始日が古い順（今日以前は同列扱い）→期日が近い順。
     工数感/期日が未設定でガント化できないタスクは、件数と一覧を明示して別枠に出す
     （バーが引けないタスクを黙って消さない）。"""
     today = _today_jst()
     all_tasks = sfa_db.list_tasks(con, admin=False)
     open_tasks = [t for t in all_tasks if (t.get("status") or "") != "完了"]
+    owners = sfa_db.get_master_list(con, "owners")
+    cats = sfa_db.get_master_list(con, "task_categories")
 
     _owner_schedules = {}
 
@@ -5423,11 +5428,23 @@ def tasks_gantt_page(con) -> str:
     def _days(t):
         return sfa_db.TASK_EFFORT_DAYS.get(t.get("effort_level") or "", 0)
 
+    _LINK_TYPE_ORDER = {"delivery": 0, "deal": 1, "issue": 2, None: 3}
+    _LINK_TYPE_ICON = {"delivery": "🚚", "deal": "🤝", "issue": "📌"}
     groups: dict = {}
-    for t in ready:
-        key = (t.get("project") or "（未設定）", t.get("category") or "（未設定）")
-        groups.setdefault(key, []).append(t)
-    group_items = sorted(groups.items(), key=lambda kv: -sum(_days(t) for t in kv[1]))
+    if group_by == "link":
+        for t in ready:
+            lt = t.get("link_type")
+            li = t.get("link_id")
+            key = (lt, li) if lt in ("deal", "issue", "delivery") and li else (None, None)
+            groups.setdefault(key, []).append(t)
+        group_items = sorted(
+            groups.items(),
+            key=lambda kv: (_LINK_TYPE_ORDER.get(kv[0][0], 3), -sum(_days(t) for t in kv[1])))
+    else:
+        for t in ready:
+            key = (t.get("project") or "（未設定）", t.get("category") or "（未設定）")
+            groups.setdefault(key, []).append(t)
+        group_items = sorted(groups.items(), key=lambda kv: -sum(_days(t) for t in kv[1]))
 
     def _sort_key(t):
         return (max(t["_start"], today.isoformat()), t["_end"])
@@ -5476,11 +5493,21 @@ def tasks_gantt_page(con) -> str:
             cells.append(f'<div class="{cls}" style="grid-row:1;grid-column:{i + 2}">{label}</div>')
 
         row = 2
-        for (proj, cat), items in group_items:
+        for key, items in group_items:
             total = sum(_days(t) for t in items)
+            if group_by == "link":
+                lt, li = key
+                if lt:
+                    _grp_lbl = sfa_db.task_link_label(con, lt, li) or "（削除済み）"
+                    grp_label = f'{_LINK_TYPE_ICON.get(lt, "")}{_esc(_grp_lbl)}'
+                else:
+                    grp_label = "（紐づけ無し）"
+            else:
+                proj, cat = key
+                grp_label = f'📁{_esc(proj)} ／ 🏷{_esc(cat)}'
             cells.append(
                 f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
-                f'📁{_esc(proj)} ／ 🏷{_esc(cat)}（{len(items)}件・計{total}営業日）</div>')
+                f'{grp_label}（{len(items)}件・計{total}営業日）</div>')
             row += 1
             for t in sorted(items, key=_sort_key):
                 cells.append(_day_bg_cells(row))
@@ -5489,12 +5516,12 @@ def tasks_gantt_page(con) -> str:
                 ucolor, _ = _task_urgency(t.get("due_date") or "", today.isoformat(), d3, weekend_end)
                 cells.append(
                     f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1">'
-                    f'<a href="/tasks#tc-{t["id"]}" style="color:inherit;text-decoration:none;'
+                    f'<a href="#" onclick="return gtOpenTask({t["id"]})" style="color:inherit;text-decoration:none;'
                     f'overflow:hidden;text-overflow:ellipsis" title="{_esc(t.get("title"))}">'
                     f'{_esc(t.get("title"))}</a></div>')
                 c1, c2 = _col_of(s), _col_of(e) + 1
                 cells.append(
-                    f'<a href="/tasks#tc-{t["id"]}" class="gantt-bar" '
+                    f'<a href="#" onclick="return gtOpenTask({t["id"]})" class="gantt-bar" '
                     f'style="grid-row:{row};grid-column:{c1} / {c2};background:{ucolor}" '
                     f'title="{_esc(t.get("title"))}｜{_esc(t["_start"])}〜{_esc(t["_end"])}'
                     f'（工数感:{_esc(t.get("effort_level") or "")}）">{_esc(t.get("title"))}</a>')
@@ -5510,6 +5537,96 @@ def tasks_gantt_page(con) -> str:
                         f'⚠ 工数感または期日が未設定のためガントに表示していないタスク '
                         f'{len(missing)}件: {names}{more}</p>')
 
+    _group_desc = ("大分類（プロジェクト×種類）ごとに、合計所要日数が多いグループから表示。"
+                   if group_by != "link" else
+                   "紐づけ単位（Delivery→商談→論点→紐づけ無し、の順）で、各単位内は合計所要日数が多いグループから表示。")
+    _group_tabs = f"""
+    <div style="display:flex;gap:6px;margin:4px 0 8px">
+      <a class="btn sec" href="/tasks/gantt?group=type"
+         style="font-size:12px;{'background:#4f46e5;color:#fff;border-color:#4f46e5' if group_by != 'link' else ''}">作業種別ごと</a>
+      <a class="btn sec" href="/tasks/gantt?group=link"
+         style="font-size:12px;{'background:#4f46e5;color:#fff;border-color:#4f46e5' if group_by == 'link' else ''}">紐づけ単位</a>
+    </div>"""
+
+    # バークリックでのフローティング編集（ユーザー要望2026-08-28）。埋め込みJSON(GANTT_TASKS)を
+    # クライアント側で編集→/task/{id}/fieldへ1フィールドずつ自動保存（既存の看板と同じ方式）。
+    # 閉じる（保存ボタン/欄外クリック/Esc）と再読込しガントの位置/グルーピングを最新化する。
+    _gantt_task_data = {
+        t["id"]: {
+            "title": t.get("title") or "", "next_action": t.get("next_action") or "",
+            "assignee": t.get("assignee") or "", "due_date": t.get("due_date") or "",
+            "category": t.get("category") or "", "effort_level": t.get("effort_level") or "",
+            "status": t.get("status") or "",
+        } for t in ready
+    }
+    _gantt_js = f"""
+    <style>
+    #gtBackdrop{{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}}
+    #gtPop{{position:fixed;z-index:9999;display:none;left:50%;top:50%;transform:translate(-50%,-50%);
+      background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.25);
+      padding:14px;width:340px;max-width:92vw}}
+    </style>
+    <div id="gtBackdrop" onclick="closeGtTask()"></div>
+    <div id="gtPop"></div>
+    <script>
+    var GANTT_TASKS = {json.dumps(_gantt_task_data, ensure_ascii=False)};
+    var GANTT_OWNERS = {json.dumps(owners, ensure_ascii=False)};
+    var GANTT_CATS = {json.dumps(cats, ensure_ascii=False)};
+    var GANTT_EFFORT_LEVELS = {json.dumps(sfa_db.TASK_EFFORT_LEVELS, ensure_ascii=False)};
+    function _gtEsc(s){{ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }}
+    function _gtOpt(list,cur){{ var h='<option value=""></option>';
+      for(var i=0;i<list.length;i++){{ var v=list[i];
+        h+='<option value="'+_gtEsc(v)+'"'+(v===cur?' selected':'')+'>'+_gtEsc(v)+'</option>'; }}
+      return h; }}
+    function gtPopHtml(id,t){{
+      return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        +'<b style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px">'
+        +_gtEsc(t.title)+'</b><span onclick="closeGtTask()" style="cursor:pointer;color:#94a3b8">✕</span></div>'
+        +'<label style="font-size:11px;display:block">次アクション<br>'
+        +'<input type="text" style="width:100%;box-sizing:border-box" value="'+_gtEsc(t.next_action)+'" '
+        +'onchange="gtField('+id+',\\'next_action\\',this.value)"></label>'
+        +'<div style="display:flex;gap:8px;margin-top:8px">'
+        +'<label style="font-size:11px;flex:1">担当<br><select style="width:100%" '
+        +'onchange="gtField('+id+',\\'assignee\\',this.value)">'+_gtOpt(GANTT_OWNERS,t.assignee)+'</select></label>'
+        +'<label style="font-size:11px;flex:1">期限<br><input type="date" style="width:100%;box-sizing:border-box" '
+        +'value="'+_gtEsc(t.due_date)+'" onchange="gtField('+id+',\\'due_date\\',this.value)"></label></div>'
+        +'<div style="display:flex;gap:8px;margin-top:8px">'
+        +'<label style="font-size:11px;flex:1">種類<br><select style="width:100%" '
+        +'onchange="gtField('+id+',\\'category\\',this.value)">'+_gtOpt(GANTT_CATS,t.category)+'</select></label>'
+        +'<label style="font-size:11px;flex:1">工数感<br><select style="width:100%" '
+        +'onchange="gtField('+id+',\\'effort_level\\',this.value)">'+_gtOpt(GANTT_EFFORT_LEVELS,t.effort_level)+'</select></label></div>'
+        +'<div style="margin-top:8px;font-size:11px;color:#64748b">状態: '+_gtEsc(t.status)
+        +'　<a href="/tasks/'+id+'/edit" style="color:#2563eb">フル編集画面を開く</a></div>'
+        +'<div style="margin-top:10px;text-align:right"><button type="button" class="btn" '
+        +'onclick="closeGtTask()">保存して閉じる</button></div>';
+    }}
+    function gtOpenTask(id){{
+      var t=GANTT_TASKS[id]; if(!t) return false;
+      var pop=document.getElementById('gtPop'), bd=document.getElementById('gtBackdrop');
+      pop.innerHTML=gtPopHtml(id,t);
+      bd.style.display='block'; pop.style.display='block';
+      return false;
+    }}
+    function closeGtTask(){{
+      var pop=document.getElementById('gtPop'), bd=document.getElementById('gtBackdrop');
+      if(pop) pop.style.display='none'; if(bd) bd.style.display='none';
+      location.reload();
+    }}
+    function gtField(id,field,value){{
+      if(GANTT_TASKS[id]) GANTT_TASKS[id][field]=value;
+      fetch('/task/'+id+'/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok) alert('更新エラー: '+(d.error||''));
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    document.addEventListener('keydown',function(ev){{
+      if(ev.key==='Escape'){{ var pop=document.getElementById('gtPop');
+        if(pop&&pop.style.display==='block'){{ ev.preventDefault(); closeGtTask(); }} }}
+    }});
+    </script>"""
+
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -5524,11 +5641,13 @@ def tasks_gantt_page(con) -> str:
           <a class="btn" href="/tasks/new">＋新規コンサルタスク</a>
         </span>
       </h2>
-      <p class="muted" style="font-size:12px">大分類（プロジェクト×種類）ごとに、合計所要日数が多いグループから表示。
-      グループ内は開始日が古い順（今日以前は同列）→期日が近い順。</p>
+      {_group_tabs}
+      <p class="muted" style="font-size:12px">{_group_desc}
+      グループ内は開始日が古い順（今日以前は同列）→期日が近い順。バーやタイトルをクリックすると
+      その場で編集できます。</p>
       {body}
       {missing_html}
-    </div>{_GANTT_CSS}"""
+    </div>{_GANTT_CSS}{_gantt_js}"""
 
 
 def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
@@ -15266,7 +15385,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         link_id=(int(_tq["link_id"][0]) if _tq.get("link_id", [""])[0].isdigit() else None),
                         pick=bool(_tq.get("pick", [""])[0]))))
                 elif path == "/tasks/gantt":
-                    self._send(render(tasks_gantt_page(con)))
+                    _gq = self._qs()
+                    _group = (_gq.get("group", ["type"])[0] or "type")
+                    self._send(render(tasks_gantt_page(con, group_by=_group if _group == "link" else "type")))
                 elif path == "/tasks/capacity":
                     self._send(render(tasks_capacity_page(con)))
                 elif path == "/tasks/daily-plan":

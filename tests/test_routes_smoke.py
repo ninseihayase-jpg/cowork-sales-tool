@@ -1010,6 +1010,31 @@ def test_task_card_assignee_badge_syncs_without_reload(server, db_path):
     assert "field==='assignee'&&card" in body
 
 
+def test_tasks_gantt_route_accepts_group_query_param(server):
+    """#124: /tasks/gantt?group=link がエラー無く紐づけ単位モードで返る。"""
+    code, resp = _get(server + "/tasks/gantt?group=link", headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert "background:#4f46e5;color:#fff" in body
+
+    code2, resp2 = _get(server + "/tasks/gantt", headers=_auth_header())
+    body2 = resp2.read().decode("utf-8")
+    assert code2 == 200
+    assert "background:#4f46e5;color:#fff" in body2  # 既定(作業種別ごと)タブがアクティブ
+
+
+def test_task_form_related_label_mentions_delivery(server, db_path):
+    """#125: 「関連」欄のラベルにDeliveryが明記されていない（実際には選択肢は既に存在する）
+    という報告への対応。ラベル文言にDeliveryを追加。"""
+    con = sfa_db.connect(db_path)
+    tid = sfa_db.upsert_task(con, title="ラベル確認用")
+    con.close()
+    code, resp = _get(server + f"/tasks/{tid}/edit", headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert "関連（商談・論点・開発案件・Delivery）" in body
+
+
 def test_viewport_meta_allows_pinch_zoom(server):
     """スマホでピンチイン/アウトできるよう、maximum-scale/user-scalableを明示する(#113 2026-08-27)。"""
     code, resp = _get(server + "/deals", headers=_auth_header())

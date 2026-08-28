@@ -98,12 +98,18 @@ def test_gantt_lists_tasks_missing_effort_or_due_without_silently_dropping(con):
     assert "2件" in html
 
 
-def test_gantt_bar_link_points_to_kanban_card_anchor(con):
+def test_gantt_bar_opens_floating_editor_instead_of_navigating(con):
+    """#124（2026-08-28）: バー/タイトルをクリックすると看板へ遷移せず、その場のフローティング
+    ポップアップで編集できる（gtOpenTask）。GANTT_TASKSに編集対象フィールドが埋め込まれる。"""
     today = webapp._today_jst().isoformat()
     tid = sfa_db.upsert_task(con, title="リンク確認タスク", project="P", category="C",
-                             due_date=today, effort_level="軽")
+                             due_date=today, effort_level="軽", assignee="早瀬")
     html = webapp.tasks_gantt_page(con)
-    assert f"/tasks#tc-{tid}" in html
+    assert f"onclick=\"return gtOpenTask({tid})\"" in html
+    assert f"/tasks#tc-{tid}" not in html
+    assert f'"{tid}": ' in html or f'"{tid}":' in html  # GANTT_TASKS JSONにこのタスクが含まれる
+    assert "function gtOpenTask" in html and "function gtField" in html
+    assert "id=\"gtBackdrop\"" in html and "id=\"gtPop\"" in html
 
 
 def test_gantt_shows_at_least_three_weeks_and_fills_width(con):
@@ -118,3 +124,56 @@ def test_gantt_shows_at_least_three_weeks_and_fills_width(con):
     assert m, "minmax(28px,1fr)の列テンプレートが見つからない"
     assert int(m.group(1)) >= 21
     assert "width:100%" in html or "width: 100%" in html
+
+
+def test_gantt_group_tabs_render_with_active_state(con):
+    """#124: 「作業種別ごと」「紐づけ単位」タブが両方出て、現在のgroup_byが強調表示される。"""
+    html_type = webapp.tasks_gantt_page(con, group_by="type")
+    assert 'href="/tasks/gantt?group=type"' in html_type
+    assert 'href="/tasks/gantt?group=link"' in html_type
+    assert "作業種別ごと" in html_type and "紐づけ単位" in html_type
+
+    html_link = webapp.tasks_gantt_page(con, group_by="link")
+    assert "background:#4f46e5;color:#fff" in html_link  # どちらかのタブがアクティブ表示される
+
+
+def test_gantt_link_grouping_orders_delivery_deal_issue_then_unlinked(con):
+    """#124: 紐づけ単位モードは、単位のグループをDelivery→商談→論点→紐づけ無し、の順に並べる。
+    グループ内タスクは着手日の早い順（=期日の逆算で開始日が早いものが上）。"""
+    today = webapp._today_jst()
+    far = (today + timedelta(days=30)).isoformat()
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="商談X", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="DeliveryX")
+    iid = sfa_db.upsert_deal_issue(con, deal_id=None, issue="論点X", status="議論中")
+
+    sfa_db.upsert_task(con, title="論点タスク", due_date=far, effort_level="軽",
+                       link_type="issue", link_id=iid)
+    sfa_db.upsert_task(con, title="商談タスク", due_date=far, effort_level="軽",
+                       link_type="deal", link_id=did)
+    sfa_db.upsert_task(con, title="Deliveryタスク", due_date=far, effort_level="軽",
+                       link_type="delivery", link_id=dvid)
+    sfa_db.upsert_task(con, title="紐づけ無しタスク", due_date=far, effort_level="軽")
+
+    html = webapp.tasks_gantt_page(con, group_by="link")
+    pos_delivery = html.find("🚚")
+    pos_deal = html.find("🤝")
+    pos_issue = html.find("📌")
+    pos_none = html.find("（紐づけ無し）")
+    assert -1 not in (pos_delivery, pos_deal, pos_issue, pos_none)
+    assert pos_delivery < pos_deal < pos_issue < pos_none
+
+
+def test_gantt_link_grouping_within_group_sorted_by_start_date(con):
+    """紐づけ単位モードでも、グループ内は開始日が古い順（従来の並び順と同じロジック）。"""
+    today = webapp._today_jst()
+    near = (today + timedelta(days=5)).isoformat()
+    far = (today + timedelta(days=25)).isoformat()
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="商談Y", stage="受注")
+    sfa_db.upsert_task(con, title="遠い方", due_date=far, effort_level="軽",
+                       link_type="deal", link_id=did)
+    sfa_db.upsert_task(con, title="近い方", due_date=near, effort_level="軽",
+                       link_type="deal", link_id=did)
+    html = webapp.tasks_gantt_page(con, group_by="link")
+    assert html.find("近い方") < html.find("遠い方")
