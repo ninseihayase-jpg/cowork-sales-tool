@@ -1672,45 +1672,63 @@ def build_deliveries_xlsx(con) -> bytes:
 def build_delivery_payment_schedule_xlsx(con) -> bytes:
     """検収/入金の月別金額一覧（1案件×検収/入金の2行のピボット形式）を1枚のxlsxで出力する
     （ユーザー要望2026-08-28: 検収/入金は同じxlsx内に同居させ、先頭列「検収/入金」の値で
-    Excelのフィルタ機能により絞り込めるようにする）。月列は実際に金額が登録されている月のみ
-    （案件期間全体を機械的に広げない）。"""
+    Excelのフィルタ機能により絞り込めるようにする）。
+    月列は実データの有無に関わらず「今月〜+18ヶ月後」の固定19ヶ月分を表示し、登録が無い月は
+    0を入力する（ユーザー要望2026-08-28続き）。検収も入金も1件も登録が無い案件は行として
+    出さない（両者は検収額から派生するため常に両方揃うか両方空かのいずれかになる）。
+    アサインは「主担当/副担当」(1人目/2人目・アルファベット順ではなく名前の昇順。副担当が
+    居なければ"-") に加え、全員を1人1列（アサインN）でも列挙する。"""
     import openpyxl
     from openpyxl.styles import Font
     from io import BytesIO
 
-    per_delivery = []  # [(dv, "検収"|"入金", vals), ...]
-    all_months: set[str] = set()
+    today = _today_jst()
+    months = []
+    for i in range(19):  # 今月から+18ヶ月後まで(19ヶ月分)
+        yy, mm = sfa_db._add_months_ym(today.year, today.month, i)
+        months.append(f"{yy:04d}-{mm:02d}")
+
+    per_delivery = []  # [(dv, "検収"|"入金", vals, assignees), ...]
+    max_assignees = 0
     for dv in sfa_db.list_deliveries(con):
         cf = sfa_db.delivery_cashflow(con, dv["id"])
-        for flag, key in (("検収", "receipts"), ("入金", "payments")):
-            vals = cf.get(key) or {}
-            if not vals:
-                continue
-            per_delivery.append((dv, flag, vals))
-            all_months.update(vals.keys())
-    months = sorted(all_months)
+        receipts = cf.get("receipts") or {}
+        if not receipts:
+            continue
+        payments = cf.get("payments") or {}
+        blocks = sfa_db.list_delivery_assignments(con, dv["id"])
+        assignees = sorted({b["owner"] for b in blocks if (b.get("owner") or "").strip()})
+        max_assignees = max(max_assignees, len(assignees))
+        per_delivery.append((dv, "検収", receipts, assignees))
+        per_delivery.append((dv, "入金", payments, assignees))
 
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "入金予定表"
-    hdr = (["検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週", "アサイン"]
+    fixed_hdr = ["検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
+                 "支払いサイト", "主担当", "副担当"]
+    hdr = (fixed_hdr + [f"アサイン{i + 1}" for i in range(max_assignees)]
            + [f"{m[2:4]}/{m[5:7]}" for m in months])
     for c, h in enumerate(hdr, 1):
         ws.cell(row=1, column=c, value=h).font = Font(bold=True)
     r = 2
-    for dv, flag, vals in per_delivery:
-        blocks = sfa_db.list_delivery_assignments(con, dv["id"])
-        who = "、".join(sorted({b["owner"] for b in blocks})) or ""
+    for dv, flag, vals, assignees in per_delivery:
+        main_a = assignees[0] if len(assignees) >= 1 else "-"
+        sub_a = assignees[1] if len(assignees) >= 2 else "-"
+        _cycle = dv.get("payment_cycle_months")
         row = [flag, dv["id"], dv.get("account_name") or "", dv.get("title") or "",
-               dv.get("status") or "", dv.get("start_week") or "", dv.get("end_week") or "", who]
-        row += [vals.get(m) for m in months]
+               dv.get("status") or "", dv.get("start_week") or "", dv.get("end_week") or "",
+               _cycle if _cycle is not None else 1, main_a, sub_a]
+        row += [(assignees[i] if i < len(assignees) else "") for i in range(max_assignees)]
+        row += [(vals.get(m) or 0) for m in months]
         for c, v in enumerate(row, 1):
             ws.cell(row=r, column=c, value=v)
         r += 1
     last_row = r - 1
     last_col = openpyxl.utils.get_column_letter(len(hdr))
     ws.auto_filter.ref = f"A1:{last_col}{max(last_row, 1)}"  # 「検収/入金」列等でExcel側から絞り込み可
-    ws.freeze_panes = "I2"
+    _freeze_col = openpyxl.utils.get_column_letter(len(fixed_hdr) + max_assignees + 1)
+    ws.freeze_panes = f"{_freeze_col}2"
 
     buf = BytesIO()
     wb.save(buf)

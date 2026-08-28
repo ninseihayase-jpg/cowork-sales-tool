@@ -707,15 +707,27 @@ def test_build_deliveries_xlsx_includes_cashflow_sheet(con, acc_id):
     assert any(r[0] == dvid and r[3] == "2026-09" and r[4] == 100 for r in rows)
 
 
+def _ym(n: int) -> str:
+    """今月からnヶ月後の'YYYY-MM'（テストはその日実行される日付に依存しないよう相対計算）。"""
+    today = webapp._today_jst()
+    y, m = sfa_db._add_months_ym(today.year, today.month, n)
+    return f"{y:04d}-{m:02d}"
+
+
+def _ml(ym: str) -> str:
+    return f"{ym[2:4]}/{ym[5:7]}"
+
+
 def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable_flag(con, acc_id):
     """#115（2026-08-28修正）: 検収/入金は別ファイルではなく同一xlsx・同一シートに同居させ、
-    先頭列「検収/入金」の値でExcel側のフィルタ機能から絞り込めるようにする。"""
+    先頭列「検収/入金」の値でExcel側のフィルタ機能から絞り込めるようにする。
+    支払いサイト・主担当/副担当・アサインN・月列(今月〜+18ヶ月固定・未登録月は0)も検証。"""
     d = _deal(con, acc_id, "受注")
-    dvid = sfa_db.create_delivery(con, deal_id=d, title="A社支援", start_week="2026-09-07",
-                                  end_week="2026-11-01", status="進行中")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="A社支援", status="進行中")
     sfa_db.update_delivery(con, dvid, payment_cycle_months=1)
-    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
-    sfa_db.set_delivery_receipt(con, dvid, "2026-10", 200)
+    m0, m1, m2 = _ym(0), _ym(1), _ym(2)
+    sfa_db.set_delivery_receipt(con, dvid, m0, 100)
+    sfa_db.set_delivery_receipt(con, dvid, m1, 200)
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
                                    to_week="2026-09-14", role="コンサルタント", fte_pct=50)
     import openpyxl
@@ -724,16 +736,45 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     ws = wb.active
     assert ws.title == "入金予定表"
     hdr = [c.value for c in ws[1]]
-    assert hdr[:8] == ["検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週", "アサイン"]
-    assert "26/09" in hdr and "26/10" in hdr and "26/11" in hdr
+    assert hdr[:10] == ["検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
+                         "支払いサイト", "主担当", "副担当"]
+    assert hdr[10] == "アサイン1"
+    assert _ml(m0) in hdr and _ml(m1) in hdr and _ml(m2) in hdr
+    assert _ml(_ym(18)) in hdr   # 今月+18ヶ月後まで含む
+    assert _ml(_ym(19)) not in hdr  # +19ヶ月後は含まない(固定19ヶ月分)
+
     rows = [dict(zip(hdr, [c.value for c in ws[r]])) for r in (2, 3)]
     receipt_row = next(r for r in rows if r["検収/入金"] == "検収")
     payment_row = next(r for r in rows if r["検収/入金"] == "入金")
-    assert receipt_row["#"] == dvid and receipt_row["案件"] == "A社支援" and receipt_row["アサイン"] == "早瀬"
-    assert receipt_row["26/09"] == 100 and receipt_row["26/10"] == 200
-    assert payment_row.get("26/09") is None  # 検収月自体には入金額は出ない
-    assert payment_row["26/10"] == 100 and payment_row["26/11"] == 200  # 1ヶ月後に入金
+    assert receipt_row["#"] == dvid and receipt_row["案件"] == "A社支援"
+    assert receipt_row["支払いサイト"] == 1
+    assert receipt_row["主担当"] == "早瀬" and receipt_row["副担当"] == "-"  # 1人のみ→副担当は"-"
+    assert receipt_row["アサイン1"] == "早瀬"
+    assert receipt_row[_ml(m0)] == 100 and receipt_row[_ml(m1)] == 200
+    assert receipt_row[_ml(m2)] == 0  # 登録の無い月は0
+    assert payment_row[_ml(m0)] == 0  # 検収月自体には入金額は出ない
+    assert payment_row[_ml(m1)] == 100 and payment_row[_ml(m2)] == 200  # 1ヶ月後に入金
     assert ws.auto_filter.ref == f"A1:{openpyxl.utils.get_column_letter(len(hdr))}3"
+
+
+def test_payment_schedule_xlsx_multiple_assignees_get_own_columns(con, acc_id):
+    """アサインは1人1列(アサインN)。主担当/副担当は名前の昇順(sorted()既定=文字コード順)で
+    1人目/2人目。列数は全案件を通じた最大人数に揃え、少ない案件は空欄で埋める。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="複数アサイン案件")
+    sfa_db.set_delivery_receipt(con, dvid, _ym(0), 50)
+    for owner in ("早瀬", "中島", "吉江"):
+        sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner=owner, from_week="2026-09-07",
+                                       to_week="2026-09-14", role="コンサルタント", fte_pct=30)
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
+    ws = wb.active
+    hdr = [c.value for c in ws[1]]
+    assert ["アサイン1", "アサイン2", "アサイン3"] == hdr[10:13]
+    row = dict(zip(hdr, [c.value for c in ws[2]]))
+    assert row["主担当"] == "中島" and row["副担当"] == "吉江"  # 五十音順の1人目/2人目
+    assert row["アサイン1"] == "中島" and row["アサイン2"] == "吉江" and row["アサイン3"] == "早瀬"
 
 
 def test_payment_schedule_xlsx_skips_deliveries_without_any_amount(con, acc_id):
