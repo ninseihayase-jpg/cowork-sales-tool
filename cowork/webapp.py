@@ -2440,13 +2440,13 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">報酬額/総額(万)<br>
                 <input type="number" step="0.1" min="0" id="dvFeeTotal" name="fee_total" style="width:110px"
                        value="{"" if dv.get("fee_total") is None else dv.get("fee_total")}" oninput="dvFeeFieldInput(this)"></label>
-              <span class="muted" style="font-size:11px;align-self:center" id="dvFeeMonths"></span>
               <label style="font-size:12px">成果報酬有無<br>
                 <select id="dvPerfFee" name="performance_fee" onchange="dvPerfFeeChanged()">{_delivery_performance_fee_opts(dv.get("performance_fee"))}</select></label>
               <label style="font-size:12px">成果報酬比率(%)<br>
                 <input type="number" step="0.1" min="0" max="100" id="dvPerfFeeRatio" name="performance_fee_ratio" style="width:90px"
                        value="{"" if dv.get("performance_fee_ratio") is None else dv.get("performance_fee_ratio")}" oninput="dvPerfFeeChanged()"></label>
             </div>
+            <p class="muted" style="font-size:11px;margin:2px 0 0" id="dvFeeMonths"></p>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">外注先<br>
                 <input type="text" id="dvCostVendor" name="cost_vendor" style="width:140px"
