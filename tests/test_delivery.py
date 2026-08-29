@@ -676,33 +676,37 @@ def test_delivery_form_renders_business_type_override_selects(con, acc_id):
     assert "コスト診断(無償)（自動: 商談を継承）" in html
 
 
-def test_delivery_form_prompts_to_add_assignees_before_choosing_responsible(con, acc_id):
-    """#121: アサインが未登録の間は責任者/担当者を選べず、アサインを促す表示を出す。
-    (2026-08-29 #132/#133: 責任者/担当者selectはクライアントJSでも動的に組み立て直されるため、
-    その関数定義自体には`name="responsible_owner"`という文字列が常に含まれる。よって
-    サーバ側の初期HTML断片＝`_delivery_owner_roles_box_html`の出力だけを直接検証する。)"""
+def test_delivery_form_owner_roles_box_is_display_only(con, acc_id):
+    """2026-08-29: 責任者・担当者は体制の上に表示専用ボックスとして配置し、
+    値の入力はここでは行わない（下のアサイン行のチェックボックスで指定する）。
+    未設定時は「未設定」と表示される。"""
     d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
     dvid = sfa_db.create_delivery(con, deal_id=d)
     html = webapp.delivery_form(con, dvid)
     assert "責任者・担当者" in html
-    box = webapp._delivery_owner_roles_box_html(sfa_db.get_delivery(con, dvid), [])
-    assert "アサインが未登録" in box and "メンバーを追加" in box
-    assert 'name="responsible_owner"' not in box
+    box = webapp._delivery_owner_roles_box_html(sfa_db.get_delivery(con, dvid))
+    assert "責任者" in box and "担当者" in box
+    assert "未設定" in box
+    assert "<select" not in box  # 直接入力用のセレクトは無い（自動表示のみ）
 
 
-def test_delivery_form_lets_choose_responsible_from_assignee_list(con, acc_id):
-    """#121: アサインがいれば、責任者/担当者はそのアサインリストから選ぶ<select>になり、
-    基礎情報と同じ保存ボタン(dvBaseForm)で一括保存される。"""
+def test_delivery_form_assignment_row_has_responsible_and_handling_checkboxes(con, acc_id):
+    """2026-08-29: 責任者/担当者はアサイン行のチェックボックスから指定する。
+    既にresponsible_owner/handling_ownerに一致するアサインは初期状態でチェック済みになる。"""
     d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
     dvid = sfa_db.create_delivery(con, deal_id=d)
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
                                    to_week="2026-09-14", role="コンサルタント", fte_pct=50)
-    sfa_db.update_delivery(con, dvid, responsible_owner="早瀬")
+    sfa_db.update_delivery(con, dvid, responsible_owner="早瀬", handling_owner="早瀬")
     html = webapp.delivery_form(con, dvid)
-    assert 'id="dvBaseForm"' in html
-    assert 'name="responsible_owner" form="dvBaseForm"' in html
-    assert 'name="handling_owner" form="dvBaseForm"' in html
-    assert '<option value="早瀬" selected>早瀬</option>' in html
+    assert 'data-role-field="responsible_owner"' in html
+    assert 'data-role-field="handling_owner"' in html
+    assert 'data-role-field="responsible_owner" checked' in html
+    assert 'data-role-field="handling_owner" checked' in html
+    assert "責任者: <b>早瀬</b>" in html
+    assert "担当者: <b>早瀬</b>" in html
+
+
 
 
 def test_delivery_form_includes_billing_fields_and_collapsible_effort_box(con, acc_id):
@@ -735,6 +739,20 @@ def test_delivery_form_base_info_autosaves_without_save_button(con, acc_id):
     assert "function dvBaseAutoSave" in html
     assert "function dvOwnerRolesRender" in html
     assert 'id="dvOwnerRolesBox"' in html
+
+
+def test_delivery_form_save_button_is_beside_base_info_heading(con, acc_id):
+    """2026-08-29: 保存ボタンは「基礎情報」見出しの横に配置し、確度/事業種別L1/L2は同じ行に
+    横並びで表示する（ユーザー要望）。保存ボタンは見出し直下でform属性経由でdvBaseFormに紐づく。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    html = webapp.delivery_form(con, dvid)
+    assert '基礎情報' in html
+    heading_idx = html.index("基礎情報")
+    button_idx = html.index('<button class="btn" form="dvBaseForm"')
+    form_idx = html.index('<form id="dvBaseForm"')
+    assert heading_idx < button_idx < form_idx  # 保存ボタンは見出しの直後・フォーム本体より前
+    assert '必須' in html  # 先に基礎情報を入力するよう促す注意喚起
 
 
 def test_delivery_form_billing_due_other_shown_when_custom_value(con, acc_id):
@@ -960,3 +978,66 @@ def test_delivery_confidence_and_business_type_auto_option_label_shows_value_fir
     l2_opts = webapp._delivery_biz_l2_opts(con, dv)
     assert "自動（商談を継承" not in l1_opts and "自動（商談を継承" not in l2_opts
     assert "（自動: 商談を継承）" in l1_opts and "（自動: 商談を継承）" in l2_opts
+
+
+def test_delivery_missing_requirements_empty_while_deal_stage_before_closing(con, acc_id):
+    """#134: 見込み段階（クロージング未満）では、必須項目が何も入っていなくても
+    警告を出さない（ユーザー確定仕様: 起票直後から出すと警告過多になるため）。"""
+    did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="提案")
+    dvid = sfa_db.create_delivery(con, deal_id=did)
+    dv = sfa_db.get_delivery(con, dvid)
+    assert webapp._delivery_missing_requirements(con, dv) == []
+
+
+def test_delivery_missing_requirements_lists_gaps_once_deal_reaches_closing(con, acc_id):
+    """#134: 商談がクロージング以降になると、未入力の必須項目をラベルで列挙する。"""
+    did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="クロージング")
+    dvid = sfa_db.create_delivery(con, deal_id=did)
+    dv = sfa_db.get_delivery(con, dvid)
+    missing = webapp._delivery_missing_requirements(con, dv)
+    assert "報酬形態・報酬額" in missing
+    assert "責任者" in missing
+    assert "請求方法・請求期日・請求送付先" in missing
+    assert "体制" in missing
+    assert "アサイン" in missing
+    assert "検収額" in missing
+    assert "経費請求有無" in missing
+
+
+def test_delivery_missing_requirements_empty_once_all_fields_filled(con, acc_id):
+    """#134: 必須項目を全て埋めると、クロージング以降でも警告が出なくなる。"""
+    did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="クロージング")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="コンサルタント", fte_billing=100, fte_pct=100)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
+                                   to_week="2026-10-04", role="コンサルタント", fte_pct=100)
+    sfa_db.update_delivery(
+        con, dvid, fee_mode="monthly", fee_monthly=100, fee_total=100,
+        responsible_owner="早瀬", billing_method=sfa_db.DELIVERY_BILLING_METHODS[0],
+        billing_recipient="経理部佐藤さん", expense_billing="有", payment_cycle_months=1)
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 50)
+    dv = sfa_db.get_delivery(con, dvid)
+    assert webapp._delivery_missing_requirements(con, dv) == []
+
+
+def test_delivery_form_shows_missing_requirements_banner_only_once_closing(con, acc_id):
+    """#134: 個別編集画面に、未入力の必須項目を列挙する警告バナーが出る
+    （見込み段階では出ない）。"""
+    did_early = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D1", stage="提案")
+    dvid_early = sfa_db.create_delivery(con, deal_id=did_early)
+    assert "未入力の必須項目" not in webapp.delivery_form(con, dvid_early)
+
+    did_late = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D2", stage="クロージング")
+    dvid_late = sfa_db.create_delivery(con, deal_id=did_late)
+    html_late = webapp.delivery_form(con, dvid_late)
+    assert "未入力の必須項目" in html_late
+    assert "責任者" in html_late
+
+
+def test_deliveries_page_shows_warning_badge_for_missing_requirements(con, acc_id):
+    """#134: Delivery一覧にも、必須項目未入力のDeliveryに警告バッジ(⚠️)を出す。"""
+    did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="クロージング")
+    sfa_db.create_delivery(con, deal_id=did)
+    html = webapp.deliveries_page(con)
+    assert "⚠️" in html
+    assert "未入力の必須項目" in html

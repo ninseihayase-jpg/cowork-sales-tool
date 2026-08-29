@@ -794,6 +794,55 @@ def test_delivery_save_route_persists_responsible_and_billing_fields(server, db_
     con2.close()
 
 
+def test_delivery_field_route_accepts_responsible_owner_from_current_assignees(server, db_path):
+    """2026-08-29: 責任者/担当者はアサイン行のチェックボックスからajaxで
+    POST /delivery/{id}/field に保存される。現在のアサインリストに実在する値のみ受け付け、
+    存在しない値は空に落ちる。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
+                                   to_week="2026-09-14", role="コンサルタント", fte_pct=50)
+    con.close()
+
+    code, body = _post(server + f"/delivery/{dvid}/field",
+                       {"field": "responsible_owner", "value": "早瀬"}, headers=_auth_header())
+    assert code == 200
+    assert json.loads(body)["ok"] is True
+
+    code2, _ = _post(server + f"/delivery/{dvid}/field",
+                     {"field": "handling_owner", "value": "存在しない人"}, headers=_auth_header())
+    assert code2 == 200
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT responsible_owner, handling_owner FROM deliveries WHERE id=?", (dvid,)).fetchone()
+    assert row["responsible_owner"] == "早瀬"
+    assert row["handling_owner"] is None  # アサインに無い値は空に落ちる
+    con2.close()
+
+
+def test_delivery_assignment_delete_clears_responsible_owner_if_matched(server, db_path):
+    """2026-08-29: 責任者/担当者に指定されているアサイン行を削除すると、参照切れを防ぐため
+    そのフィールドをクリアする。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did)
+    aid = sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
+                                         to_week="2026-09-14", role="コンサルタント", fte_pct=50)
+    sfa_db.update_delivery(con, dvid, responsible_owner="早瀬")
+    con.close()
+
+    code, _ = _post(server + f"/delivery/{dvid}/assignment/{aid}/delete", {}, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT responsible_owner FROM deliveries WHERE id=?", (dvid,)).fetchone()
+    assert row["responsible_owner"] is None
+    con2.close()
+
+
 def test_delivery_save_route_ajax_returns_204_without_redirect(server, db_path):
     """#132: 基礎情報フォームはクライアントJSからajax=1付きでバックグラウンド自動保存される。
     通常のフォーム送信(ajax無し)はこれまで通りリダイレクトするが、ajax=1指定時は204を返し、

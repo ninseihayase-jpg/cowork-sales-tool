@@ -1533,22 +1533,16 @@ def _delivery_expense_billing_opts(cur: str | None) -> str:
     return "".join(opts)
 
 
-def _delivery_owner_roles_box_html(dv: dict, assignees: list[str]) -> str:
-    """責任者/担当者セレクト（アサインリストから選択。2026-08-28）。form属性で基礎情報の
-    フォーム(dvBaseForm)へ送信し、同じ「保存」ボタンで一括保存する。アサインが未登録の場合は
-    選べる人がいないため、先にアサインを入力するよう促す表示を出す。"""
-    if not assignees:
-        return ('<p class="muted" style="font-size:11px">アサインが未登録のため選べません。'
-                '下の「アサイン」でメンバーを追加してください。</p>')
-
-    def _sel(field: str, cur: str) -> str:
-        opts = ['<option value=""></option>'] + [
-            f'<option value="{_esc(a)}"{" selected" if a == cur else ""}>{_esc(a)}</option>' for a in assignees]
-        return f'<select name="{field}" form="dvBaseForm">{"".join(opts)}</select>'
-
+def _delivery_owner_roles_box_html(dv: dict) -> str:
+    """責任者/担当者の表示専用ボックス（体制の上に配置。2026-08-29改訂）。
+    入力はここでは行わず、下の「アサイン」各行のチェックボックスから指定する
+    （ユーザー要望: 責任者/担当者はアサイン行と紐づけて入力したい）。ここは自動表示のみ。"""
+    def _disp(v: str) -> str:
+        return _esc(v) if v else '<span class="muted">未設定</span>'
     return (
-        f'<label style="font-size:12px">責任者<br>{_sel("responsible_owner", dv.get("responsible_owner") or "")}</label>'
-        f'<label style="font-size:12px">担当者<br>{_sel("handling_owner", dv.get("handling_owner") or "")}</label>'
+        f'<div style="font-size:12px;margin-bottom:2px">責任者: <b>{_disp(dv.get("responsible_owner") or "")}</b></div>'
+        f'<div style="font-size:12px">担当者: <b>{_disp(dv.get("handling_owner") or "")}</b></div>'
+        '<p class="muted" style="font-size:10px;margin:6px 0 0">下の「アサイン」各行のチェックボックスで指定します（それぞれ1人まで）。</p>'
     )
 
 
@@ -1573,6 +1567,41 @@ def _delivery_sort_key(dv: dict, lbl: str) -> tuple:
         bucket = _DELIVERY_ACTIVE_CONF_RANK.get(lbl, 2)
     start = dv.get("start_week") or "9999-99-99"   # 未設定は同グループ内で最後
     return (bucket, start, dv.get("id") or 0)
+
+
+def _delivery_missing_requirements(con, dv: dict, *, assignments: list | None = None) -> list[str]:
+    """#134: Deliveryの必須項目のうち未入力のものをラベルのリストで返す。
+    商談がクロージング以降（クロージング/受注）になってから判定する。見込み段階
+    （初回アポ実施・要件詰め・提案）では常に空リストを返す＝警告を出さない
+    （起票直後から出すと警告だらけになるため。ユーザー確定仕様2026-08-29）。
+    どの項目を必須にするかもユーザーに確認して確定：報酬形態・報酬額(月額/総額いずれか)、
+    責任者、請求方法・請求期日・請求送付先(請求期日は既定値があるため実質billing_method/
+    billing_recipientで判定)、体制(1件以上)、アサイン(owner入り1件以上)、検収額(1件以上)、
+    経費請求有無（「不明(要確認)」も有効な回答として扱う。空欄のみ不可）。
+    ※支払いサイクル(payment_cycle_months)はDB列にDEFAULT 1があり常に値が入るため、
+    「未確認のまま既定値1」と「確認済みで1」を区別できず、必須チェック対象からは除外している。
+    assignmentsを渡すと二重取得を避けられる（一覧画面など既に取得済みの場合）。"""
+    if (dv.get("deal_stage") or "") not in ("クロージング", "受注"):
+        return []
+    dvid = dv.get("id")
+    if assignments is None:
+        assignments = sfa_db.list_delivery_assignments(con, dvid)
+    missing = []
+    if dv.get("fee_monthly") is None and dv.get("fee_total") is None:
+        missing.append("報酬形態・報酬額")
+    if not (dv.get("responsible_owner") or "").strip():
+        missing.append("責任者")
+    if not (dv.get("billing_method") or "").strip() or not (dv.get("billing_recipient") or "").strip():
+        missing.append("請求方法・請求期日・請求送付先")
+    if not sfa_db.list_delivery_roles(con, dvid):
+        missing.append("体制")
+    if not any((a.get("owner") or "").strip() for a in assignments):
+        missing.append("アサイン")
+    if not sfa_db.list_delivery_receipts(con, dvid):
+        missing.append("検収額")
+    if not (dv.get("expense_billing") or "").strip():
+        missing.append("経費請求有無")
+    return missing
 
 
 def _heat_style(pct: float) -> str:
@@ -2030,6 +2059,10 @@ def deliveries_page(con) -> str:
         _up_html = (f'{round(_fmon * 10000 * 100 / _eff / 100000) * 10:,}'
                     if (_fmon and _eff > 0) else '<span class="muted">—</span>')
         _search = _esc(((dv.get("account_name") or "") + " " + (dv.get("title") or "")).lower())
+        _missing = _delivery_missing_requirements(con, dv, assignments=blocks)
+        _warn_badge = (
+            f'<span title="未入力の必須項目: {_esc("、".join(_missing))}" '
+            'style="margin-left:4px;cursor:help">⚠️</span>') if _missing else ""
         rows += f"""
         <tr class="dv-row" data-search="{_search}" data-status="{_esc(dv.get('status') or '進行中')}" data-conf="{lbl}">
           <td style="width:26px"><input type="checkbox" name="ids" value="{_id}"></td>
@@ -2037,7 +2070,7 @@ def deliveries_page(con) -> str:
           <td>{_esc(dv.get('account_name') or '—')}</td>
           <td><input type="text" value="{_esc(dv.get('title') or '')}" style="width:220px;font-size:12px"
                  onchange="dvField({_id},'title',this.value)"></td>
-          <td style="white-space:nowrap"><span style="background:{col};color:#fff;border-radius:5px;padding:1px 7px;font-size:11px;white-space:nowrap;display:inline-block">{lbl}</span></td>
+          <td style="white-space:nowrap"><span style="background:{col};color:#fff;border-radius:5px;padding:1px 7px;font-size:11px;white-space:nowrap;display:inline-block">{lbl}</span>{_warn_badge}</td>
           <td><select style="font-size:12px;min-width:104px" onchange="dvField({_id},'status',this.value)">{_st_opts}</select></td>
           <td><input type="date" value="{_esc(dv.get('start_week') or '')}" style="font-size:11px"
                  onchange="dvField({_id},'start_week',this.value)"></td>
@@ -2140,9 +2173,11 @@ def deliveries_page(con) -> str:
     </script>"""
 
 
-def _delivery_row_fields(owners: list, b: dict) -> str:
-    """アサイン1行分の入力フィールド群（役割→区分(内部/外部)→メンバー(sel/txt)→期間→請求→実想定→メモ）。
-    追加/編集の両方で使う。週入力は class=wkdate（JSで月曜スナップ）。"""
+def _delivery_row_fields(owners: list, b: dict, dv: dict) -> str:
+    """アサイン1行分の入力フィールド群（役割→区分(内部/外部)→メンバー(sel/txt)→期間→請求→実想定→メモ→責任者/担当者）。
+    追加/編集の両方で使う。週入力は class=wkdate（JSで月曜スナップ）。
+    責任者/担当者はこの行のメンバーをチェックボックスで指定する（2026-08-29。排他はJS側で制御し、
+    ajaxで/delivery/{id}/fieldへ即時保存。値のバリデーションと参照切れクリアはサーバ側でも行う）。"""
     kind = b.get("member_kind") or "内部"
     owner = b.get("owner") or ""
     _bill = b.get("fte_billing")
@@ -2151,6 +2186,8 @@ def _delivery_row_fields(owners: list, b: dict) -> str:
                         for k in ("内部", "外部"))
     sel_disp = "display:none" if kind == "外部" else ""
     txt_disp = "" if kind == "外部" else "display:none"
+    _resp_checked = " checked" if owner and owner == (dv.get("responsible_owner") or "") else ""
+    _handle_checked = " checked" if owner and owner == (dv.get("handling_owner") or "") else ""
     return (
         f'<label style="font-size:11px">役割<br><input type="text" name="role" value="{_esc(b.get("role") or "")}" placeholder="PM/エンジニア等" style="width:110px"></label>'
         f'<label style="font-size:11px">区分<br><select name="member_kind" class="mkind" onchange="tglMember(this)" style="font-size:12px">{kind_opts}</select></label>'
@@ -2162,6 +2199,10 @@ def _delivery_row_fields(owners: list, b: dict) -> str:
         f'<label style="font-size:11px">稼働率(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="{_num_pct(_bill)}" style="width:80px"></label>'
         f'<label style="font-size:11px">稼働率(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="{_num_pct(b.get("fte_pct"))}" style="width:80px"></label>'
         f'<label style="font-size:11px">メモ<br><input type="text" name="note" value="{_esc(b.get("note") or "")}" style="width:130px"></label>'
+        f'<label style="font-size:11px;text-align:center">責任者<br>'
+        f'<input type="checkbox" data-role-field="responsible_owner"{_resp_checked} onchange="dvOwnerRoleToggle(\'responsible_owner\',this)"></label>'
+        f'<label style="font-size:11px;text-align:center">担当者<br>'
+        f'<input type="checkbox" data-role-field="handling_owner"{_handle_checked} onchange="dvOwnerRoleToggle(\'handling_owner\',this)"></label>'
     )
 
 
@@ -2230,13 +2271,25 @@ def delivery_form(con, delivery_id: int) -> str:
     blocks = sfa_db.list_delivery_assignments(con, delivery_id)
     blocks.sort(key=lambda b: (_role_order.get(b.get("role") or "", 10_000),
                                b.get("role") or "￿", b.get("id") or 0))
-    _assignees = sorted({b["owner"] for b in blocks if (b.get("owner") or "").strip()})
+    # #134: 必須項目チェック（商談がクロージング以降になってから注意喚起。個別画面はここ、一覧はdeliveries_page）。
+    _missing = _delivery_missing_requirements(con, dv, assignments=blocks)
+    _missing_banner = ""
+    if _missing:
+        _missing_items = "".join(f"<li>{_esc(m)}</li>" for m in _missing)
+        _missing_banner = (
+            '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin:0 0 12px">'
+            '<p style="margin:0 0 4px;font-size:12px;color:#92400e;font-weight:600">⚠️ 未入力の必須項目があります'
+            '（商談がクロージング以降のため）</p>'
+            f'<ul style="margin:0 0 4px;padding-left:18px;font-size:12px;color:#92400e">{_missing_items}</ul>'
+            '<p class="muted" style="margin:0;font-size:10px">※このチェックは表示時点の情報に基づきます。'
+            '入力後は画面を再読み込みすると最新の状態に更新されます。</p>'
+            '</div>')
     bedit = ""
     for b in blocks:
         bedit += f"""
         <form method="post" action="/delivery/{delivery_id}/assignment/{b['id']}/update" class="asgForm"
               style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border:1px solid #e6e9f0;border-radius:8px;padding:8px;margin-bottom:6px">
-          {_delivery_row_fields(_owners, b)}
+          {_delivery_row_fields(_owners, b, dv)}
           <span class="asgSaved" style="font-size:10px;color:#94a3b8;align-self:center">自動保存</span>
           <button formaction="/delivery/{delivery_id}/assignment/{b['id']}/delete" formnovalidate
                   class="btn sec" style="font-size:11px;color:#c53030"
@@ -2311,6 +2364,7 @@ def delivery_form(con, delivery_id: int) -> str:
       <p class="muted" style="margin:0 0 12px">
         <a href="/deal/{dv["deal_id"]}">{_esc(dv.get("account_name") or "")}：{_esc(dv.get("deal_name") or "")}</a>
         （ステージ: {_esc(dv.get("deal_stage") or "")}）</p>
+      {_missing_banner}
       <div style="margin:-4px 0 14px">
         <form method="post" action="/delivery/{delivery_id}/duplicate" style="display:inline;margin:0"
           onsubmit="return confirm('このDeliveryを複製します（体制の目標役割・報酬/外注費設定は引き継ぎ、アサインの実績・検収実額・確度の手動固定は引き継ぎません）。よろしいですか？')">
@@ -2320,7 +2374,12 @@ def delivery_form(con, delivery_id: int) -> str:
 
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;margin-bottom:14px">
         <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
-          <h3 style="margin:0 0 8px;font-size:14px">基礎情報</h3>
+          <h3 style="margin:0 0 4px;font-size:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">基礎情報
+            <button class="btn" form="dvBaseForm" style="font-size:12px">保存</button>
+            <span id="dvBaseSaveStatus" class="muted" style="font-size:11px;font-weight:normal">入力すると自動保存されます</span>
+          </h3>
+          <p style="margin:0 0 8px;font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:4px 8px">
+            ⚠️ 他の項目（体制・アサイン等）より先に、まず基礎情報を入力してください（必須）。自動保存されますが、押し忘れが不安な場合はこの「保存」を押してください。</p>
           <form id="dvBaseForm" method="post" action="/delivery/{delivery_id}/save" style="display:flex;flex-direction:column;flex:1">
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
               <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:200px"></label>
@@ -2328,15 +2387,13 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd();dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
-              <label style="font-size:12px">確度<br><select name="confidence_override">{conf_opts}</select></label>
-              <button class="btn" style="font-size:12px">保存</button>
-              <span id="dvBaseSaveStatus" class="muted" style="font-size:11px;align-self:center">入力すると自動保存されます</span>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+              <label style="font-size:12px">確度<br><select name="confidence_override">{conf_opts}</select></label>
               <label style="font-size:12px">事業種別L1<br><select name="business_type_l1_override">{_delivery_biz_l1_opts(con, dv)}</select></label>
               <label style="font-size:12px">事業種別L2<br><select name="business_type_l2_override">{_delivery_biz_l2_opts(con, dv)}</select></label>
-              <div class="muted" style="font-size:10px;align-self:center;max-width:280px">※未選択＝商談の事業種別を継承。1商談から複数Deliveryが分かれる場合など、Deliveryごとに個別指定したい時だけ選んでください。</div>
             </div>
+            <p class="muted" style="font-size:10px;margin:4px 0 0">※事業種別 未選択＝商談の事業種別を継承。1商談から複数Deliveryが分かれる場合など、Deliveryごとに個別指定したい時だけ選んでください。</p>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">報酬形態<br>
                 <select id="dvFeeMode" name="fee_mode" onchange="dvFeeModeChanged()">
@@ -2402,6 +2459,11 @@ def delivery_form(con, delivery_id: int) -> str:
         </div>
         <div style="flex:1 1 380px;min-width:340px;display:flex;flex-direction:column;gap:14px">
           <div style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+            <h3 style="margin:0 0 6px;font-size:14px">責任者・担当者</h3>
+            <p class="muted" style="font-size:11px;margin:0 0 8px">下の「アサイン」各行のチェックボックスで指定します（自動表示のみ）。</p>
+            <div id="dvOwnerRolesBox" style="display:flex;gap:14px;flex-wrap:wrap">{_delivery_owner_roles_box_html(dv)}</div>
+          </div>
+          <div style="flex:1;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
             <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
             <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。</p>
             <form method="post" action="/delivery/{delivery_id}/role/add"
@@ -2412,11 +2474,6 @@ def delivery_form(con, delivery_id: int) -> str:
               <button class="btn sec" style="font-size:12px">＋役割追加（アサイン行も生成）</button>
             </form>
             <div style="overflow:auto">{role_rows}</div>
-          </div>
-          <div style="flex:1;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
-            <h3 style="margin:0 0 6px;font-size:14px">責任者・担当者</h3>
-            <p class="muted" style="font-size:11px;margin:0 0 8px">アサインリストに入っている人から選びます（自動保存。アサインを追加するとこの選択肢にも即反映されます）。</p>
-            <div id="dvOwnerRolesBox" style="display:flex;gap:12px;flex-wrap:wrap">{_delivery_owner_roles_box_html(dv, _assignees)}</div>
           </div>
         </div>
       </div>
@@ -2677,41 +2734,47 @@ def delivery_form(con, delivery_id: int) -> str:
       html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。</p>';
       box.innerHTML=html;
     }}
-    // 責任者・担当者の選択肢を、現在画面上のアサイン行（メンバー）からライブ再構築する。
-    // #dvOwnerRolesBoxのセレクトはform="dvBaseForm"属性でdvBaseFormに紐づくが、DOM上は
-    // アサインfetch保存後もページ再読込しないため、サーバ再レンダリングなしで選択肢を更新する必要がある
-    // （ユーザー報告2026-08-29：アサイン入力→保存しても責任者・担当者に出てこない）。
+    // 責任者・担当者は下の「アサイン」各行のチェックボックスから指定する（2026-08-29改訂。
+    // 従来はここで直接セレクトしていたが、アサイン行と紐づけて入力したいという要望に対応）。
+    // ここは自動表示のみ。チェック状態が変わるたびに、その行の現在のメンバー名をサーバへ即保存する
+    // （値が前回送信時から変わった時だけfetchする＝キー入力のたびに無駄打ちしないためのdedupe）。
+    var _dvLastResp={_json.dumps(dv.get("responsible_owner") or "")}, _dvLastHandle={_json.dumps(dv.get("handling_owner") or "")};
+    function _dvRowOwner(row){{
+      var kind=(row.querySelector('[name=member_kind]')||{{}}).value||'内部';
+      var v=(kind==='外部'?(row.querySelector('[name=owner_txt]')||{{}}).value:(row.querySelector('[name=owner_sel]')||{{}}).value)||'';
+      return v.trim();
+    }}
     function dvOwnerRolesRender(){{
       var box=document.getElementById('dvOwnerRolesBox'); if(!box) return;
-      var names={{}};
-      document.querySelectorAll('.asgForm').forEach(function(f){{
-        var kind=(f.querySelector('[name=member_kind]')||{{}}).value||'内部';
-        var owner=(kind==='外部'?(f.querySelector('[name=owner_txt]')||{{}}).value:(f.querySelector('[name=owner_sel]')||{{}}).value)||'';
-        owner=owner.trim(); if(owner) names[owner]=true;
+      var resp='', handle='';
+      document.querySelectorAll('.asgForm').forEach(function(row){{
+        var rcb=row.querySelector('input[data-role-field=responsible_owner]');
+        var hcb=row.querySelector('input[data-role-field=handling_owner]');
+        if(rcb && rcb.checked) resp=_dvRowOwner(row);
+        if(hcb && hcb.checked) handle=_dvRowOwner(row);
       }});
-      var list=Object.keys(names).sort();
-      if(!list.length){{
-        box.innerHTML='<p class="muted" style="font-size:11px">アサインが未登録のため選べません。下の「アサイン」でメンバーを追加してください。</p>';
-        return;
-      }}
-      var prevResp=(box.querySelector('[name=responsible_owner]')||{{}}).value||'';
-      var prevHandle=(box.querySelector('[name=handling_owner]')||{{}}).value||'';
-      function opts(cur){{
-        var h='<option value=""></option>';
-        list.forEach(function(n){{ h+='<option value="'+_esc3(n)+'"'+(n===cur?' selected':'')+'>'+_esc3(n)+'</option>'; }});
-        return h;
-      }}
       box.innerHTML =
-        '<label style="font-size:12px">責任者<br><select name="responsible_owner" form="dvBaseForm">'
-        +opts(list.indexOf(prevResp)>=0?prevResp:'')+'</select></label>'
-        +'<label style="font-size:12px">担当者<br><select name="handling_owner" form="dvBaseForm">'
-        +opts(list.indexOf(prevHandle)>=0?prevHandle:'')+'</select></label>';
+        '<div style="font-size:12px;margin-bottom:2px">責任者: <b>'+(resp?_esc3(resp):'<span class="muted">未設定</span>')+'</b></div>'
+        +'<div style="font-size:12px">担当者: <b>'+(handle?_esc3(handle):'<span class="muted">未設定</span>')+'</b></div>';
+      if(resp!==_dvLastResp){{ _dvLastResp=resp;
+        fetch('/delivery/{delivery_id}/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+          body:'field=responsible_owner&value='+encodeURIComponent(resp)}}).catch(function(){{}}); }}
+      if(handle!==_dvLastHandle){{ _dvLastHandle=handle;
+        fetch('/delivery/{delivery_id}/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+          body:'field=handling_owner&value='+encodeURIComponent(handle)}}).catch(function(){{}}); }}
+    }}
+    // 責任者/担当者チェックボックスはそれぞれ1行のみ選べる（同じfieldの他行を自動でオフにする）。
+    function dvOwnerRoleToggle(field, cb){{
+      if(cb.checked){{
+        document.querySelectorAll('.asgForm input[data-role-field="'+field+'"]').forEach(function(other){{
+          if(other!==cb) other.checked=false;
+        }});
+      }}
+      dvOwnerRolesRender();
     }}
     function recompute(){{ checkRoleTotals(); renderPreview(); dvOwnerRolesRender(); }}
     // 基礎情報フォーム(#dvBaseForm)は入力の都度バックグラウンドで自動保存する（保存ボタン押し忘れ対策・
     // ユーザー報告2026-08-29：基礎情報を保存しないまま他項目を触ると入力内容が消える）。
-    // 責任者/担当者セレクトはdvOwnerRolesRenderで動的に作り直されるためDOM上はdvBaseFormの外にあるが、
-    // form="dvBaseForm"属性でel.formが正しく解決されるため、documentへのイベント委譲で拾える。
     var _dvBaseSaveTimer=null;
     function dvBaseAutoSave(reload){{
       var form=document.getElementById('dvBaseForm'); if(!form) return;
@@ -16963,7 +17026,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _fld = (f.get("field", "") or "").strip()
                     _val = f.get("value", "")
                     if _fld in ("title", "status", "start_week", "end_week", "overview",
-                                 "payment_cycle_months"):
+                                 "payment_cycle_months", "responsible_owner", "handling_owner"):
                         if _fld in ("start_week", "end_week"):
                             _val = _snap_monday(_val)
                             _old_dv = sfa_db.get_delivery(con, _dvid) or {}
@@ -16972,6 +17035,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             sfa_db.reschedule_delivery_assignments(
                                 con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"),
                                 _new_dv.get("start_week"), _new_dv.get("end_week"))
+                        elif _fld in ("responsible_owner", "handling_owner"):
+                            # 責任者/担当者は各アサイン行のチェックボックスから入力される（2026-08-29改訂）。
+                            # このDeliveryの現在のアサインリストに実在する値のみ受け付ける（存在しなければ空に落とす）。
+                            _val = (_val or "").strip()
+                            _cur_owners = {a.get("owner") for a in sfa_db.list_delivery_assignments(con, _dvid)
+                                          if (a.get("owner") or "").strip()}
+                            _val = _val if _val in _cur_owners else ""
+                            sfa_db.update_delivery(con, _dvid, **{_fld: _val or None})
                         else:
                             sfa_db.update_delivery(con, _dvid, **{_fld: _val})
                         self._send(json.dumps({"ok": True, "value": _val}).encode(), ctype="application/json")
@@ -17187,6 +17258,21 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _dvid = int(path.split("/")[2])
                     _aid = path.split("/")[4]
                     if _aid.isdigit():
+                        # 削除するアサインが責任者/担当者に指定されていた場合はクリアする
+                        # （2026-08-29: 責任者/担当者はアサイン行のチェックボックス由来のため、
+                        # 行自体が消えると参照切れになる）。
+                        _del_row = con.execute(
+                            "SELECT owner FROM delivery_assignments WHERE id=?", (int(_aid),)).fetchone()
+                        _del_owner = (_del_row["owner"] if _del_row else "") or ""
+                        if _del_owner:
+                            _dv_before = sfa_db.get_delivery(con, _dvid) or {}
+                            _clear = {}
+                            if _dv_before.get("responsible_owner") == _del_owner:
+                                _clear["responsible_owner"] = None
+                            if _dv_before.get("handling_owner") == _del_owner:
+                                _clear["handling_owner"] = None
+                            if _clear:
+                                sfa_db.update_delivery(con, _dvid, **_clear)
                         sfa_db.delete_delivery_assignment(con, int(_aid))
                     self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and path.endswith("/delete")
