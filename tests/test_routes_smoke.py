@@ -794,6 +794,50 @@ def test_delivery_save_route_persists_responsible_and_billing_fields(server, db_
     con2.close()
 
 
+def test_delivery_save_route_persists_performance_fee_and_ratio(server, db_path):
+    """#138: POST /delivery/{id}/save に成果報酬有無=有・比率を渡すと両方保存される。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did)
+    con.close()
+
+    code, _ = _post(server + f"/delivery/{dvid}/save", {
+        "title": "D", "status": "進行中",
+        "performance_fee": "有", "performance_fee_ratio": "12.5",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT performance_fee, performance_fee_ratio FROM deliveries WHERE id=?", (dvid,)).fetchone()
+    assert row["performance_fee"] == "有"
+    assert row["performance_fee_ratio"] == 12.5
+    con2.close()
+
+
+def test_delivery_save_route_clears_performance_fee_ratio_when_not_yes(server, db_path):
+    """#138: 成果報酬有無が「有」以外（無・未選択）なら、比率が送信されても常にNoneへ落とす
+    （比率は「有」の場合のみ意味を持つため）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did)
+    sfa_db.update_delivery(con, dvid, performance_fee="有", performance_fee_ratio=20.0)
+    con.close()
+
+    code, _ = _post(server + f"/delivery/{dvid}/save", {
+        "title": "D", "status": "進行中",
+        "performance_fee": "無", "performance_fee_ratio": "20",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT performance_fee, performance_fee_ratio FROM deliveries WHERE id=?", (dvid,)).fetchone()
+    assert row["performance_fee"] == "無"
+    assert row["performance_fee_ratio"] is None
+    con2.close()
+
+
 def test_delivery_field_route_accepts_responsible_owner_from_current_assignees(server, db_path):
     """2026-08-29: 責任者/担当者はアサイン行のチェックボックスからajaxで
     POST /delivery/{id}/field に保存される。現在のアサインリストに実在する値のみ受け付け、

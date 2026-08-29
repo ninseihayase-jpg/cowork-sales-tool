@@ -98,6 +98,7 @@ DELIVERY_BILLING_METHODS = ["請求書送付(オペレータ)", "顧客PF入力(
 DELIVERY_BILLING_DUE_OPTIONS = ["当月末日", "翌月1日", "翌月2日", "翌月3日"]
 DELIVERY_BILLING_DUE_DEFAULT = "当月末日"
 DELIVERY_EXPENSE_BILLING_OPTIONS = ["有", "無", "不明(要確認)"]
+DELIVERY_PERFORMANCE_FEE_OPTIONS = ["有", "無"]  # 成果報酬有無（2026-08-30）。「有」の場合のみ比率入力が必須。
 
 MASTER_KEYS = {
     "owners":            OWNERS,
@@ -1430,6 +1431,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE deliveries ADD COLUMN expense_billing TEXT")
         if _dv_cols and "expense_billing_note" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN expense_billing_note TEXT")
+        # 成果報酬有無/比率（2026-08-30。「有」の場合のみ比率入力が必須＝webapp側でチェック）。
+        if _dv_cols and "performance_fee" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN performance_fee TEXT")
+        if _dv_cols and "performance_fee_ratio" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN performance_fee_ratio REAL")
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -4491,7 +4497,8 @@ def update_delivery(con, delivery_id: int, **fields) -> None:
                "cost_mode", "cost_monthly", "cost_total", "cost_vendor",
                "payment_cycle_months", "business_type_l1_override", "business_type_l2_override",
                "responsible_owner", "handling_owner", "billing_method", "billing_due",
-               "billing_recipient", "expense_billing", "expense_billing_note"}
+               "billing_recipient", "expense_billing", "expense_billing_note",
+               "performance_fee", "performance_fee_ratio"}
     sets, args = [], []
     for k, v in fields.items():
         if k in allowed:
@@ -4521,6 +4528,7 @@ def duplicate_delivery(con, delivery_id: int) -> int | None:
         fee_mode=src.get("fee_mode"), fee_monthly=src.get("fee_monthly"), fee_total=src.get("fee_total"),
         cost_mode=src.get("cost_mode"), cost_monthly=src.get("cost_monthly"), cost_total=src.get("cost_total"),
         cost_vendor=src.get("cost_vendor"), payment_cycle_months=src.get("payment_cycle_months"),
+        performance_fee=src.get("performance_fee"), performance_fee_ratio=src.get("performance_fee_ratio"),
         business_type_l1_override=src.get("business_type_l1_override"),
         business_type_l2_override=src.get("business_type_l2_override"),
         # 請求関連は計画情報として引き継ぐ。責任者/担当者はアサインリストから選ぶ値のため、

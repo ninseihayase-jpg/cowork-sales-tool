@@ -1533,6 +1533,15 @@ def _delivery_expense_billing_opts(cur: str | None) -> str:
     return "".join(opts)
 
 
+def _delivery_performance_fee_opts(cur: str | None) -> str:
+    """成果報酬有無(performance_fee)の<option>群。マスタ非連動の固定選択肢（2026-08-30）。"""
+    cur = cur or ""
+    opts = ['<option value=""></option>']
+    for v in sfa_db.DELIVERY_PERFORMANCE_FEE_OPTIONS:
+        opts.append(f'<option value="{_esc(v)}"{" selected" if v == cur else ""}>{_esc(v)}</option>')
+    return "".join(opts)
+
+
 def _delivery_owner_roles_box_html(dv: dict) -> str:
     """責任者/担当者の表示専用ボックス（体制の上に配置。2026-08-29改訂）。
     入力はここでは行わず、下の「アサイン」各行のチェックボックスから指定する
@@ -1580,13 +1589,18 @@ def _delivery_missing_requirements(con, dv: dict, *, assignments: list | None = 
     経費請求有無（「不明(要確認)」も有効な回答として扱う。空欄のみ不可）。
     ※支払いサイクル(payment_cycle_months)はDB列にDEFAULT 1があり常に値が入るため、
     「未確認のまま既定値1」と「確認済みで1」を区別できず、必須チェック対象からは除外している。
+    成果報酬比率(performance_fee_ratio)は上記とは別枠で、商談の段階に関わらず常にチェックする
+    （「成果報酬有無」が有りなのに比率未入力は、段階を問わず単なる入力漏れ＝矛盾データのため。
+    2026-08-30）。
     assignmentsを渡すと二重取得を避けられる（一覧画面など既に取得済みの場合）。"""
-    if (dv.get("deal_stage") or "") not in ("クロージング", "受注"):
-        return []
     dvid = dv.get("id")
+    missing = []
+    if (dv.get("performance_fee") or "") == "有" and dv.get("performance_fee_ratio") is None:
+        missing.append("成果報酬比率")
+    if (dv.get("deal_stage") or "") not in ("クロージング", "受注"):
+        return missing
     if assignments is None:
         assignments = sfa_db.list_delivery_assignments(con, dvid)
-    missing = []
     if dv.get("fee_monthly") is None and dv.get("fee_total") is None:
         missing.append("報酬形態・報酬額")
     if not (dv.get("responsible_owner") or "").strip():
@@ -1929,50 +1943,70 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
     from openpyxl.styles import Font
     from io import BytesIO
 
+    def _na(v):
+        """金額列以外の空欄は"na"に統一する（ユーザー要望2026-08-30）。"""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "na"
+        return v
+
     today = _today_jst()
     months = []
     for i in range(19):  # 今月から+18ヶ月後まで(19ヶ月分)
         yy, mm = sfa_db._add_months_ym(today.year, today.month, i)
         months.append(f"{yy:04d}-{mm:02d}")
 
-    per_delivery = []  # [(dv, "検収"|"入金", vals, assignees), ...]
-    max_assignees = 0
+    # 並び順は確度順(完了含む) × 開始週の早い順（ユーザー要望2026-08-30）。Delivery一覧の
+    # `_delivery_sort_key`は状態(完了/中止/保留)を確度より優先して下段に沈めるが、入金予定表は
+    # 完了案件も他と同じ確度基準の並びに含めたいため、専用の単純な並び替えキーを使う。
+    _XLSX_CONF_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2, "無効(終了)": 3}
+    _dvs = []
     for dv in sfa_db.list_deliveries(con):
+        _conf_lbl, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
+                                            dv.get("confidence_override"))
+        _dvs.append((dv, _conf_lbl))
+    _dvs.sort(key=lambda t: (_XLSX_CONF_RANK.get(t[1], 4), t[0].get("start_week") or "9999-99-99", t[0]["id"]))
+
+    per_delivery = []  # [(dv, conf_lbl, "検収"|"入金", vals, assignees), ...]
+    max_assignees = 0
+    for dv, conf_lbl in _dvs:
         cf = sfa_db.delivery_cashflow(con, dv["id"])
         receipts = cf.get("receipts") or {}
         payments = cf.get("payments") or {}
         blocks = sfa_db.list_delivery_assignments(con, dv["id"])
         assignees = sorted({b["owner"] for b in blocks if (b.get("owner") or "").strip()})
         max_assignees = max(max_assignees, len(assignees))
-        per_delivery.append((dv, "検収", receipts, assignees))
-        per_delivery.append((dv, "入金", payments, assignees))
+        per_delivery.append((dv, conf_lbl, "検収", receipts, assignees))
+        per_delivery.append((dv, conf_lbl, "入金", payments, assignees))
 
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "入金予定表"
-    fixed_hdr = ["確度", "検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
-                 "支払いサイト", "責任者", "担当者", "請求方法", "請求期日", "請求送付先",
-                 "経費請求有無", "経費請求メモ"]
+    # フォントはメイリオ UI 10pt に統一（ユーザー要望2026-08-30）。
+    _font = Font(name="Meiryo UI", size=10)
+    _font_bold = Font(name="Meiryo UI", size=10, bold=True)
+    fixed_hdr = ["確度", "検収/入金", "#", "クライアント", "案件", "事業種別L1", "事業種別L2", "状態",
+                 "開始週", "終了週", "支払いサイト", "責任者", "担当者", "請求方法", "請求期日",
+                 "請求送付先", "経費請求有無", "経費請求メモ"]
     hdr = (fixed_hdr + [f"アサイン{i + 1}" for i in range(max_assignees)]
            + [f"{m[2:4]}/{m[5:7]}" for m in months])
     for c, h in enumerate(hdr, 1):
-        ws.cell(row=1, column=c, value=h).font = Font(bold=True)
+        ws.cell(row=1, column=c, value=h).font = _font_bold
     r = 2
-    for dv, flag, vals, assignees in per_delivery:
+    for dv, conf_lbl, flag, vals, assignees in per_delivery:
         _cycle = dv.get("payment_cycle_months")
-        _conf_lbl, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
-                                            dv.get("confidence_override"))
-        row = [_conf_lbl, flag, dv["id"], dv.get("account_name") or "", dv.get("title") or "",
-               dv.get("status") or "", dv.get("start_week") or "", dv.get("end_week") or "",
+        _biz_l1, _biz_l2 = sfa_db.delivery_business_type_effective(dv)
+        row = [conf_lbl, flag, dv["id"], _na(dv.get("account_name")), _na(dv.get("title")),
+               _na(_biz_l1), _na(_biz_l2),
+               _na(dv.get("status")), _na(dv.get("start_week")), _na(dv.get("end_week")),
                _cycle if _cycle is not None else 1,
-               dv.get("responsible_owner") or "", dv.get("handling_owner") or "",
-               dv.get("billing_method") or "", dv.get("billing_due") or sfa_db.DELIVERY_BILLING_DUE_DEFAULT,
-               dv.get("billing_recipient") or "", dv.get("expense_billing") or "",
-               dv.get("expense_billing_note") or ""]
-        row += [(assignees[i] if i < len(assignees) else "") for i in range(max_assignees)]
-        row += [(vals.get(m) or 0) for m in months]
+               _na(dv.get("responsible_owner")), _na(dv.get("handling_owner")),
+               _na(dv.get("billing_method")), dv.get("billing_due") or sfa_db.DELIVERY_BILLING_DUE_DEFAULT,
+               _na(dv.get("billing_recipient")), _na(dv.get("expense_billing")),
+               _na(dv.get("expense_billing_note"))]
+        row += [_na(assignees[i] if i < len(assignees) else "") for i in range(max_assignees)]
+        row += [(vals.get(m) or 0) for m in months]  # 金額列のみ空欄は0のまま（naにしない）
         for c, v in enumerate(row, 1):
-            ws.cell(row=r, column=c, value=v)
+            ws.cell(row=r, column=c, value=v).font = _font
         r += 1
     last_row = r - 1
     last_col = openpyxl.utils.get_column_letter(len(hdr))
@@ -2407,6 +2441,11 @@ def delivery_form(con, delivery_id: int) -> str:
                 <input type="number" step="0.1" min="0" id="dvFeeTotal" name="fee_total" style="width:110px"
                        value="{"" if dv.get("fee_total") is None else dv.get("fee_total")}" oninput="dvFeeFieldInput(this)"></label>
               <span class="muted" style="font-size:11px;align-self:center" id="dvFeeMonths"></span>
+              <label style="font-size:12px">成果報酬有無<br>
+                <select id="dvPerfFee" name="performance_fee" onchange="dvPerfFeeChanged()">{_delivery_performance_fee_opts(dv.get("performance_fee"))}</select></label>
+              <label style="font-size:12px">成果報酬比率(%)<br>
+                <input type="number" step="0.1" min="0" max="100" id="dvPerfFeeRatio" name="performance_fee_ratio" style="width:90px"
+                       value="{"" if dv.get("performance_fee_ratio") is None else dv.get("performance_fee_ratio")}" oninput="dvPerfFeeChanged()"></label>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">外注先<br>
@@ -2596,6 +2635,16 @@ def delivery_form(con, delivery_id: int) -> str:
       if(!sel||!other) return;
       other.style.display = sel.value==='{_DELIVERY_BILLING_DUE_OTHER}' ? '' : 'none';
     }}
+    // 成果報酬有無=「有」の場合のみ比率入力を必須にする（ユーザー要望2026-08-30）。
+    // このアプリの自動保存はfetch経由でネイティブのフォームバリデーションを経由しないため、
+    // required属性は「未入力なら赤枠で目立たせる」視覚的な注意喚起として使う（保存自体はブロックしない）。
+    function dvPerfFeeChanged(){{
+      var sel=document.getElementById('dvPerfFee'), ratio=document.getElementById('dvPerfFeeRatio');
+      if(!sel||!ratio) return;
+      var need = sel.value==='有';
+      ratio.required = need;
+      ratio.style.background = (need && ratio.value==='') ? '#fef3c7' : '';
+    }}
     // 想定利益(月額/総額) = 報酬額－外注費。どちらも未入力なら「—」、片方だけ未入力は0扱い。
     function dvProfitRecalc(){{
       var pm=document.getElementById('dvProfitMonthly'), pt=document.getElementById('dvProfitTotal');
@@ -2644,6 +2693,7 @@ def delivery_form(con, delivery_id: int) -> str:
     }}
     dvFeeRecalc();
     dvCostRecalc();
+    dvPerfFeeChanged();
     function tglMember(sel){{ var f=sel.closest('form'); if(!f) return;
       var mi=f.querySelector('.mint'), me=f.querySelector('.mext');
       if(sel.value==='外部'){{ if(mi)mi.style.display='none'; if(me)me.style.display=''; }}
@@ -17127,6 +17177,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _expense_billing = (f.get("expense_billing", "") or "").strip()
                     _expense_billing = (_expense_billing
                                         if _expense_billing in sfa_db.DELIVERY_EXPENSE_BILLING_OPTIONS else None)
+                    # 成果報酬有無/比率（2026-08-30）。「有」以外なら比率は意味を持たないため常にNoneへ落とす。
+                    _perf_fee = (f.get("performance_fee", "") or "").strip()
+                    _perf_fee = _perf_fee if _perf_fee in sfa_db.DELIVERY_PERFORMANCE_FEE_OPTIONS else None
+                    _perf_ratio = _to_float(f.get("performance_fee_ratio"), None) if _perf_fee == "有" else None
                     sfa_db.update_delivery(
                         con, _dvid,
                         title=(f.get("title", "") or "").strip(),
@@ -17150,7 +17204,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         billing_due=_billing_due,
                         billing_recipient=(f.get("billing_recipient", "") or "").strip(),
                         expense_billing=_expense_billing,
-                        expense_billing_note=(f.get("expense_billing_note", "") or "").strip())
+                        expense_billing_note=(f.get("expense_billing_note", "") or "").strip(),
+                        performance_fee=_perf_fee,
+                        performance_fee_ratio=_perf_ratio)
                     # 期間の変更に合わせて各アサインの週も連動スライド（開始移動＝全員スライド／週数延長＝全員の終了延長）
                     sfa_db.reschedule_delivery_assignments(
                         con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"), _sw, _ew)

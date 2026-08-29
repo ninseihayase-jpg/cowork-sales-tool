@@ -829,10 +829,10 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     ws = wb.active
     assert ws.title == "入金予定表"
     hdr = [c.value for c in ws[1]]
-    assert hdr[:16] == ["確度", "検収/入金", "#", "クライアント", "案件", "状態", "開始週", "終了週",
-                        "支払いサイト", "責任者", "担当者", "請求方法", "請求期日", "請求送付先",
-                        "経費請求有無", "経費請求メモ"]
-    assert hdr[16] == "アサイン1"
+    assert hdr[:18] == ["確度", "検収/入金", "#", "クライアント", "案件", "事業種別L1", "事業種別L2",
+                        "状態", "開始週", "終了週", "支払いサイト", "責任者", "担当者", "請求方法",
+                        "請求期日", "請求送付先", "経費請求有無", "経費請求メモ"]
+    assert hdr[18] == "アサイン1"
     assert _ml(m0) in hdr and _ml(m1) in hdr and _ml(m2) in hdr
     assert _ml(_ym(18)) in hdr   # 今月+18ヶ月後まで含む
     assert _ml(_ym(19)) not in hdr  # +19ヶ月後は含まない(固定19ヶ月分)
@@ -843,7 +843,7 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     assert receipt_row["#"] == dvid and receipt_row["案件"] == "A社支援"
     assert receipt_row["確度"] == "確定"  # stage=受注→自動判定は「確定」
     assert receipt_row["支払いサイト"] == 1
-    assert receipt_row["責任者"] == "早瀬" and not receipt_row["担当者"]  # 未設定は空欄(openpyxlはNoneで返る)
+    assert receipt_row["責任者"] == "早瀬" and receipt_row["担当者"] == "na"  # #137: 空欄は"na"に統一
     assert receipt_row["請求方法"] == sfa_db.DELIVERY_BILLING_METHODS[0]
     assert receipt_row["請求期日"] == "翌月1日"
     assert receipt_row["請求送付先"] == "経理部佐藤さん、PF提出"
@@ -854,6 +854,76 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     assert payment_row[_ml(m0)] == 0  # 検収月自体には入金額は出ない
     assert payment_row[_ml(m1)] == 100 and payment_row[_ml(m2)] == 200  # 1ヶ月後に入金
     assert ws.auto_filter.ref == f"A1:{openpyxl.utils.get_column_letter(len(hdr))}3"
+
+
+def test_payment_schedule_xlsx_uses_meiryo_ui_10pt_font(con, acc_id):
+    """#137: フォントはメイリオ UI 10ptに統一する（ヘッダ・データともに）。"""
+    d = _deal(con, acc_id, "受注")
+    sfa_db.create_delivery(con, deal_id=d, title="A社支援")
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
+    ws = wb.active
+    assert ws["A1"].font.name == "Meiryo UI" and ws["A1"].font.size == 10 and ws["A1"].font.bold
+    assert ws["A2"].font.name == "Meiryo UI" and ws["A2"].font.size == 10 and not ws["A2"].font.bold
+
+
+def test_payment_schedule_xlsx_blank_fields_shown_as_na_except_amounts(con, acc_id):
+    """#137: 金額(月)列以外の空欄はすべて"na"に統一する。金額列は0のまま。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="")  # 未入力の空文字
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
+    ws = wb.active
+    hdr = [c.value for c in ws[1]]
+    row = dict(zip(hdr, [c.value for c in ws[2]]))
+    assert row["案件"] == "na"
+    assert row["開始週"] == "na" and row["終了週"] == "na"
+    assert row["責任者"] == "na" and row["担当者"] == "na"
+    assert row["請求方法"] == "na" and row["請求送付先"] == "na"
+    assert row["経費請求有無"] == "na" and row["経費請求メモ"] == "na"
+    assert row[_ml(_ym(0))] == 0  # 金額列は"na"にせず0のまま
+
+
+def test_payment_schedule_xlsx_includes_business_type_columns(con, acc_id):
+    """#137: 事業種別L1/L2もカラムとして出力する（override優先、無ければ商談から継承）。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注",
+                           business_type_l1="コスト削減", business_type_l2="コスト診断(無償)")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="A社支援")
+    sfa_db.update_delivery(con, dvid, business_type_l1_override="コンサルティング")
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
+    ws = wb.active
+    hdr = [c.value for c in ws[1]]
+    row = dict(zip(hdr, [c.value for c in ws[2]]))
+    assert row["事業種別L1"] == "コンサルティング"  # override優先
+    assert row["事業種別L2"] == "コスト診断(無償)"  # override無し→商談から継承
+
+
+def test_payment_schedule_xlsx_sorted_by_confidence_then_start_week_including_done(con, acc_id):
+    """#137: 並び順は確度順(完了含む) × 開始週の早い順。一覧ページの並び(_delivery_sort_key)とは異なり、
+    状態=完了のDeliveryも他と同じ確度基準で並べる（下段に沈めない）。"""
+    d1 = _deal(con, acc_id, "提案")  # 見込み(提案中)
+    dv1 = sfa_db.create_delivery(con, deal_id=d1, title="提案中・遅い開始", start_week="2026-10-05")
+    d2 = _deal(con, acc_id, "受注")  # 確定
+    dv2 = sfa_db.create_delivery(con, deal_id=d2, title="確定・完了済み・早い開始", start_week="2026-09-07")
+    sfa_db.update_delivery(con, dv2, status="完了")
+    d3 = _deal(con, acc_id, "受注")  # 確定
+    dv3 = sfa_db.create_delivery(con, deal_id=d3, title="確定・遅い開始", start_week="2026-09-14")
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
+    ws = wb.active
+    hdr = [c.value for c in ws[1]]
+    ids_in_order = []
+    for r in range(2, ws.max_row + 1):
+        row = dict(zip(hdr, [c.value for c in ws[r]]))
+        if row["#"] not in ids_in_order:
+            ids_in_order.append(row["#"])
+    # 確定(完了含む)が先、確定内は開始週の早い順。見込み(提案中)は最後。
+    assert ids_in_order == [dv2, dv3, dv1]
 
 
 def test_payment_schedule_xlsx_multiple_assignees_get_own_columns(con, acc_id):
@@ -869,7 +939,7 @@ def test_payment_schedule_xlsx_multiple_assignees_get_own_columns(con, acc_id):
     wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
     ws = wb.active
     hdr = [c.value for c in ws[1]]
-    assert ["アサイン1", "アサイン2", "アサイン3"] == hdr[16:19]
+    assert ["アサイン1", "アサイン2", "アサイン3"] == hdr[18:21]
     row = dict(zip(hdr, [c.value for c in ws[2]]))
     # sorted()の文字コード順（五十音順ではない）: 中島(4E2D) < 吉江(5409) < 早瀬(65E9)
     assert row["アサイン1"] == "中島" and row["アサイン2"] == "吉江" and row["アサイン3"] == "早瀬"
@@ -925,7 +995,8 @@ def test_duplicate_delivery_copies_plan_fields_but_not_execution_data(con, acc_i
     sfa_db.update_delivery(con, src_id, responsible_owner="高橋", handling_owner="高橋",
                            billing_method=sfa_db.DELIVERY_BILLING_METHODS[0], billing_due="翌月1日",
                            billing_recipient="経理部佐藤さん", expense_billing="有",
-                           expense_billing_note="交通費のみ")
+                           expense_billing_note="交通費のみ",
+                           performance_fee="有", performance_fee_ratio=15.0)
     sfa_db.set_delivery_receipt(con, src_id, "2026-09", 100)
 
     new_id = sfa_db.duplicate_delivery(con, src_id)
@@ -945,6 +1016,7 @@ def test_duplicate_delivery_copies_plan_fields_but_not_execution_data(con, acc_i
     assert new["billing_due"] == "翌月1日"
     assert new["billing_recipient"] == "経理部佐藤さん"
     assert new["expense_billing"] == "有" and new["expense_billing_note"] == "交通費のみ"
+    assert new["performance_fee"] == "有" and new["performance_fee_ratio"] == 15.0
     # 責任者/担当者はアサインリスト由来のため、アサインが空の複製直後は引き継がない
     assert new["responsible_owner"] is None and new["handling_owner"] is None
 
@@ -1041,3 +1113,34 @@ def test_deliveries_page_shows_warning_badge_for_missing_requirements(con, acc_i
     html = webapp.deliveries_page(con)
     assert "⚠️" in html
     assert "未入力の必須項目" in html
+
+
+def test_delivery_form_renders_performance_fee_fields_next_to_fee(con, acc_id):
+    """#138: 基礎情報の報酬額の横に成果報酬有無/比率を入力できる。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    sfa_db.update_delivery(con, dvid, performance_fee="有", performance_fee_ratio=12.5)
+    html = webapp.delivery_form(con, dvid)
+    assert 'name="performance_fee"' in html
+    assert 'id="dvPerfFeeRatio"' in html and 'name="performance_fee_ratio"' in html
+    assert '<option value="有" selected>有</option>' in html
+    assert 'value="12.5"' in html
+    assert "function dvPerfFeeChanged" in html
+
+
+def test_delivery_missing_requirements_flags_performance_fee_ratio_regardless_of_stage(con, acc_id):
+    """#138: 成果報酬有無=有なのに比率が未入力の場合、商談の段階（見込みでも）に関わらず
+    必須項目として警告する（他の#134項目とは異なりクロージング以降縛りなし）。"""
+    did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="提案")  # 見込み段階
+    dvid = sfa_db.create_delivery(con, deal_id=did)
+    sfa_db.update_delivery(con, dvid, performance_fee="有")
+    dv = sfa_db.get_delivery(con, dvid)
+    assert "成果報酬比率" in webapp._delivery_missing_requirements(con, dv)
+
+    sfa_db.update_delivery(con, dvid, performance_fee_ratio=10.0)
+    dv2 = sfa_db.get_delivery(con, dvid)
+    assert "成果報酬比率" not in webapp._delivery_missing_requirements(con, dv2)
+
+    sfa_db.update_delivery(con, dvid, performance_fee="無", performance_fee_ratio=None)
+    dv3 = sfa_db.get_delivery(con, dvid)
+    assert "成果報酬比率" not in webapp._delivery_missing_requirements(con, dv3)  # 「無」なら不要
