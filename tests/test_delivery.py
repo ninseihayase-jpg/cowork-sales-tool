@@ -677,13 +677,17 @@ def test_delivery_form_renders_business_type_override_selects(con, acc_id):
 
 
 def test_delivery_form_prompts_to_add_assignees_before_choosing_responsible(con, acc_id):
-    """#121: アサインが未登録の間は責任者/担当者を選べず、アサインを促す表示を出す。"""
+    """#121: アサインが未登録の間は責任者/担当者を選べず、アサインを促す表示を出す。
+    (2026-08-29 #132/#133: 責任者/担当者selectはクライアントJSでも動的に組み立て直されるため、
+    その関数定義自体には`name="responsible_owner"`という文字列が常に含まれる。よって
+    サーバ側の初期HTML断片＝`_delivery_owner_roles_box_html`の出力だけを直接検証する。)"""
     d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
     dvid = sfa_db.create_delivery(con, deal_id=d)
     html = webapp.delivery_form(con, dvid)
     assert "責任者・担当者" in html
-    assert "先にアサインを入力" in html or "アサインを追加" in html
-    assert 'name="responsible_owner"' not in html
+    box = webapp._delivery_owner_roles_box_html(sfa_db.get_delivery(con, dvid), [])
+    assert "アサインが未登録" in box and "メンバーを追加" in box
+    assert 'name="responsible_owner"' not in box
 
 
 def test_delivery_form_lets_choose_responsible_from_assignee_list(con, acc_id):
@@ -717,6 +721,20 @@ def test_delivery_form_includes_billing_fields_and_collapsible_effort_box(con, a
     assert "<details" in html and "総アサイン工数" in html
     # 既定値(当月末日)がマスタ選択肢として選択されている（自由入力欄は隠れている）
     assert 'id="dvBillingDueOther"' in html and "display:none" in html
+
+
+def test_delivery_form_base_info_autosaves_without_save_button(con, acc_id):
+    """#132: 基礎情報(#dvBaseForm)は保存ボタン押し忘れ対策として、フィールド変更で自動保存される。
+    (1) 保存の要否をユーザーに教える案内文言、(2) JS側の自動保存関数、(3) 責任者/担当者の
+    選択肢をアサイン変更に追従させる関数、が出力に含まれること。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    html = webapp.delivery_form(con, dvid)
+    assert "自動保存されます" in html
+    assert 'id="dvBaseSaveStatus"' in html
+    assert "function dvBaseAutoSave" in html
+    assert "function dvOwnerRolesRender" in html
+    assert 'id="dvOwnerRolesBox"' in html
 
 
 def test_delivery_form_billing_due_other_shown_when_custom_value(con, acc_id):

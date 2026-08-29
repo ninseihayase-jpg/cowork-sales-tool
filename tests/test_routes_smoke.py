@@ -794,6 +794,29 @@ def test_delivery_save_route_persists_responsible_and_billing_fields(server, db_
     con2.close()
 
 
+def test_delivery_save_route_ajax_returns_204_without_redirect(server, db_path):
+    """#132: 基礎情報フォームはクライアントJSからajax=1付きでバックグラウンド自動保存される。
+    通常のフォーム送信(ajax無し)はこれまで通りリダイレクトするが、ajax=1指定時は204を返し、
+    ページ全体の再読込を発生させないこと（保存ボタン押し忘れ対策）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-10-04")
+    con.close()
+
+    code, body = _post(server + f"/delivery/{dvid}/save", {
+        "title": "自動保存タイトル", "start_week": "2026-09-07", "end_week": "2026-10-04",
+        "status": "進行中", "ajax": "1",
+    }, headers=_auth_header())
+    assert code == 204
+    assert body == b""
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT title FROM deliveries WHERE id=?", (dvid,)).fetchone()
+    assert row["title"] == "自動保存タイトル"
+    con2.close()
+
+
 def test_delivery_receipt_route_persists_monthly_amount(server, db_path):
     """POST /delivery/{id}/receipt で月別検収額を保存できること（月別入金計画・ユーザー要望2026-08-23）。"""
     con = sfa_db.connect(db_path)

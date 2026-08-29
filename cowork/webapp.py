@@ -2330,6 +2330,7 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
               <label style="font-size:12px">確度<br><select name="confidence_override">{conf_opts}</select></label>
               <button class="btn" style="font-size:12px">保存</button>
+              <span id="dvBaseSaveStatus" class="muted" style="font-size:11px;align-self:center">入力すると自動保存されます</span>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">事業種別L1<br><select name="business_type_l1_override">{_delivery_biz_l1_opts(con, dv)}</select></label>
@@ -2393,7 +2394,9 @@ def delivery_form(con, delivery_id: int) -> str:
             </details>
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
-            <p class="muted" style="font-size:11px;margin:4px 0 0">※週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は体制「複製」で生成する行の初期値（ガイド）です。
+            <p class="muted" style="font-size:11px;margin:4px 0 0">※基礎情報は各項目の入力後（フォーカスを外した時点）で自動保存されます。「保存」ボタンは押し忘れても問題ありません
+              （週数/開始週/終了週の変更のみ、アサイン週の連動再計算のため保存後に自動で再読込します）。
+              週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は体制「複製」で生成する行の初期値（ガイド）です。
               月額/総額は自動換算されますが、灰色側を直接編集すると手修正として保持されます（報酬形態を切り替えると自動換算に戻ります）。</p>
           </form>
         </div>
@@ -2412,8 +2415,8 @@ def delivery_form(con, delivery_id: int) -> str:
           </div>
           <div style="flex:1;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
             <h3 style="margin:0 0 6px;font-size:14px">責任者・担当者</h3>
-            <p class="muted" style="font-size:11px;margin:0 0 8px">アサインリストに入っている人から選びます（「保存」ボタンで基礎情報と一緒に保存されます）。</p>
-            <div style="display:flex;gap:12px;flex-wrap:wrap">{_delivery_owner_roles_box_html(dv, _assignees)}</div>
+            <p class="muted" style="font-size:11px;margin:0 0 8px">アサインリストに入っている人から選びます（自動保存。アサインを追加するとこの選択肢にも即反映されます）。</p>
+            <div id="dvOwnerRolesBox" style="display:flex;gap:12px;flex-wrap:wrap">{_delivery_owner_roles_box_html(dv, _assignees)}</div>
           </div>
         </div>
       </div>
@@ -2674,7 +2677,54 @@ def delivery_form(con, delivery_id: int) -> str:
       html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。</p>';
       box.innerHTML=html;
     }}
-    function recompute(){{ checkRoleTotals(); renderPreview(); }}
+    // 責任者・担当者の選択肢を、現在画面上のアサイン行（メンバー）からライブ再構築する。
+    // #dvOwnerRolesBoxのセレクトはform="dvBaseForm"属性でdvBaseFormに紐づくが、DOM上は
+    // アサインfetch保存後もページ再読込しないため、サーバ再レンダリングなしで選択肢を更新する必要がある
+    // （ユーザー報告2026-08-29：アサイン入力→保存しても責任者・担当者に出てこない）。
+    function dvOwnerRolesRender(){{
+      var box=document.getElementById('dvOwnerRolesBox'); if(!box) return;
+      var names={{}};
+      document.querySelectorAll('.asgForm').forEach(function(f){{
+        var kind=(f.querySelector('[name=member_kind]')||{{}}).value||'内部';
+        var owner=(kind==='外部'?(f.querySelector('[name=owner_txt]')||{{}}).value:(f.querySelector('[name=owner_sel]')||{{}}).value)||'';
+        owner=owner.trim(); if(owner) names[owner]=true;
+      }});
+      var list=Object.keys(names).sort();
+      if(!list.length){{
+        box.innerHTML='<p class="muted" style="font-size:11px">アサインが未登録のため選べません。下の「アサイン」でメンバーを追加してください。</p>';
+        return;
+      }}
+      var prevResp=(box.querySelector('[name=responsible_owner]')||{{}}).value||'';
+      var prevHandle=(box.querySelector('[name=handling_owner]')||{{}}).value||'';
+      function opts(cur){{
+        var h='<option value=""></option>';
+        list.forEach(function(n){{ h+='<option value="'+_esc3(n)+'"'+(n===cur?' selected':'')+'>'+_esc3(n)+'</option>'; }});
+        return h;
+      }}
+      box.innerHTML =
+        '<label style="font-size:12px">責任者<br><select name="responsible_owner" form="dvBaseForm">'
+        +opts(list.indexOf(prevResp)>=0?prevResp:'')+'</select></label>'
+        +'<label style="font-size:12px">担当者<br><select name="handling_owner" form="dvBaseForm">'
+        +opts(list.indexOf(prevHandle)>=0?prevHandle:'')+'</select></label>';
+    }}
+    function recompute(){{ checkRoleTotals(); renderPreview(); dvOwnerRolesRender(); }}
+    // 基礎情報フォーム(#dvBaseForm)は入力の都度バックグラウンドで自動保存する（保存ボタン押し忘れ対策・
+    // ユーザー報告2026-08-29：基礎情報を保存しないまま他項目を触ると入力内容が消える）。
+    // 責任者/担当者セレクトはdvOwnerRolesRenderで動的に作り直されるためDOM上はdvBaseFormの外にあるが、
+    // form="dvBaseForm"属性でel.formが正しく解決されるため、documentへのイベント委譲で拾える。
+    var _dvBaseSaveTimer=null;
+    function dvBaseAutoSave(reload){{
+      var form=document.getElementById('dvBaseForm'); if(!form) return;
+      var st=document.getElementById('dvBaseSaveStatus');
+      if(st){{ st.textContent='保存中…'; st.style.color='#94a3b8'; }}
+      var body=new URLSearchParams(new FormData(form)); body.set('ajax','1');
+      fetch(form.action,{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:body.toString()}})
+        .then(function(r){{
+          if(reload){{ location.reload(); return; }}
+          if(st){{ st.textContent=r.ok?'自動保存済み':'保存失敗'; st.style.color=r.ok?'#059669':'#b91c1c'; }}
+        }})
+        .catch(function(){{ if(st){{ st.textContent='保存失敗（通信エラー）'; st.style.color='#b91c1c'; }} }});
+    }}
     document.addEventListener('DOMContentLoaded',function(){{
       document.querySelectorAll('.wkdate').forEach(function(el){{el.addEventListener('change',function(){{snapWk(el);}});}});
       document.querySelectorAll('.mkind').forEach(function(s){{tglMember(s);}});
@@ -2687,6 +2737,17 @@ def delivery_form(con, delivery_id: int) -> str:
       // 自動保存: 各アサイン行・体制行の変更でajax保存（保存ボタン不要）
       document.querySelectorAll('.asgForm,.roleRow').forEach(function(form){{
         form.addEventListener('change',function(){{autoSave(form);}});
+      }});
+      // 基礎情報: フォーム内の項目変更で自動保存（責任者/担当者selectはform属性経由でも拾う）
+      document.addEventListener('change',function(e){{
+        var el=e.target;
+        if(el.form && el.form.id==='dvBaseForm'){{
+          // 開始/終了週・週数はアサイン週の連動再計算、事業種別L1は事業種別L2の選択肢の
+          // サーバ側再計算のため、保存後に再読込して画面を最新化する。それ以外は再読込不要。
+          var reload=(el.name==='start_week'||el.name==='end_week'||el.id==='hdrWeeks'
+            ||el.name==='business_type_l1_override');
+          dvBaseAutoSave(reload);
+        }}
       }});
       recompute();
     }});
@@ -17022,7 +17083,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 期間の変更に合わせて各アサインの週も連動スライド（開始移動＝全員スライド／週数延長＝全員の終了延長）
                     sfa_db.reschedule_delivery_assignments(
                         con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"), _sw, _ew)
-                    self._redirect(f"/delivery/{_dvid}")
+                    # 基礎情報は入力の都度クライアントJSから自動保存される（保存ボタン押し忘れ対策・2026-08-29）。
+                    if f.get("ajax"):
+                        self._send(b"", status=204)
+                    else:
+                        self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and path.endswith("/assignment/add")
                       and path.split("/")[2].isdigit()):
                     _dvid = int(path.split("/")[2])
