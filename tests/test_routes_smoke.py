@@ -760,21 +760,18 @@ def test_delivery_save_route_persists_business_type_override(server, db_path):
     con2.close()
 
 
-def test_delivery_save_route_persists_responsible_and_billing_fields(server, db_path):
-    """#121: POST /delivery/{id}/save に責任者/担当者・請求方法/請求期日/請求送付先・
-    経費請求有無/メモを渡すと保存されること。責任者/担当者はこのDeliveryの現在のアサイン
-    リストに実在する値のみ受け付け、存在しない値はNoneへ落ちる。"""
+def test_delivery_save_route_persists_billing_fields(server, db_path):
+    """#121: POST /delivery/{id}/save に請求方法/請求期日/請求送付先・経費請求有無/メモを
+    渡すと保存されること。責任者/担当者は#136でこのルートの対象外になった
+    （下のtest_delivery_save_route_does_not_clear_responsible_owner_set_via_checkbox参照）。"""
     con = sfa_db.connect(db_path)
     acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
     did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
     dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-10-04")
-    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
-                                   to_week="2026-09-14", role="コンサルタント", fte_pct=50)
     con.close()
 
     code, _ = _post(server + f"/delivery/{dvid}/save", {
         "title": "D", "start_week": "2026-09-07", "end_week": "2026-10-04", "status": "進行中",
-        "responsible_owner": "早瀬", "handling_owner": "存在しない人",
         "billing_method": sfa_db.DELIVERY_BILLING_METHODS[0],
         "billing_due_sel": "__other__", "billing_due_other": "毎月10日",
         "billing_recipient": "経理部佐藤さん、PF提出",
@@ -784,13 +781,45 @@ def test_delivery_save_route_persists_responsible_and_billing_fields(server, db_
 
     con2 = sfa_db.connect(db_path)
     row = con2.execute("SELECT * FROM deliveries WHERE id=?", (dvid,)).fetchone()
-    assert row["responsible_owner"] == "早瀬"
-    assert row["handling_owner"] is None  # アサインリストに無い値はNoneに落ちる
     assert row["billing_method"] == sfa_db.DELIVERY_BILLING_METHODS[0]
     assert row["billing_due"] == "毎月10日"  # 「他」選択時は自由入力欄の値
     assert row["billing_recipient"] == "経理部佐藤さん、PF提出"
     assert row["expense_billing"] == "不明(要確認)"
     assert row["expense_billing_note"] == "後で確認"
+    con2.close()
+
+
+def test_delivery_save_route_does_not_clear_responsible_owner_set_via_checkbox(server, db_path):
+    """2026-08-30: ユーザー報告のバグ再現・修正確認。責任者/担当者はアサイン行のチェックボックス
+    経由(/delivery/{id}/field)で設定するが、#dvBaseFormは/delivery/{id}/saveへ責任者/担当者の
+    フィールドをもう送信しない（#136でUIから撤去済み）。このルートが「送信が無い＝空で上書き」と
+    誤って扱うと、基礎情報のどれか一項目を編集して自動保存しただけで責任者/担当者が消えてしまう
+    （実際にユーザー環境で発生）。/saveがこの2フィールドに一切触れないことを保証する。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
+                                   to_week="2026-09-14", role="コンサルタント", fte_pct=50)
+    con.close()
+    # チェックボックス相当の保存（実際のUIと同じ/fieldルート経由）
+    _post(server + f"/delivery/{dvid}/field", {"field": "responsible_owner", "value": "早瀬"},
+         headers=_auth_header())
+    _post(server + f"/delivery/{dvid}/field", {"field": "handling_owner", "value": "早瀬"},
+         headers=_auth_header())
+
+    # 基礎情報のどれか一項目（成果報酬比率）を変更して#dvBaseFormが自動保存されるのを再現。
+    # 実際のフォームにresponsible_owner/handling_ownerは含まれないため、ここでも送らない。
+    code, _ = _post(server + f"/delivery/{dvid}/save", {
+        "title": "D", "start_week": "2026-09-07", "end_week": "2026-10-04", "status": "進行中",
+        "performance_fee": "有", "performance_fee_ratio": "10",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+
+    con2 = sfa_db.connect(db_path)
+    row = con2.execute("SELECT responsible_owner, handling_owner FROM deliveries WHERE id=?", (dvid,)).fetchone()
+    assert row["responsible_owner"] == "早瀬"  # 消えていないこと
+    assert row["handling_owner"] == "早瀬"
     con2.close()
 
 

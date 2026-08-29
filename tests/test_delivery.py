@@ -1144,3 +1144,18 @@ def test_delivery_missing_requirements_flags_performance_fee_ratio_regardless_of
     sfa_db.update_delivery(con, dvid, performance_fee="無", performance_fee_ratio=None)
     dv3 = sfa_db.get_delivery(con, dvid)
     assert "成果報酬比率" not in webapp._delivery_missing_requirements(con, dv3)  # 「無」なら不要
+
+
+def test_deliveries_page_renders_business_type_filter_selects_and_data_attrs(con, acc_id):
+    """#139: 事業種別L1/L2でもフィルタできるよう、専用セレクトと各行のdata属性を出力する。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注",
+                           business_type_l1="コスト削減", business_type_l2="コスト診断(無償)")
+    sfa_db.create_delivery(con, deal_id=d, title="A社支援")
+    html = webapp.deliveries_page(con)
+    assert 'id="dvBizL1F"' in html and 'id="dvBizL2F"' in html
+    assert "全事業種別L1" in html and "全事業種別L2" in html
+    assert '<option value="コスト削減">コスト削減</option>' in html
+    assert '<option value="コスト診断(無償)">コスト診断(無償)</option>' in html
+    assert 'data-bizl1="コスト削減"' in html
+    assert 'data-bizl2="コスト診断(無償)"' in html
+    assert "dvBizL1F" in html and "dvBizL2F" in html  # filterDeliveries()内で参照されていること

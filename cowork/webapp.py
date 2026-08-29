@@ -2097,8 +2097,10 @@ def deliveries_page(con) -> str:
         _warn_badge = (
             f'<span title="未入力の必須項目: {_esc("、".join(_missing))}" '
             'style="margin-left:4px;cursor:help">⚠️</span>') if _missing else ""
+        _biz_l1, _biz_l2 = sfa_db.delivery_business_type_effective(dv)
         rows += f"""
-        <tr class="dv-row" data-search="{_search}" data-status="{_esc(dv.get('status') or '進行中')}" data-conf="{lbl}">
+        <tr class="dv-row" data-search="{_search}" data-status="{_esc(dv.get('status') or '進行中')}" data-conf="{lbl}"
+            data-bizl1="{_esc(_biz_l1 or '')}" data-bizl2="{_esc(_biz_l2 or '')}">
           <td style="width:26px"><input type="checkbox" name="ids" value="{_id}"></td>
           <td class="muted" style="font-size:.8em"><a href="/delivery/{_id}">#{_id}</a></td>
           <td>{_esc(dv.get('account_name') or '—')}</td>
@@ -2125,6 +2127,15 @@ def deliveries_page(con) -> str:
         f'<option value="{d["id"]}">{_esc(d.get("account_name") or "")}：{_esc(d.get("deal_name") or "")}（{_esc(d.get("stage") or "")}）</option>'
         for d in _cands)
     _st_filter = "".join(f'<option value="{_esc(s)}">{_esc(s)}</option>' for s in _statuses)
+    # 事業種別L1/L2フィルタ（ユーザー要望2026-08-30）。値は現在の有効事業種別(delivery_business_type_effective)。
+    _biz_l1_filter = "".join(
+        f'<option value="{_esc(l1)}">{_esc(l1)}</option>' for l1 in sfa_db.get_master_list(con, "business_type_l1"))
+    _biz_l2_seen: list = []
+    for _l2s in sfa_db.get_business_type_tree(con).values():
+        for _l2 in _l2s:
+            if _l2 not in _biz_l2_seen:
+                _biz_l2_seen.append(_l2)
+    _biz_l2_filter = "".join(f'<option value="{_esc(l2)}">{_esc(l2)}</option>' for l2 in _biz_l2_seen)
     # 誤起票の掃除: アサイン未入力（空）のDelivery件数
     _empty_n = con.execute(
         "SELECT COUNT(*) c FROM deliveries WHERE id NOT IN "
@@ -2144,6 +2155,8 @@ def deliveries_page(con) -> str:
         <select id="dvStatusF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全状態</option>{_st_filter}</select>
         <select id="dvConfF" style="font-size:12px" onchange="filterDeliveries()"><option value="">全確度</option>
           {"".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in sfa_db.DELIVERY_CONFIDENCE_LEVELS)}</select>
+        <select id="dvBizL1F" style="font-size:12px" onchange="filterDeliveries()"><option value="">全事業種別L1</option>{_biz_l1_filter}</select>
+        <select id="dvBizL2F" style="font-size:12px" onchange="filterDeliveries()"><option value="">全事業種別L2</option>{_biz_l2_filter}</select>
         <span id="dvCount" class="muted" style="font-size:12px"></span>
         <span style="margin-left:auto;display:inline-flex;gap:6px;flex-wrap:wrap">
           <a class="btn sec" href="/deliveries/payment-schedule.xlsx" style="font-size:12px"
@@ -2195,9 +2208,11 @@ def deliveries_page(con) -> str:
     function filterDeliveries(){{
       var q=(document.getElementById('dvSearch').value||'').toLowerCase();
       var st=document.getElementById('dvStatusF').value, cf=document.getElementById('dvConfF').value;
+      var bl1=document.getElementById('dvBizL1F').value, bl2=document.getElementById('dvBizL2F').value;
       var n=0;
       document.querySelectorAll('#dv_bulk tr.dv-row').forEach(function(row){{
-        var ok=(!q||row.dataset.search.indexOf(q)>=0)&&(!st||row.dataset.status===st)&&(!cf||row.dataset.conf===cf);
+        var ok=(!q||row.dataset.search.indexOf(q)>=0)&&(!st||row.dataset.status===st)&&(!cf||row.dataset.conf===cf)
+          &&(!bl1||row.dataset.bizl1===bl1)&&(!bl2||row.dataset.bizl2===bl2);
         row.style.display=ok?'':'none'; if(ok)n++;
       }});
       var c=document.getElementById('dvCount'); if(c)c.textContent=n+'件';
@@ -17153,14 +17168,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # L2はL1override未選択（自動）ならL1override自体は商談のL1を継承する前提で判定
                     _eff_l1_for_l2 = _biz_l1_ov or _old_dv.get("deal_business_type_l1")
                     _biz_l2_ov = _biz_l2_ov if _biz_l2_ov in sfa_db.business_type_l2_of(con, _eff_l1_for_l2) else None
-                    # 責任者/担当者はこのDeliveryの現在のアサインリストに実在する値のみ受け付ける
-                    # （選択肢自体がアサインリスト由来のため、通常操作では常に一致する）。
-                    _cur_assignees = {a.get("owner") for a in sfa_db.list_delivery_assignments(con, _dvid)
-                                      if (a.get("owner") or "").strip()}
-                    _resp_owner = (f.get("responsible_owner", "") or "").strip()
-                    _resp_owner = _resp_owner if _resp_owner in _cur_assignees else None
-                    _handle_owner = (f.get("handling_owner", "") or "").strip()
-                    _handle_owner = _handle_owner if _handle_owner in _cur_assignees else None
+                    # 責任者/担当者はこのフォーム(dvBaseForm)では扱わない（2026-08-30 #136で撤回）。
+                    # アサイン行のチェックボックス→/delivery/{id}/fieldへ個別保存する専用経路に一本化した。
+                    # このルートで responsible_owner/handling_owner を毎回上書きすると、dvBaseFormの
+                    # 自動保存（#132）が発火するたびに未送信の値(空)で上書きされ、チェックボックスで
+                    # 設定した値が消えてしまう不具合になっていたため、ここでは一切触れない
+                    # （update_deliveryは渡さなかったフィールドを上書きしないため、省略でよい）。
                     # 請求方法（マスタ照合）。
                     _billing_method = (f.get("billing_method", "") or "").strip()
                     _billing_method = (_billing_method
@@ -17198,8 +17211,6 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         cost_vendor=(f.get("cost_vendor", "") or "").strip(),
                         business_type_l1_override=_biz_l1_ov,
                         business_type_l2_override=_biz_l2_ov,
-                        responsible_owner=_resp_owner,
-                        handling_owner=_handle_owner,
                         billing_method=_billing_method,
                         billing_due=_billing_due,
                         billing_recipient=(f.get("billing_recipient", "") or "").strip(),
