@@ -5,6 +5,12 @@ Hisho側 `google_calendar.py` は早瀬個人のOAuthリフレッシュトーク
 実装であり、他メンバーの予定は読めない。本モジュールは別用途（複数メンバー横断の外部会議
 検知）のため、独立したサービスアカウント認証を使う。セットアップ手順は
 docs/calendar-crosscheck/02_Googleカレンダー委任セットアップ手順.md を参照。
+
+2026-08-31追記（#101マイルストン2）: ドメイン全体の委任（Workspace管理者の設定が必要・#64のP2）
+より前に、まず早瀬個人のカレンダーだけ「今日明日のタスク」画面に重ねたいという要望のため、
+`list_events_for_date_shared`（委任を使わず、カレンダー所有者本人がこのサービスアカウントへ
+自分のカレンダーを共有するだけで動く簡易版）を追加した。同じ`GOOGLE_CALENDAR_SA_JSON`の
+サービスアカウントを流用できる（Calendar APIが有効なプロジェクトであれば新規作成不要）。
 """
 from __future__ import annotations
 
@@ -93,12 +99,27 @@ class WorkspaceCalendarClient:
         self.tz = tz
 
     def list_events_for_date(self, user_email: str, target_date: date_cls) -> list[CalendarEvent]:
-        """指定メンバー(user_email)になりすまし、指定日の予定を取得する。"""
+        """指定メンバー(user_email)になりすまし、指定日の予定を取得する。
+        ドメイン全体の委任(with_subject)が必要（#64のP2セットアップ済みが前提）。"""
         start = datetime.combine(target_date, time(0, 0), self.tz)
         end = start + timedelta(days=1)
         creds = self._base_creds.with_subject(user_email)
         service = self._build("calendar", "v3", credentials=creds, cache_discovery=False)
         result = service.events().list(
             calendarId="primary", timeMin=start.isoformat(), timeMax=end.isoformat(),
+            singleEvents=True, orderBy="startTime").execute()
+        return [_parse_event(e, self.tz) for e in result.get("items", [])]
+
+    def list_events_for_date_shared(self, calendar_id: str, target_date: date_cls) -> list[CalendarEvent]:
+        """委任(with_subject)を使わない簡易版（#101マイルストン2、2026-08-31）。
+        カレンダー所有者本人が、このサービスアカウントのメールアドレス（sa_info["client_email"]）
+        へ自分のカレンダーを「予定の詳細をすべて表示」権限で共有するだけで動く——
+        Google Workspace管理者によるドメイン全体の委任（#64のP2）は不要。
+        calendar_idは通常、共有した本人のGoogleアカウントのメールアドレス。"""
+        start = datetime.combine(target_date, time(0, 0), self.tz)
+        end = start + timedelta(days=1)
+        service = self._build("calendar", "v3", credentials=self._base_creds, cache_discovery=False)
+        result = service.events().list(
+            calendarId=calendar_id, timeMin=start.isoformat(), timeMax=end.isoformat(),
             singleEvents=True, orderBy="startTime").execute()
         return [_parse_event(e, self.tz) for e in result.get("items", [])]

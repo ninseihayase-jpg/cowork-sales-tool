@@ -139,6 +139,89 @@ def test_daily_plan_page_links_to_latest_plan_for_today(con):
     assert "早瀬/直近プラン" in html
 
 
+# ── Googleカレンダー重ね表示（#101マイルストン2、2026-08-31） ─────────────────────
+
+def test_dp_gcal_events_by_day_fail_open_when_env_unset(con, monkeypatch):
+    """GOOGLE_CALENDAR_SA_JSON / HAYASE_GOOGLE_CALENDAR_ID が未設定なら、対応担当者(早瀬)
+    でも空dictを返す（fail-open。実害の無い機能停止に留める）。"""
+    monkeypatch.delenv("GOOGLE_CALENDAR_SA_JSON", raising=False)
+    monkeypatch.delenv("HAYASE_GOOGLE_CALENDAR_ID", raising=False)
+    today = webapp._today_jst()
+    assert webapp._dp_gcal_events_by_day("早瀬", [today]) == {}
+
+
+def test_dp_gcal_events_by_day_empty_for_unsupported_assignee(con, monkeypatch):
+    """未対応の担当者（早瀬以外）は、環境変数が設定されていても空dictを返す
+    （Googleカレンダー連携の対象は当面早瀬個人のみ）。"""
+    monkeypatch.setenv("GOOGLE_CALENDAR_SA_JSON", '{"dummy": true}')
+    monkeypatch.setenv("HAYASE_GOOGLE_CALENDAR_ID", "hayase@example.com")
+    today = webapp._today_jst()
+    assert webapp._dp_gcal_events_by_day("中島", [today]) == {}
+
+
+def test_dp_gcal_events_by_day_fail_open_on_api_error(con, monkeypatch):
+    """サービスアカウントJSONが不正・API呼び出し失敗などの例外は握りつぶし、空dictを返す
+    （タスク配置画面自体は壊れない）。"""
+    monkeypatch.setenv("GOOGLE_CALENDAR_SA_JSON", "not-valid-json-or-path")
+    monkeypatch.setenv("HAYASE_GOOGLE_CALENDAR_ID", "hayase@example.com")
+    today = webapp._today_jst()
+    assert webapp._dp_gcal_events_by_day("早瀬", [today]) == {}
+
+
+def test_dp_gcal_blocks_html_renders_position_and_skips_all_day():
+    """予定の開始/終了(06:00起点の経過分)からtop/heightをpxで算出し、終日予定は除外する。
+    グリッド範囲(06:00-21:00)外の時刻は範囲内にクリップする。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from cowork.workspace_calendar import CalendarEvent
+    tz = ZoneInfo("Asia/Tokyo")
+    events = [
+        CalendarEvent(id="1", summary="通常会議", start=datetime(2026, 8, 31, 10, 0, tzinfo=tz),
+                     end=datetime(2026, 8, 31, 11, 0, tzinfo=tz), all_day=False, attendees=[]),
+        CalendarEvent(id="2", summary="終日休暇", start=datetime(2026, 8, 31, 0, 0, tzinfo=tz),
+                     end=datetime(2026, 9, 1, 0, 0, tzinfo=tz), all_day=True, attendees=[]),
+        CalendarEvent(id="3", summary="早朝(範囲外開始)", start=datetime(2026, 8, 31, 5, 0, tzinfo=tz),
+                     end=datetime(2026, 8, 31, 6, 30, tzinfo=tz), all_day=False, attendees=[]),
+    ]
+    html = webapp._dp_gcal_blocks_html(events)
+    assert "通常会議" in html
+    assert "終日休暇" not in html  # 終日予定は除外
+    assert "早朝(範囲外開始)" in html  # クリップして残る（06:00〜06:30分のみ）
+    # 10:00開始＝06:00起点で240分後→top=240/15*22=352.0px、1時間=60分→height=60/15*22=88.0px
+    assert 'top:352.0px;height:88.0px' in html
+
+
+def test_daily_plan_page_renders_gcal_overlay_when_available(con, monkeypatch):
+    """対応担当者(早瀬)でGoogleカレンダーの予定が取得できた場合、当日/翌日の枠に
+    読み取り専用の背景ブロックと案内文が出る。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from cowork.workspace_calendar import CalendarEvent
+    tz = ZoneInfo("Asia/Tokyo")
+    today = webapp._today_jst()
+    ev = CalendarEvent(id="1", summary="社内定例",
+                       start=datetime(today.year, today.month, today.day, 10, 0, tzinfo=tz),
+                       end=datetime(today.year, today.month, today.day, 11, 0, tzinfo=tz),
+                       all_day=False, attendees=[])
+    monkeypatch.setattr(webapp, "_dp_gcal_events_by_day", lambda assignee, dates: {today: [ev]})
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
+    assert '<div class="dp-gcal-block"' in html
+    assert "社内定例" in html
+    assert "縞模様のグレー" in html
+
+
+def test_daily_plan_page_has_no_gcal_overlay_when_unconfigured(con, monkeypatch):
+    """環境変数未設定時は、対応担当者(早瀬)でも通常のタスク配置画面のまま
+    （Googleカレンダー関連の表示が一切出ない）。"""
+    monkeypatch.delenv("GOOGLE_CALENDAR_SA_JSON", raising=False)
+    monkeypatch.delenv("HAYASE_GOOGLE_CALENDAR_ID", raising=False)
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
+    assert '<div class="dp-gcal-block"' not in html  # CSS定義自体は常に出るので要素の有無で判定
+    assert "縞模様のグレー" not in html  # 案内文（CSSコメントには出ない文言）
+
+
 # ── 看板(/tasks)のピック機能 ─────────────────────────────────────────────
 
 def test_tasks_page_cards_carry_pick_checkbox(con):

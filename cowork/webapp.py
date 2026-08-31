@@ -6166,6 +6166,57 @@ def _dp_fmt_time(min_from_start: int) -> str:
     total = _DAILY_PLAN_START_H * 60 + min_from_start
     return f"{total // 60}:{total % 60:02d}"
 
+
+# Googleカレンダー重ね表示（#101マイルストン2、2026-08-31）。まずは早瀬個人のカレンダーのみ、
+# ドメイン全体の委任（#64のP2、Workspace管理者作業が必要）を待たずに導入する簡易版。
+# GOOGLE_CALENDAR_SA_JSON（#64と共用）＋HAYASE_GOOGLE_CALENDAR_ID（早瀬本人がこのサービス
+# アカウントへ自分のカレンダーを共有した上でのカレンダーID＝通常は本人のGmailアドレス）の
+# 両方が設定されていない間は、fail-open（何も表示せず、通常のタスク配置画面のまま）にする
+# （#64と同じ設計方針。docs/calendar-crosscheck/02_Googleカレンダー委任セットアップ手順.md
+# 参照——ただし本機能はドメイン全体の委任は不要で、カレンダーの共有設定だけで動く）。
+_DP_GCAL_OVERLAY_OWNERS = {"早瀬"}  # 対応済みの担当者名（今後増やす場合はここに追記）
+
+
+def _dp_gcal_events_by_day(assignee: str, dates: list) -> dict:
+    """assigneeの担当者名がGoogleカレンダー連携対象なら、日付ごとの予定リストを返す。
+    未設定・未対応の担当者・API呼び出し失敗は、いずれも空dictを返す（fail-open）。"""
+    if assignee not in _DP_GCAL_OVERLAY_OWNERS:
+        return {}
+    sa_json = os.environ.get("GOOGLE_CALENDAR_SA_JSON", "").strip()
+    cal_id = os.environ.get("HAYASE_GOOGLE_CALENDAR_ID", "").strip()
+    if not sa_json or not cal_id:
+        return {}
+    try:
+        from cowork import workspace_calendar as wc
+        from zoneinfo import ZoneInfo
+        sa_info = wc.load_service_account_info(sa_json)
+        client = wc.WorkspaceCalendarClient(sa_info, ZoneInfo("Asia/Tokyo"))
+        return {d: client.list_events_for_date_shared(cal_id, d) for d in dates}
+    except Exception as e:  # noqa: BLE001
+        print(f"[daily-plan] Googleカレンダー取得失敗（fail-open・タスク配置には影響なし）: {e}", flush=True)
+        return {}
+
+
+def _dp_gcal_blocks_html(events: list) -> str:
+    """1日分のGoogleカレンダー予定を、時間グリッドに重ねる読み取り専用の背景ブロックにする。
+    終日予定・グリッド範囲(06:00-21:00)外にはみ出す部分は除外/クリップする。"""
+    html = ""
+    for ev in events:
+        if getattr(ev, "all_day", False):
+            continue
+        start_min = (ev.start.hour * 60 + ev.start.minute) - _DAILY_PLAN_START_H * 60
+        end_min = (ev.end.hour * 60 + ev.end.minute) - _DAILY_PLAN_START_H * 60
+        start_min = max(0, start_min)
+        end_min = min(_DAILY_PLAN_SLOTS * _DAILY_PLAN_SLOT_MIN, end_min)
+        if end_min <= start_min:
+            continue
+        top = start_min * _DAILY_PLAN_SLOT_PX / _DAILY_PLAN_SLOT_MIN
+        height = (end_min - start_min) * _DAILY_PLAN_SLOT_PX / _DAILY_PLAN_SLOT_MIN
+        html += (f'<div class="dp-gcal-block" style="top:{top:.1f}px;height:{height:.1f}px" '
+                 f'title="{_esc(ev.summary)}（Googleカレンダー・読み取り専用）">'
+                 f'<span class="dp-gcal-t">{_esc(ev.summary)}</span></div>')
+    return html
+
 _DAILY_PLAN_CSS = f"""<style>
 .dp-wrap{{width:100%}}
 .dp-cal{{display:grid;grid-template-columns:56px 1fr 1fr;width:100%;column-gap:8px}}
@@ -6187,7 +6238,7 @@ _DAILY_PLAN_CSS = f"""<style>
 /* ブロックは15分(1コマ)でも1行だけは必ず読めるように、×/リサイズハンドルを絶対配置の
    オーバーレイにして、本文行の高さを消費しないようにする（ユーザー要望2026-08-27：
    文字が小さい・15分だと潰れて読めない・設定時間を表記してほしい）。 */
-.dp-block{{position:absolute;border-radius:4px;font-size:12px;color:#fff;
+.dp-block{{position:absolute;border-radius:4px;font-size:12px;color:#fff;z-index:2;
   padding:1px 20px 1px 4px;box-sizing:border-box;overflow:hidden;cursor:grab;
   line-height:1.35;display:flex;align-items:center}}
 .dp-light{{background:#38bdf8}}
@@ -6208,6 +6259,13 @@ _DAILY_PLAN_CSS = f"""<style>
 .dp-snap-preview{{position:absolute;left:0;right:0;border:2px dashed #4f46e5;
   background:rgba(79,70,229,.12);border-radius:4px;pointer-events:none;z-index:6;display:none}}
 .dp-block.dp-resizing{{outline:2px dashed #4f46e5;outline-offset:1px}}
+/* Googleカレンダーの予定（読み取り専用の背景ブロック。#101マイルストン2）。
+   タスクブロック(.dp-block)より背面・クリック不可にして、既存の配置操作を邪魔しない。 */
+.dp-gcal-block{{position:absolute;left:1px;right:1px;z-index:1;pointer-events:none;
+  border-radius:3px;font-size:10px;color:#475569;overflow:hidden;padding:1px 4px;box-sizing:border-box;
+  background:repeating-linear-gradient(45deg,#e2e8f0,#e2e8f0 6px,#eef2f7 6px,#eef2f7 12px);
+  border:1px solid #cbd5e1}}
+.dp-gcal-t{{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}}
 /* カレンダー上のブロックをクリックするとタスク詳細をフローティング表示（ユーザー要望2026-08-27）。
    エリア外(背景)クリックで閉じる。既存の#notesPop/#linkPopと同じ様式。 */
 #dpDetailBackdrop{{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}}
@@ -6267,6 +6325,14 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
     hour_labels = "".join(
         f'<span style="top:{(h - _DAILY_PLAN_START_H) * 4 * _DAILY_PLAN_SLOT_PX}px">{h}:00</span>'
         for h in range(_DAILY_PLAN_START_H, _DAILY_PLAN_END_H + 1))
+    # Googleカレンダーの重ね表示（#101マイルストン2）。未設定/未対応の担当者は空dictで
+    # 何も表示されない（fail-open）。
+    _gcal_by_day = _dp_gcal_events_by_day(assignee, [today, tomorrow])
+    _gcal_html0 = _dp_gcal_blocks_html(_gcal_by_day.get(today, []))
+    _gcal_html1 = _dp_gcal_blocks_html(_gcal_by_day.get(tomorrow, []))
+    _gcal_note = ('<p class="muted" style="font-size:11px;margin:0 0 4px">🗓 縞模様のグレー＝'
+                  'Googleカレンダーの予定（読み取り専用。重ならないよう配置の参考にしてください）</p>'
+                  if _gcal_by_day else "")
 
     return f"""
     <div class="card">
@@ -6296,6 +6362,7 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         <h3 style="font-size:14px;margin:10px 0 4px">② カレンダーへドラッグ&ドロップで配置</h3>
         <p class="muted" style="font-size:12px">下のチップをカレンダーへドラッグ。配置後は下端をドラッグで長さ変更、
           再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
+        {_gcal_note}
         <div class="dp-sticky-top">
           <div style="display:flex;gap:8px;margin-bottom:8px">
             <div id="dpTrayLight" class="dp-col" style="flex:1;min-height:40px"></div>
@@ -6310,8 +6377,8 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         <div class="dp-wrap">
           <div class="dp-cal">
             <div class="dp-gutter">{hour_labels}</div>
-            <div id="dpDay0" class="dp-day"></div>
-            <div id="dpDay1" class="dp-day"></div>
+            <div id="dpDay0" class="dp-day">{_gcal_html0}</div>
+            <div id="dpDay1" class="dp-day">{_gcal_html1}</div>
           </div>
         </div>
         <button class="btn" type="button" onclick="dpConfirm()" style="margin-top:10px">✅ 確定して保存</button>
