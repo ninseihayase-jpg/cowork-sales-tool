@@ -30,6 +30,12 @@ CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 
 def main() -> None:
+    # 標準出力がターミナルでなくパイプ/ファイルの場合、既定ではブロックバッファされ、
+    # 認可URLを表示するprint()（google_auth_oauthlib内部のもの含む）が、後続の
+    # run_local_server()のブロッキング待機（ユーザーがブラウザで認可するまで戻らない）に
+    # 埋もれて画面に出てこない事故が起きた（ユーザー報告2026-08-31）。ここで明示的に
+    # 行バッファへ切り替え、print()のたびに即座にフラッシュされるようにする。
+    sys.stdout.reconfigure(line_buffering=True)
     if len(sys.argv) != 2:
         print(f"使い方: python {sys.argv[0]} path/to/client_secret_xxx.json", file=sys.stderr)
         sys.exit(1)
