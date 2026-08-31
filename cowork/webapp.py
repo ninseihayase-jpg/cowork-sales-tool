@@ -6187,11 +6187,13 @@ def _dp_fmt_time(min_from_start: int) -> str:
 
 # Googleカレンダー重ね表示（#101マイルストン2、2026-08-31）。まずは早瀬個人のカレンダーのみ、
 # ドメイン全体の委任（#64のP2、Workspace管理者作業が必要）を待たずに導入する簡易版。
-# GOOGLE_CALENDAR_SA_JSON（#64と共用）＋HAYASE_GOOGLE_CALENDAR_ID（早瀬本人がこのサービス
-# アカウントへ自分のカレンダーを共有した上でのカレンダーID＝通常は本人のGmailアドレス）の
-# 両方が設定されていない間は、fail-open（何も表示せず、通常のタスク配置画面のまま）にする
-# （#64と同じ設計方針。docs/calendar-crosscheck/02_Googleカレンダー委任セットアップ手順.md
-# 参照——ただし本機能はドメイン全体の委任は不要で、カレンダーの共有設定だけで動く）。
+# 当初はサービスアカウントへのカレンダー共有方式(list_events_for_date_shared)で実装したが、
+# Workspace管理コンソールの「外部共有」制限により「予定の表示（時間枠のみ）」しか許可されず
+# 断念（ユーザー報告2026-08-31）。早瀬本人のOAuthリフレッシュトークン方式（Hisho側
+# `google_calendar.py`と同じ仕組み）に切り替えた——本人が自分のAPIを叩くだけなので、
+# カレンダーの外部共有設定に一切左右されない。HAYASE_GOOGLE_CLIENT_ID/CLIENT_SECRET/
+# REFRESH_TOKEN のいずれかが未設定、またはAPI呼び出し失敗は空dictを返す（fail-open。
+# タスク配置画面自体には影響しない）。
 _DP_GCAL_OVERLAY_OWNERS = {"早瀬"}  # 対応済みの担当者名（今後増やす場合はここに追記）
 
 
@@ -6200,16 +6202,16 @@ def _dp_gcal_events_by_day(assignee: str, dates: list) -> dict:
     未設定・未対応の担当者・API呼び出し失敗は、いずれも空dictを返す（fail-open）。"""
     if assignee not in _DP_GCAL_OVERLAY_OWNERS:
         return {}
-    sa_json = os.environ.get("GOOGLE_CALENDAR_SA_JSON", "").strip()
-    cal_id = os.environ.get("HAYASE_GOOGLE_CALENDAR_ID", "").strip()
-    if not sa_json or not cal_id:
+    client_id = os.environ.get("HAYASE_GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("HAYASE_GOOGLE_CLIENT_SECRET", "").strip()
+    refresh_token = os.environ.get("HAYASE_GOOGLE_REFRESH_TOKEN", "").strip()
+    if not (client_id and client_secret and refresh_token):
         return {}
     try:
         from cowork import workspace_calendar as wc
         from zoneinfo import ZoneInfo
-        sa_info = wc.load_service_account_info(sa_json)
-        client = wc.WorkspaceCalendarClient(sa_info, ZoneInfo("Asia/Tokyo"))
-        return {d: client.list_events_for_date_shared(cal_id, d) for d in dates}
+        client = wc.PersonalOAuthCalendarClient(client_id, client_secret, refresh_token, ZoneInfo("Asia/Tokyo"))
+        return {d: client.list_events_for_date(d) for d in dates}
     except Exception as e:  # noqa: BLE001
         print(f"[daily-plan] Googleカレンダー取得失敗（fail-open・タスク配置には影響なし）: {e}", flush=True)
         return {}

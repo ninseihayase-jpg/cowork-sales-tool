@@ -141,11 +141,21 @@ def test_daily_plan_page_links_to_latest_plan_for_today(con):
 
 # ── Googleカレンダー重ね表示（#101マイルストン2、2026-08-31） ─────────────────────
 
+def _clear_gcal_env(monkeypatch):
+    for k in ("HAYASE_GOOGLE_CLIENT_ID", "HAYASE_GOOGLE_CLIENT_SECRET", "HAYASE_GOOGLE_REFRESH_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def _set_gcal_env(monkeypatch):
+    monkeypatch.setenv("HAYASE_GOOGLE_CLIENT_ID", "dummy-client-id")
+    monkeypatch.setenv("HAYASE_GOOGLE_CLIENT_SECRET", "dummy-client-secret")
+    monkeypatch.setenv("HAYASE_GOOGLE_REFRESH_TOKEN", "dummy-refresh-token")
+
+
 def test_dp_gcal_events_by_day_fail_open_when_env_unset(con, monkeypatch):
-    """GOOGLE_CALENDAR_SA_JSON / HAYASE_GOOGLE_CALENDAR_ID が未設定なら、対応担当者(早瀬)
-    でも空dictを返す（fail-open。実害の無い機能停止に留める）。"""
-    monkeypatch.delenv("GOOGLE_CALENDAR_SA_JSON", raising=False)
-    monkeypatch.delenv("HAYASE_GOOGLE_CALENDAR_ID", raising=False)
+    """HAYASE_GOOGLE_CLIENT_ID/CLIENT_SECRET/REFRESH_TOKEN のいずれかが未設定なら、
+    対応担当者(早瀬)でも空dictを返す（fail-open。実害の無い機能停止に留める）。"""
+    _clear_gcal_env(monkeypatch)
     today = webapp._today_jst()
     assert webapp._dp_gcal_events_by_day("早瀬", [today]) == {}
 
@@ -153,17 +163,23 @@ def test_dp_gcal_events_by_day_fail_open_when_env_unset(con, monkeypatch):
 def test_dp_gcal_events_by_day_empty_for_unsupported_assignee(con, monkeypatch):
     """未対応の担当者（早瀬以外）は、環境変数が設定されていても空dictを返す
     （Googleカレンダー連携の対象は当面早瀬個人のみ）。"""
-    monkeypatch.setenv("GOOGLE_CALENDAR_SA_JSON", '{"dummy": true}')
-    monkeypatch.setenv("HAYASE_GOOGLE_CALENDAR_ID", "hayase@example.com")
+    _set_gcal_env(monkeypatch)
     today = webapp._today_jst()
     assert webapp._dp_gcal_events_by_day("中島", [today]) == {}
 
 
 def test_dp_gcal_events_by_day_fail_open_on_api_error(con, monkeypatch):
-    """サービスアカウントJSONが不正・API呼び出し失敗などの例外は握りつぶし、空dictを返す
-    （タスク配置画面自体は壊れない）。"""
-    monkeypatch.setenv("GOOGLE_CALENDAR_SA_JSON", "not-valid-json-or-path")
-    monkeypatch.setenv("HAYASE_GOOGLE_CALENDAR_ID", "hayase@example.com")
+    """OAuth認証・API呼び出しの失敗などの例外は握りつぶし、空dictを返す
+    （タスク配置画面自体は壊れない）。実ネットワーク呼び出しを避けるため、
+    PersonalOAuthCalendarClient自体を例外を投げるダミーに差し替えてテストする。"""
+    from cowork import workspace_calendar as wc
+    _set_gcal_env(monkeypatch)
+
+    class _Boom:
+        def __init__(self, *a, **kw):
+            raise RuntimeError("認証失敗（テスト用）")
+
+    monkeypatch.setattr(wc, "PersonalOAuthCalendarClient", _Boom)
     today = webapp._today_jst()
     assert webapp._dp_gcal_events_by_day("早瀬", [today]) == {}
 
@@ -214,8 +230,7 @@ def test_daily_plan_page_renders_gcal_overlay_when_available(con, monkeypatch):
 def test_daily_plan_page_has_no_gcal_overlay_when_unconfigured(con, monkeypatch):
     """環境変数未設定時は、対応担当者(早瀬)でも通常のタスク配置画面のまま
     （Googleカレンダー関連の表示が一切出ない）。"""
-    monkeypatch.delenv("GOOGLE_CALENDAR_SA_JSON", raising=False)
-    monkeypatch.delenv("HAYASE_GOOGLE_CALENDAR_ID", raising=False)
+    _clear_gcal_env(monkeypatch)
     tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
     html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
     assert '<div class="dp-gcal-block"' not in html  # CSS定義自体は常に出るので要素の有無で判定

@@ -9,8 +9,10 @@ docs/calendar-crosscheck/02_Googleカレンダー委任セットアップ手順.
 2026-08-31追記（#101マイルストン2）: ドメイン全体の委任（Workspace管理者の設定が必要・#64のP2）
 より前に、まず早瀬個人のカレンダーだけ「今日明日のタスク」画面に重ねたいという要望のため、
 `list_events_for_date_shared`（委任を使わず、カレンダー所有者本人がこのサービスアカウントへ
-自分のカレンダーを共有するだけで動く簡易版）を追加した。同じ`GOOGLE_CALENDAR_SA_JSON`の
-サービスアカウントを流用できる（Calendar APIが有効なプロジェクトであれば新規作成不要）。
+自分のカレンダーを共有するだけで動く簡易版）を追加したが、Google Workspace管理コンソールの
+外部共有ポリシーにより「予定の表示（時間枠のみ）」までしか共有できず断念（ユーザー報告）。
+代わりに`PersonalOAuthCalendarClient`（Hisho側`google_calendar.py`と同じ、早瀬本人の
+OAuthリフレッシュトークン方式）を追加し、こちらに切り替えた——外部共有設定に一切左右されない。
 """
 from __future__ import annotations
 
@@ -112,14 +114,49 @@ class WorkspaceCalendarClient:
 
     def list_events_for_date_shared(self, calendar_id: str, target_date: date_cls) -> list[CalendarEvent]:
         """委任(with_subject)を使わない簡易版（#101マイルストン2、2026-08-31）。
-        カレンダー所有者本人が、このサービスアカウントのメールアドレス（sa_info["client_email"]）
-        へ自分のカレンダーを「予定の詳細をすべて表示」権限で共有するだけで動く——
-        Google Workspace管理者によるドメイン全体の委任（#64のP2）は不要。
-        calendar_idは通常、共有した本人のGoogleアカウントのメールアドレス。"""
+        ※2026-08-31時点で実運用は断念: Google Workspace管理コンソールの「カレンダーの外部共有
+        オプション」がドメイン内で「予定の表示（時間枠のみ、詳細は非表示）」までしか許可されておらず、
+        サービスアカウント（ドメイン外のメールアドレス扱い）へ「予定の詳細の表示」以上の権限を
+        共有できなかった（ユーザー報告）。このメソッド自体は、外部共有ポリシーを緩和した場合に
+        備えて残す。早瀬個人のカレンダー重ね表示は`PersonalOAuthCalendarClient`（本人のOAuth
+        リフレッシュトークン方式。外部共有設定に一切左右されない）へ切り替え済み。
+        （想定していた動作: カレンダー所有者本人がサービスアカウントのメールアドレス
+        [sa_info["client_email"]]へ自分のカレンダーを「予定の詳細をすべて表示」権限で共有し、
+        calendar_idにその本人のGoogleアカウントのメールアドレスを渡す、というものだった。）"""
         start = datetime.combine(target_date, time(0, 0), self.tz)
         end = start + timedelta(days=1)
         service = self._build("calendar", "v3", credentials=self._base_creds, cache_discovery=False)
         result = service.events().list(
+            calendarId=calendar_id, timeMin=start.isoformat(), timeMax=end.isoformat(),
+            singleEvents=True, orderBy="startTime").execute()
+        return [_parse_event(e, self.tz) for e in result.get("items", [])]
+
+
+class PersonalOAuthCalendarClient:
+    """個人のGoogleアカウントでOAuth認可した状態で、本人自身のカレンダーを読む薄いクライアント
+    （#101マイルストン2、2026-08-31）。Hisho側`google_calendar.py`のGoogleCalendarクラスと
+    同じOAuthリフレッシュトークン方式——本人が自分のAPIを叩くだけなので、ドメイン全体の委任
+    （#64のP2）もカレンダーの外部共有設定も一切不要（Workspace管理コンソールの外部共有制限に
+    左右されない）。認可はGCPで「OAuthクライアントID」（種類=デスクトップアプリ、
+    OAuth同意画面のユーザータイプ=内部）を作成し、スコープ`calendar.readonly`で本人が
+    初回だけブラウザで認可 → 返るリフレッシュトークンを保存、という手順（サービスアカウントの
+    鍵JSONは使わない）。"""
+
+    def __init__(self, client_id: str, client_secret: str, refresh_token: str, tz: ZoneInfo):
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+        self._creds = Credentials(
+            token=None, refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id, client_secret=client_secret, scopes=CALENDAR_SCOPES)
+        self.tz = tz
+        self._service = build("calendar", "v3", credentials=self._creds, cache_discovery=False)
+
+    def list_events_for_date(self, target_date: date_cls, calendar_id: str = "primary") -> list[CalendarEvent]:
+        """本人の指定カレンダー（既定=primary）の、指定日の予定を取得する。"""
+        start = datetime.combine(target_date, time(0, 0), self.tz)
+        end = start + timedelta(days=1)
+        result = self._service.events().list(
             calendarId=calendar_id, timeMin=start.isoformat(), timeMax=end.isoformat(),
             singleEvents=True, orderBy="startTime").execute()
         return [_parse_event(e, self.tz) for e in result.get("items", [])]
