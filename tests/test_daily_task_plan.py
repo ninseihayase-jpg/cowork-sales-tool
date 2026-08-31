@@ -139,6 +139,41 @@ def test_daily_plan_page_renamed_and_shows_five_days(con):
     assert not labels[2].endswith("明日")  # 3日目以降は「明日」表記を引きずらない
 
 
+def test_daily_plan_page_tray_grouped_by_linked_entity(con):
+    """2026-08-31: Step②のチップ置き場は、従来の軽い/重いの2列並びから、紐づけ案件別
+    （Delivery/商談/論点/紐づけなし）の縦並びに変更（ユーザー要望）。"""
+    acc = sfa_db.upsert_account(con, name="テスト商事")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件A", status="open")
+    iid = sfa_db.upsert_deal_issue(con, deal_id=did, issue="論点A")
+    dv = sfa_db.create_delivery(con, deal_id=did, title="DeliveryA")
+    t_deal = sfa_db.upsert_task(con, title="商談タスク", assignee="早瀬", status="未着手",
+                                link_type="deal", link_id=did)
+    t_issue = sfa_db.upsert_task(con, title="論点タスク", assignee="早瀬", status="未着手",
+                                 link_type="issue", link_id=iid)
+    t_delivery = sfa_db.upsert_task(con, title="デリバリタスク", assignee="早瀬", status="未着手",
+                                    link_type="delivery", link_id=dv)
+    t_none = sfa_db.upsert_task(con, title="紐づけなしタスク", assignee="早瀬", status="未着手")
+    html = webapp.daily_plan_page(con, assignee="早瀬",
+                                  picked=[t_deal, t_issue, t_delivery, t_none])
+    # 旧UI(軽い/重いの2列トレイ)は消え、紐づけ別の4段トレイに置き換わっている
+    assert 'id="dpTrayLight"' not in html and 'id="dpTrayHeavy"' not in html
+    assert 'id="dpTrayDelivery"' in html and 'id="dpTrayDeal"' in html
+    assert 'id="dpTrayIssue"' in html and 'id="dpTrayNone"' in html
+    assert "🚚 Delivery" in html and "🤝 商談" in html and "📌 論点" in html and "紐づけなし" in html
+    assert "function dpLinkGroupEl" in html
+    assert "function dpRefreshLinkGroupVisibility" in html
+    # 表示エリアの高さ維持のため、コンテナ自体がmax-height+overflow-yで固定されている
+    assert 'id="dpTrayByLink"' in html
+    tray_style = html.split('id="dpTrayByLink"', 1)[1].split(">", 1)[0]
+    assert "max-height" in tray_style and "overflow-y:auto" in tray_style
+    # 各タスクのlink_type/link_labelがJSへ埋め込まれている
+    data = json.loads(html.split("window.DP_TASKS_BY_ID = ", 1)[1].split(";\n", 1)[0])
+    assert data[str(t_deal)]["link_type"] == "deal" and "案件A" in data[str(t_deal)]["link_label"]
+    assert data[str(t_issue)]["link_type"] == "issue" and "論点A" in data[str(t_issue)]["link_label"]
+    assert data[str(t_delivery)]["link_type"] == "delivery" and "DeliveryA" in data[str(t_delivery)]["link_label"]
+    assert data[str(t_none)]["link_type"] == ""
+
+
 def test_daily_plan_page_ignores_picked_without_assignee(con):
     tid = sfa_db.upsert_task(con, title="X", assignee="早瀬")
     html = webapp.daily_plan_page(con, picked=[tid])
@@ -369,7 +404,7 @@ def test_daily_plan_calendar_day_header_is_sticky(con):
     sticky_start = html.index('class="dp-sticky-top"')
     sticky_end = html.index("</div>\n        <div class=\"dp-wrap\">")
     sticky_block = html[sticky_start:sticky_end]
-    assert "dpTrayLight" in sticky_block
+    assert "dpTrayByLink" in sticky_block
     assert "dp-daylabel-h" in sticky_block
 
 

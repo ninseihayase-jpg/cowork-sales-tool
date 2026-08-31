@@ -6286,6 +6286,11 @@ _DAILY_PLAN_CSS = f"""<style>
 .dp-chip[data-bucket="軽い"]{{background:#38bdf8}}
 .dp-chip[data-bucket="重い"]{{background:#6366f1}}
 .dp-col{{min-height:60px;border:1px dashed #cbd5e1;border-radius:6px;padding:6px;flex:1}}
+/* Step②のチップ置き場（紐づけ案件別・縦並び。ユーザー要望2026-08-31）。空の段はJSで非表示。 */
+.dp-linkgrp{{margin-bottom:4px}}
+.dp-linkgrp:last-child{{margin-bottom:0}}
+.dp-linkgrp-h{{font-size:10px;color:#64748b;font-weight:600;margin-bottom:2px}}
+.dp-linkgrp-body{{display:flex;flex-wrap:wrap;gap:4px;min-height:4px}}
 .dp-pick-row{{display:block;padding:4px 2px;font-size:13px;cursor:pointer}}
 .dp-pick-row:hover{{background:#f8fafc}}
 /* ドラッグ配置・長さ変更のスナップ可視化（ユーザー要望2026-08-27: 15分線に近づくと枠が
@@ -6352,7 +6357,9 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
     tasks_by_id = {
         str(t["id"]): {"id": t["id"], "title": t.get("title") or "(無題)",
                        "due_date": t.get("due_date") or "", "effort_level": t.get("effort_level") or "",
-                       "effort_hours": t.get("effort_hours")}
+                       "effort_hours": t.get("effort_hours"),
+                       "link_type": t.get("link_type") or "",
+                       "link_label": sfa_db.task_link_label(con, t.get("link_type"), t.get("link_id")) or ""}
         for t in tasks
     }
     latest = sfa_db.get_latest_daily_task_plan(con, assignee, base_date=today.isoformat())
@@ -6403,9 +6410,16 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
           再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
         {_gcal_note}
         <div class="dp-sticky-top">
-          <div style="display:flex;gap:8px;margin-bottom:8px">
-            <div id="dpTrayLight" class="dp-col" style="flex:1;min-height:40px"></div>
-            <div id="dpTrayHeavy" class="dp-col" style="flex:1;min-height:40px"></div>
+          <!-- チップの置き場は紐づけ案件別（Delivery/商談/論点/紐づけなし）に縦3〜4段で表示
+               （ユーザー要望2026-08-31: 従来の軽い/重いの2列並びから変更）。表示エリアの
+               高さは以前と同程度に保つため、コンテナ自体をmax-height+overflow-yで固定し、
+               中身が多い時だけ内部スクロールにする。空の段はJS側で非表示にする。 -->
+          <div id="dpTrayByLink" style="max-height:190px;overflow-y:auto;border:1px dashed #cbd5e1;
+               border-radius:6px;padding:6px;margin-bottom:8px">
+            <div class="dp-linkgrp" data-grp="delivery"><div class="dp-linkgrp-h">🚚 Delivery</div><div id="dpTrayDelivery" class="dp-linkgrp-body"></div></div>
+            <div class="dp-linkgrp" data-grp="deal"><div class="dp-linkgrp-h">🤝 商談</div><div id="dpTrayDeal" class="dp-linkgrp-body"></div></div>
+            <div class="dp-linkgrp" data-grp="issue"><div class="dp-linkgrp-h">📌 論点</div><div id="dpTrayIssue" class="dp-linkgrp-body"></div></div>
+            <div class="dp-linkgrp" data-grp="none"><div class="dp-linkgrp-h">紐づけなし</div><div id="dpTrayNone" class="dp-linkgrp-body"></div></div>
           </div>
           <div class="dp-cal-header">
             <div></div>
@@ -6502,6 +6516,22 @@ _DAILY_PLAN_JS = f"""<script>
     }};
     return el;
   }}
+  // Step②のチップ置き場は紐づけ案件別（Delivery/商談/論点/紐づけなし）。タスクの
+  // link_type(window.DP_TASKS_BY_ID)から表示先のグループ要素を決める（ユーザー要望2026-08-31）。
+  function dpLinkGroupId(taskId){{
+    var t = (window.DP_TASKS_BY_ID||{{}})[taskId] || {{}};
+    var lt = t.link_type;
+    return lt === 'delivery' ? 'dpTrayDelivery' : lt === 'deal' ? 'dpTrayDeal'
+         : lt === 'issue' ? 'dpTrayIssue' : 'dpTrayNone';
+  }}
+  function dpLinkGroupEl(taskId){{ return document.getElementById(dpLinkGroupId(taskId)); }}
+  // 中身が無い段は表示エリアの高さを節約するため隠す（同上要望: 表示エリアの高さ維持）。
+  function dpRefreshLinkGroupVisibility(){{
+    document.querySelectorAll('#dpTrayByLink .dp-linkgrp').forEach(function(g){{
+      var body = g.querySelector('.dp-linkgrp-body');
+      g.style.display = (body && body.children.length) ? '' : 'none';
+    }});
+  }}
   // #103と揃える: 設定工数(h)があれば分単位に換算し、その仕分け(軽い/重い)の既定時間より
   // 短い場合だけ採用する（長い場合は既定時間のまま。ユーザー要望2026-08-27）。
   function effectiveDuration(bucket, effortHoursStr){{
@@ -6525,14 +6555,16 @@ _DAILY_PLAN_JS = f"""<script>
   }});
 
   window.dpToStep4 = function(){{
-    var trayLight = document.getElementById('dpTrayLight'), trayHeavy = document.getElementById('dpTrayHeavy');
-    trayLight.innerHTML = ''; trayHeavy.innerHTML = '';
+    document.querySelectorAll('#dpTrayByLink .dp-linkgrp-body').forEach(function(b){{ b.innerHTML = ''; }});
     document.querySelectorAll('#dpLight .dp-chip').forEach(function(c){{
-      trayLight.appendChild(dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title,
-        effort_hours:c.dataset.effortHours}}, '軽い')); }});
+      var chip = dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title,
+        effort_hours:c.dataset.effortHours}}, '軽い');
+      dpLinkGroupEl(c.dataset.taskId).appendChild(chip); }});
     document.querySelectorAll('#dpHeavy .dp-chip').forEach(function(c){{
-      trayHeavy.appendChild(dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title,
-        effort_hours:c.dataset.effortHours}}, '重い')); }});
+      var chip = dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title,
+        effort_hours:c.dataset.effortHours}}, '重い');
+      dpLinkGroupEl(c.dataset.taskId).appendChild(chip); }});
+    dpRefreshLinkGroupVisibility();
     document.getElementById('dpStep3').style.display = 'none';
     document.getElementById('dpStep4').style.display = '';
   }};
@@ -6620,8 +6652,9 @@ _DAILY_PLAN_JS = f"""<script>
     var el = document.querySelector('.dp-block[data-uid="' + uid + '"]');
     if (el) el.remove();
     relayoutDay(p.dayOffset);
-    var tray = document.getElementById(p.bucket === '軽い' ? 'dpTrayLight' : 'dpTrayHeavy');
-    tray.appendChild(dpMakeChip({{id:p.taskId, title:p.title, effort_hours:p.effortHours}}, p.bucket));
+    dpLinkGroupEl(p.taskId).appendChild(
+      dpMakeChip({{id:p.taskId, title:p.title, effort_hours:p.effortHours}}, p.bucket));
+    dpRefreshLinkGroupVisibility();
   }}
 
   function wireResize(el, uid){{
