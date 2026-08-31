@@ -15,8 +15,10 @@ RenderのHAYASE_GOOGLE_REFRESH_TOKENに設定する（本体アプリはこの�
   pip install google-auth-oauthlib   # このスクリプト専用。本体アプリには不要
   python scripts/gcal_oauth_authorize.py path/to/client_secret_xxx.json
 
-ブラウザが開き、早瀬個人のGoogleアカウントでログイン・同意すると、ターミナルに
-CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN が表示される。この3つをRenderの
+このスクリプトは自動でブラウザを開こうとしない（WSL環境ではブラウザが見つからず
+クラッシュするため、open_browser=Falseで固定している）。ターミナルに表示されるURLを
+手動でコピーしてブラウザに貼り付け、早瀬個人のGoogleアカウントでログイン・同意すると、
+ターミナルにCLIENT_ID / CLIENT_SECRET / REFRESH_TOKENが表示される。この3つをRenderの
 sfa-crm（Webサービス）の環境変数 HAYASE_GOOGLE_CLIENT_ID / HAYASE_GOOGLE_CLIENT_SECRET /
 HAYASE_GOOGLE_REFRESH_TOKEN にそれぞれ設定する。
 """
@@ -36,7 +38,9 @@ def main() -> None:
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     flow = InstalledAppFlow.from_client_secrets_file(client_secrets_path, scopes=CALENDAR_SCOPES)
-    creds = flow.run_local_server(port=0)
+    # open_browser=False: WSL等ブラウザが見つからない環境ではwebbrowser.open()が例外を投げて
+    # スクリプトごと落ちるため、常に手動コピー方式にする（表示されたURLを自分でブラウザに貼る）。
+    creds = flow.run_local_server(port=0, open_browser=False)
 
     print("\n認可に成功しました。以下をRenderの環境変数に設定してください。\n")
     print(f"HAYASE_GOOGLE_CLIENT_ID={creds.client_id}")
