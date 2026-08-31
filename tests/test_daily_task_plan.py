@@ -117,9 +117,11 @@ def test_daily_plan_page_with_picked_ids_embeds_only_those_tasks(con):
     data = json.loads(html.split("window.DP_TASKS_BY_ID = ", 1)[1].split(";\n", 1)[0])
     assert str(picked_id) in data
     assert str(other_id) not in data
-    # 別画面の一覧(Step1/2)は無く、いきなり仕分け(Step3)から始まる
+    # 別画面の一覧や仕分けステップは無く、いきなりカレンダー配置画面から始まる
+    # （2026-09-01 #145で「①軽い/重いに仕分ける」ステップ自体を廃止）。
     assert "id=\"dpStep2\"" not in html
-    assert 'id="dpStep3">' in html  # display:noneが付いていない=最初から表示
+    assert "id=\"dpStep3\"" not in html and "id=\"dpStep4\"" not in html
+    assert 'id="dpTrayByLink"' in html
 
 
 def test_daily_plan_page_renamed_and_shows_five_days(con):
@@ -140,8 +142,9 @@ def test_daily_plan_page_renamed_and_shows_five_days(con):
 
 
 def test_daily_plan_page_tray_grouped_by_linked_entity(con):
-    """2026-08-31: Step②のチップ置き場は、従来の軽い/重いの2列並びから、紐づけ案件別
-    （Delivery/商談/論点/紐づけなし）の縦並びに変更（ユーザー要望）。"""
+    """2026-09-01 #145: チップ置き場は、紐づけ案件別（Delivery/商談/論点/紐づけなし）の
+    縦4段、各段の中に案件（entity）ごとのハコ、ハコの中にタスクチップという構造。
+    従来の「①軽い/重いに仕分ける」ステップは廃止し、いきなりこの構造で表示する。"""
     acc = sfa_db.upsert_account(con, name="テスト商事")
     did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件A", status="open")
     iid = sfa_db.upsert_deal_issue(con, deal_id=did, issue="論点A")
@@ -155,23 +158,36 @@ def test_daily_plan_page_tray_grouped_by_linked_entity(con):
     t_none = sfa_db.upsert_task(con, title="紐づけなしタスク", assignee="早瀬", status="未着手")
     html = webapp.daily_plan_page(con, assignee="早瀬",
                                   picked=[t_deal, t_issue, t_delivery, t_none])
-    # 旧UI(軽い/重いの2列トレイ)は消え、紐づけ別の4段トレイに置き換わっている
-    assert 'id="dpTrayLight"' not in html and 'id="dpTrayHeavy"' not in html
-    assert 'id="dpTrayDelivery"' in html and 'id="dpTrayDeal"' in html
-    assert 'id="dpTrayIssue"' in html and 'id="dpTrayNone"' in html
+    # 「①軽い/重いに仕分ける」ステップ自体が無い
+    assert 'id="dpLight"' not in html and 'id="dpHeavy"' not in html
+    assert "dpToStep4" not in html
+    # 案件ごとのハコ（entity単位）が、紐づけ先ごとのIDで存在する
+    assert f'id="dpBox-deal-{did}"' in html
+    assert f'id="dpBox-issue-{iid}"' in html
+    assert f'id="dpBox-delivery-{dv}"' in html
+    assert 'id="dpBox-none"' in html
     assert "🚚 Delivery" in html and "🤝 商談" in html and "📌 論点" in html and "紐づけなし" in html
+    # ハコの見出しは具体的な案件名（"論点A（テスト商事：案件A）"等）
+    assert "論点A" in html and "DeliveryA" in html
     assert "function dpLinkGroupEl" in html
     assert "function dpRefreshLinkGroupVisibility" in html
+    assert "function dpWireChip" in html
+    # 各タスクのチップが正しいハコの中にある（data-task-idで判定）
+    box_deal = html.split(f'id="dpBox-deal-{did}"', 1)[1].split("</div>", 1)[0]
+    assert f'data-task-id="{t_deal}"' in box_deal
     # 表示エリアの高さ維持のため、コンテナ自体がmax-height+overflow-yで固定されている
     assert 'id="dpTrayByLink"' in html
     tray_style = html.split('id="dpTrayByLink"', 1)[1].split(">", 1)[0]
     assert "max-height" in tray_style and "overflow-y:auto" in tray_style
-    # 各タスクのlink_type/link_labelがJSへ埋め込まれている
+    # 各タスクのlink_type/link_id/link_labelがJSへ埋め込まれている
     data = json.loads(html.split("window.DP_TASKS_BY_ID = ", 1)[1].split(";\n", 1)[0])
-    assert data[str(t_deal)]["link_type"] == "deal" and "案件A" in data[str(t_deal)]["link_label"]
-    assert data[str(t_issue)]["link_type"] == "issue" and "論点A" in data[str(t_issue)]["link_label"]
-    assert data[str(t_delivery)]["link_type"] == "delivery" and "DeliveryA" in data[str(t_delivery)]["link_label"]
-    assert data[str(t_none)]["link_type"] == ""
+    assert data[str(t_deal)]["link_type"] == "deal" and data[str(t_deal)]["link_id"] == did
+    assert "案件A" in data[str(t_deal)]["link_label"]
+    assert data[str(t_issue)]["link_type"] == "issue" and data[str(t_issue)]["link_id"] == iid
+    assert "論点A" in data[str(t_issue)]["link_label"]
+    assert data[str(t_delivery)]["link_type"] == "delivery" and data[str(t_delivery)]["link_id"] == dv
+    assert "DeliveryA" in data[str(t_delivery)]["link_label"]
+    assert data[str(t_none)]["link_type"] == "" and data[str(t_none)]["link_id"] is None
 
 
 def test_daily_plan_page_ignores_picked_without_assignee(con):
@@ -402,7 +418,7 @@ def test_daily_plan_calendar_day_header_is_sticky(con):
     assert "position:sticky;top:50px" in html
     # トレイと日付ヘッダーが同じsticky塊の中にある（トレイが先・見出しが後）
     sticky_start = html.index('class="dp-sticky-top"')
-    sticky_end = html.index("</div>\n        <div class=\"dp-wrap\">")
+    sticky_end = html.index('class="dp-wrap"', sticky_start)
     sticky_block = html[sticky_start:sticky_end]
     assert "dpTrayByLink" in sticky_block
     assert "dp-daylabel-h" in sticky_block

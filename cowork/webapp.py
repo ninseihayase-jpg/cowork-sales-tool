@@ -6285,12 +6285,16 @@ _DAILY_PLAN_CSS = f"""<style>
 .dp-chip{{padding:4px 8px;margin:2px;border-radius:6px;font-size:12px;cursor:grab;display:inline-block;color:#fff}}
 .dp-chip[data-bucket="軽い"]{{background:#38bdf8}}
 .dp-chip[data-bucket="重い"]{{background:#6366f1}}
-.dp-col{{min-height:60px;border:1px dashed #cbd5e1;border-radius:6px;padding:6px;flex:1}}
-/* Step②のチップ置き場（紐づけ案件別・縦並び。ユーザー要望2026-08-31）。空の段はJSで非表示。 */
-.dp-linkgrp{{margin-bottom:4px}}
+/* チップ置き場（紐づけ案件別・縦4段、各段の中に案件ごとのハコ、ハコの中にタスクチップ。
+   ユーザー要望2026-09-01: 仕分けステップを廃止しいきなりこの構造で表示。中身が無い段/ハコは
+   JSで非表示にして表示エリアの高さを抑える）。 */
+.dp-linkgrp{{margin-bottom:6px}}
 .dp-linkgrp:last-child{{margin-bottom:0}}
 .dp-linkgrp-h{{font-size:10px;color:#64748b;font-weight:600;margin-bottom:2px}}
-.dp-linkgrp-body{{display:flex;flex-wrap:wrap;gap:4px;min-height:4px}}
+.dp-entitybox-wrap{{display:flex;flex-direction:column;gap:4px}}
+.dp-entitybox{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:4px 6px}}
+.dp-entitybox-h{{font-size:10px;color:#475569;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.dp-entitybox-body{{display:flex;flex-wrap:wrap;gap:4px;min-height:4px}}
 .dp-pick-row{{display:block;padding:4px 2px;font-size:13px;cursor:pointer}}
 .dp-pick-row:hover{{background:#f8fafc}}
 /* ドラッグ配置・長さ変更のスナップ可視化（ユーザー要望2026-08-27: 15分線に近づくと枠が
@@ -6354,14 +6358,75 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         f'{d.month}/{d.day}({_JP_WEEKDAYS[d.weekday()]}){_day_suffix.get(i, "")}'
         for i, d in enumerate(days)
     ]
+    # タスクの紐づけ先（Delivery/商談/論点）を正規化して1回だけ求める。参照切れ（対象削除済み等）は
+    # 未紐づけ扱いに落とす——tasks_by_id(JS側)とトレイのHTML(Python側)で判定がズレないように、
+    # 同じ結果をどちらでも使う（2026-09-01 #145）。
+    def _dp_effective_link(t: dict) -> tuple[str, int | None, str]:
+        lt, lid = t.get("link_type"), t.get("link_id")
+        if lt in ("delivery", "deal", "issue") and lid:
+            label = sfa_db.task_link_label(con, lt, lid)
+            if label:
+                return lt, lid, label
+        return "", None, ""
+    _dp_links = {t["id"]: _dp_effective_link(t) for t in tasks}
     tasks_by_id = {
         str(t["id"]): {"id": t["id"], "title": t.get("title") or "(無題)",
                        "due_date": t.get("due_date") or "", "effort_level": t.get("effort_level") or "",
                        "effort_hours": t.get("effort_hours"),
-                       "link_type": t.get("link_type") or "",
-                       "link_label": sfa_db.task_link_label(con, t.get("link_type"), t.get("link_id")) or ""}
+                       "link_type": _dp_links[t["id"]][0], "link_id": _dp_links[t["id"]][1],
+                       "link_label": _dp_links[t["id"]][2]}
         for t in tasks
     }
+    # チップ置き場: 縦4段（Delivery/商談/論点/紐づけなし）、各段の中は案件(entity)ごとのハコ、
+    # ハコの中に実際のタスクチップ（ユーザー要望2026-09-01: 従来の仕分けステップを廃止し、
+    # いきなりこの構造で表示。軽い/重いはeffort_levelから自動判定してチップの色だけに反映）。
+    _LINK_TIERS = (("delivery", "🚚 Delivery"), ("deal", "🤝 商談"), ("issue", "📌 論点"))
+
+    def _dp_bucket(t: dict) -> str:
+        return "軽い" if (t.get("effort_level") or "") == "軽" else "重い"
+
+    def _dp_chip_html(t: dict) -> str:
+        eh = t.get("effort_hours")
+        return (f'<div class="dp-chip" draggable="true" data-task-id="{t["id"]}" '
+                f'data-bucket="{_dp_bucket(t)}" data-title="{_esc(t.get("title") or "(無題)")}" '
+                f'data-effort-hours="{"" if eh is None else _esc(str(eh))}">'
+                f'{_esc(t.get("title") or "(無題)")}</div>')
+
+    _entities: dict[tuple[str, int], list[dict]] = {}
+    _entity_order: dict[str, list[int]] = {"delivery": [], "deal": [], "issue": []}
+    _unlinked: list[dict] = []
+    for t in tasks:
+        lt, lid, _label = _dp_links[t["id"]]
+        if lt and lid:
+            key = (lt, lid)
+            if key not in _entities:
+                _entities[key] = []
+                _entity_order[lt].append(lid)
+            _entities[key].append(t)
+        else:
+            _unlinked.append(t)
+
+    _tray_tiers_html = ""
+    for _lt, _tier_label in _LINK_TIERS:
+        if not _entity_order[_lt]:
+            continue
+        _boxes = ""
+        for _lid in _entity_order[_lt]:
+            _ts = _entities[(_lt, _lid)]
+            _label = _dp_links[_ts[0]["id"]][2]
+            _boxes += (f'<div class="dp-entitybox"><div class="dp-entitybox-h" title="{_esc(_label)}">'
+                       f'{_esc(_label[:40])}</div>'
+                       f'<div class="dp-entitybox-body" id="dpBox-{_lt}-{_lid}">'
+                       f'{"".join(_dp_chip_html(_t) for _t in _ts)}</div></div>')
+        _tray_tiers_html += (f'<div class="dp-linkgrp" data-grp="{_lt}"><div class="dp-linkgrp-h">{_tier_label}</div>'
+                             f'<div class="dp-entitybox-wrap">{_boxes}</div></div>')
+    if _unlinked:
+        _tray_tiers_html += (
+            '<div class="dp-linkgrp" data-grp="none"><div class="dp-linkgrp-h">紐づけなし</div>'
+            '<div class="dp-entitybox-wrap"><div class="dp-entitybox">'
+            f'<div class="dp-entitybox-body" id="dpBox-none">'
+            f'{"".join(_dp_chip_html(_t) for _t in _unlinked)}</div></div></div></div>')
+    _tray_html = _tray_tiers_html or '<p class="muted" style="font-size:11px;margin:0">対象タスクがありません。</p>'
     latest = sfa_db.get_latest_daily_task_plan(con, assignee, base_date=today.isoformat())
     latest_html = (f'<p class="muted" style="font-size:12px">直近の確定プラン: '
                    f'<a href="/tasks/daily-plan/plan/{latest["id"]}">{_esc(latest["label"])}</a></p>'
@@ -6389,51 +6454,34 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         <a href="/tasks?pick=1&assignee={_esc(assignee)}">選び直す（看板へ戻る）</a></p>
       {latest_html}
 
-      <div id="dpStep3">
-        <h3 style="font-size:14px;margin:10px 0 4px">① 軽い/重いに仕分ける（ドラッグで修正可）</h3>
-        <div style="display:flex;gap:12px">
-          <div style="flex:1">
-            <div class="muted" style="font-size:12px;margin-bottom:4px">🩵 軽い（作業的・既定30分）</div>
-            <div id="dpLight" class="dp-col"></div>
-          </div>
-          <div style="flex:1">
-            <div class="muted" style="font-size:12px;margin-bottom:4px">🟣 重い（集中・既定90分）</div>
-            <div id="dpHeavy" class="dp-col"></div>
-          </div>
+      <h3 style="font-size:14px;margin:10px 0 4px">カレンダーへドラッグ&ドロップで配置（直近{_DAILY_PLAN_NUM_DAYS}日間）</h3>
+      <p class="muted" style="font-size:12px">下のチップをカレンダーへドラッグ。配置後は下端をドラッグで長さ変更、
+        再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
+      {_gcal_note}
+      <div class="dp-sticky-top">
+        <!-- チップの置き場は紐づけ案件別（Delivery/商談/論点/紐づけなし）に縦4段、各段の中に
+             案件（Delivery1件・商談1件・論点1件）ごとのハコ、ハコの中にタスクチップ、という
+             構造（ユーザー要望2026-09-01: 従来の「①軽い/重いに仕分ける」ステップを廃止し、
+             いきなりこの構造でカレンダー配置画面から始める。軽い/重いはeffort_levelから
+             自動判定してチップの色だけに反映する）。表示エリアの高さは以前と同程度に保つため、
+             コンテナ自体をmax-height+overflow-yで固定し、中身が多い時だけ内部スクロールにする。
+             中身の無い段/ハコはJS側で非表示にする。 -->
+        <div id="dpTrayByLink" style="max-height:190px;overflow-y:auto;border:1px dashed #cbd5e1;
+             border-radius:6px;padding:6px;margin-bottom:8px">
+          {_tray_html}
         </div>
-        <button class="btn" type="button" onclick="dpToStep4()" style="margin-top:8px">次へ（カレンダーへ配置）</button>
+        <div class="dp-cal-header">
+          <div></div>
+          {_day_header_html}
+        </div>
       </div>
-
-      <div id="dpStep4" style="display:none">
-        <h3 style="font-size:14px;margin:10px 0 4px">② カレンダーへドラッグ&ドロップで配置（直近{_DAILY_PLAN_NUM_DAYS}日間）</h3>
-        <p class="muted" style="font-size:12px">下のチップをカレンダーへドラッグ。配置後は下端をドラッグで長さ変更、
-          再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
-        {_gcal_note}
-        <div class="dp-sticky-top">
-          <!-- チップの置き場は紐づけ案件別（Delivery/商談/論点/紐づけなし）に縦3〜4段で表示
-               （ユーザー要望2026-08-31: 従来の軽い/重いの2列並びから変更）。表示エリアの
-               高さは以前と同程度に保つため、コンテナ自体をmax-height+overflow-yで固定し、
-               中身が多い時だけ内部スクロールにする。空の段はJS側で非表示にする。 -->
-          <div id="dpTrayByLink" style="max-height:190px;overflow-y:auto;border:1px dashed #cbd5e1;
-               border-radius:6px;padding:6px;margin-bottom:8px">
-            <div class="dp-linkgrp" data-grp="delivery"><div class="dp-linkgrp-h">🚚 Delivery</div><div id="dpTrayDelivery" class="dp-linkgrp-body"></div></div>
-            <div class="dp-linkgrp" data-grp="deal"><div class="dp-linkgrp-h">🤝 商談</div><div id="dpTrayDeal" class="dp-linkgrp-body"></div></div>
-            <div class="dp-linkgrp" data-grp="issue"><div class="dp-linkgrp-h">📌 論点</div><div id="dpTrayIssue" class="dp-linkgrp-body"></div></div>
-            <div class="dp-linkgrp" data-grp="none"><div class="dp-linkgrp-h">紐づけなし</div><div id="dpTrayNone" class="dp-linkgrp-body"></div></div>
-          </div>
-          <div class="dp-cal-header">
-            <div></div>
-            {_day_header_html}
-          </div>
+      <div class="dp-wrap">
+        <div class="dp-cal">
+          <div class="dp-gutter">{hour_labels}</div>
+          {_day_col_html}
         </div>
-        <div class="dp-wrap">
-          <div class="dp-cal">
-            <div class="dp-gutter">{hour_labels}</div>
-            {_day_col_html}
-          </div>
-        </div>
-        <button class="btn" type="button" onclick="dpConfirm()" style="margin-top:10px">✅ 確定して保存</button>
       </div>
+      <button class="btn" type="button" onclick="dpConfirm()" style="margin-top:10px">✅ 確定して保存</button>
     </div>
     <div id="dpDetailBackdrop" onclick="closeDpDetail()"></div>
     <div id="dpDetailPop"></div>
@@ -6502,34 +6550,45 @@ _DAILY_PLAN_JS = f"""<script>
     if (bd) bd.style.display = 'none';
   }};
 
-  function dpMakeChip(t, bucket){{
-    var el = document.createElement('div');
-    el.className = 'dp-chip'; el.draggable = true;
-    el.dataset.taskId = t.id; el.dataset.bucket = bucket; el.dataset.title = t.title;
-    el.dataset.effortHours = (t.effort_hours != null && t.effort_hours !== '') ? t.effort_hours : '';
-    el.textContent = t.title;
+  // チップのドラッグ開始ハンドラ（サーバ側で最初から描画済みのチップ／JS側で動的生成した
+  // チップの両方で共有。2026-09-01 #145: 仕分けステップ廃止に伴い、チップは初期表示の時点で
+  // 既にHTMLとして存在するため、生成関数(dpMakeChip)とは別に「配線だけ行う」関数を用意）。
+  function dpWireChip(el){{
     el.ondragstart = function(e){{
       DRAGGING_CHIP = el;
       e.dataTransfer.setData('text/plain', JSON.stringify({{
         type:'chip', taskId:el.dataset.taskId, bucket:el.dataset.bucket, title:el.dataset.title,
         effortHours:el.dataset.effortHours}}));
     }};
+  }}
+  function dpMakeChip(t, bucket){{
+    var el = document.createElement('div');
+    el.className = 'dp-chip'; el.draggable = true;
+    el.dataset.taskId = t.id; el.dataset.bucket = bucket; el.dataset.title = t.title;
+    el.dataset.effortHours = (t.effort_hours != null && t.effort_hours !== '') ? t.effort_hours : '';
+    el.textContent = t.title;
+    dpWireChip(el);
     return el;
   }}
-  // Step②のチップ置き場は紐づけ案件別（Delivery/商談/論点/紐づけなし）。タスクの
-  // link_type(window.DP_TASKS_BY_ID)から表示先のグループ要素を決める（ユーザー要望2026-08-31）。
+  // チップ置き場は紐づけ案件別（Delivery/商談/論点/紐づけなし）の縦4段、各段の中に案件ごとの
+  // ハコ、ハコの中にタスクチップ（ユーザー要望2026-09-01）。タスクのlink_type/link_id
+  // (window.DP_TASKS_BY_ID)から、返却先のハコ要素IDを決める。IDの組み立て方はサーバ側
+  // （_dp_chip_html/dpBox-{{lt}}-{{lid}}）と揃えること。
   function dpLinkGroupId(taskId){{
     var t = (window.DP_TASKS_BY_ID||{{}})[taskId] || {{}};
-    var lt = t.link_type;
-    return lt === 'delivery' ? 'dpTrayDelivery' : lt === 'deal' ? 'dpTrayDeal'
-         : lt === 'issue' ? 'dpTrayIssue' : 'dpTrayNone';
+    return (t.link_type && t.link_id) ? ('dpBox-' + t.link_type + '-' + t.link_id) : 'dpBox-none';
   }}
   function dpLinkGroupEl(taskId){{ return document.getElementById(dpLinkGroupId(taskId)); }}
-  // 中身が無い段は表示エリアの高さを節約するため隠す（同上要望: 表示エリアの高さ維持）。
+  // 中身が無いハコ/段は表示エリアの高さを節約するため隠す（ユーザー要望: 表示エリアの高さ維持）。
   function dpRefreshLinkGroupVisibility(){{
+    document.querySelectorAll('#dpTrayByLink .dp-entitybox').forEach(function(box){{
+      var body = box.querySelector('.dp-entitybox-body');
+      box.style.display = (body && body.children.length) ? '' : 'none';
+    }});
     document.querySelectorAll('#dpTrayByLink .dp-linkgrp').forEach(function(g){{
-      var body = g.querySelector('.dp-linkgrp-body');
-      g.style.display = (body && body.children.length) ? '' : 'none';
+      var anyVisible = Array.prototype.some.call(g.querySelectorAll('.dp-entitybox'), function(b){{
+        return b.style.display !== 'none'; }});
+      g.style.display = anyVisible ? '' : 'none';
     }});
   }}
   // #103と揃える: 設定工数(h)があれば分単位に換算し、その仕分け(軽い/重い)の既定時間より
@@ -6541,33 +6600,6 @@ _DAILY_PLAN_JS = f"""<script>
     var mins = Math.max(SLOT_MIN, Math.round(h * 60 / SLOT_MIN) * SLOT_MIN);
     return mins < def ? mins : def;
   }}
-
-  ['dpLight','dpHeavy'].forEach(function(colId){{
-    var col = document.getElementById(colId);
-    col.ondragover = function(e){{ e.preventDefault(); }};
-    col.ondrop = function(e){{
-      e.preventDefault();
-      var data; try {{ data = JSON.parse(e.dataTransfer.getData('text/plain')||'{{}}'); }} catch(_e){{ return; }}
-      if (data.type !== 'chip' || !DRAGGING_CHIP) return;
-      DRAGGING_CHIP.dataset.bucket = (colId === 'dpLight' ? '軽い' : '重い');
-      col.appendChild(DRAGGING_CHIP);
-    }};
-  }});
-
-  window.dpToStep4 = function(){{
-    document.querySelectorAll('#dpTrayByLink .dp-linkgrp-body').forEach(function(b){{ b.innerHTML = ''; }});
-    document.querySelectorAll('#dpLight .dp-chip').forEach(function(c){{
-      var chip = dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title,
-        effort_hours:c.dataset.effortHours}}, '軽い');
-      dpLinkGroupEl(c.dataset.taskId).appendChild(chip); }});
-    document.querySelectorAll('#dpHeavy .dp-chip').forEach(function(c){{
-      var chip = dpMakeChip({{id:c.dataset.taskId, title:c.dataset.title,
-        effort_hours:c.dataset.effortHours}}, '重い');
-      dpLinkGroupEl(c.dataset.taskId).appendChild(chip); }});
-    dpRefreshLinkGroupVisibility();
-    document.getElementById('dpStep3').style.display = 'none';
-    document.getElementById('dpStep4').style.display = '';
-  }};
 
   function findFreeLane(dayOffset, startMin, durationMin, excludeUid){{
     var used = {{}};
@@ -6748,16 +6780,12 @@ _DAILY_PLAN_JS = f"""<script>
       }}).catch(function(){{ alert('通信エラー'); }});
   }};
 
-  // 初期化: 看板でピックされたタスク(window.DP_TASKS_BY_ID)をeffort_levelベースで
-  // 軽い/重いに仕分けてStep3から開始する（ピック自体は看板で完了済みのため）。
+  // 初期化: チップはサーバ側で紐づけ案件別のハコに既に描画済み（2026-09-01 #145で
+  // 仕分けステップを廃止したため）。ここではドラッグ開始の配線と、空のハコ/段の
+  // 非表示だけを行う。
   (function dpInit(){{
-    var light = document.getElementById('dpLight'), heavy = document.getElementById('dpHeavy');
-    if (!light || !heavy) return;
-    Object.keys(window.DP_TASKS_BY_ID || {{}}).forEach(function(tid){{
-      var t = window.DP_TASKS_BY_ID[tid];
-      var bucket = (t.effort_level === '軽') ? '軽い' : '重い';
-      (bucket === '軽い' ? light : heavy).appendChild(dpMakeChip(t, bucket));
-    }});
+    document.querySelectorAll('#dpTrayByLink .dp-chip').forEach(dpWireChip);
+    dpRefreshLinkGroupVisibility();
   }})();
 }})();
 </script>"""
