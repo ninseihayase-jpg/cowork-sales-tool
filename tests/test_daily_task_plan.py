@@ -249,6 +249,16 @@ def test_tasks_page_pick_without_assignee_shows_gate_not_checkboxes(con):
     assert "まず担当を選んでください" in html
 
 
+def test_tasks_page_pick_gate_is_floating_popup_below_nav_button(con):
+    """2026-08-31: 担当未選択ゲートは、従来のページ下部固定バーではなく「今日明日」ボタンの
+    真下に出るフローティングポップアップにする（ユーザー報告: 見つけにくい）。"""
+    html = webapp.tasks_page(con, pick=True)
+    assert 'id="dpGatePop"' in html
+    assert 'id="dpGateBackdrop"' in html
+    assert 'id="dpPickBar"' not in html  # 担当未選択の間は旧来の固定バーは出ない
+    assert 'getElementById("navDailyPickBtn")' in html  # ボタン位置を基準に配置するJS
+
+
 def test_tasks_page_pick_with_assignee_enables_picking_mode(con):
     html = webapp.tasks_page(con, pick=True, assignee="早瀬")
     assert 'id="taskBoard" class="picking"' in html

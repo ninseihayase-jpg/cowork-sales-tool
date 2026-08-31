@@ -4547,6 +4547,11 @@ _TASKS_JS = """
 #taskBoard.picking .task-card{padding-left:24px}
 #dpPickBar{display:none;align-items:center;gap:10px;flex-wrap:wrap;background:#eef2ff;border:1px solid #c7d2fe;
   border-radius:8px;padding:8px 12px;margin-top:8px;position:sticky;bottom:8px;z-index:20}
+/* 担当未選択ゲート: 「今日明日」ボタン真下のフローティングポップアップ（ユーザー報告2026-08-31:
+   従来のページ下部固定バーは見つけにくかった）。位置はJS側でボタンのbounding rectから計算する。 */
+#dpGateBackdrop{position:fixed;inset:0;z-index:9998;display:block;background:transparent}
+#dpGatePop{position:fixed;z-index:9999;background:#fff;border:1px solid #c7d2fe;border-radius:8px;
+  box-shadow:0 8px 30px rgba(0,0,0,.18);padding:12px;width:240px;max-width:92vw}
 .task-card.saved{outline:2px solid #10b981;transition:outline .15s}
 .task-card.pinned{border-color:#f59e0b}
 .task-card[data-status="完了"]{background:#f1f5f9;border-color:#e2e8f0}
@@ -5649,14 +5654,27 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     _real_assignee = assignee if (assignee and assignee != "__none__") else None
     _picking_active = bool(pick and _real_assignee)
     if pick and not _real_assignee:
+        # 担当未選択の間だけ出るゲート。従来はページ下部に張り付く横長バー(#dpPickBar)
+        # だったため見つけにくかった（ユーザー報告2026-08-31）。「今日明日」ボタンの
+        # 真下に出るフローティングポップアップに変更（JS側でボタンの位置を基準に配置）。
         _gate_owner_opts = "".join(f'<option value="{_esc(o)}">{_esc(o)}</option>' for o in owners)
         pick_bar = (
-            f'<div id="dpPickBar" style="display:flex">'
-            f'<b>📆 今日明日のタスク — まず担当を選んでください</b>'
+            f'<div id="dpGateBackdrop" onclick="location.href=&#39;/tasks&#39;"></div>'
+            f'<div id="dpGatePop">'
+            f'<b style="display:block;margin-bottom:6px;font-size:13px">📆 今日明日のタスク<br>まず担当を選んでください</b>'
             f'<select onchange="if(this.value) location.href=&#39;/tasks?assignee=&#39;+'
-            f'encodeURIComponent(this.value)+&#39;&pick=1&#39;">'
+            f'encodeURIComponent(this.value)+&#39;&pick=1&#39;" style="width:100%">'
             f'<option value="">担当を選択</option>{_gate_owner_opts}</select>'
-            f'<button class="btn sec" type="button" onclick="location.href=&#39;/tasks&#39;">キャンセル</button></div>')
+            f'<button class="btn sec" type="button" style="margin-top:8px;width:100%" '
+            f'onclick="location.href=&#39;/tasks&#39;">キャンセル</button></div>'
+            '<script>(function(){'
+            'var btn=document.getElementById("navDailyPickBtn"), pop=document.getElementById("dpGatePop");'
+            'if(!btn||!pop) return;'
+            'var r=btn.getBoundingClientRect();'
+            'pop.style.top=(r.bottom+6)+"px";'
+            'var left=r.left; if(left+240>window.innerWidth) left=window.innerWidth-248;'
+            'pop.style.left=Math.max(8,left)+"px";'
+            '})();</script>')
     else:
         pick_bar = (
             f'<div id="dpPickBar" style="{"display:flex" if _picking_active else ""}">'
