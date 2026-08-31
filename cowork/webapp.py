@@ -4545,8 +4545,11 @@ _TASKS_JS = """
 .tc-pick{display:none;position:absolute;top:4px;left:4px;z-index:5;line-height:1}
 #taskBoard.picking .tc-pick{display:block}
 #taskBoard.picking .task-card{padding-left:24px}
+/* ピック中バー（「次へ（仕分けへ）」等）も、担当未選択ゲートと同じく「今日明日」ボタン
+   真下のフローティングにする（ユーザー要望2026-08-31: 位置を統一）。位置はJS側で
+   dpPositionPop()がボタンのbounding rectから計算する。 */
 #dpPickBar{display:none;align-items:center;gap:10px;flex-wrap:wrap;background:#eef2ff;border:1px solid #c7d2fe;
-  border-radius:8px;padding:8px 12px;margin-top:8px;position:sticky;bottom:8px;z-index:20}
+  border-radius:8px;padding:8px 12px;position:fixed;z-index:9999;box-shadow:0 8px 30px rgba(0,0,0,.18);max-width:92vw}
 /* 担当未選択ゲート: 「今日明日」ボタン真下のフローティングポップアップ（ユーザー報告2026-08-31:
    従来のページ下部固定バーは見つけにくかった）。位置はJS側でボタンのbounding rectから計算する。 */
 #dpGateBackdrop{position:fixed;inset:0;z-index:9998;display:block;background:transparent}
@@ -4669,6 +4672,17 @@ function tcPickChanged(){
   var el=document.getElementById('dpPickCount');
   if(el) el.textContent=n;
 }
+// 「今日明日」ボタン(#navDailyPickBtn)真下にフローティング要素を配置する共通関数
+// （ユーザー要望2026-08-31: 担当未選択ゲート(#dpGatePop)と同じ位置に統一）。
+function dpPositionPop(el){
+  var btn=document.getElementById('navDailyPickBtn');
+  if(!btn||!el) return;
+  var r=btn.getBoundingClientRect();
+  el.style.top=(r.bottom+6)+'px';
+  var left=r.left, w=el.offsetWidth||240;
+  if(left+w>window.innerWidth) left=window.innerWidth-w-8;
+  el.style.left=Math.max(8,left)+'px';
+}
 function tcToggleDailyPick(){
   var board=document.getElementById('taskBoard'), bar=document.getElementById('dpPickBar');
   if(!board||!bar) return false;
@@ -4681,6 +4695,7 @@ function tcToggleDailyPick(){
   var on=!already;
   board.classList.toggle('picking',on);
   bar.style.display=on?'flex':'none';
+  if(on) dpPositionPop(bar);
   if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); tcPickChanged(); }
   return false;
 }
@@ -4868,6 +4883,10 @@ function tcSlack(id){
     if(url){ box.outerHTML='<span id="tcslk-'+id+'"><a class="tc-edit" href="'+_tcEsc(url)+'" target="_blank" rel="noopener" title="Slackメッセージを開く" style="color:#2563eb">🔗 Slack</a><button type="button" class="tc-edit" style="border:none;background:none;cursor:pointer" title="リンクを編集" onclick="tcSlack('+id+')">✎</button></span>'; }
     else { box.outerHTML='<button type="button" id="tcslk-'+id+'" class="tc-edit" style="border:none;background:none;cursor:pointer;color:#94a3b8" title="Slackリンクを追加" onclick="tcSlack('+id+')">🔗 リンク追加</button>'; } }); }
 document.addEventListener('DOMContentLoaded',function(){ document.querySelectorAll('.task-card').forEach(tcRenderActions);
+  // 「今日明日」のフローティングポップアップ(#dpGatePop/#dpPickBar)は、サーバー側で最初から
+  // 表示状態(?pick=1)でレンダリングされることがあるため、読み込み時にも位置合わせする。
+  var dpGate=document.getElementById('dpGatePop'); if(dpGate) dpPositionPop(dpGate);
+  var dpBar=document.getElementById('dpPickBar'); if(dpBar && dpBar.style.display==='flex') dpPositionPop(dpBar);
   var bd=document.getElementById('notesBackdrop'); if(bd)bd.addEventListener('click',closeNotes);
   // 「当該カードの外」をクリックしたら、そのカードを閉じる（他カードをクリックした時も閉じる）
   document.addEventListener('click',function(e){ if(e.target.closest('#notesPop'))return;
@@ -5501,7 +5520,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         # ユーザー要望2026-08-27: 別画面の一覧ではなく看板のままチェックを付けたい）。
         pick_cb = "" if status == "完了" else (
             f'<label class="tc-pick" onclick="event.stopPropagation()" '
-            f'title="今日明日のタスクとして選択"><input type="checkbox" class="tc-pick-cb" '
+            f'title="直近タスク設計の対象として選択"><input type="checkbox" class="tc-pick-cb" '
             f'data-tid="{tid}" onchange="tcPickChanged()"></label>')
         return (
             f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
@@ -5661,24 +5680,16 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         pick_bar = (
             f'<div id="dpGateBackdrop" onclick="location.href=&#39;/tasks&#39;"></div>'
             f'<div id="dpGatePop">'
-            f'<b style="display:block;margin-bottom:6px;font-size:13px">📆 今日明日のタスク<br>まず担当を選んでください</b>'
+            f'<b style="display:block;margin-bottom:6px;font-size:13px">📆 直近タスク設計<br>まず担当を選んでください</b>'
             f'<select onchange="if(this.value) location.href=&#39;/tasks?assignee=&#39;+'
             f'encodeURIComponent(this.value)+&#39;&pick=1&#39;" style="width:100%">'
             f'<option value="">担当を選択</option>{_gate_owner_opts}</select>'
             f'<button class="btn sec" type="button" style="margin-top:8px;width:100%" '
-            f'onclick="location.href=&#39;/tasks&#39;">キャンセル</button></div>'
-            '<script>(function(){'
-            'var btn=document.getElementById("navDailyPickBtn"), pop=document.getElementById("dpGatePop");'
-            'if(!btn||!pop) return;'
-            'var r=btn.getBoundingClientRect();'
-            'pop.style.top=(r.bottom+6)+"px";'
-            'var left=r.left; if(left+240>window.innerWidth) left=window.innerWidth-248;'
-            'pop.style.left=Math.max(8,left)+"px";'
-            '})();</script>')
+            f'onclick="location.href=&#39;/tasks&#39;">キャンセル</button></div>')
     else:
         pick_bar = (
             f'<div id="dpPickBar" style="{"display:flex" if _picking_active else ""}">'
-            f'<b>📆 今日明日のタスクを選択中（担当: {_esc(_real_assignee or "")}）: '
+            f'<b>📆 直近タスク設計 — 対象を選択中（担当: {_esc(_real_assignee or "")}）: '
             f'<span id="dpPickCount">0</span>件</b>'
             f'<button class="btn" type="button" onclick="tcGoDailyPlan()">次へ（仕分けへ）</button>'
             f'<button class="btn sec" type="button" onclick="tcToggleDailyPick()">キャンセル</button></div>')
@@ -5713,7 +5724,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
             <a href="/tasks/daily-plan" onclick="return tcToggleDailyPick()" id="navDailyPickBtn"
-               style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
+               style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 直近タスク設計</a>
           </span>
           <a class="btn sec" href="/tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
           {seed_btn}
@@ -6080,7 +6091,7 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
             <a href="/tasks" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗂 看板</a>
             <a href="/tasks/gantt" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📊 ガント</a>
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
-            <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
+            <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 直近タスク設計</a>
           </span>
           <a class="btn" href="/tasks/new">＋新規コンサルタスク</a>
         </span>
@@ -6145,7 +6156,7 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
           <a href="/tasks" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗂 看板</a>
           <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
           <a href="/tasks/capacity" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📅 容量</a>
-          <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 今日明日</a>
+          <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 直近タスク設計</a>
         </span>
       </h2>
       <p class="muted" style="font-size:12px;margin:0 0 10px">担当者ごとの1日あたり作業可能時間（打ち合わせ除く）を、当日〜直近{horizon_days}営業日分で
@@ -6166,9 +6177,10 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
     </script>"""
 
 
-# 「今日明日のタスク」機能（#101, 2026-08-27）。06:00〜21:00・15分刻みの2日分(当日/翌日)
-# カレンダーへドラッグ&ドロップでタスクを配置する日次プランニングツール。
-# 時間軸は縦方向（ユーザー要望2026-08-27）。日付を横2列にして画面幅いっぱいまで広げ、
+# 「直近タスク設計」機能（#101, 2026-08-27。2026-08-31に「今日明日のタスク」から改称・
+# 2日間→直近5日間に拡張）。06:00〜21:00・15分刻みの直近5日分カレンダーへドラッグ&ドロップで
+# タスクを配置する日次プランニングツール。
+# 時間軸は縦方向（ユーザー要望2026-08-27）。日付を横N列にして画面幅いっぱいまで広げ、
 # 重なりは各日列内でレーン(横)を動的に分割して表現する（幅は毎回JS側でclientWidthから再計算）。
 _DAILY_PLAN_SLOT_PX = 22  # 15分あたりの高さ(px)。15分1コマでも時刻付きラベルが1行読める高さを確保
 _DAILY_PLAN_SLOT_MIN = 15
@@ -6176,6 +6188,7 @@ _DAILY_PLAN_START_H = 6
 _DAILY_PLAN_END_H = 21
 _DAILY_PLAN_SLOTS = (_DAILY_PLAN_END_H - _DAILY_PLAN_START_H) * 60 // _DAILY_PLAN_SLOT_MIN  # 60
 _DAILY_PLAN_DAY_H = _DAILY_PLAN_SLOTS * _DAILY_PLAN_SLOT_PX  # 960
+_DAILY_PLAN_NUM_DAYS = 5  # 当日を含む直近何日分を並べるか（ユーザー要望2026-08-31: 2日→5日）
 _JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 
 
@@ -6237,15 +6250,16 @@ def _dp_gcal_blocks_html(events: list) -> str:
                  f'<span class="dp-gcal-t">{_esc(ev.summary)}</span></div>')
     return html
 
+_DAILY_PLAN_GRID_COLS = "56px " + " ".join(["1fr"] * _DAILY_PLAN_NUM_DAYS)  # 直近N日分の列定義
 _DAILY_PLAN_CSS = f"""<style>
 .dp-wrap{{width:100%}}
-.dp-cal{{display:grid;grid-template-columns:56px 1fr 1fr;width:100%;column-gap:8px}}
+.dp-cal{{display:grid;grid-template-columns:{_DAILY_PLAN_GRID_COLS};width:100%;column-gap:8px}}
 /* トレイ(チップ置き場)＋日付ヘッダーを1つの塊としてスクロール時に固定表示にする
    （ユーザー要望2026-08-27）。ヘッダー用グリッドは本体(.dp-cal)と同じ列定義にして
    縦位置を揃える。トレイの高さが可変でも、まとめて1つのsticky要素にすることで
    個別にtopオフセットを計算する必要をなくしている。 */
 .dp-sticky-top{{position:sticky;top:50px;z-index:20;background:#fff;padding-bottom:6px}}
-.dp-cal-header{{display:grid;grid-template-columns:56px 1fr 1fr;width:100%;column-gap:8px}}
+.dp-cal-header{{display:grid;grid-template-columns:{_DAILY_PLAN_GRID_COLS};width:100%;column-gap:8px}}
 .dp-daylabel-h{{font-size:13px;font-weight:600;padding:4px 0 6px;text-align:center;
   color:#334155;border-bottom:2px solid #e2e8f0}}
 .dp-gutter{{position:relative;height:{_DAILY_PLAN_DAY_H}px}}
@@ -6302,35 +6316,38 @@ def _daily_plan_nav(active: str) -> str:
     return (f'<span style="display:inline-flex;gap:4px;background:#eef0ff;border-radius:8px;padding:2px">'
             f'{item("/tasks", "🗂 看板", "board")}{item("/tasks/gantt", "📊 ガント", "gantt")}'
             f'{item("/tasks/capacity", "📅 容量", "capacity")}'
-            f'{item("/tasks?pick=1", "📆 今日明日", "daily")}</span>')
+            f'{item("/tasks?pick=1", "📆 直近タスク設計", "daily")}</span>')
 
 
 def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None = None) -> str:
-    """「今日明日のタスク」仕分け(軽い/重い)→当日+翌日カレンダーへドラッグ配置、という
-    日次プランニングをStep3〜4で1ページ完結させる（サーバは初期データを渡すのみ、
+    """「直近タスク設計」仕分け(軽い/重い)→直近N日分(_DAILY_PLAN_NUM_DAYS)カレンダーへドラッグ配置、
+    という日次プランニングをStep3〜4で1ページ完結させる（サーバは初期データを渡すのみ、
     以降はクライアントJSで状態遷移し、確定時のみPOST /tasks/daily-plan/save で保存）。
     タスクのピック（旧Step1/2）は看板(/tasks?pick=1)でカード上のチェックボックスから行う
     （ユーザー要望2026-08-27: 別画面の一覧ではなく看板のままチェックを付けたい）。picked=
-    看板から渡されたタスクid群が無ければ、看板へ誘導するだけの案内を表示する。"""
+    看板から渡されたタスクid群が無ければ、看板へ誘導するだけの案内を表示する。
+    2026-08-31: 「今日明日のタスク」から改称し、対象日数を2日→直近5日間(_DAILY_PLAN_NUM_DAYS)へ
+    拡張（ユーザー要望）。"""
     nav = _daily_plan_nav("daily")
     if not assignee or not picked:
         return f"""
         <div class="card">
           <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <span>📆 今日明日のタスク</span>{nav}
+            <span>📆 直近タスク設計</span>{nav}
           </h2>
           <p class="muted" style="font-size:13px">
-            <a href="/tasks?pick=1">看板</a>で「📆 今日明日」を押すと、カードにチェックボックスが
-            表示されます。今日/明日やるタスクを選び、下部の「次へ（仕分けへ）」でここに進みます。
+            <a href="/tasks?pick=1">看板</a>で「📆 直近タスク設計」を押すと、カードにチェックボックスが
+            表示されます。直近{_DAILY_PLAN_NUM_DAYS}日でやるタスクを選び、下部の「次へ（仕分けへ）」でここに進みます。
           </p>
         </div>{_DAILY_PLAN_CSS}"""
 
     tasks = [t for t in (sfa_db.get_task(con, tid) for tid in picked) if t]
     today = _today_jst()
-    tomorrow = today + timedelta(days=1)
+    days = [today + timedelta(days=i) for i in range(_DAILY_PLAN_NUM_DAYS)]
+    _day_suffix = {0: " 今日", 1: " 明日"}
     day_labels = [
-        f'{today.month}/{today.day}({_JP_WEEKDAYS[today.weekday()]}) 今日',
-        f'{tomorrow.month}/{tomorrow.day}({_JP_WEEKDAYS[tomorrow.weekday()]}) 明日',
+        f'{d.month}/{d.day}({_JP_WEEKDAYS[d.weekday()]}){_day_suffix.get(i, "")}'
+        for i, d in enumerate(days)
     ]
     tasks_by_id = {
         str(t["id"]): {"id": t["id"], "title": t.get("title") or "(無題)",
@@ -6347,17 +6364,19 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         for h in range(_DAILY_PLAN_START_H, _DAILY_PLAN_END_H + 1))
     # Googleカレンダーの重ね表示（#101マイルストン2）。未設定/未対応の担当者は空dictで
     # 何も表示されない（fail-open）。
-    _gcal_by_day = _dp_gcal_events_by_day(assignee, [today, tomorrow])
-    _gcal_html0 = _dp_gcal_blocks_html(_gcal_by_day.get(today, []))
-    _gcal_html1 = _dp_gcal_blocks_html(_gcal_by_day.get(tomorrow, []))
+    _gcal_by_day = _dp_gcal_events_by_day(assignee, days)
+    _gcal_htmls = [_dp_gcal_blocks_html(_gcal_by_day.get(d, [])) for d in days]
     _gcal_note = ('<p class="muted" style="font-size:11px;margin:0 0 4px">🗓 縞模様のグレー＝'
                   'Googleカレンダーの予定（読み取り専用。重ならないよう配置の参考にしてください）</p>'
                   if _gcal_by_day else "")
+    _day_header_html = "".join(f'<div class="dp-daylabel-h">{_esc(lbl)}</div>' for lbl in day_labels)
+    _day_col_html = "".join(
+        f'<div id="dpDay{i}" class="dp-day">{html_}</div>' for i, html_ in enumerate(_gcal_htmls))
 
     return f"""
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <span>📆 今日明日のタスク — {_esc(assignee)}</span>{nav}
+        <span>📆 直近タスク設計 — {_esc(assignee)}</span>{nav}
       </h2>
       <p class="muted" style="font-size:12px">
         <a href="/tasks?pick=1&assignee={_esc(assignee)}">選び直す（看板へ戻る）</a></p>
@@ -6379,7 +6398,7 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
       </div>
 
       <div id="dpStep4" style="display:none">
-        <h3 style="font-size:14px;margin:10px 0 4px">② カレンダーへドラッグ&ドロップで配置</h3>
+        <h3 style="font-size:14px;margin:10px 0 4px">② カレンダーへドラッグ&ドロップで配置（直近{_DAILY_PLAN_NUM_DAYS}日間）</h3>
         <p class="muted" style="font-size:12px">下のチップをカレンダーへドラッグ。配置後は下端をドラッグで長さ変更、
           再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
         {_gcal_note}
@@ -6390,15 +6409,13 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
           </div>
           <div class="dp-cal-header">
             <div></div>
-            <div class="dp-daylabel-h">{_esc(day_labels[0])}</div>
-            <div class="dp-daylabel-h">{_esc(day_labels[1])}</div>
+            {_day_header_html}
           </div>
         </div>
         <div class="dp-wrap">
           <div class="dp-cal">
             <div class="dp-gutter">{hour_labels}</div>
-            <div id="dpDay0" class="dp-day">{_gcal_html0}</div>
-            <div id="dpDay1" class="dp-day">{_gcal_html1}</div>
+            {_day_col_html}
           </div>
         </div>
         <button class="btn" type="button" onclick="dpConfirm()" style="margin-top:10px">✅ 確定して保存</button>
@@ -6408,7 +6425,9 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
     <div id="dpDetailPop"></div>
     <script>
     window.DP_ASSIGNEE = {json.dumps(assignee, ensure_ascii=False)};
+    window.DP_DAY_LABELS = {json.dumps(day_labels, ensure_ascii=False)};
     window.DP_TASKS_BY_ID = {json.dumps(tasks_by_id, ensure_ascii=False)};
+    window.DP_NUM_DAYS = {_DAILY_PLAN_NUM_DAYS};
     </script>
     {_DAILY_PLAN_CSS}{_DAILY_PLAN_JS}"""
 
@@ -6416,6 +6435,8 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
 _DAILY_PLAN_JS = f"""<script>
 (function(){{
   var SLOT_PX = {_DAILY_PLAN_SLOT_PX}, SLOT_MIN = {_DAILY_PLAN_SLOT_MIN}, SLOTS = {_DAILY_PLAN_SLOTS};
+  var NUM_DAYS = {_DAILY_PLAN_NUM_DAYS};
+  var DAY_RANGE = Array.from({{length: NUM_DAYS}}, function(_, i){{ return i; }});
   var DEFAULT_DUR = {{'軽い':30,'重い':90}};
   var PLACED = {{}};
   var NEXT_UID = 1;
@@ -6442,7 +6463,7 @@ _DAILY_PLAN_JS = f"""<script>
   window.openDpDetail = function(uid){{
     var p = PLACED[uid]; if (!p) return;
     var t = window.DP_TASKS_BY_ID[p.taskId] || {{}};
-    var dayLabel = (p.dayOffset === 0) ? '今日' : '明日';
+    var dayLabel = (window.DP_DAY_LABELS && window.DP_DAY_LABELS[p.dayOffset]) || ('日' + (p.dayOffset + 1));
     var timeLabel = fmtTime(p.startMin) + '-' + fmtTime(p.startMin + p.durationMin);
     var pop = document.getElementById('dpDetailPop'), bd = document.getElementById('dpDetailBackdrop');
     var rows = '<div class="muted" style="font-size:12px;margin-top:6px">'
@@ -6638,12 +6659,12 @@ _DAILY_PLAN_JS = f"""<script>
     return SLOT_MIN;
   }}
   function hideAllSnapPreviews(){{
-    [0,1].forEach(function(d){{ var r = document.getElementById('dpDay' + d);
+    DAY_RANGE.forEach(function(d){{ var r = document.getElementById('dpDay' + d);
       if (r && r._dpPreview) r._dpPreview.style.display = 'none'; }});
   }}
   document.addEventListener('dragend', hideAllSnapPreviews);
 
-  [0,1].forEach(function(dayOffset){{
+  DAY_RANGE.forEach(function(dayOffset){{
     var row = document.getElementById('dpDay' + dayOffset);
     var preview = document.createElement('div');
     preview.className = 'dp-snap-preview';
@@ -6710,13 +6731,15 @@ _DAILY_PLAN_JS = f"""<script>
 
 
 def daily_task_plan_view_page(con, plan_id: int) -> str:
-    """確定済み「今日明日のタスク」プランの読み取り専用表示（ドラッグ不可）。"""
+    """確定済み「直近タスク設計」プランの読み取り専用表示（ドラッグ不可）。
+    2026-08-31以前に確定した2日分のプランも、以降の直近N日分のプランも同じグリッドで表示する
+    （データが無い日は単に空欄になるだけで、item側にday_offset範囲の制約は無い）。"""
     plan = sfa_db.get_daily_task_plan(con, plan_id)
     if not plan:
         return '<div class="card">プランが見つかりません（削除済み？）。</div>'
     items = sfa_db.list_daily_task_plan_items(con, plan_id)
     base = date.fromisoformat(plan["base_date"])
-    days = [base, base + timedelta(days=1)]
+    days = [base + timedelta(days=i) for i in range(_DAILY_PLAN_NUM_DAYS)]
     day_labels = [f'{d.month}/{d.day}({_JP_WEEKDAYS[d.weekday()]})' for d in days]
     hour_labels = "".join(
         f'<span style="top:{(h - _DAILY_PLAN_START_H) * 4 * _DAILY_PLAN_SLOT_PX}px">{h}:00</span>'
@@ -6753,15 +6776,13 @@ def daily_task_plan_view_page(con, plan_id: int) -> str:
       <div class="dp-sticky-top">
         <div class="dp-cal-header">
           <div></div>
-          <div class="dp-daylabel-h">{_esc(day_labels[0])}</div>
-          <div class="dp-daylabel-h">{_esc(day_labels[1])}</div>
+          {"".join(f'<div class="dp-daylabel-h">{_esc(lbl)}</div>' for lbl in day_labels)}
         </div>
       </div>
       <div class="dp-wrap">
         <div class="dp-cal">
           <div class="dp-gutter">{hour_labels}</div>
-          {day_html(0)}
-          {day_html(1)}
+          {"".join(day_html(i) for i in range(_DAILY_PLAN_NUM_DAYS))}
         </div>
       </div>
     </div>{_DAILY_PLAN_CSS}"""

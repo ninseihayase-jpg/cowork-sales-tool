@@ -14,6 +14,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -119,6 +120,23 @@ def test_daily_plan_page_with_picked_ids_embeds_only_those_tasks(con):
     # 別画面の一覧(Step1/2)は無く、いきなり仕分け(Step3)から始まる
     assert "id=\"dpStep2\"" not in html
     assert 'id="dpStep3">' in html  # display:noneが付いていない=最初から表示
+
+
+def test_daily_plan_page_renamed_and_shows_five_days(con):
+    """2026-08-31: 「今日明日のタスク」から「直近タスク設計」へ改称し、対象日数を
+    2日→直近5日間へ拡張（ユーザー要望）。"""
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
+    html = webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
+    assert "直近タスク設計" in html
+    assert "今日明日" not in html  # 旧称はユーザー向け表示から消えている
+    for i in range(5):
+        assert f'id="dpDay{i}"' in html
+    assert 'id="dpDay5"' not in html  # 5日分まで（6日目は無い）
+    assert "window.DP_NUM_DAYS = 5;" in html
+    labels = json.loads(html.split("window.DP_DAY_LABELS = ", 1)[1].split(";\n", 1)[0])
+    assert len(labels) == 5
+    assert labels[0].endswith("今日") and labels[1].endswith("明日")
+    assert not labels[2].endswith("明日")  # 3日目以降は「明日」表記を引きずらない
 
 
 def test_daily_plan_page_ignores_picked_without_assignee(con):
@@ -237,6 +255,19 @@ def test_daily_plan_page_has_no_gcal_overlay_when_unconfigured(con, monkeypatch)
     assert "縞模様のグレー" not in html  # 案内文（CSSコメントには出ない文言）
 
 
+def test_daily_plan_page_fetches_gcal_for_five_days(con, monkeypatch):
+    """2026-08-31: Googleカレンダーの取得対象日も、当日+翌日の2日ではなく直近5日分に拡張。"""
+    today = webapp._today_jst()
+    captured = {}
+    def _fake(assignee, dates):
+        captured["dates"] = dates
+        return {}
+    monkeypatch.setattr(webapp, "_dp_gcal_events_by_day", _fake)
+    tid = sfa_db.upsert_task(con, title="X", assignee="早瀬", status="未着手")
+    webapp.daily_plan_page(con, assignee="早瀬", picked=[tid])
+    assert captured["dates"] == [today + timedelta(days=i) for i in range(5)]
+
+
 # ── 看板(/tasks)のピック機能 ─────────────────────────────────────────────
 
 def test_tasks_page_cards_carry_pick_checkbox(con):
@@ -271,7 +302,8 @@ def test_tasks_page_pick_gate_is_floating_popup_below_nav_button(con):
     assert 'id="dpGatePop"' in html
     assert 'id="dpGateBackdrop"' in html
     assert 'id="dpPickBar"' not in html  # 担当未選択の間は旧来の固定バーは出ない
-    assert 'getElementById("navDailyPickBtn")' in html  # ボタン位置を基準に配置するJS
+    assert "function dpPositionPop" in html  # ボタン位置を基準に配置する共通関数
+    assert "dpPositionPop(dpGate)" in html  # 読み込み時に位置合わせされる
 
 
 def test_tasks_page_pick_with_assignee_enables_picking_mode(con):
@@ -279,6 +311,14 @@ def test_tasks_page_pick_with_assignee_enables_picking_mode(con):
     assert 'id="taskBoard" class="picking"' in html
     assert 'id="dpPickBar" style="display:flex"' in html
     assert "担当: 早瀬" in html
+
+
+def test_tasks_page_pick_bar_positions_below_nav_button_like_gate(con):
+    """2026-08-31: 「次へ（仕分けへ）」バーも担当未選択ゲートと同じく「今日明日」ボタン
+    真下のフローティング位置にする（ページ下部固定はやめる）。"""
+    html = webapp.tasks_page(con, pick=True, assignee="早瀬")
+    assert "position:fixed" in html.split('#dpPickBar{', 1)[1].split('}', 1)[0]
+    assert 'dpPositionPop(dpBar)' in html  # 初期表示時にも位置合わせされる
 
 
 def test_tasks_page_without_pick_param_starts_hidden(con):
@@ -297,6 +337,20 @@ def test_daily_task_plan_view_page_renders_blocks_with_kanban_link(con):
     assert "表示確認タスク" in html
     assert f"/tasks#tc-{tid}" in html
     assert "dp-heavy" in html
+
+
+def test_daily_task_plan_view_page_renders_five_days_including_day3(con):
+    """2026-08-31: 読み取り専用の確定プラン表示も直近5日分に対応（3日目以降のitemも表示できる）。"""
+    tid = sfa_db.upsert_task(con, title="3日目のタスク", assignee="早瀬")
+    plan_id = sfa_db.create_daily_task_plan(
+        con, owner="早瀬", base_date="2026-08-27", label="早瀬/8/27 09:30時点",
+        items=[{"task_id": tid, "day_offset": 3, "start_min": 60, "duration_min": 90,
+                "lane": 0, "bucket": "重い"}])
+    html = webapp.daily_task_plan_view_page(con, plan_id)
+    assert "3日目のタスク" in html
+    for i in range(5):
+        assert f'id="dpDay{i}"' in html
+    assert 'id="dpDay5"' not in html
 
 
 def test_daily_task_plan_view_page_missing_plan(con):

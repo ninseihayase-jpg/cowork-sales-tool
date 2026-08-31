@@ -1077,7 +1077,7 @@ CREATE TABLE IF NOT EXISTS daily_task_plan_items (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     plan_id       INTEGER NOT NULL REFERENCES daily_task_plans(id) ON DELETE CASCADE,
     task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    day_offset    INTEGER NOT NULL,        -- 0=当日 / 1=翌日
+    day_offset    INTEGER NOT NULL,        -- 0=当日起点の経過日数（既定は直近5日分＝0〜4。2026-08-31改称・拡張）
     start_min     INTEGER NOT NULL,        -- 06:00からの経過分（0〜899、15分刻み）
     duration_min  INTEGER NOT NULL,
     lane          INTEGER NOT NULL DEFAULT 0,
@@ -3799,7 +3799,7 @@ def hard_delete_task(con, id: int) -> None:
 
 def create_daily_task_plan(con, *, owner: str, base_date: str, label: str, items: list[dict]) -> int:
     """1件の確定プラン＋配置済みタスク群をまとめて保存する。itemsは各要素
-    {task_id, day_offset(0/1), start_min, duration_min, lane, bucket} の辞書。"""
+    {task_id, day_offset(0〜、既定は直近5日分), start_min, duration_min, lane, bucket} の辞書。"""
     cur = con.execute(
         "INSERT INTO daily_task_plans (owner, label, base_date) VALUES (?, ?, ?)",
         (owner, label, base_date))
