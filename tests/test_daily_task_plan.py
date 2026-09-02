@@ -169,7 +169,7 @@ def test_daily_plan_page_tray_grouped_by_linked_entity(con):
     assert "🚚 Delivery" in html and "🤝 商談" in html and "📌 論点" in html and "紐づけなし" in html
     # ハコの見出しは具体的な案件名（"論点A（テスト商事：案件A）"等）
     assert "論点A" in html and "DeliveryA" in html
-    assert "function dpLinkGroupEl" in html
+    assert "function dpLinkGroupIds" in html
     assert "function dpRefreshLinkGroupVisibility" in html
     assert "function dpWireChip" in html
     # 各タスクのチップが正しいハコの中にある（data-task-idで判定）
@@ -181,13 +181,18 @@ def test_daily_plan_page_tray_grouped_by_linked_entity(con):
     assert "max-height" in tray_style and "overflow-y:auto" in tray_style
     # 各タスクのlink_type/link_id/link_labelがJSへ埋め込まれている
     data = json.loads(html.split("window.DP_TASKS_BY_ID = ", 1)[1].split(";\n", 1)[0])
-    assert data[str(t_deal)]["link_type"] == "deal" and data[str(t_deal)]["link_id"] == did
-    assert "案件A" in data[str(t_deal)]["link_label"]
-    assert data[str(t_issue)]["link_type"] == "issue" and data[str(t_issue)]["link_id"] == iid
-    assert "論点A" in data[str(t_issue)]["link_label"]
-    assert data[str(t_delivery)]["link_type"] == "delivery" and data[str(t_delivery)]["link_id"] == dv
-    assert "DeliveryA" in data[str(t_delivery)]["link_label"]
-    assert data[str(t_none)]["link_type"] == "" and data[str(t_none)]["link_id"] is None
+    # #146: link_type/link_id/link_labelの単一キーから、links配列(複数可)に変更。
+    assert len(data[str(t_deal)]["links"]) == 1
+    assert data[str(t_deal)]["links"][0]["link_type"] == "deal"
+    assert data[str(t_deal)]["links"][0]["link_id"] == did
+    assert "案件A" in data[str(t_deal)]["links"][0]["label"]
+    assert data[str(t_issue)]["links"][0]["link_type"] == "issue"
+    assert data[str(t_issue)]["links"][0]["link_id"] == iid
+    assert "論点A" in data[str(t_issue)]["links"][0]["label"]
+    assert data[str(t_delivery)]["links"][0]["link_type"] == "delivery"
+    assert data[str(t_delivery)]["links"][0]["link_id"] == dv
+    assert "DeliveryA" in data[str(t_delivery)]["links"][0]["label"]
+    assert data[str(t_none)]["links"] == []
 
 
 def test_daily_plan_page_ignores_picked_without_assignee(con):

@@ -48,14 +48,19 @@ def deal_issue_delivery(con):
 # ── 関連付けポップアップ ─────────────────────────────────────────────────
 
 def test_tasks_page_card_has_link_popup_trigger_and_data_attrs(con, deal_issue_delivery):
+    """#146(2026-09-02): カードの紐づけはdata-links属性のJSON配列(複数可)で持つ
+    （属性値なのでHTMLエスケープされている点に注意）。"""
+    import html as html_mod
     did, _iid, _dv = deal_issue_delivery
     tid = sfa_db.upsert_task(con, title="X", link_type="deal", link_id=did, status="未着手")
     html = webapp.tasks_page(con)
-    assert f'data-link-type="deal" data-link-id="{did}"' in html
+    assert html_mod.escape(f'"link_type": "deal", "link_id": {did}') in html
     assert "function openLinkPop" in html
     assert "function saveLinkPop" in html
+    assert "function tcAddLinkFromPicker" in html
     assert 'id="linkPop"' in html
     assert 'id="linkBackdrop"' in html
+    assert 'id="tcLinksList"' in html
 
 
 def test_tasks_page_card_without_link_shows_add_button(con):
@@ -104,6 +109,8 @@ def _post(url, data, headers=None):
 
 
 def test_task_link_route_persists_delivery_link(server):
+    """#146(2026-09-02): links_json=[{type,id}, ...]で複数関連付けをまとめて保存する。
+    レスポンスも単一link_type/link_idではなくlinks配列になる。"""
     import json
     base, db_path = server
     con = sfa_db.connect(db_path)
@@ -113,21 +120,45 @@ def test_task_link_route_persists_delivery_link(server):
     tid = sfa_db.upsert_task(con, title="X", status="未着手")
     con.close()
 
-    code, body = _post(base + f"/task/{tid}/link", {"link_type": "delivery", "link_id": str(dv)},
-                       headers=_auth_header())
+    payload = json.dumps([{"type": "delivery", "id": dv}])
+    code, body = _post(base + f"/task/{tid}/link", {"links_json": payload}, headers=_auth_header())
     assert code == 200
     data = json.loads(body)
     assert data["ok"] is True
-    assert data["link_type"] == "delivery"
-    assert data["link_id"] == dv
-    assert "DeliveryA" in data["label"]
-    assert data["href"] == f"/delivery/{dv}"
-    assert data["icon"] == "🚚"
+    assert len(data["links"]) == 1
+    lk = data["links"][0]
+    assert lk["link_type"] == "delivery"
+    assert lk["link_id"] == dv
+    assert "DeliveryA" in lk["label"]
+    assert lk["href"] == f"/delivery/{dv}"
+    assert lk["icon"] == "🚚"
 
     con2 = sfa_db.connect(db_path)
-    row = con2.execute("SELECT link_type, link_id FROM tasks WHERE id=?", (tid,)).fetchone()
+    assert [(l["link_type"], l["link_id"]) for l in sfa_db.get_task_links(con2, tid)] == [("delivery", dv)]
     con2.close()
-    assert row["link_type"] == "delivery" and row["link_id"] == dv
+
+
+def test_task_link_route_persists_multiple_links(server):
+    """#146: 商談と論点を同時に関連付けられる（種別をまたいだ複数関連付け）。"""
+    import json
+    base, db_path = server
+    con = sfa_db.connect(db_path)
+    acc = sfa_db.upsert_account(con, name="テスト商事")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件A", status="open")
+    iid = sfa_db.upsert_deal_issue(con, deal_id=did, issue="論点A")
+    tid = sfa_db.upsert_task(con, title="X", status="未着手")
+    con.close()
+
+    payload = json.dumps([{"type": "deal", "id": did}, {"type": "issue", "id": iid}])
+    code, body = _post(base + f"/task/{tid}/link", {"links_json": payload}, headers=_auth_header())
+    assert code == 200
+    data = json.loads(body)
+    assert data["ok"] is True
+    assert {(l["link_type"], l["link_id"]) for l in data["links"]} == {("deal", did), ("issue", iid)}
+
+    con2 = sfa_db.connect(db_path)
+    assert {(l["link_type"], l["link_id"]) for l in sfa_db.get_task_links(con2, tid)} == {("deal", did), ("issue", iid)}
+    con2.close()
 
 
 def test_task_link_route_clears_link_when_empty(server):
@@ -139,18 +170,15 @@ def test_task_link_route_clears_link_when_empty(server):
     tid = sfa_db.upsert_task(con, title="X", link_type="deal", link_id=did, status="未着手")
     con.close()
 
-    code, body = _post(base + f"/task/{tid}/link", {"link_type": "", "link_id": ""},
-                       headers=_auth_header())
+    code, body = _post(base + f"/task/{tid}/link", {"links_json": "[]"}, headers=_auth_header())
     assert code == 200
     data = json.loads(body)
     assert data["ok"] is True
-    assert data["link_type"] is None
-    assert data["label"] is None
+    assert data["links"] == []
 
     con2 = sfa_db.connect(db_path)
-    row = con2.execute("SELECT link_type, link_id FROM tasks WHERE id=?", (tid,)).fetchone()
+    assert sfa_db.get_task_links(con2, tid) == []
     con2.close()
-    assert row["link_type"] is None and row["link_id"] is None
 
 
 def test_task_link_route_rejects_invalid_kind(server):
@@ -177,14 +205,16 @@ def test_task_link_route_dev_project(server):
     tid = sfa_db.upsert_task(con, title="X", status="未着手")
     con.close()
 
-    code, body = _post(base + f"/task/{tid}/link", {"link_type": "dev_project", "link_id": str(dp)},
-                       headers=_auth_header())
+    payload = json.dumps([{"type": "dev_project", "id": dp}])
+    code, body = _post(base + f"/task/{tid}/link", {"links_json": payload}, headers=_auth_header())
     assert code == 200
     data = json.loads(body)
     assert data["ok"] is True
-    assert data["link_type"] == "dev_project"
-    assert data["label"] == "AI基盤"
-    assert data["icon"] == "🛠"
+    assert len(data["links"]) == 1
+    lk = data["links"][0]
+    assert lk["link_type"] == "dev_project"
+    assert lk["label"] == "テスト商事：AI基盤"
+    assert lk["icon"] == "🛠"
 
 
 # ── 紐づけられている案件ストリップ ─────────────────────────────────────────

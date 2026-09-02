@@ -99,6 +99,9 @@ DELIVERY_BILLING_DUE_OPTIONS = ["当月末日", "翌月1日", "翌月2日", "翌
 DELIVERY_BILLING_DUE_DEFAULT = "当月末日"
 DELIVERY_EXPENSE_BILLING_OPTIONS = ["有", "無", "不明(要確認)"]
 DELIVERY_PERFORMANCE_FEE_OPTIONS = ["有", "無"]  # 成果報酬有無（2026-08-30）。「有」の場合のみ比率入力が必須。
+# 論点(deal_issues)の会社機能（#147）。商談に紐づかない論点（deal_id IS NULL＝商談共通）の
+# 場合に、社内のどの機能に紐づくかを選択する。マスタ画面で編集可能。
+COMPANY_FUNCTIONS = ["経営企画", "総務", "法務", "人事", "財務", "経理"]
 
 MASTER_KEYS = {
     "owners":            OWNERS,
@@ -113,6 +116,7 @@ MASTER_KEYS = {
     "target_domains":    TARGET_DOMAINS,
     "delivery_billing_methods": DELIVERY_BILLING_METHODS,
     "delivery_billing_due":     DELIVERY_BILLING_DUE_OPTIONS,
+    "company_functions":        COMPANY_FUNCTIONS,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -127,6 +131,7 @@ MASTER_LABELS = {
     "target_domains":    "ターゲット領域",
     "delivery_billing_methods": "Delivery請求方法",
     "delivery_billing_due":     "Delivery請求期日",
+    "company_functions":        "論点の会社機能（商談共通論点向け）",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -707,6 +712,8 @@ CREATE TABLE IF NOT EXISTS deal_issues (
     status      TEXT DEFAULT '議論中', -- 議論中/議論済み/取り消し
     due_date    TEXT,                 -- 解消期限（YYYY-MM-DD）
     ai_summary  TEXT,                 -- メモ全履歴からAI自動生成したサマリー
+    company_function TEXT,            -- 会社機能（#147。deal_id IS NULLの商談共通論点向け。
+                                       -- 経営企画/総務/法務/人事/財務/経理等。company_functionsマスタ準拠）
     note_lock_salt TEXT,              -- 論点メモのパスワードロック（2026-08）。NULL=ロック無し
     note_lock_hash TEXT,              -- sha256(salt+password)。NULL=ロック無し
     note_lock_recovery_email TEXT,    -- パスワード忘れ時の連絡先（本人確認クリック用リンクの送付先）
@@ -819,6 +826,22 @@ CREATE TABLE IF NOT EXISTS task_notes (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id);
+
+-- タスクと商談/論点/Delivery/開発案件の多対多関連付け（#146、2026-09-02）。
+-- tasks.link_type/link_idは単一紐づけ時代の名残の列で、以後は新規に書き込まない
+-- （非破壊のため列自体は残置）。読み出しは両方をマージする(sfa_db.get_task_links等)ため、
+-- 旧データのバックフィルは不要——新UIでその タスクの関連付けを一度編集すれば、
+-- この表へ完全移行する(set_task_links)。
+CREATE TABLE IF NOT EXISTS task_entity_links (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    link_type  TEXT NOT NULL,      -- deal/issue/delivery/dev_project
+    link_id    INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(task_id, link_type, link_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_entity_links_task ON task_entity_links(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_entity_links_entity ON task_entity_links(link_type, link_id);
 
 -- タスクに貼る関連リンク（名前付き。ガントのフローティング編集等から追加、2026-08-28）。
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1478,6 +1501,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         _issue_cols = {c[1] for c in con.execute("PRAGMA table_info(deal_issues)")}
         if "responsible" not in _issue_cols:
             con.execute("ALTER TABLE deal_issues ADD COLUMN responsible TEXT")
+        if "company_function" not in _issue_cols:  # #147
+            con.execute("ALTER TABLE deal_issues ADD COLUMN company_function TEXT")
         # 論点メモのパスワードロック（2026-08）。
         for _col, _ddl in (
             ("note_lock_salt", "TEXT"), ("note_lock_hash", "TEXT"),
@@ -3417,7 +3442,7 @@ def set_dev_coef(con, coef_type: str, coef_key: str, coef_value: float) -> None:
 
 # ---- 社内論点（deal_id:N の議論ポイント管理） ----
 
-DEAL_ISSUE_FIELDS = ["deal_id", "issue", "members", "responsible", "status", "due_date"]
+DEAL_ISSUE_FIELDS = ["deal_id", "issue", "members", "responsible", "status", "due_date", "company_function"]
 
 _DEAL_ISSUE_SELECT = (
     "SELECT i.*, d.deal_name, d.owner AS sales_owner, d.sub_owner AS sales_sub_owner, "
@@ -3430,11 +3455,13 @@ DEAL_ISSUE_SORTS = ["due_date", "status", "updated_at"]
 
 def list_deal_issues(con, *, deal_id: int | None = None, status: str | None = None,
                       member: str | None = None, responsible: str | None = None,
-                      q: str | None = None, sort: str = "due_date") -> list[dict]:
+                      q: str | None = None, company_function: str | None = None,
+                      sort: str = "due_date") -> list[dict]:
     """論点一覧。deal_id以外はすべて一覧画面の絞り込み用。
     member指定時は議論メンバー（社員名のカンマ区切り複数選択）にその名前を含む論点のみ返す。
     responsible指定時は責任者がその社員名の論点のみ返す。
-    q指定時はアカウント名・商談名の部分一致で絞り込む。"""
+    q指定時はアカウント名・商談名の部分一致で絞り込む。
+    company_function指定時は会社機能（#147、商談共通論点のみ持つ）で絞り込む。"""
     q_sql = _DEAL_ISSUE_SELECT
     conds: list = []
     params: list = []
@@ -3453,6 +3480,9 @@ def list_deal_issues(con, *, deal_id: int | None = None, status: str | None = No
     if q:
         conds.append("(a.name LIKE ? OR d.deal_name LIKE ?)")
         params.extend([f"%{q}%", f"%{q}%"])
+    if company_function:
+        conds.append("i.company_function = ?")
+        params.append(company_function)
     if conds:
         q_sql += " WHERE " + " AND ".join(conds)
     order = {
@@ -3693,10 +3723,14 @@ def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
                category: str | None = None, project: str | None = None,
                link_type: str | None = None,
                link_id: int | None = None, exclude_done: bool = False,
-               admin: bool | None = None, only_deleted: bool = False) -> list[dict]:
+               admin: bool | None = None, only_deleted: bool = False,
+               issue_company_function: str | None = None) -> list[dict]:
     """admin=True で事務タスク(is_admin=1)のみ、admin=False で通常タスク(is_admin=0/NULL)のみ、
     admin=None（既定）で両方。既存呼び出しは admin=None のため挙動不変。
-    既定はソフト削除済み(deleted_at)を除外。only_deleted=True で削除済みのみ（復活画面用）。"""
+    既定はソフト削除済み(deleted_at)を除外。only_deleted=True で削除済みのみ（復活画面用）。
+    issue_company_function指定時（#147）は、紐づく論点(issue)のcompany_functionがその値の
+    タスクのみ返す（レガシー単一列・task_entity_linksの両方の紐づけを対象、商談紐づけの
+    論点はcompany_functionを持たないため対象外）。"""
     q = "SELECT * FROM tasks"
     conds: list = []
     params: list = []
@@ -3719,12 +3753,35 @@ def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
     if project:
         conds.append("project = ?"); params.append(project)
     if link_type == "__none__":
-        # 紐づけ無しのみ（ユーザー要望2026-08-27）。link_idは無視する。
-        conds.append("(link_type IS NULL OR link_type = '')")
+        # 紐づけ無しのみ（ユーザー要望2026-08-27）。link_idは無視する。レガシー単一列と
+        # task_entity_links（#146・複数関連付け）の両方に何も無いことを確認する。
+        conds.append(
+            "(link_type IS NULL OR link_type = '') AND NOT EXISTS "
+            "(SELECT 1 FROM task_entity_links tel WHERE tel.task_id = tasks.id)")
     elif link_type:
-        conds.append("link_type = ?"); params.append(link_type)
-    if link_id is not None and link_type != "__none__":
-        conds.append("link_id = ?"); params.append(int(link_id))
+        # レガシー単一列(link_type[/link_id])、またはtask_entity_links（#146）のどちらかに
+        # マッチすれば該当（1タスクが複数の紐づけ先を持てるため）。
+        if link_id is not None:
+            conds.append(
+                "((link_type = ? AND link_id = ?) OR EXISTS "
+                "(SELECT 1 FROM task_entity_links tel WHERE tel.task_id = tasks.id "
+                "AND tel.link_type = ? AND tel.link_id = ?))")
+            params += [link_type, int(link_id), link_type, int(link_id)]
+        else:
+            conds.append(
+                "(link_type = ? OR EXISTS "
+                "(SELECT 1 FROM task_entity_links tel WHERE tel.task_id = tasks.id "
+                "AND tel.link_type = ?))")
+            params += [link_type, link_type]
+    if issue_company_function:
+        # #147: 紐づく論点(issue)のcompany_functionで絞り込む（レガシー単一列/
+        # task_entity_linksの両方の紐づけ経路を対象）。
+        conds.append(
+            "(EXISTS (SELECT 1 FROM deal_issues di WHERE di.id = tasks.link_id "
+            "AND tasks.link_type = 'issue' AND di.company_function = ?) "
+            "OR EXISTS (SELECT 1 FROM task_entity_links tel JOIN deal_issues di ON di.id = tel.link_id "
+            "WHERE tel.task_id = tasks.id AND tel.link_type = 'issue' AND di.company_function = ?))")
+        params += [issue_company_function, issue_company_function]
     if conds:
         q += " WHERE " + " AND ".join(conds)
     # ★ピン最優先→期限昇順(未設定は末尾)→id
@@ -3739,9 +3796,11 @@ def get_task(con, id: int) -> dict | None:
 
 
 def task_link_label(con, link_type: str | None, link_id: int | None) -> str | None:
-    """タスクのlink_type/link_id（deal/issue/delivery）の表示ラベル。対象が消えていたらNone。
+    """タスクのlink_type/link_id（deal/issue/delivery/dev_project）の表示ラベル。
+    対象が消えていたらNone。
     ユーザー要望2026-08-24: コンサルタスクを商談/論点に紐づけられるようにする機能で使用。
-    2026-08-27にDeliveryを追加。"""
+    2026-08-27にDeliveryを追加。2026-09-02(#146)にdev_projectを追加
+    （複数関連付け対応で、従来webapp.py側に別出しだったdev_projectのラベル解決を統一）。"""
     if not link_type or not link_id:
         return None
     if link_type == "deal":
@@ -3756,13 +3815,129 @@ def task_link_label(con, link_type: str | None, link_id: int | None) -> str | No
         base = it.get("issue") or "(無題)"
         if it.get("deal_name"):
             return f'{base}（{it.get("account_name") or "—"}：{it["deal_name"]}）'
+        if it.get("company_function"):
+            # #147: 商談共通論点に会社機能が設定されていれば、コンサルタスク側の
+            # 紐づけラベルにも反映する（「商談共通」より具体的な文脈になる）。
+            return f'{base}（{it["company_function"]}）'
         return f"{base}（商談共通）"
     if link_type == "delivery":
         dv = get_delivery(con, link_id)
         if not dv:
             return None
         return f'{dv.get("account_name") or "—"}：{dv.get("title") or dv.get("deal_name") or "—"}'
+    if link_type == "dev_project":
+        dp = get_dev_project(con, link_id)
+        if not dp:
+            return None
+        return f'{dp.get("account_name") or "—"}：{dp.get("theme") or "開発案件"}'
     return None
+
+
+TASK_LINK_TYPES_MULTI = ("deal", "issue", "delivery", "dev_project")
+
+
+def set_task_links(con, task_id: int, links: list[tuple[str, int]], commit: bool = True) -> None:
+    """タスクの関連付け（商談/論点/Delivery/開発案件、複数可）を一括置き換える（#146）。
+    linksは[(link_type, link_id), ...]。種別が不正・link_id欠落・重複は無視する。
+    旧来の単一紐づけ(tasks.link_type/link_id)は、後方互換のため先頭の1件を反映する
+    （レガシー参照箇所向けのミラー。実体はtask_entity_linksが正）。"""
+    seen: set[tuple[str, int]] = set()
+    clean: list[tuple[str, int]] = []
+    for lt, lid in (links or []):
+        if lt not in TASK_LINK_TYPES_MULTI or not lid:
+            continue
+        try:
+            lid = int(lid)
+        except (TypeError, ValueError):
+            continue
+        if (lt, lid) in seen:
+            continue
+        seen.add((lt, lid))
+        clean.append((lt, lid))
+    tid = int(task_id)
+    con.execute("DELETE FROM task_entity_links WHERE task_id=?", (tid,))
+    if clean:
+        con.executemany(
+            "INSERT INTO task_entity_links(task_id, link_type, link_id) VALUES (?,?,?)",
+            [(tid, lt, lid) for lt, lid in clean])
+    first_lt, first_li = clean[0] if clean else (None, None)
+    con.execute("UPDATE tasks SET link_type=?, link_id=? WHERE id=?", (first_lt, first_li, tid))
+    if commit:
+        con.commit()
+
+
+def get_task_links(con, task_id: int) -> list[dict]:
+    """タスクの全関連付け（商談/論点/Delivery/開発案件、複数可, #146）。
+    task_entity_links（正）とtasks.link_type/link_id（レガシー単一列。#146以前の
+    upsert_task経由の紐づけがまだこちらにしか無いケースを拾う）の両方を見て、
+    重複除去のうえ返す。ラベルが解決できない（参照切れ）ものは除外。"""
+    t = get_task(con, task_id)
+    pairs: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    if t and t.get("link_type") and t.get("link_id"):
+        key = (t["link_type"], t["link_id"])
+        pairs.append(key); seen.add(key)
+    for r in con.execute(
+        "SELECT link_type, link_id FROM task_entity_links WHERE task_id=? ORDER BY id",
+        (int(task_id),)):
+        key = (r["link_type"], r["link_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append(key)
+    out = []
+    for lt, lid in pairs:
+        label = task_link_label(con, lt, lid)
+        if label:
+            out.append({"link_type": lt, "link_id": lid, "label": label})
+    return out
+
+
+def get_task_links_map(con, task_ids: list[int] | None = None) -> dict[int, list[dict]]:
+    """複数タスク分の関連付けをまとめて取得（#146・N+1回避用）。get_task_linksの一括版。
+    task_idsを指定するとその範囲のみ、Noneなら全タスク対象。"""
+    if task_ids is not None:
+        ids = [int(i) for i in task_ids]
+        if not ids:
+            return {}
+        ph = ",".join("?" for _ in ids)
+        legacy_rows = con.execute(
+            f"SELECT id, link_type, link_id FROM tasks WHERE id IN ({ph}) "
+            f"AND link_type IS NOT NULL AND link_type != '' AND link_id IS NOT NULL", ids).fetchall()
+        multi_rows = con.execute(
+            f"SELECT task_id, link_type, link_id FROM task_entity_links WHERE task_id IN ({ph}) "
+            f"ORDER BY id", ids).fetchall()
+    else:
+        legacy_rows = con.execute(
+            "SELECT id, link_type, link_id FROM tasks "
+            "WHERE link_type IS NOT NULL AND link_type != '' AND link_id IS NOT NULL").fetchall()
+        multi_rows = con.execute(
+            "SELECT task_id, link_type, link_id FROM task_entity_links ORDER BY id").fetchall()
+    pairs_by_task: dict[int, list[tuple[str, int]]] = {}
+    seen_by_task: dict[int, set] = {}
+    for r in legacy_rows:
+        tid, key = r["id"], (r["link_type"], r["link_id"])
+        pairs_by_task.setdefault(tid, []).append(key)
+        seen_by_task.setdefault(tid, set()).add(key)
+    for r in multi_rows:
+        tid, key = r["task_id"], (r["link_type"], r["link_id"])
+        if key in seen_by_task.get(tid, set()):
+            continue
+        pairs_by_task.setdefault(tid, []).append(key)
+        seen_by_task.setdefault(tid, set()).add(key)
+    label_cache: dict[tuple[str, int], str | None] = {}
+    out: dict[int, list[dict]] = {}
+    for tid, pairs in pairs_by_task.items():
+        items = []
+        for lt, lid in pairs:
+            if (lt, lid) not in label_cache:
+                label_cache[(lt, lid)] = task_link_label(con, lt, lid)
+            label = label_cache[(lt, lid)]
+            if label:
+                items.append({"link_type": lt, "link_id": lid, "label": label})
+        if items:
+            out[tid] = items
+    return out
 
 
 def set_task_status(con, id: int, status: str, commit: bool = True) -> None:
@@ -4081,15 +4256,17 @@ def delete_task_project(con, id: int) -> None:
 
 
 def clear_orphaned_task_links(con) -> int:
-    """紐づけ先(商談/論点/Delivery)が削除済みで参照切れになっているタスクのlink_type/link_idを
-    クリアする（自己修復）。返り値はクリアした件数。
+    """紐づけ先(商談/論点/Delivery/開発案件)が削除済みで参照切れになっている紐づけを
+    クリアする（自己修復）。返り値はクリア・削除した件数の合計。
     ユーザー報告2026-08-29: 商談/論点/Deliveryを削除すると、それを参照していたタスクの
     link_type/link_idが残ったままになり、看板上部の「紐づけられている案件」一覧から
     静かに消えてしまっていた（task_link_labelが参照先を解決できずNoneを返すため）。
     delete_deal/delete_deal_issue/delete_deliveryの直後、およびtask_link_summary計算時に
-    呼んで自己修復する。"""
+    呼んで自己修復する。2026-09-02(#146): 複数関連付け対応のtask_entity_linksと
+    dev_projectも対象に拡張。"""
     cleared = 0
-    for link_type, table in (("deal", "deals"), ("issue", "deal_issues"), ("delivery", "deliveries")):
+    for link_type, table in (("deal", "deals"), ("issue", "deal_issues"),
+                             ("delivery", "deliveries"), ("dev_project", "dev_projects")):
         rows = con.execute(
             f"SELECT id FROM tasks WHERE link_type=? AND link_id IS NOT NULL "
             f"AND NOT EXISTS (SELECT 1 FROM {table} x WHERE x.id = tasks.link_id)",
@@ -4100,6 +4277,12 @@ def clear_orphaned_task_links(con) -> int:
                 f"UPDATE tasks SET link_type=NULL, link_id=NULL WHERE id IN ({','.join('?' for _ in ids)})",
                 ids)
             cleared += len(ids)
+        cur = con.execute(
+            f"DELETE FROM task_entity_links WHERE link_type=? "
+            f"AND NOT EXISTS (SELECT 1 FROM {table} x WHERE x.id = task_entity_links.link_id)",
+            (link_type,))
+        if cur.rowcount and cur.rowcount > 0:
+            cleared += cur.rowcount
     if cleared:
         con.commit()
     return cleared
@@ -4108,24 +4291,39 @@ def clear_orphaned_task_links(con) -> int:
 def task_link_summary(con) -> dict:
     """コンサルタスクの紐づけ先(商談/論点/Delivery)ごとの未完了/完了件数集計
     （看板上部の「紐づけられている案件」一覧用、ユーザー要望2026-08-27）。
-    未完了タスクが1件も無い紐づけ先（完了にしか登場しない案件）は結果に含めない。"""
+    未完了タスクが1件も無い紐づけ先（完了にしか登場しない案件）は結果に含めない。
+    2026-09-02(#146): 複数関連付け対応。1タスクが複数の紐づけ先を持つ場合、
+    該当する全ての紐づけ先に重複してカウントする（ユーザー確定仕様）。"""
     clear_orphaned_task_links(con)  # 参照切れの紐づけがあれば自己修復してから集計
     out: dict = {"deal": [], "issue": [], "delivery": []}
-    rows = con.execute(
-        "SELECT link_type, link_id, "
-        "SUM(CASE WHEN status!='完了' THEN 1 ELSE 0 END) open_n, "
-        "SUM(CASE WHEN status='完了' THEN 1 ELSE 0 END) done_n "
-        "FROM tasks WHERE COALESCE(is_admin,0)=0 AND (deleted_at IS NULL OR deleted_at='') "
-        "AND link_type IN ('deal','issue','delivery') AND link_id IS NOT NULL "
-        "GROUP BY link_type, link_id")
-    for r in rows:
-        if not r["open_n"]:
+    # (task_id, link_type, link_id) をキーに、レガシー単一列とtask_entity_linksを
+    # マージ（同じ組が両方にあっても二重カウントしない）。
+    status_by_key: dict[tuple, str] = {}
+    for r in con.execute(
+        "SELECT id AS task_id, link_type, link_id, status FROM tasks "
+        "WHERE COALESCE(is_admin,0)=0 AND (deleted_at IS NULL OR deleted_at='') "
+        "AND link_type IN ('deal','issue','delivery') AND link_id IS NOT NULL"):
+        status_by_key[(r["task_id"], r["link_type"], r["link_id"])] = r["status"] or ""
+    for r in con.execute(
+        "SELECT tel.task_id AS task_id, tel.link_type AS link_type, tel.link_id AS link_id, "
+        "t.status AS status FROM task_entity_links tel JOIN tasks t ON t.id = tel.task_id "
+        "WHERE tel.link_type IN ('deal','issue','delivery') "
+        "AND COALESCE(t.is_admin,0)=0 AND (t.deleted_at IS NULL OR t.deleted_at='')"):
+        status_by_key.setdefault((r["task_id"], r["link_type"], r["link_id"]), r["status"] or "")
+    agg: dict[tuple[str, int], dict] = {}
+    for (_task_id, lt, lid), status in status_by_key.items():
+        slot = agg.setdefault((lt, lid), {"open_n": 0, "done_n": 0})
+        if status == "完了":
+            slot["done_n"] += 1
+        else:
+            slot["open_n"] += 1
+    for (lt, lid), slot in agg.items():
+        if not slot["open_n"]:
             continue
-        label = task_link_label(con, r["link_type"], r["link_id"])
+        label = task_link_label(con, lt, lid)
         if not label:
             continue
-        out[r["link_type"]].append({"id": r["link_id"], "label": label,
-                                    "open_n": r["open_n"], "done_n": r["done_n"]})
+        out[lt].append({"id": lid, "label": label, "open_n": slot["open_n"], "done_n": slot["done_n"]})
     for k in out:
         out[k].sort(key=lambda x: -x["open_n"])
     return out

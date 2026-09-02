@@ -101,20 +101,25 @@ def test_tasks_page_filters_by_link(con, deal_and_issue):
 
 
 def test_task_form_offers_deal_and_issue_search_and_prefills_current_link(con, deal_and_issue):
+    """#146(2026-09-02): 関連付けは複数可になり、既存の紐づけはチップ一覧
+    (window.TF_LINKS→tfLinksList)として表示される。ピッカー自体は「追加する1件」を選ぶ
+    ためのUIになり、name属性は持たない(emit_name_attrs=False)。"""
     did, iid = deal_and_issue
     tid = sfa_db.upsert_task(con, title="論点タスク", link_type="issue", link_id=iid)
     html = webapp.task_form(con, sfa_db.get_task(con, tid))
-    assert 'name="link_type"' in html and 'name="link_id"' in html
-    assert 'value="価格交渉の論点（ソラスト：成果報酬コスト削減）"' in html
-    assert '<option value="issue" selected>論点</option>' in html
-    assert f'value="{iid}"' in html
+    assert 'name="link_type"' not in html and 'name="link_id"' not in html
+    assert 'id="tfLinksList"' in html
+    assert f'"type": "issue", "id": {iid}' in html
+    assert "価格交渉の論点（ソラスト：成果報酬コスト削減）" in html
+    assert 'name="links_json"' in html
 
 
 def test_task_form_no_link_by_default(con):
     tid = sfa_db.upsert_task(con, title="未紐づけ")
     html = webapp.task_form(con, sfa_db.get_task(con, tid))
-    assert 'id="tfLinkType" name="link_type" value=""' in html
-    assert 'id="tfLinkId" name="link_id" value=""' in html
+    assert "window.TF_LINKS = []" in html
+    assert 'id="tfLinkType"' in html and 'id="tfLinkId"' in html
+    assert 'name="link_type"' not in html and 'name="link_id"' not in html
 
 
 # ── route ──
