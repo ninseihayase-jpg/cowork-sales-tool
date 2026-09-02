@@ -189,3 +189,95 @@ def test_gantt_day_axis_labels_every_day(con):
     labels = re.findall(r'class="gantt-daylabel[^"]*"[^>]*>([^<]*)</div>', html)
     assert labels, "日付ラベルのセルが見つからない"
     assert all(lbl.strip() != "" for lbl in labels), "全ての日に日付が入っていること"
+
+
+# ── #152(2026-09-03): バーのドラッグ移動・リサイズ ──
+# ユーザー要望: ガント画面でスケジュールをドラッグ&幅変更で修正できるようにしたい。
+# 幅変更は日付線にスナップし、ドラッグ中は変更後の日付が見えるようにする。
+# tasks.gantt_start_date（新規カラム）に手動調整後の開始日を保存し、以後は
+# 自動計算（期日からの営業日逆算・容量スケジュール）より優先する。
+
+def test_schema_has_gantt_start_date_column(con):
+    cols = {r[1] for r in con.execute("PRAGMA table_info(tasks)")}
+    assert "gantt_start_date" in cols
+
+
+def test_gantt_bar_has_drag_and_resize_attributes(con):
+    today = webapp._today_jst().isoformat()
+    tid = sfa_db.upsert_task(con, title="ドラッグ確認タスク", project="P", category="C",
+                             due_date=today, effort_level="軽", assignee="早瀬")
+    html = webapp.tasks_gantt_page(con)
+    assert f'data-tid="{tid}"' in html
+    assert 'draggable="true"' in html
+    assert 'class="gt-grip gt-grip-l"' in html
+    assert 'class="gt-grip gt-grip-r"' in html
+    assert f"onclick=\"return gtBarClick(event,{tid})\"" in html
+    assert "function gtBarClick" in html
+    assert "GANTT_MIN_DATE" in html and "GANTT_NUM_DAYS" in html
+    assert "gt-drag-preview" in html
+
+
+def test_gantt_start_date_override_takes_precedence_over_effort_level(con):
+    """gantt_start_date（ドラッグ移動/リサイズで保存される値）が設定されていれば、
+    effort_levelからの自動計算より優先してバー開始位置に使われる。"""
+    today = webapp._today_jst()
+    due = (today + timedelta(days=10)).isoformat()
+    manual_start = (today + timedelta(days=3)).isoformat()
+    tid = sfa_db.upsert_task(con, title="手動調整タスク", due_date=due, effort_level="軽")
+    con.execute("UPDATE tasks SET gantt_start_date=? WHERE id=?", (manual_start, tid))
+    con.commit()
+    html = webapp.tasks_gantt_page(con)
+    assert f'data-start="{manual_start}"' in html
+    assert f'data-end="{due}"' in html
+
+
+def test_gantt_without_override_still_uses_effort_level_calc(con):
+    """gantt_start_date未設定のタスクは従来通りtask_gantt_rangeの計算結果を使う（回帰確認）。"""
+    tid = sfa_db.upsert_task(con, title="自動計算タスク", due_date="2026-08-20", effort_level="中")
+    html = webapp.tasks_gantt_page(con)
+    assert 'data-start="2026-08-18"' in html
+    assert 'data-end="2026-08-20"' in html
+    assert str(tid) in html
+
+
+def test_task_field_route_accepts_gantt_start_date(con, monkeypatch, tmp_path):
+    """POST /task/{id}/field がgantt_start_dateを受け付けて保存すること。"""
+    import base64
+    import urllib.parse
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    con.close()  # 別プロセス相当のサーバー用に新しいDBファイルで検証する
+    db_path = str(tmp_path / "srv.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    tid = sfa_db.upsert_task(con2, title="X", due_date="2026-09-10", effort_level="軽")
+    con2.close()
+
+    monkeypatch.setattr(webapp, "SFA_BASIC_USER", "u")
+    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", "p")
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    import threading
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        token = base64.b64encode(b"u:p").decode()
+        body = urllib.parse.urlencode({"field": "gantt_start_date", "value": "2026-09-05"}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/task/{tid}/field", data=body,
+            headers={"Authorization": f"Basic {token}",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+            method="POST")
+        resp = urllib.request.urlopen(req, timeout=10)
+        assert resp.getcode() == 200
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+    con3 = sfa_db.connect(db_path)
+    row = con3.execute("SELECT gantt_start_date FROM tasks WHERE id=?", (tid,)).fetchone()
+    con3.close()
+    assert row["gantt_start_date"] == "2026-09-05"

@@ -5844,7 +5844,17 @@ _GANTT_CSS = """<style>
 .gantt-daylabel.weekend{background:#f8fafc}
 .gantt-daylabel.today{background:#fef3c7;font-weight:700}
 .gantt-bar{border-radius:4px;height:16px;align-self:center;font-size:10px;color:#fff;
-  white-space:nowrap;overflow:hidden;padding:0 4px;line-height:16px;text-decoration:none;display:block;z-index:1}
+  white-space:nowrap;overflow:hidden;line-height:16px;display:block;z-index:1;position:relative;
+  cursor:grab}
+.gantt-bar:active{cursor:grabbing}
+.gt-bar-label{position:absolute;left:6px;right:6px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;pointer-events:none}
+.gt-grip{position:absolute;top:0;bottom:0;width:6px;cursor:ew-resize;z-index:2}
+.gt-grip-l{left:0}
+.gt-grip-r{right:0}
+.gt-drag-preview{position:fixed;z-index:10000;background:#1e293b;color:#fff;font-size:11px;
+  padding:3px 8px;border-radius:4px;pointer-events:none;white-space:nowrap;display:none;
+  box-shadow:0 4px 10px rgba(0,0,0,.25)}
 </style>"""
 
 
@@ -5878,12 +5888,19 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
 
     ready, missing = [], []
     for t in open_tasks:
-        _owner = (t.get("assignee") or "").strip()
-        _sched = _sched_for(_owner) if _owner else None
-        if _sched and t["id"] in _sched["starts"]:
-            start, end = _sched["starts"][t["id"]], _sched["ends"][t["id"]]
+        # ガントのバーをドラッグ移動/リサイズすると保存されるgantt_start_date（#152）が
+        # あれば、自動計算（容量スケジュール／期日からの単純逆算）より優先する
+        # （dev_projectsの「既存値があれば再計算で上書きしない」と同じ考え方）。
+        _override_start = (t.get("gantt_start_date") or "").strip()
+        if _override_start:
+            start, end = _override_start, (t.get("due_date") or "").strip() or None
         else:
-            start, end = sfa_db.task_gantt_range(t.get("due_date"), t.get("effort_level"))
+            _owner = (t.get("assignee") or "").strip()
+            _sched = _sched_for(_owner) if _owner else None
+            if _sched and t["id"] in _sched["starts"]:
+                start, end = _sched["starts"][t["id"]], _sched["ends"][t["id"]]
+            else:
+                start, end = sfa_db.task_gantt_range(t.get("due_date"), t.get("effort_level"))
         if start and end:
             ready.append({**t, "_start": start, "_end": end})
         else:
@@ -5920,6 +5937,10 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
 
     d3 = sfa_db.add_business_days(today, 3).isoformat()
     weekend_end = (today + timedelta(days=6 - today.weekday())).isoformat()
+    # ドラッグ移動/リサイズ(#152)のJS側日付計算に使う。readyが空ならドラッグ操作自体が
+    # 発生しないため未使用（None/0のまま）。
+    _gantt_min_date_iso: str | None = None
+    _gantt_n_days = 0
 
     if not ready:
         body = ('<p class="muted" style="margin:0">工数感と期日の両方が設定されたコンサルタスクが'
@@ -5934,6 +5955,8 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
         # 見通しが常に見えるようにする。列は固定22pxではなくminmaxで画面幅まで伸ばす。
         n_days = max(n_days, 21)
         col_tpl = f"220px repeat({n_days}, minmax(28px, 1fr))"
+        _gantt_min_date_iso = min_d.isoformat()
+        _gantt_n_days = n_days
 
         def _col_of(d: date) -> int:
             return (d - min_d).days + 2  # 列1=ラベル列。列2=min_d
@@ -5990,11 +6013,19 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
                     f'overflow:hidden;text-overflow:ellipsis" title="{_esc(t.get("title"))}">'
                     f'{_esc(t.get("title"))}</a></div>')
                 c1, c2 = _col_of(s), _col_of(e) + 1
+                # #152: バー全体をドラッグすると日程スライド、左右端のグリップをドラッグすると
+                # リサイズ（所要日数変更）。ドラッグ中は日付ラベルのプレビューを表示し、
+                # 日付線にスナップしてからドロップできる（JS側 _GANTT_DRAG_JS 参照）。
                 cells.append(
-                    f'<a href="#" onclick="return gtOpenTask({t["id"]})" class="gantt-bar" '
+                    f'<div class="gantt-bar" draggable="true" data-tid="{t["id"]}" '
+                    f'data-start="{t["_start"]}" data-end="{t["_end"]}" '
                     f'style="grid-row:{row};grid-column:{c1} / {c2};background:{ucolor}" '
+                    f'onclick="return gtBarClick(event,{t["id"]})" '
                     f'title="{_esc(t.get("title"))}｜{_esc(t["_start"])}〜{_esc(t["_end"])}'
-                    f'（工数感:{_esc(t.get("effort_level") or "")}）">{_esc(t.get("title"))}</a>')
+                    f'（工数感:{_esc(t.get("effort_level") or "")}）">'
+                    f'<span class="gt-grip gt-grip-l"></span>'
+                    f'<span class="gt-bar-label">{_esc(t.get("title"))}</span>'
+                    f'<span class="gt-grip gt-grip-r"></span></div>')
                 row += 1
         body = (f'<div class="gantt-wrap"><div class="gantt-grid" '
                 f'style="grid-template-columns:{col_tpl}">{"".join(cells)}</div></div>')
@@ -6053,6 +6084,8 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
     var GANTT_CATS = {json.dumps(cats, ensure_ascii=False)};
     var GANTT_EFFORT_LEVELS = {json.dumps(sfa_db.TASK_EFFORT_LEVELS, ensure_ascii=False)};
     var GANTT_STATUSES = {json.dumps(sfa_db.TASK_STATUSES, ensure_ascii=False)};
+    var GANTT_MIN_DATE = {json.dumps(_gantt_min_date_iso, ensure_ascii=False)};
+    var GANTT_NUM_DAYS = {json.dumps(_gantt_n_days)};
     function _gtEsc(s){{ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;')
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }}
     function _gtOpt(list,cur){{ var h='<option value=""></option>';
@@ -6119,6 +6152,13 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
       bd.style.display='block'; pop.style.display='block';
       return false;
     }}
+    // #152: バーのドラッグ移動/リサイズ直後のclickイベント発火を抑止する（ネイティブDnDは
+    // drop後にclickも発火してしまい、そのままだとドラッグのたびに編集ポップアップが
+    // 開いてしまうため）。
+    function gtBarClick(ev,id){{
+      if (window.GANTT_JUST_DRAGGED) {{ ev.preventDefault(); return false; }}
+      return gtOpenTask(id);
+    }}
     function closeGtTask(){{
       var pop=document.getElementById('gtPop'), bd=document.getElementById('gtBackdrop');
       if(pop) pop.style.display='none'; if(bd) bd.style.display='none';
@@ -6173,6 +6213,144 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
       if(ev.key==='Escape'){{ var pop=document.getElementById('gtPop');
         if(pop&&pop.style.display==='block'){{ ev.preventDefault(); closeGtTask(); }} }}
     }});
+
+    // ── バーのドラッグ移動・リサイズ（#152。ユーザー要望2026-09-03: ガント画面で
+    // スケジュールをドラッグ&幅変更で修正できるように。幅変更は日付線にスナップし、
+    // ドラッグ中は変更後の日付をラベル表示する）。
+    // グリッドは1日=1列のCSS Grid（列1=ラベル列220px固定、以降n_days列がminmax(28px,1fr)で
+    // 均等割）。ピクセル→列の変換は「グリッド全体幅からラベル列幅を引いてn_daysで割る」
+    // だけで求まる（列幅は全て同じfrなので）。日付そのものが列の単位＝スナップは
+    // Math.round一発で常に日付線ぴったりになる（サブ日の概念が無いため特別な処理は不要）。
+    (function(){{
+      if (!GANTT_MIN_DATE || !GANTT_NUM_DAYS) return;   // 表示中のバーが無ければ何もしない
+      var LABEL_W = 220;
+      window.GANTT_JUST_DRAGGED = false;
+      var resizing = false;
+
+      function parseISO(s){{ var p=s.split('-'); return new Date(Date.UTC(+p[0],+p[1]-1,+p[2])); }}
+      function fmtISO(d){{
+        var y=d.getUTCFullYear(), m=d.getUTCMonth()+1, day=d.getUTCDate();
+        return y+'-'+(m<10?'0':'')+m+'-'+(day<10?'0':'')+day;
+      }}
+      function dateForOffset(offset){{
+        var d=parseISO(GANTT_MIN_DATE); d.setUTCDate(d.getUTCDate()+offset); return fmtISO(d);
+      }}
+      function offsetForDate(s){{
+        var d=parseISO(s), min=parseISO(GANTT_MIN_DATE);
+        return Math.round((d.getTime()-min.getTime())/86400000);
+      }}
+      function grid(){{ return document.querySelector('.gantt-grid'); }}
+      function dayColWidth(){{
+        var g=grid(); if(!g) return 28;
+        return Math.max(1,(g.clientWidth-LABEL_W)/GANTT_NUM_DAYS);
+      }}
+      function offsetForClientX(clientX){{
+        var g=grid(); if(!g) return 0;
+        var rect=g.getBoundingClientRect();
+        var raw=(clientX-rect.left-LABEL_W)/dayColWidth();
+        return Math.max(0, Math.min(GANTT_NUM_DAYS-1, Math.round(raw)));
+      }}
+
+      var previewEl=null;
+      function showPreview(text, clientX, clientY){{
+        if(!previewEl){{ previewEl=document.createElement('div'); previewEl.className='gt-drag-preview';
+          document.body.appendChild(previewEl); }}
+        previewEl.textContent=text;
+        previewEl.style.left=(clientX+12)+'px'; previewEl.style.top=(clientY-24)+'px';
+        previewEl.style.display='block';
+      }}
+      function hidePreview(){{ if(previewEl) previewEl.style.display='none'; }}
+      function afterJustDragged(){{
+        window.GANTT_JUST_DRAGGED=true;
+        setTimeout(function(){{ window.GANTT_JUST_DRAGGED=false; }},250);
+      }}
+      function saveField(tid,field,value,cb){{
+        fetch('/task/'+tid+'/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+          body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)}})
+         .then(function(r){{return r.json();}}).then(function(d){{
+           if(!d.ok){{ alert('更新エラー: '+(d.error||'')); return; }}
+           if (cb) cb();
+         }}).catch(function(){{ alert('通信エラー'); }});
+      }}
+
+      // 移動（バー全体のドラッグ、ネイティブHTML5 DnD）
+      var dragTid=null, dragStartOffset=0, dragEndOffset=0, dragGrabOffset=0;
+      document.querySelectorAll('.gantt-bar').forEach(function(bar){{
+        bar.addEventListener('dragstart', function(e){{
+          if (resizing) {{ e.preventDefault(); return; }}
+          dragTid = bar.dataset.tid;
+          dragStartOffset = offsetForDate(bar.dataset.start);
+          dragEndOffset = offsetForDate(bar.dataset.end);
+          var rect = bar.getBoundingClientRect();
+          dragGrabOffset = Math.round((e.clientX - rect.left) / dayColWidth());
+          if (e.dataTransfer) {{ e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain', dragTid); }}
+        }});
+        bar.addEventListener('drag', function(e){{
+          if (!dragTid || (e.clientX===0 && e.clientY===0)) return;   // 一部ブラウザの最終dragイベント対策
+          var delta = (offsetForClientX(e.clientX) - dragGrabOffset) - dragStartOffset;
+          showPreview(dateForOffset(dragStartOffset+delta)+' 〜 '+dateForOffset(dragEndOffset+delta), e.clientX, e.clientY);
+        }});
+        bar.addEventListener('dragend', function(e){{
+          hidePreview();
+          if (!dragTid) return;
+          var delta = (offsetForClientX(e.clientX) - dragGrabOffset) - dragStartOffset;
+          var tid = dragTid; dragTid = null;
+          afterJustDragged();
+          if (!delta) return;
+          var newStart = dateForOffset(dragStartOffset+delta), newEnd = dateForOffset(dragEndOffset+delta);
+          bar.style.gridColumn = (offsetForDate(newStart)+2)+' / '+(offsetForDate(newEnd)+3);
+          saveField(tid,'gantt_start_date',newStart,function(){{ saveField(tid,'due_date',newEnd,function(){{ location.reload(); }}); }});
+        }});
+      }});
+
+      // リサイズ（左右端のグリップをドラッグ）
+      function wireGrip(grip, side){{
+        grip.addEventListener('mousedown', function(e){{
+          e.preventDefault(); e.stopPropagation();
+          resizing = true;
+          var bar = grip.closest('.gantt-bar');
+          var tid = bar.dataset.tid;
+          var startOffset = offsetForDate(bar.dataset.start), endOffset = offsetForDate(bar.dataset.end);
+          function onMove(ev){{
+            var off = offsetForClientX(ev.clientX);
+            var s = side==='l' ? Math.min(off,endOffset) : startOffset;
+            var en = side==='r' ? Math.max(off,startOffset) : endOffset;
+            bar.style.gridColumn = (s+2)+' / '+(en+3);
+            showPreview(dateForOffset(s)+' 〜 '+dateForOffset(en), ev.clientX, ev.clientY);
+          }}
+          function onUp(ev){{
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            hidePreview();
+            resizing = false;
+            afterJustDragged();
+            var off = offsetForClientX(ev.clientX);
+            if (side==='l') {{
+              var newStart = dateForOffset(Math.min(off,endOffset));
+              if (newStart !== bar.dataset.start) saveField(tid,'gantt_start_date',newStart,function(){{ location.reload(); }});
+            }} else {{
+              var newEnd = dateForOffset(Math.max(off,startOffset));
+              if (newEnd !== bar.dataset.end) {{
+                // 右端(期日)のリサイズは、開始日を変えないのが目的。だがgantt_start_date未設定の
+                // タスクは開始日が「期日から工数感の営業日数ぶん逆算」の式で決まっているため、
+                // due_dateだけ変えるとリロード後に開始日まで再計算されてズレてしまう
+                // （実機確認で発見。#152）。現在の開始日をgantt_start_dateとして明示的に
+                // ピン留めしてからdue_dateを更新することで、開始日を固定したまま期日だけ
+                // 動かす、という本来のリサイズの意味を保つ。
+                var pinStart = bar.dataset.start;
+                saveField(tid,'gantt_start_date',pinStart,function(){{
+                  saveField(tid,'due_date',newEnd,function(){{ location.reload(); }});
+                }});
+              }}
+            }}
+          }}
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        }});
+      }}
+      document.querySelectorAll('.gt-grip-l').forEach(function(g){{ wireGrip(g,'l'); }});
+      document.querySelectorAll('.gt-grip-r').forEach(function(g){{ wireGrip(g,'r'); }});
+    }})();
     </script>"""
 
     return f"""
@@ -17152,7 +17330,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _value = f.get("value", "")
                     _allowed = {"status", "assignee", "due_date", "category", "priority",
                                 "title", "project", "next_action", "pinned", "slack_permalink",
-                                "requester", "effort_level", "effort_hours"}
+                                "requester", "effort_level", "effort_hours", "gantt_start_date"}
                     if _field not in _allowed:
                         self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(), ctype="application/json")
                     elif _field == "slack_permalink" and _value and not _value.startswith(("http://", "https://")):

@@ -1387,6 +1387,12 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # 所要作業時間(h)。effort_levelの明示的な上書き（2026-08-24、工数時間ベースのスケジューリング）。
         if _task_cols and "effort_hours" not in _task_cols:
             con.execute("ALTER TABLE tasks ADD COLUMN effort_hours REAL")
+        # ガント開始日の手動上書き（#152、2026-09-03）。未設定ならtask_gantt_range/
+        # compute_owner_scheduleによる自動計算のまま。ガント上でバーをドラッグ移動/
+        # 左端をリサイズすると、ここに実際の開始日が保存され、以後は自動計算より優先される
+        # （dev_projectsの「既存値があれば再計算で上書きしない」という考え方と同じ設計）。
+        if _task_cols and "gantt_start_date" not in _task_cols:
+            con.execute("ALTER TABLE tasks ADD COLUMN gantt_start_date TEXT")
         # 事務タスクの期限確認プロセス（2026-08-27）。Slack起票時のAI抽出/既定値はあくまで提案で、
         # 依頼者本人の「OK」または期限の返信で確定するまでは0（未確定）。既定1＝確認不要
         # （通常タスク・Web手入力等、そもそもこのフローの対象外のものは常に確定扱い）。
