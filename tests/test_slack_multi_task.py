@@ -218,3 +218,66 @@ def test_handle_reaction_creates_multiple_tasks_from_bulleted_message(con, monke
     assert len(all_tasks) == 2
     titles = {t["title"] for t in all_tasks}
     assert titles == {"要件詰め案件の棚卸と注力案件の掘り起こし・特定", "開発案件の定義書FMTを整備"}
+
+
+# ── #149(2026-09-02): 期限確認の返信率が低い問題への対応（依頼者を直接メンション） ──
+
+def test_handle_admin_mention_task_mentions_requester_in_reply(con, monkeypatch):
+    """「事務タスク化しました」の返信本文に、依頼者（＝メンションした本人）を
+    Slackメンションで含めること。名前解決を挟まず、メンションした人の実IDをそのまま使う。"""
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+    monkeypatch.setattr(slack_tasks, "_message_permalink", lambda channel, ts, token=None: None)
+    monkeypatch.setattr(slack_tasks, "notify_task_created", lambda *a, **kw: False)
+    monkeypatch.setattr(slack_tasks, "_call_claude", _fake_claude_json_array([
+        {"title": "請求書を発行する", "next_action": "", "due_date": "", "category": ""},
+    ]))
+
+    slack_tasks.handle_admin_mention_task(con, "C1", "500.0", "請求書を発行する", "U_REQUESTER")
+
+    _, kwargs = posts[-1]
+    section_text = kwargs["blocks"][0]["text"]["text"]
+    assert "<@U_REQUESTER>" in section_text
+
+
+def test_handle_admin_mention_task_mentions_requester_for_multi_task_reply(con, monkeypatch):
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+    monkeypatch.setattr(slack_tasks, "_message_permalink", lambda channel, ts, token=None: None)
+    monkeypatch.setattr(slack_tasks, "notify_task_created", lambda *a, **kw: False)
+    monkeypatch.setattr(slack_tasks, "_call_claude", _fake_claude_json_array([
+        {"title": "経費精算をする", "next_action": "", "due_date": "", "category": ""},
+        {"title": "会議室を予約する", "next_action": "", "due_date": "", "category": ""},
+    ]))
+
+    slack_tasks.handle_admin_mention_task(con, "C1", "501.0", "・経費精算をする\n・会議室を予約する", "U_REQUESTER")
+
+    _, kwargs = posts[-1]
+    section_text = kwargs["blocks"][0]["text"]["text"]
+    assert "<@U_REQUESTER>" in section_text
+
+
+def test_handle_reaction_admin_mentions_message_author_in_reply(con, monkeypatch):
+    """📋リアクション起票では、依頼者=元メッセージの投稿者(author_id)をメンションすること。"""
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "_fetch_message",
+                        lambda channel, ts, token=None: {"text": "請求書を発行する", "user": "U_AUTHOR"})
+    monkeypatch.setattr(slack_tasks, "_message_permalink", lambda channel, ts, token=None: None)
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+    monkeypatch.setattr(slack_tasks, "notify_task_created", lambda *a, **kw: False)
+    monkeypatch.setattr(slack_tasks, "_call_claude", _fake_claude_json_array([
+        {"title": "請求書を発行する", "next_action": "", "due_date": "", "category": ""},
+    ]))
+
+    slack_tasks.handle_reaction(con, {
+        "reaction": "clipboard", "user": "U_REACTOR", "item": {"channel": "C1", "ts": "600.1"},
+    })
+    _, kwargs = posts[-1]
+    section_text = kwargs["blocks"][0]["text"]["text"]
+    assert "<@U_AUTHOR>" in section_text

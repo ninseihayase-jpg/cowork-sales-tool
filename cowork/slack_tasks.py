@@ -529,12 +529,40 @@ def _is_affirmative_reply(text: str) -> bool:
     return bool(_AFFIRMATIVE_RE.match((text or "").strip()))
 
 
+def _parse_due_date_reply(text: str, today: str | None = None) -> str:
+    """期限確認スレッドへの返信から日付だけを抽出する（#149）。
+    ユーザー報告2026-09-02: 「9/2(本日)」「9/2」という単純な日付返信が2回とも
+    「期限が読み取れませんでした」と失敗していた。従来はai_extract_task（=タスクを1件
+    抽出するための「次の文から社内タスクを1件抽出し」というプロンプト）を流用していたが、
+    「9/2」のような日付単体の短い返信は「タスク」として抽出しようとするとAIが混乱しやすく、
+    失敗率が高い。日付抽出だけに絞った専用プロンプトに切り出すことで安定させる。"""
+    text = (text or "").strip()
+    today = today or date.today().isoformat()
+    if not text:
+        return ""
+    prompt = (
+        "次の文に含まれる期日を1つだけ抽出し、JSONだけを出力してください（説明不要）。\n"
+        f"今日は{today}。「9/2」「9/2(本日)」のような日付そのものの返信も、"
+        "「来週金曜」「明後日」「今日中」のような相対表現も、今日基準でYYYY-MM-DD形式に"
+        "変換してください。年が省略されている場合は今日以降で最も近い年を補ってください。\n"
+        "日付がどうしても読み取れない場合のみdue_dateを空文字にしてください。\n"
+        '出力: {"due_date":"YYYY-MM-DD or 空"}\n\n'
+        f"文:\n{text}")
+    try:
+        raw = _call_claude(prompt) or ""
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        data = json.loads(m.group(0)) if m else {}
+    except Exception:
+        return ""
+    return (data.get("due_date") or "").strip() if isinstance(data, dict) else ""
+
+
 def handle_admin_due_reply(con, event: dict, token: str | None = None) -> None:
     """事務タスクの期限確認スレッドへの人間の返信を処理（message イベント）。
     channel+thread_ts が一致し、is_admin=1 かつ due_date_confirmed=0 のタスクが対象
     （無ければ何もしない＝無関係なスレッド返信では反応しない）。
-    「OK」等の肯定語なら提案中の期限をそのまま確定。それ以外は自由文の期限としてAI抽出
-    （ai_extract_task の期限抽出をそのまま流用＝人間の表記揺れに強い）。抽出できなければ
+    「OK」等の肯定語なら提案中の期限をそのまま確定。それ以外は自由文の期限として
+    _parse_due_date_reply（日付抽出専用プロンプト、#149）で抽出する。抽出できなければ
     確定せず再度尋ね返す（無言で諦めない）。"""
     channel = (event.get("channel") or "").strip()
     ts = (event.get("ts") or "").strip()
@@ -554,7 +582,7 @@ def handle_admin_due_reply(con, event: dict, token: str | None = None) -> None:
     if _is_affirmative_reply(text):
         nd = proposed
     else:
-        nd = (ai_extract_task(text).get("due_date") or "").strip()
+        nd = _parse_due_date_reply(text)
         if not nd:
             _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
                         text="🙏 期限が読み取れませんでした。日付でお答えください（例: 9/5, 来週金曜, 明後日 等）。")
@@ -649,20 +677,24 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
                 except Exception as _e:  # noqa: BLE001
                     print(f"[slack_tasks] notify_task_created(reaction) error: {_e}", flush=True)
         _req = f"（依頼者: {requester}）" if requester else ""
+        # 期限確認の返信が来ないというユーザー報告(2026-09-02, #149)への対応: 依頼者本人
+        # （＝元メッセージの投稿者。author_idは既にSlack上の実IDなので名前解決を挟まず
+        # 直接メンションできる）を本文中でメンションし、期限確認への反応率を上げる。
+        _mention = f"<@{author_id}> " if author_id else ""
         if len(created_pairs) == 1:
             tid, prefill, _created = created_pairs[0]
             link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
             summary_text = f"📋 事務タスク化しました: {prefill['title']}"
             blocks = [
                 {"type": "section", "text": {"type": "mrkdwn",
-                 "text": f"📋 事務タスク化しました{_req}\n*<{link}|{prefill['title']}>*"
+                 "text": f"{_mention}📋 事務タスク化しました{_req}\n*<{link}|{prefill['title']}>*"
                          + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
                 _admin_due_context(con, tid),
                 _task_action_block(tid),
             ]
         else:
             summary_text = f"📋 事務タスク化しました{_req}（{len(created_pairs)}件）"
-            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": summary_text}}]
+            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"{_mention}{summary_text}"}}]
             for tid, prefill, _created in created_pairs:
                 link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
                 blocks.append({"type": "section", "text": {"type": "mrkdwn",
@@ -793,17 +825,21 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
         # 同一メッセージからの多重配信（別event_id）＝全件既に起票済み。返信もしない（3重返信の抑止）。
         return tids
     _req = f"（依頼者: {requester}）" if requester else ""
+    # 期限確認の返信が来ないというユーザー報告(2026-09-02, #149)への対応: 依頼者本人（＝
+    # メンションした人。user_idは既にSlack上の実IDなので名前解決を挟まず直接メンションできる）
+    # を「事務タスク化しました」の本文中でメンションし、期限確認への反応率を上げる。
+    _mention = f"<@{user_id}> " if user_id else ""
     if len(new_pairs) == 1 and len(prefills) == 1:
         tid, prefill = new_pairs[0]
         link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
         summary_text = f"事務タスク化しました: {prefill['title']}"
         blocks = [{"type": "section", "text": {"type": "mrkdwn",
-                   "text": f"📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}},
+                   "text": f"{_mention}📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}},
                   _admin_due_context(con, tid), _task_action_block(tid)]
     else:
         summary_text = f"事務タスク化しました（{len(new_pairs)}件）"
         blocks = [{"type": "section", "text": {"type": "mrkdwn",
-                   "text": f"📋 事務タスク化しました{_req}（{len(new_pairs)}件）"}}]
+                   "text": f"{_mention}📋 事務タスク化しました{_req}（{len(new_pairs)}件）"}}]
         for tid, prefill in new_pairs:
             link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*<{link}|{prefill['title']}>*"}})
