@@ -220,11 +220,38 @@ def test_handle_reaction_creates_multiple_tasks_from_bulleted_message(con, monke
     assert titles == {"要件詰め案件の棚卸と注力案件の掘り起こし・特定", "開発案件の定義書FMTを整備"}
 
 
-# ── #149(2026-09-02): 期限確認の返信率が低い問題への対応（依頼者を直接メンション） ──
+# ── #149/#150(2026-09-02): 期限確認の返信率が低い問題への対応 ──
+# #149でいったん「事務タスク化しました」見出しに依頼者メンションを付けたが、ユーザーから
+# 「見出しにメンションは不要、文字も小さくてよい。実際に返信してほしい期限確認の一文
+# （📅期限は...でよろしいですか？）の方にメンションを付け、そちらを太字・通常サイズに」と
+# 修正指示（#150）。見出しはcontextブロック（小さい）、期限確認は section ブロック
+# （通常サイズ・太字・メンション付き）という最終形になった。
 
-def test_handle_admin_mention_task_mentions_requester_in_reply(con, monkeypatch):
-    """「事務タスク化しました」の返信本文に、依頼者（＝メンションした本人）を
-    Slackメンションで含めること。名前解決を挟まず、メンションした人の実IDをそのまま使う。"""
+def test_handle_admin_mention_task_header_is_small_and_unmentioned(con, monkeypatch):
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: {"ok": True})
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+    monkeypatch.setattr(slack_tasks, "_message_permalink", lambda channel, ts, token=None: None)
+    monkeypatch.setattr(slack_tasks, "notify_task_created", lambda *a, **kw: False)
+    monkeypatch.setattr(slack_tasks, "_call_claude", _fake_claude_json_array([
+        {"title": "請求書を発行する", "next_action": "", "due_date": "", "category": ""},
+    ]))
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+
+    slack_tasks.handle_admin_mention_task(con, "C1", "500.0", "請求書を発行する", "U_REQUESTER")
+
+    _, kwargs = posts[-1]
+    header = kwargs["blocks"][0]
+    assert header["type"] == "context"
+    assert "<@" not in header["elements"][0]["text"]
+    assert "事務タスク化しました" in header["elements"][0]["text"]
+
+
+def test_handle_admin_mention_task_mentions_requester_in_due_confirmation(con, monkeypatch):
+    """依頼者（＝メンションした本人）へのメンションは「事務タスク化しました」ではなく、
+    期限確認の一文の方に付くこと。名前解決を挟まず、メンションした人の実IDをそのまま使う。"""
     posts = []
     monkeypatch.setattr(slack_tasks, "_slack_post",
                         lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
@@ -238,11 +265,15 @@ def test_handle_admin_mention_task_mentions_requester_in_reply(con, monkeypatch)
     slack_tasks.handle_admin_mention_task(con, "C1", "500.0", "請求書を発行する", "U_REQUESTER")
 
     _, kwargs = posts[-1]
-    section_text = kwargs["blocks"][0]["text"]["text"]
-    assert "<@U_REQUESTER>" in section_text
+    due_block = kwargs["blocks"][1]
+    assert due_block["type"] == "section"
+    assert "<@U_REQUESTER>" in due_block["text"]["text"]
+    assert "でよろしいですか" in due_block["text"]["text"]
 
 
-def test_handle_admin_mention_task_mentions_requester_for_multi_task_reply(con, monkeypatch):
+def test_handle_admin_mention_task_mentions_requester_only_on_first_task_for_multi(con, monkeypatch):
+    """複数タスクの場合、「OK」返信でヒットするのは元tsのままの1件目だけ(#148設計)なので、
+    メンションも1件目の期限確認ブロックにのみ付ける。"""
     posts = []
     monkeypatch.setattr(slack_tasks, "_slack_post",
                         lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
@@ -257,12 +288,15 @@ def test_handle_admin_mention_task_mentions_requester_for_multi_task_reply(con, 
     slack_tasks.handle_admin_mention_task(con, "C1", "501.0", "・経費精算をする\n・会議室を予約する", "U_REQUESTER")
 
     _, kwargs = posts[-1]
-    section_text = kwargs["blocks"][0]["text"]["text"]
-    assert "<@U_REQUESTER>" in section_text
+    due_blocks = [b for b in kwargs["blocks"] if b.get("type") == "section" and "でよろしいですか" in b["text"]["text"]]
+    assert len(due_blocks) == 2
+    assert "<@U_REQUESTER>" in due_blocks[0]["text"]["text"]
+    assert "<@" not in due_blocks[1]["text"]["text"]
 
 
-def test_handle_reaction_admin_mentions_message_author_in_reply(con, monkeypatch):
-    """📋リアクション起票では、依頼者=元メッセージの投稿者(author_id)をメンションすること。"""
+def test_handle_reaction_admin_mentions_message_author_in_due_confirmation(con, monkeypatch):
+    """📋リアクション起票では、依頼者=元メッセージの投稿者(author_id)を、期限確認の
+    一文の方にメンションすること。"""
     posts = []
     monkeypatch.setattr(slack_tasks, "_slack_post",
                         lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
@@ -279,5 +313,9 @@ def test_handle_reaction_admin_mentions_message_author_in_reply(con, monkeypatch
         "reaction": "clipboard", "user": "U_REACTOR", "item": {"channel": "C1", "ts": "600.1"},
     })
     _, kwargs = posts[-1]
-    section_text = kwargs["blocks"][0]["text"]["text"]
-    assert "<@U_AUTHOR>" in section_text
+    header = kwargs["blocks"][0]
+    assert header["type"] == "context"
+    assert "<@" not in header["elements"][0]["text"]
+    due_block = kwargs["blocks"][1]
+    assert due_block["type"] == "section"
+    assert "<@U_AUTHOR>" in due_block["text"]["text"]

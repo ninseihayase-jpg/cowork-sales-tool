@@ -502,18 +502,24 @@ def _admin_default_due() -> str:
     return sfa_db.add_business_days(today, 3).isoformat()
 
 
-def _admin_due_context(con, tid: int) -> dict:
+def _admin_due_context(con, tid: int, mention_uid: str | None = None) -> dict:
     """事務タスク起票コメントに添える期限確認ブロック（2026-08-27・期限確認プロセス）。
+    2026-09-02(#150): 見落とされやすいという報告を受け、目立たせるため通常サイズ・太字の
+    sectionブロックに変更（従来はcontextブロックで小さく表示していた）。依頼者への
+    メンション（実SlackID）もここに付けられるようにした——「事務タスク化しました」の
+    見出し行ではなく、実際に返信してほしいこの確認文の方にメンションを付けてほしい、
+    というユーザー要望（2026-09-02）に対応。
     AI抽出/既定値(起票から3営業日後)はあくまで提案であり、依頼者本人の返信で確定するまで
     タスクは due_date_confirmed=0（未確定）のまま。このスレッドへの返信「OK」で提案どおり確定、
     別の日付を書けばその日付で確定（下のクイックボタンでも確定扱いになる）。"""
     t = sfa_db.get_task(con, tid)
     due = ((t or {}).get("due_date") or "").strip()
-    due_txt = f"*{due}*" if due else "未設定"
-    return {"type": "context", "elements": [{"type": "mrkdwn",
-            "text": f"📅 期限は {due_txt} でよろしいですか？"
+    due_txt = due or "未設定"
+    mention = f"<@{mention_uid}> " if mention_uid else ""
+    return {"type": "section", "text": {"type": "mrkdwn",
+            "text": f"{mention}*📅 期限は {due_txt} でよろしいですか？*\n"
                     "このスレッドに「OK」と返信、または正しい期限を返信してください"
-                    "（例: 9/5, 来週金曜, 明後日 等）。下のボタンでも設定できます。"}]}
+                    "（例: 9/5, 来週金曜, 明後日 等）。下のボタンでも設定できます。"}}
 
 
 _AFFIRMATIVE_RE = re.compile(
@@ -677,30 +683,33 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
                 except Exception as _e:  # noqa: BLE001
                     print(f"[slack_tasks] notify_task_created(reaction) error: {_e}", flush=True)
         _req = f"（依頼者: {requester}）" if requester else ""
-        # 期限確認の返信が来ないというユーザー報告(2026-09-02, #149)への対応: 依頼者本人
-        # （＝元メッセージの投稿者。author_idは既にSlack上の実IDなので名前解決を挟まず
-        # 直接メンションできる）を本文中でメンションし、期限確認への反応率を上げる。
-        _mention = f"<@{author_id}> " if author_id else ""
+        # 期限確認の返信が来ないというユーザー報告(2026-09-02, #149/#150)への対応。
+        # 依頼者本人（＝元メッセージの投稿者。author_idは既にSlack上の実IDなので名前解決を
+        # 挟まず直接メンションできる）は、実際に返信してほしい期限確認の一文
+        # (_admin_due_context)の方にメンションする。「事務タスク化しました」の見出しは
+        # 逆に目立たせなくてよい（#150）ので、通常sectionより小さいcontextブロックにする。
         if len(created_pairs) == 1:
             tid, prefill, _created = created_pairs[0]
             link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
             summary_text = f"📋 事務タスク化しました: {prefill['title']}"
             blocks = [
-                {"type": "section", "text": {"type": "mrkdwn",
-                 "text": f"{_mention}📋 事務タスク化しました{_req}\n*<{link}|{prefill['title']}>*"
-                         + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}},
-                _admin_due_context(con, tid),
+                {"type": "context", "elements": [{"type": "mrkdwn",
+                 "text": f"📋 事務タスク化しました{_req}\n*<{link}|{prefill['title']}>*"
+                         + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}]},
+                _admin_due_context(con, tid, mention_uid=author_id),
                 _task_action_block(tid),
             ]
         else:
             summary_text = f"📋 事務タスク化しました{_req}（{len(created_pairs)}件）"
-            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"{_mention}{summary_text}"}}]
-            for tid, prefill, _created in created_pairs:
+            blocks = [{"type": "context", "elements": [{"type": "mrkdwn", "text": summary_text}]}]
+            for idx, (tid, prefill, _created) in enumerate(created_pairs):
                 link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
                 blocks.append({"type": "section", "text": {"type": "mrkdwn",
                                "text": f"*<{link}|{prefill['title']}>*"
                                        + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}})
-                blocks.append(_admin_due_context(con, tid))
+                # このスレッドへの「OK」返信は元tsの1件目にしかヒットしないため(#148設計)、
+                # メンションも1件目にのみ付ける（2件目以降で返信してもらっても確定できない）。
+                blocks.append(_admin_due_context(con, tid, mention_uid=(author_id if idx == 0 else None)))
                 blocks.append(_task_action_block(tid))
         # 起票したらスレッド投稿（@メンション起票と同仕様。以前はchat.postEphemeralで
         # リアクションした本人にしか見えなかった）。
@@ -825,25 +834,28 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
         # 同一メッセージからの多重配信（別event_id）＝全件既に起票済み。返信もしない（3重返信の抑止）。
         return tids
     _req = f"（依頼者: {requester}）" if requester else ""
-    # 期限確認の返信が来ないというユーザー報告(2026-09-02, #149)への対応: 依頼者本人（＝
-    # メンションした人。user_idは既にSlack上の実IDなので名前解決を挟まず直接メンションできる）
-    # を「事務タスク化しました」の本文中でメンションし、期限確認への反応率を上げる。
-    _mention = f"<@{user_id}> " if user_id else ""
+    # 期限確認の返信が来ないというユーザー報告(2026-09-02, #149/#150)への対応。依頼者本人
+    # （＝メンションした人。user_idは既にSlack上の実IDなので名前解決を挟まず直接メンション
+    # できる）は、実際に返信してほしい期限確認の一文(_admin_due_context)の方にメンションする。
+    # 「事務タスク化しました」の見出しは逆に目立たせなくてよい（#150）ので、通常sectionより
+    # 小さいcontextブロックにする。
     if len(new_pairs) == 1 and len(prefills) == 1:
         tid, prefill = new_pairs[0]
         link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
         summary_text = f"事務タスク化しました: {prefill['title']}"
-        blocks = [{"type": "section", "text": {"type": "mrkdwn",
-                   "text": f"{_mention}📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}},
-                  _admin_due_context(con, tid), _task_action_block(tid)]
+        blocks = [{"type": "context", "elements": [{"type": "mrkdwn",
+                   "text": f"📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}]},
+                  _admin_due_context(con, tid, mention_uid=user_id), _task_action_block(tid)]
     else:
         summary_text = f"事務タスク化しました（{len(new_pairs)}件）"
-        blocks = [{"type": "section", "text": {"type": "mrkdwn",
-                   "text": f"{_mention}📋 事務タスク化しました{_req}（{len(new_pairs)}件）"}}]
-        for tid, prefill in new_pairs:
+        blocks = [{"type": "context", "elements": [{"type": "mrkdwn",
+                   "text": f"📋 事務タスク化しました{_req}（{len(new_pairs)}件）"}]}]
+        for idx, (tid, prefill) in enumerate(new_pairs):
             link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*<{link}|{prefill['title']}>*"}})
-            blocks.append(_admin_due_context(con, tid))
+            # このスレッドへの「OK」返信は元tsの1件目にしかヒットしないため(#148設計)、
+            # メンションも1件目にのみ付ける（2件目以降で返信してもらっても確定できない）。
+            blocks.append(_admin_due_context(con, tid, mention_uid=(user_id if idx == 0 else None)))
             blocks.append(_task_action_block(tid))
     _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
                      text=summary_text, blocks=blocks)

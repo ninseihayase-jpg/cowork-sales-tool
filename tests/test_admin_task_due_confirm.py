@@ -118,12 +118,30 @@ def test_non_admin_slack_task_is_created_confirmed(con):
 
 
 def test_admin_due_context_asks_confirmation_question(con):
+    """#150(2026-09-02): 見落とされやすいという報告を受け、通常サイズ・太字の
+    sectionブロックに変更（従来はcontextブロックで小さく表示していた）。"""
     tid = sfa_db.upsert_task(con, title="X", is_admin=1, due_date="2026-09-05")
     block = slack_tasks._admin_due_context(con, tid)
-    text = block["elements"][0]["text"]
+    assert block["type"] == "section"
+    text = block["text"]["text"]
     assert "2026-09-05" in text
     assert "でよろしいですか" in text
     assert "OK" in text
+    # 「期限は...でよろしいですか？」の一文が太字(*...*)になっている
+    assert "*📅 期限は 2026-09-05 でよろしいですか？*" in text
+
+
+def test_admin_due_context_mentions_given_uid(con):
+    """#150: 依頼者へのメンションは「事務タスク化しました」ではなく、この確認文の方に付く。"""
+    tid = sfa_db.upsert_task(con, title="X", is_admin=1, due_date="2026-09-05")
+    block = slack_tasks._admin_due_context(con, tid, mention_uid="U_REQUESTER")
+    assert block["text"]["text"].startswith("<@U_REQUESTER> ")
+
+
+def test_admin_due_context_no_mention_when_uid_omitted(con):
+    tid = sfa_db.upsert_task(con, title="X", is_admin=1, due_date="2026-09-05")
+    block = slack_tasks._admin_due_context(con, tid)
+    assert "<@" not in block["text"]["text"]
 
 
 def test_affirmative_reply_confirms_proposed_date_unchanged(con, monkeypatch):
