@@ -2906,9 +2906,19 @@ def delivery_form(con, delivery_id: int) -> str:
       document.addEventListener('change',function(e){{
         var el=e.target;
         if(el.form && el.form.id==='dvBaseForm'){{
-          // 開始/終了週・週数はアサイン週の連動再計算、事業種別L1は事業種別L2の選択肢の
-          // サーバ側再計算のため、保存後に再読込して画面を最新化する。それ以外は再読込不要。
-          var reload=(el.name==='start_week'||el.name==='end_week'||el.id==='hdrWeeks'
+          if(el.id==='hdrWeeks'){{
+            // 週数はDB列を持たない表示専用フィールド（開始週から逆算した終了週を
+            // hdrCalcEnd()が計算するだけ）。開始週が未入力だとhdrCalcEnd()は何もせず
+            // end_weekが空のまま自動保存→即時reloadされ、せっかく入力した週数が
+            // どこにも保存されずに画面から消えてしまっていた（ユーザー報告2026-09-03）。
+            // 開始週が入力済みで実際にend_weekが計算できた時だけ保存・再読込する。
+            if(!(document.getElementById('hdrStart')||{{}}).value) return;
+            dvBaseAutoSave(true);
+            return;
+          }}
+          // 開始/終了週は週数の連動再計算、事業種別L1は事業種別L2の選択肢のサーバ側
+          // 再計算のため、保存後に再読込して画面を最新化する。それ以外は再読込不要。
+          var reload=(el.name==='start_week'||el.name==='end_week'
             ||el.name==='business_type_l1_override');
           dvBaseAutoSave(reload);
         }}

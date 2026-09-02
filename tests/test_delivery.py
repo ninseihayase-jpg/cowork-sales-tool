@@ -741,6 +741,20 @@ def test_delivery_form_base_info_autosaves_without_save_button(con, acc_id):
     assert 'id="dvOwnerRolesBox"' in html
 
 
+def test_delivery_form_weeks_field_skips_autosave_reload_without_start_week(con, acc_id):
+    """#154(2026-09-03): 週数(hdrWeeks)はDB列を持たない表示専用フィールドで、開始週から
+    逆算した終了週をhdrCalcEnd()が計算するだけ。開始週が未入力のまま週数だけ入力すると、
+    以前は無条件で自動保存＋即時reloadされ、せっかく入力した週数がどこにも保存されずに
+    画面から消えてしまっていた（ユーザー報告）。開始週が入力済みで実際にend_weekが
+    計算できた時だけ保存・再読込するよう修正。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    html = webapp.delivery_form(con, dvid)
+    assert "if(!(document.getElementById('hdrStart')||{}).value) return;" in html
+    # 旧実装: el.id==='hdrWeeks' を無条件でreload対象に含めていたOR条件が残っていないこと
+    assert "el.name==='end_week'||el.id==='hdrWeeks'" not in html
+
+
 def test_delivery_form_save_button_is_beside_base_info_heading(con, acc_id):
     """2026-08-29: 保存ボタンは「基礎情報」見出しの横に配置し、確度/事業種別L1/L2は同じ行に
     横並びで表示する（ユーザー要望）。保存ボタンは見出し直下でform属性経由でdvBaseFormに紐づく。"""
