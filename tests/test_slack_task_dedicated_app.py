@@ -65,7 +65,7 @@ def test_handle_mention_task_passes_token_to_slack_calls(con, monkeypatch):
     monkeypatch.setattr(slack_tasks, "owner_from_slack_user", _fake_owner)
 
     tid = slack_tasks.handle_mention_task(
-        con, "C123", "100.0", "資料を金曜までに作成する", "U999", token="xoxb-task-dedicated")
+        con, "C123", "100.0", "資料を金曜までに作成する", "U999", token="xoxb-task-dedicated")[0]
 
     assert resolved_tokens == ["xoxb-task-dedicated"]
     assert posts, "chat.postMessageが呼ばれていない"
@@ -270,7 +270,7 @@ def test_handle_mention_task_dms_user_when_reply_post_fails(con, monkeypatch):
     monkeypatch.setattr(slack_tasks, "_slack_post", _fake_post)
     monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
 
-    tid = slack_tasks.handle_mention_task(con, "C1", "1.0", "見積を送る", "U1", token="xoxb-task")
+    tid = slack_tasks.handle_mention_task(con, "C1", "1.0", "見積を送る", "U1", token="xoxb-task")[0]
 
     dm_posts = [kw for m, kw in posts if m == "chat.postMessage" and kw.get("channel") == "U1"]
     assert dm_posts, "チャンネル投稿失敗時にU1へのDMフォールバックが送られていない"
