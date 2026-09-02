@@ -1,10 +1,14 @@
-"""#148(2026-09-02): TaskBot(@メンション)へ箇条書きで複数の依頼を書いた場合、
-1件のタスクに統合されてしまう不具合の回帰テスト。
+"""#148/#151(2026-09-02): TaskBotの複数タスク分割まわりの回帰テスト。
 
-ユーザー報告: 「・要件詰め案件の棚卸、注力案件の掘り起こし・特定」「・開発案件の定義書FMTを整備」
+#148: 「・要件詰め案件の棚卸、注力案件の掘り起こし・特定」「・開発案件の定義書FMTを整備」
 という2行の箇条書きをメンションしたら、1件のタスク（両方を要約統合したタイトル）しか
 起票されなかった。原因は`ai_extract_task`が「1件抽出」前提のプロンプト・単一dict戻り値
 だったこと。`ai_extract_tasks`（複数形）を新設し、箇条書き/改行ごとに複数タスクへ分割する。
+
+#151: その後、「テレンプのAP調達未来像+デモ+ステップ+想定DB整理」のような、本来1件の
+依頼が「+」区切りで4件に無確認で分割されてしまうという報告があった。分割できる場合は
+必ずボタンで「分割する/1件のまま登録する」を確認するステップを挟むように変更
+（pending_task_splitsテーブルに一時保存→ボタン押下で確定）。
 """
 from __future__ import annotations
 
@@ -37,6 +41,26 @@ BULLET_TEXT = (
 
 def _fake_claude_json_array(items):
     return lambda prompt: json.dumps(items, ensure_ascii=False)
+
+
+def _split_action_id(kwargs, decision="yes"):
+    """確認メッセージ(post kwargs)の中から「分割する/1件のまま登録」ボタンのaction_idを
+    取り出す（#151）。"""
+    prefix = f"task_split_{decision}:"
+    for block in kwargs["blocks"]:
+        if block.get("type") != "actions":
+            continue
+        for el in block["elements"]:
+            if el["action_id"].startswith(prefix):
+                return el["action_id"]
+    raise AssertionError(f"{prefix}... のボタンが見つからない")
+
+
+def _click_split_button(con, kwargs, decision="yes"):
+    """確認メッセージへのボタン押下をシミュレートする（#151）。"""
+    action_id = _split_action_id(kwargs, decision)
+    split_id = int(action_id.split(":", 1)[1])
+    slack_tasks._handle_split_decision(con, split_id, decision)
 
 
 # ── ai_extract_tasks（AI抽出の複数形） ──
@@ -92,7 +116,10 @@ def test_ai_extract_tasks_forces_billing_category_per_item(monkeypatch):
 
 # ── handle_mention_task（コンサルタスクBot、通常#146の対象） ──
 
-def test_handle_mention_task_creates_multiple_tasks_from_bullets(con, monkeypatch):
+def test_handle_mention_task_asks_before_splitting_into_multiple_tasks(con, monkeypatch):
+    """#151(2026-09-02): 複数タスクに分割できる場合、無確認では作成しない。まず
+    「分割する/1件のまま登録する」ボタン付きの確認メッセージだけを投稿し、タスクは
+    1件も作らない（ユーザー報告: 「＋」区切りの1行が無確認で4件に分割されてしまった）。"""
     posts = []
     monkeypatch.setattr(slack_tasks, "_slack_post",
                         lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
@@ -105,19 +132,102 @@ def test_handle_mention_task_creates_multiple_tasks_from_bullets(con, monkeypatc
 
     tids = slack_tasks.handle_mention_task(con, "C1", "100.0", BULLET_TEXT, "U1")
 
-    assert len(tids) == 2
-    titles = {sfa_db.get_task(con, t)["title"] for t in tids}
+    assert tids == []
+    assert sfa_db.list_tasks(con, admin=False) == []
+    assert len(posts) == 1
+    _, kwargs = posts[0]
+    assert "2件" in kwargs["text"]
+    assert "分割しますか" in kwargs["blocks"][0]["text"]["text"]
+    assert _split_action_id(kwargs, "yes")
+    assert _split_action_id(kwargs, "no")
+
+
+def test_handle_mention_task_confirm_yes_creates_multiple_tasks(con, monkeypatch):
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+    monkeypatch.setattr(slack_tasks, "_call_claude", _fake_claude_json_array([
+        {"title": "要件詰め案件の棚卸と注力案件の掘り起こし・特定", "next_action": "",
+         "due_date": "", "category": ""},
+        {"title": "開発案件の定義書FMTを整備", "next_action": "", "due_date": "", "category": ""},
+    ]))
+
+    slack_tasks.handle_mention_task(con, "C1", "100.0", BULLET_TEXT, "U1")
+    confirm_kwargs = posts[0][1]
+    posts.clear()
+    _click_split_button(con, confirm_kwargs, "yes")
+
+    all_tasks = sfa_db.list_tasks(con, admin=False)
+    assert len(all_tasks) == 2
+    titles = {t["title"] for t in all_tasks}
     assert titles == {"要件詰め案件の棚卸と注力案件の掘り起こし・特定", "開発案件の定義書FMTを整備"}
-    for t in tids:
-        assert sfa_db.get_task(con, t)["assignee"] == "早瀬"
-    # 返信は1回のchat.postMessageにまとまっている（メッセージ数が依頼数に比例して増えない）
+    for t in all_tasks:
+        assert t["assignee"] == "早瀬"
+    # 確定後の返信は1回のchat.postMessageにまとまっている
     assert len(posts) == 1
     _, kwargs = posts[0]
     assert "2件" in kwargs["text"]
     action_ids = [el["action_id"] for block in kwargs["blocks"] if block.get("type") == "actions"
                   for el in block["elements"]]
-    # 各タスクの完了/開始/進捗ボタンが両方分含まれている
     assert sum(1 for a in action_ids if a.startswith("task_done:")) == 2
+
+
+def test_handle_mention_task_confirm_no_creates_single_consolidated_task(con, monkeypatch):
+    """「1件のまま登録」を選ぶと、元の本文全体をai_extract_task(単数形)で1件に
+    再抽出して登録する。"""
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+
+    def _fake_call_claude(prompt):
+        if "JSON配列" in prompt:
+            return json.dumps([
+                {"title": "要件詰め案件の棚卸と注力案件の掘り起こし・特定", "next_action": "",
+                 "due_date": "", "category": ""},
+                {"title": "開発案件の定義書FMTを整備", "next_action": "", "due_date": "", "category": ""},
+            ], ensure_ascii=False)
+        return json.dumps({"title": "テレンプのAP調達未来像+デモ+ステップ+想定DB整理",
+                           "next_action": "", "due_date": "", "category": ""}, ensure_ascii=False)
+    monkeypatch.setattr(slack_tasks, "_call_claude", _fake_call_claude)
+
+    slack_tasks.handle_mention_task(con, "C1", "100.0", BULLET_TEXT, "U1")
+    confirm_kwargs = posts[0][1]
+    posts.clear()
+    _click_split_button(con, confirm_kwargs, "no")
+
+    all_tasks = sfa_db.list_tasks(con, admin=False)
+    assert len(all_tasks) == 1
+    assert all_tasks[0]["title"] == "テレンプのAP調達未来像+デモ+ステップ+想定DB整理"
+
+
+def test_handle_split_decision_ignores_unknown_or_already_used_split_id(con):
+    """既に処理済み（pending行が削除済み）のsplit_idでボタンを押しても何も起きない
+    （二重クリック対策）。"""
+    slack_tasks._handle_split_decision(con, 999999, "yes")
+    assert sfa_db.list_tasks(con, admin=False) == []
+
+
+def test_split_button_click_routes_through_handle_interactive(con, monkeypatch):
+    """Slackから届く実際のblock_actionsペイロード形式でも、分割確認ボタンが
+    _handle_block_action経由で正しく_handle_split_decisionへルーティングされること。"""
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+    monkeypatch.setattr(slack_tasks, "_call_claude", _fake_claude_json_array([
+        {"title": "タスクA", "next_action": "", "due_date": "", "category": ""},
+        {"title": "タスクB", "next_action": "", "due_date": "", "category": ""},
+    ]))
+
+    slack_tasks.handle_mention_task(con, "C1", "700.0", "・タスクA\n・タスクB", "U1")
+    action_id = _split_action_id(posts[0][1], "yes")
+    payload = {"type": "block_actions", "actions": [{"action_id": action_id}], "response_url": ""}
+    slack_tasks.handle_interactive(con, payload)
+
+    all_tasks = sfa_db.list_tasks(con, admin=False)
+    assert len(all_tasks) == 2
 
 
 def test_handle_mention_task_single_item_keeps_original_reply_format(con, monkeypatch):
@@ -137,43 +247,50 @@ def test_handle_mention_task_single_item_keeps_original_reply_format(con, monkey
     assert kwargs["text"] == "コンサルタスク化しました: 見積を送る"
 
 
-def test_handle_mention_task_multi_tasks_use_distinct_slack_ts_for_dedup(con, monkeypatch):
+def test_handle_mention_task_confirmed_multi_tasks_use_distinct_slack_ts_for_dedup(con, monkeypatch):
     """複数タスクは同一slack_tsのまま保存すると重複起票防止ロジックに引っかかって
     2件目以降が作られなくなる。連番サフィックスで区別しつつ、1件目は元のtsのまま
     保つこと（事務タスクの期限確認スレッド照合のため）。"""
-    monkeypatch.setattr(slack_tasks, "_slack_post", lambda method, **kw: {"ok": True})
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
     monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
     monkeypatch.setattr(slack_tasks, "_call_claude", _fake_claude_json_array([
         {"title": "タスクA", "next_action": "", "due_date": "", "category": ""},
         {"title": "タスクB", "next_action": "", "due_date": "", "category": ""},
     ]))
 
-    tids = slack_tasks.handle_mention_task(con, "C1", "200.0", "・タスクA\n・タスクB", "U1")
-    rows = [sfa_db.get_task(con, t) for t in tids]
-    ts_values = {r["slack_ts"] for r in rows}
+    slack_tasks.handle_mention_task(con, "C1", "200.0", "・タスクA\n・タスクB", "U1")
+    _click_split_button(con, posts[0][1], "yes")
+
+    ts_values = {t["slack_ts"] for t in sfa_db.list_tasks(con, admin=False)}
     assert ts_values == {"200.0", "200.0#1"}
 
 
-def test_handle_mention_task_retry_does_not_duplicate_multi_tasks(con, monkeypatch):
-    """同一メッセージ(同一slack_ts)からの多重配信でも、複数タスクが重複作成されない
-    （各タスクごとの重複防止判定が効くこと）。"""
-    monkeypatch.setattr(slack_tasks, "_slack_post", lambda method, **kw: {"ok": True})
+def test_handle_split_decision_double_click_does_not_duplicate_tasks(con, monkeypatch):
+    """確認ボタンの二重クリック（Slackの再配信・誤操作）でも、複数タスクが
+    重複作成されない（pending行が1回目の処理で削除されるため）。"""
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
     monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
     monkeypatch.setattr(slack_tasks, "_call_claude", _fake_claude_json_array([
         {"title": "タスクA", "next_action": "", "due_date": "", "category": ""},
         {"title": "タスクB", "next_action": "", "due_date": "", "category": ""},
     ]))
 
-    tids1 = slack_tasks.handle_mention_task(con, "C1", "300.0", "・タスクA\n・タスクB", "U1")
-    tids2 = slack_tasks.handle_mention_task(con, "C1", "300.0", "・タスクA\n・タスクB", "U1")
-    assert tids1 == tids2
+    slack_tasks.handle_mention_task(con, "C1", "300.0", "・タスクA\n・タスクB", "U1")
+    action_id = _split_action_id(posts[0][1], "yes")
+    split_id = int(action_id.split(":", 1)[1])
+    slack_tasks._handle_split_decision(con, split_id, "yes")
+    slack_tasks._handle_split_decision(con, split_id, "yes")   # 二重クリック
     all_tasks = sfa_db.list_tasks(con, admin=False)
     assert len(all_tasks) == 2
 
 
 # ── handle_admin_mention_task（事務タスクBot） ──
 
-def test_handle_admin_mention_task_creates_multiple_tasks(con, monkeypatch):
+def test_handle_admin_mention_task_asks_before_splitting(con, monkeypatch):
     posts = []
     monkeypatch.setattr(slack_tasks, "_slack_post",
                         lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
@@ -186,21 +303,42 @@ def test_handle_admin_mention_task_creates_multiple_tasks(con, monkeypatch):
     ]))
 
     tids = slack_tasks.handle_admin_mention_task(con, "C1", "400.0", "・経費精算をする\n・会議室を予約する", "U1")
-    assert len(tids) == 2
-    titles = {sfa_db.get_task(con, t)["title"] for t in tids}
-    assert titles == {"経費精算をする", "会議室を予約する"}
-    for t in tids:
-        row = sfa_db.get_task(con, t)
-        assert row["is_admin"] == 1
-        assert row["assignee"] == (slack_tasks.DESK_ASSIGNEE or None)
+    assert tids == []
+    assert sfa_db.list_tasks(con, admin=True) == []
     assert len(posts) == 1
+
+
+def test_handle_admin_mention_task_confirm_yes_creates_multiple_tasks(con, monkeypatch):
+    posts = []
+    monkeypatch.setattr(slack_tasks, "_slack_post",
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
+    monkeypatch.setattr(slack_tasks, "owner_from_slack_user", lambda uid, token=None: "早瀬")
+    monkeypatch.setattr(slack_tasks, "_message_permalink", lambda channel, ts, token=None: None)
+    monkeypatch.setattr(slack_tasks, "notify_task_created", lambda *a, **kw: False)
+    monkeypatch.setattr(slack_tasks, "_call_claude", _fake_claude_json_array([
+        {"title": "経費精算をする", "next_action": "", "due_date": "", "category": ""},
+        {"title": "会議室を予約する", "next_action": "", "due_date": "", "category": ""},
+    ]))
+
+    slack_tasks.handle_admin_mention_task(con, "C1", "400.0", "・経費精算をする\n・会議室を予約する", "U1")
+    _click_split_button(con, posts[0][1], "yes")
+
+    all_tasks = sfa_db.list_tasks(con, admin=True)
+    assert len(all_tasks) == 2
+    titles = {t["title"] for t in all_tasks}
+    assert titles == {"経費精算をする", "会議室を予約する"}
+    for t in all_tasks:
+        assert t["is_admin"] == 1
+        assert t["assignee"] == (slack_tasks.DESK_ASSIGNEE or None)
+    assert len(posts) == 2   # 確認メッセージ＋確定後の返信
 
 
 # ── handle_reaction（🎯/📋リアクション起票） ──
 
-def test_handle_reaction_creates_multiple_tasks_from_bulleted_message(con, monkeypatch):
+def test_handle_reaction_asks_before_splitting_bulleted_message(con, monkeypatch):
+    posts = []
     monkeypatch.setattr(slack_tasks, "_slack_post",
-                        lambda method, **kw: {"ok": True})
+                        lambda method, **kw: (posts.append((method, kw)), {"ok": True})[1])
     monkeypatch.setattr(slack_tasks, "_fetch_message",
                         lambda channel, ts, token=None: {"text": BULLET_TEXT, "user": "U_AUTHOR"})
     monkeypatch.setattr(slack_tasks, "_message_permalink", lambda channel, ts, token=None: None)
@@ -214,6 +352,9 @@ def test_handle_reaction_creates_multiple_tasks_from_bulleted_message(con, monke
     slack_tasks.handle_reaction(con, {
         "reaction": "dart", "user": "U_REACTOR", "item": {"channel": "C1", "ts": "111.1"},
     })
+    assert sfa_db.list_tasks(con, admin=False) == []
+
+    _click_split_button(con, posts[0][1], "yes")
     all_tasks = sfa_db.list_tasks(con, admin=False)
     assert len(all_tasks) == 2
     titles = {t["title"] for t in all_tasks}
@@ -286,6 +427,7 @@ def test_handle_admin_mention_task_mentions_requester_only_on_first_task_for_mul
     ]))
 
     slack_tasks.handle_admin_mention_task(con, "C1", "501.0", "・経費精算をする\n・会議室を予約する", "U_REQUESTER")
+    _click_split_button(con, posts[-1][1], "yes")
 
     _, kwargs = posts[-1]
     due_blocks = [b for b in kwargs["blocks"] if b.get("type") == "section" and "でよろしいですか" in b["text"]["text"]]
@@ -319,3 +461,27 @@ def test_handle_reaction_admin_mentions_message_author_in_due_confirmation(con, 
     due_block = kwargs["blocks"][1]
     assert due_block["type"] == "section"
     assert "<@U_AUTHOR>" in due_block["text"]["text"]
+
+
+# ── sfa_db層: pending_task_splits CRUD ──
+
+def test_pending_task_split_crud_roundtrip(con):
+    prefills = [{"title": "A", "next_action": "", "due_date": "", "category": ""},
+                {"title": "B", "next_action": "", "due_date": "", "category": ""}]
+    split_id = sfa_db.create_pending_task_split(
+        con, channel="C1", thread_ts="800.0", text="・A\n・B", prefills=prefills,
+        is_admin=True, user_id="U1", token="xoxb-x")
+    row = sfa_db.get_pending_task_split(con, split_id)
+    assert row["channel"] == "C1"
+    assert row["thread_ts"] == "800.0"
+    assert row["is_admin"] == 1
+    assert row["user_id"] == "U1"
+    assert row["token"] == "xoxb-x"
+    assert row["prefills"] == prefills
+
+    sfa_db.delete_pending_task_split(con, split_id)
+    assert sfa_db.get_pending_task_split(con, split_id) is None
+
+
+def test_get_pending_task_split_missing_returns_none(con):
+    assert sfa_db.get_pending_task_split(con, 999999) is None

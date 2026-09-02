@@ -640,8 +640,9 @@ def _mention_ts(base_ts: str, i: int) -> str:
 def handle_reaction(con, event: dict, token: str | None = None) -> None:
     """リアクションでメッセージをタスク化。🎯(dart)=通常タスク、📋(clipboard)=事務タスク に振り分け。
     token指定で別Bot（事務Bot）のトークンで本文取得・ユーザー解決・返信を行う。
-    #148: 本文が箇条書きで複数の依頼を含む場合は複数タスクに分けて起票する
-    （1件のみの場合は従来と同じ返信文言・ブロック構成）。"""
+    #151: 本文が複数の依頼に分割できそうな場合は、必ずボタンで「分割する/1件のまま登録する」を
+    確認する（#148で自動分割していたが、1行を過剰に分割してしまう事例があったため）。
+    1件しか抽出されない場合は確認不要でそのまま起票（従来と同じ返信文言・ブロック構成）。"""
     reaction = event.get("reaction")
     is_admin = reaction in ADMIN_TASK_REACTIONS
     if reaction not in TASK_REACTIONS and not is_admin:
@@ -660,103 +661,74 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
         _slack_post("chat.postEphemeral", token=token, channel=channel, user=user_id,
                     text="⚠ このメッセージ本文を取得できませんでした（Botの参加/権限をご確認ください）。タスクは作成していません。")
         return
-    permalink = _message_permalink(channel, ts, token=token)  # 起票元メッセージのURL（全タスク共通）
+    permalink = _message_permalink(channel, ts, token=token)  # 起票元メッセージのURL
     if is_admin:
         # 事務タスク: 依頼者=メッセージ投稿者、担当=事務員。カテゴリは事務用分類から。
         author_id = (msg or {}).get("user") or ""
         requester = owner_from_slack_user(author_id, token=token) if author_id else None
         prefills = ai_extract_tasks(text, categories=sfa_db.ADMIN_TASK_CATEGORIES)
-        created_pairs = []  # (tid, prefill, created)
-        for i, prefill in enumerate(prefills):
-            tid, created = create_task_from_fields(
-                con, title=prefill["title"], next_action=prefill["next_action"] or None,
-                assignee=(DESK_ASSIGNEE or None), due_date=prefill["due_date"] or None,
-                category=prefill["category"] or None, slack_channel=channel, slack_ts=_mention_ts(ts, i),
-                slack_permalink=permalink,
-                created_by=owner_from_slack_user(user_id, token=token) or user_id,
-                is_admin=1, requester=requester, return_created=True)
-            created_pairs.append((tid, prefill, created))
-        for tid, _prefill, created in created_pairs:
-            if created:   # 新規起票時のみ担当者へDM（重複配信では送らない）
-                try:
-                    notify_task_created(con, tid, source_text=text, token=token)
-                except Exception as _e:  # noqa: BLE001
-                    print(f"[slack_tasks] notify_task_created(reaction) error: {_e}", flush=True)
+        if len(prefills) > 1:
+            _post_split_confirm(con, channel=channel, thread_ts=ts, token=token,
+                                is_admin=True, prefills=prefills, text=text, user_id=author_id)
+            return
+        tid, created = create_task_from_fields(
+            con, title=prefills[0]["title"], next_action=prefills[0]["next_action"] or None,
+            assignee=(DESK_ASSIGNEE or None), due_date=prefills[0]["due_date"] or None,
+            category=prefills[0]["category"] or None, slack_channel=channel, slack_ts=ts,
+            slack_permalink=permalink,
+            created_by=owner_from_slack_user(user_id, token=token) or user_id,
+            is_admin=1, requester=requester, return_created=True)
+        if created:   # 新規起票時のみ担当者へDM（重複配信では送らない）
+            try:
+                notify_task_created(con, tid, source_text=text, token=token)
+            except Exception as _e:  # noqa: BLE001
+                print(f"[slack_tasks] notify_task_created(reaction) error: {_e}", flush=True)
+        link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
         _req = f"（依頼者: {requester}）" if requester else ""
         # 期限確認の返信が来ないというユーザー報告(2026-09-02, #149/#150)への対応。
         # 依頼者本人（＝元メッセージの投稿者。author_idは既にSlack上の実IDなので名前解決を
         # 挟まず直接メンションできる）は、実際に返信してほしい期限確認の一文
         # (_admin_due_context)の方にメンションする。「事務タスク化しました」の見出しは
         # 逆に目立たせなくてよい（#150）ので、通常sectionより小さいcontextブロックにする。
-        if len(created_pairs) == 1:
-            tid, prefill, _created = created_pairs[0]
-            link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
-            summary_text = f"📋 事務タスク化しました: {prefill['title']}"
-            blocks = [
-                {"type": "context", "elements": [{"type": "mrkdwn",
-                 "text": f"📋 事務タスク化しました{_req}\n*<{link}|{prefill['title']}>*"
-                         + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}]},
-                _admin_due_context(con, tid, mention_uid=author_id),
-                _task_action_block(tid),
-            ]
-        else:
-            summary_text = f"📋 事務タスク化しました{_req}（{len(created_pairs)}件）"
-            blocks = [{"type": "context", "elements": [{"type": "mrkdwn", "text": summary_text}]}]
-            for idx, (tid, prefill, _created) in enumerate(created_pairs):
-                link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
-                blocks.append({"type": "section", "text": {"type": "mrkdwn",
-                               "text": f"*<{link}|{prefill['title']}>*"
-                                       + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}})
-                # このスレッドへの「OK」返信は元tsの1件目にしかヒットしないため(#148設計)、
-                # メンションも1件目にのみ付ける（2件目以降で返信してもらっても確定できない）。
-                blocks.append(_admin_due_context(con, tid, mention_uid=(author_id if idx == 0 else None)))
-                blocks.append(_task_action_block(tid))
-        # 起票したらスレッド投稿（@メンション起票と同仕様。以前はchat.postEphemeralで
-        # リアクションした本人にしか見えなかった）。
         _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
-                         text=summary_text, blocks=blocks)
+                         text=f"📋 事務タスク化しました: {prefills[0]['title']}",
+                         blocks=[
+                             {"type": "context", "elements": [{"type": "mrkdwn",
+                              "text": f"📋 事務タスク化しました{_req}\n*<{link}|{prefills[0]['title']}>*"
+                                      + (f"\n▶ {prefills[0]['next_action']}" if prefills[0]['next_action'] else "")}]},
+                             _admin_due_context(con, tid, mention_uid=author_id),
+                             _task_action_block(tid),
+                         ])
         if not _r.get("ok"):
-            print(f"[slack_tasks] handle_reaction(admin): reply post failed "
-                  f"(tasks {[t for t, _, _ in created_pairs]} created): {_r.get('error')}", flush=True)
-            for tid, prefill, _created in created_pairs:
-                _notify_reply_post_failure(user_id, tid, prefill["title"], _r.get("error"), token, "desk-tasks")
+            print(f"[slack_tasks] handle_reaction(admin): reply post failed (task {tid} created): "
+                  f"{_r.get('error')}", flush=True)
+            _notify_reply_post_failure(user_id, tid, prefills[0]["title"], _r.get("error"), token, "desk-tasks")
         return
     prefills = ai_extract_tasks(text)
+    if len(prefills) > 1:
+        _post_split_confirm(con, channel=channel, thread_ts=ts, token=token,
+                            is_admin=False, prefills=prefills, text=text, user_id=user_id)
+        return
     owner = owner_from_slack_user(user_id, token=token)
-    tids = [create_task_from_fields(
-        con, title=prefill["title"], next_action=prefill["next_action"] or None,
-        assignee=owner, due_date=prefill["due_date"] or None, category=prefill["category"] or None,
-        slack_channel=channel, slack_ts=_mention_ts(ts, i), slack_permalink=permalink,
-        created_by=owner or user_id) for i, prefill in enumerate(prefills)]
-    if len(prefills) == 1:
-        tid = tids[0]
-        link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
-        summary_text = f"🎯 コンサルタスク化しました: {prefills[0]['title']}"
-        blocks = [
-            {"type": "section", "text": {"type": "mrkdwn",
-             "text": f"🎯 コンサルタスク化しました\n*<{link}|{prefills[0]['title']}>*"
-                     + (f"\n▶ {prefills[0]['next_action']}" if prefills[0]['next_action'] else "")}},
-            _task_action_block(tid),
-            _task_effort_block(tid),
-        ]
-    else:
-        summary_text = f"🎯 コンサルタスク化しました（{len(tids)}件）"
-        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": summary_text}}]
-        for tid, prefill in zip(tids, prefills):
-            link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
-            blocks.append({"type": "section", "text": {"type": "mrkdwn",
-                           "text": f"*<{link}|{prefill['title']}>*"
-                                   + (f"\n▶ {prefill['next_action']}" if prefill['next_action'] else "")}})
-            blocks.append(_task_action_block(tid))
-            blocks.append(_task_effort_block(tid))
+    tid = create_task_from_fields(
+        con, title=prefills[0]["title"], next_action=prefills[0]["next_action"] or None,
+        assignee=owner, due_date=prefills[0]["due_date"] or None, category=prefills[0]["category"] or None,
+        slack_channel=channel, slack_ts=ts, slack_permalink=permalink, created_by=owner or user_id)
+    link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
     # 起票したらスレッド投稿（@メンション起票・事務タスクのリアクション起票と同仕様）。
     _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
-                     text=summary_text, blocks=blocks)
+                     text=f"🎯 コンサルタスク化しました: {prefills[0]['title']}",
+                     blocks=[
+                         {"type": "section", "text": {"type": "mrkdwn",
+                          "text": f"🎯 コンサルタスク化しました\n*<{link}|{prefills[0]['title']}>*"
+                                  + (f"\n▶ {prefills[0]['next_action']}" if prefills[0]['next_action'] else "")}},
+                         _task_action_block(tid),
+                         _task_effort_block(tid),
+                     ])
     if not _r.get("ok"):
-        print(f"[slack_tasks] handle_reaction: reply post failed (tasks {tids} created): "
+        print(f"[slack_tasks] handle_reaction: reply post failed (task {tid} created): "
               f"{_r.get('error')}", flush=True)
-        for tid, prefill in zip(tids, prefills):
-            _notify_reply_post_failure(user_id, tid, prefill["title"], _r.get("error"), token, "tasks")
+        _notify_reply_post_failure(user_id, tid, prefills[0]["title"], _r.get("error"), token, "tasks")
 
 
 # ── @メンションでタスク化（webapp/slack_botから条件付きで呼ぶ） ──────────────
@@ -765,42 +737,36 @@ def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: s
                         token: str | None = None) -> list[int]:
     """@Botメンション(task/タスク:)を通常タスク化。#93: token指定で通常タスクBot（別アプリ）
     として返信・ユーザー解決を行う（desk-tasksのhandle_admin_mention_taskと対）。
-    #148: 本文が箇条書きで複数の依頼を含む場合は複数タスクに分けて起票する
-    （1件のみの場合は従来と同じ返信文言・ブロック構成、戻り値は作成した全タスクIDのリスト）。"""
+    #148で複数タスクへの分割に対応したが、ユーザー報告2026-09-02(#151): 「＋」区切りの
+    1行のような、本来1件の依頼を過剰に複数分割してしまうことがあった。#151で、分割できる
+    場合は必ずボタンで「分割する/1件のまま登録する」を確認するステップを挟むように変更
+    （1件しか抽出されない場合は確認不要でそのまま起票、従来と同じ返信文言・ブロック構成）。
+    確認が必要な場合、この時点ではタスクは何も作成していないため戻り値は空リスト。"""
     prefills = ai_extract_tasks(text)
+    if len(prefills) > 1:
+        _post_split_confirm(con, channel=channel, thread_ts=thread_ts, token=token,
+                            is_admin=False, prefills=prefills, text=text, user_id=user_id)
+        return []
     owner = owner_from_slack_user(user_id, token=token)
-    tids = [create_task_from_fields(
-        con, title=prefill["title"], next_action=prefill["next_action"] or None,
-        assignee=owner, due_date=prefill["due_date"] or None, category=prefill["category"] or None,
-        slack_channel=channel, slack_ts=_mention_ts(thread_ts, i), created_by=owner or user_id)
-        for i, prefill in enumerate(prefills)]
-    if len(prefills) == 1:
-        tid = tids[0]
-        link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
-        summary_text = f"コンサルタスク化しました: {prefills[0]['title']}"
-        blocks = [{"type": "section", "text": {"type": "mrkdwn",
-                   "text": f"✅ コンサルタスク化しました *<{link}|{prefills[0]['title']}>*"}},
-                  _task_action_block(tid), _task_effort_block(tid)]
-    else:
-        summary_text = f"コンサルタスク化しました（{len(tids)}件）"
-        blocks = [{"type": "section", "text": {"type": "mrkdwn",
-                   "text": f"✅ コンサルタスク化しました（{len(tids)}件）"}}]
-        for tid, prefill in zip(tids, prefills):
-            link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*<{link}|{prefill['title']}>*"}})
-            blocks.append(_task_action_block(tid))
-            blocks.append(_task_effort_block(tid))
+    tid = create_task_from_fields(
+        con, title=prefills[0]["title"], next_action=prefills[0]["next_action"] or None,
+        assignee=owner, due_date=prefills[0]["due_date"] or None, category=prefills[0]["category"] or None,
+        slack_channel=channel, slack_ts=thread_ts, created_by=owner or user_id)
+    link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
     _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-                     text=summary_text, blocks=blocks)
+                     text=f"コンサルタスク化しました: {prefills[0]['title']}",
+                     blocks=[{"type": "section", "text": {"type": "mrkdwn",
+                             "text": f"✅ コンサルタスク化しました *<{link}|{prefills[0]['title']}>*"}},
+                             _task_action_block(tid),
+                             _task_effort_block(tid)])
     if not _r.get("ok"):
         # タスク作成自体は成功しているが、返信の投稿に失敗（Botが未参加のprivateチャンネル等で
         # 発生するchat.postMessageのAPIレベル失敗はHTTP200で返るため例外にならず、無言で消えていた
         # ことがユーザー報告で判明。まずはログに残す＝2026-08-24）。
-        print(f"[slack_tasks] handle_mention_task: reply post failed (tasks {tids} created): "
+        print(f"[slack_tasks] handle_mention_task: reply post failed (task {tid} created): "
               f"{_r.get('error')}", flush=True)
-        for tid, prefill in zip(tids, prefills):
-            _notify_reply_post_failure(user_id, tid, prefill["title"], _r.get("error"), token, "tasks")
-    return tids
+        _notify_reply_post_failure(user_id, tid, prefills[0]["title"], _r.get("error"), token, "tasks")
+    return [tid]
 
 
 def handle_admin_reaction(con, event: dict, token: str | None = None) -> None:
@@ -814,45 +780,139 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
                               token: str | None = None) -> list[int]:
     """@事務Botメンションを事務タスク化。依頼者=メンションした人、担当=事務員、is_admin=1。
     token指定で事務Botとして返信・ユーザー解決を行う。
-    #148: 本文が箇条書きで複数の依頼を含む場合は複数タスクに分けて起票する
-    （1件のみの場合は従来と同じ返信文言・ブロック構成、戻り値は作成した全タスクIDのリスト）。"""
+    #151: 分割できる場合は必ずボタンで確認するステップを挟む（1件のみの場合は従来通り）。
+    確認が必要な場合、この時点ではタスクは何も作成していないため戻り値は空リスト。"""
     prefills = ai_extract_tasks(text, categories=sfa_db.ADMIN_TASK_CATEGORIES)
+    if len(prefills) > 1:
+        _post_split_confirm(con, channel=channel, thread_ts=thread_ts, token=token,
+                            is_admin=True, prefills=prefills, text=text, user_id=user_id)
+        return []
     requester = owner_from_slack_user(user_id, token=token)  # 依頼＝メンションした本人
     permalink = _message_permalink(channel, thread_ts, token=token)
+    tid, created = create_task_from_fields(
+        con, title=prefills[0]["title"], next_action=prefills[0]["next_action"] or None,
+        assignee=(DESK_ASSIGNEE or None), due_date=prefills[0]["due_date"] or None,
+        category=prefills[0]["category"] or None, slack_channel=channel, slack_ts=thread_ts,
+        slack_permalink=permalink, created_by=requester or user_id, is_admin=1, requester=requester,
+        return_created=True)
+    if not created:
+        # 同一メッセージからの多重配信（別event_id）＝既に起票済み。返信もしない（3重返信の抑止）。
+        return [tid]
+    _req = f"（依頼者: {requester}）" if requester else ""
+    link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
+    _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
+                     text=f"事務タスク化しました: {prefills[0]['title']}",
+                     blocks=[{"type": "context", "elements": [{"type": "mrkdwn",
+                             "text": f"📋 事務タスク化しました{_req} *<{link}|{prefills[0]['title']}>*"}]},
+                             _admin_due_context(con, tid, mention_uid=user_id), _task_action_block(tid)])
+    if not _r.get("ok"):
+        print(f"[slack_tasks] handle_admin_mention_task: reply post failed (task {tid} created): "
+              f"{_r.get('error')}", flush=True)
+        _notify_reply_post_failure(user_id, tid, prefills[0]["title"], _r.get("error"), token, "desk-tasks")
+    # 担当者へ簡潔DM（推定緊急度＋依頼者/タスク/期日＋Slackリンク）。元の依頼本文で緊急度を推定。
+    try:
+        notify_task_created(con, tid, source_text=text, token=token)
+    except Exception as _e:  # noqa: BLE001
+        print(f"[slack_tasks] notify_task_created(mention) error: {_e}", flush=True)
+    return [tid]
+
+
+# ── 複数タスクへの分割確認（#151） ───────────────────────────────────────────
+
+def _post_split_confirm(con, *, channel: str, thread_ts: str, token: str | None, is_admin: bool,
+                        prefills: list[dict], text: str, user_id: str | None) -> None:
+    """本文が複数タスクに分割できそうな時、分割するか/1件のまま登録するかを確認する
+    （#151。ユーザー報告2026-09-02: 「＋」区切りの1行が無確認で4件に分割されてしまった
+    ため、必ず確認ステップを挟むよう変更。それまでタスクは1件も作成しない）。
+    ボタン押下は_handle_block_action→_handle_split_decisionで処理する。"""
+    split_id = sfa_db.create_pending_task_split(
+        con, channel=channel, thread_ts=thread_ts, text=text, prefills=prefills,
+        is_admin=is_admin, user_id=user_id, token=token)
+    lines = "\n".join(f"{i + 1}. {p['title']}" for i, p in enumerate(prefills))
+    _r = _slack_post(
+        "chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
+        text=f"🤔 {len(prefills)}件のタスクに分割できそうです。分割しますか？",
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn",
+             "text": f"🤔 これは*{len(prefills)}件のタスク*に分割できそうです。分割しますか？\n{lines}"}},
+            {"type": "actions", "block_id": f"tsplit_{split_id}", "elements": [
+                {"type": "button", "action_id": f"task_split_yes:{split_id}", "style": "primary",
+                 "text": {"type": "plain_text", "text": f"✅ {len(prefills)}件に分割して登録"}},
+                {"type": "button", "action_id": f"task_split_no:{split_id}",
+                 "text": {"type": "plain_text", "text": "📝 1件のまま登録"}},
+            ]},
+        ])
+    if not _r.get("ok"):
+        print(f"[slack_tasks] _post_split_confirm: post failed: {_r.get('error')}", flush=True)
+
+
+def _finalize_normal_tasks(con, *, channel: str, thread_ts: str, prefills: list[dict],
+                           assignee: str | None, user_id: str | None, token: str | None) -> list[int]:
+    """分割確認(#151)の決着後（「分割する」で複数件、または「1件のまま登録」で1件）に、
+    コンサルタスクを実際に作成し、まとめて1回のスレッド返信で通知する。"""
+    tids = [create_task_from_fields(
+        con, title=p["title"], next_action=p["next_action"] or None,
+        assignee=assignee, due_date=p["due_date"] or None, category=p["category"] or None,
+        slack_channel=channel, slack_ts=_mention_ts(thread_ts, i), created_by=assignee or user_id)
+        for i, p in enumerate(prefills)]
+    if len(tids) == 1:
+        link = f"{SFA_TOOL_URL}/tasks#tc-{tids[0]}"
+        summary_text = f"コンサルタスク化しました: {prefills[0]['title']}"
+        blocks = [{"type": "section", "text": {"type": "mrkdwn",
+                   "text": f"✅ コンサルタスク化しました *<{link}|{prefills[0]['title']}>*"}},
+                  _task_action_block(tids[0]), _task_effort_block(tids[0])]
+    else:
+        summary_text = f"コンサルタスク化しました（{len(tids)}件）"
+        blocks = [{"type": "section", "text": {"type": "mrkdwn",
+                   "text": f"✅ コンサルタスク化しました（{len(tids)}件）"}}]
+        for tid, p in zip(tids, prefills):
+            link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*<{link}|{p['title']}>*"}})
+            blocks.append(_task_action_block(tid))
+            blocks.append(_task_effort_block(tid))
+    _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
+                     text=summary_text, blocks=blocks)
+    if not _r.get("ok"):
+        print(f"[slack_tasks] _finalize_normal_tasks: reply post failed (tasks {tids} created): "
+              f"{_r.get('error')}", flush=True)
+        for tid, p in zip(tids, prefills):
+            _notify_reply_post_failure(user_id, tid, p["title"], _r.get("error"), token, "tasks")
+    return tids
+
+
+def _finalize_admin_tasks(con, *, channel: str, thread_ts: str, prefills: list[dict],
+                          requester: str | None, user_id: str | None, token: str | None,
+                          permalink: str | None = None, source_text: str = "") -> list[int]:
+    """分割確認(#151)の決着後（「分割する」で複数件、または「1件のまま登録」で1件）に、
+    事務タスクを実際に作成し、まとめて1回のスレッド返信で通知する。"""
     created_pairs = []  # (tid, prefill, created)
-    for i, prefill in enumerate(prefills):
+    for i, p in enumerate(prefills):
         tid, created = create_task_from_fields(
-            con, title=prefill["title"], next_action=prefill["next_action"] or None,
-            assignee=(DESK_ASSIGNEE or None), due_date=prefill["due_date"] or None,
-            category=prefill["category"] or None, slack_channel=channel, slack_ts=_mention_ts(thread_ts, i),
+            con, title=p["title"], next_action=p["next_action"] or None,
+            assignee=(DESK_ASSIGNEE or None), due_date=p["due_date"] or None,
+            category=p["category"] or None, slack_channel=channel, slack_ts=_mention_ts(thread_ts, i),
             slack_permalink=permalink, created_by=requester or user_id, is_admin=1, requester=requester,
             return_created=True)
-        created_pairs.append((tid, prefill, created))
+        created_pairs.append((tid, p, created))
     tids = [tid for tid, _, _ in created_pairs]
-    new_pairs = [(tid, prefill) for tid, prefill, created in created_pairs if created]
+    new_pairs = [(tid, p) for tid, p, created in created_pairs if created]
     if not new_pairs:
-        # 同一メッセージからの多重配信（別event_id）＝全件既に起票済み。返信もしない（3重返信の抑止）。
         return tids
     _req = f"（依頼者: {requester}）" if requester else ""
-    # 期限確認の返信が来ないというユーザー報告(2026-09-02, #149/#150)への対応。依頼者本人
-    # （＝メンションした人。user_idは既にSlack上の実IDなので名前解決を挟まず直接メンション
-    # できる）は、実際に返信してほしい期限確認の一文(_admin_due_context)の方にメンションする。
-    # 「事務タスク化しました」の見出しは逆に目立たせなくてよい（#150）ので、通常sectionより
-    # 小さいcontextブロックにする。
-    if len(new_pairs) == 1 and len(prefills) == 1:
-        tid, prefill = new_pairs[0]
+    if len(new_pairs) == 1:
+        tid, p = new_pairs[0]
         link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
-        summary_text = f"事務タスク化しました: {prefill['title']}"
+        summary_text = f"事務タスク化しました: {p['title']}"
         blocks = [{"type": "context", "elements": [{"type": "mrkdwn",
-                   "text": f"📋 事務タスク化しました{_req} *<{link}|{prefill['title']}>*"}]},
+                   "text": f"📋 事務タスク化しました{_req} *<{link}|{p['title']}>*"}]},
                   _admin_due_context(con, tid, mention_uid=user_id), _task_action_block(tid)]
     else:
-        summary_text = f"事務タスク化しました（{len(new_pairs)}件）"
-        blocks = [{"type": "context", "elements": [{"type": "mrkdwn",
-                   "text": f"📋 事務タスク化しました{_req}（{len(new_pairs)}件）"}]}]
-        for idx, (tid, prefill) in enumerate(new_pairs):
+        summary_text = f"事務タスク化しました{_req}（{len(new_pairs)}件）"
+        blocks = [{"type": "context", "elements": [{"type": "mrkdwn", "text": summary_text}]}]
+        for idx, (tid, p) in enumerate(new_pairs):
             link = f"{SFA_TOOL_URL}/desk-tasks#tc-{tid}"
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*<{link}|{prefill['title']}>*"}})
+            blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                           "text": f"*<{link}|{p['title']}>*" + (f"\n▶ {p['next_action']}" if p['next_action'] else "")}})
             # このスレッドへの「OK」返信は元tsの1件目にしかヒットしないため(#148設計)、
             # メンションも1件目にのみ付ける（2件目以降で返信してもらっても確定できない）。
             blocks.append(_admin_due_context(con, tid, mention_uid=(user_id if idx == 0 else None)))
@@ -860,17 +920,52 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
     _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
                      text=summary_text, blocks=blocks)
     if not _r.get("ok"):
-        print(f"[slack_tasks] handle_admin_mention_task: reply post failed "
+        print(f"[slack_tasks] _finalize_admin_tasks: reply post failed "
               f"(tasks {[t for t, _ in new_pairs]} created): {_r.get('error')}", flush=True)
-        for tid, prefill in new_pairs:
-            _notify_reply_post_failure(user_id, tid, prefill["title"], _r.get("error"), token, "desk-tasks")
-    # 担当者へ簡潔DM（推定緊急度＋依頼者/タスク/期日＋Slackリンク）。元の依頼本文で緊急度を推定。
-    for tid, _prefill in new_pairs:
+        for tid, p in new_pairs:
+            _notify_reply_post_failure(user_id, tid, p["title"], _r.get("error"), token, "desk-tasks")
+    for tid, _p in new_pairs:
         try:
-            notify_task_created(con, tid, source_text=text, token=token)
+            notify_task_created(con, tid, source_text=source_text, token=token)
         except Exception as _e:  # noqa: BLE001
-            print(f"[slack_tasks] notify_task_created(mention) error: {_e}", flush=True)
+            print(f"[slack_tasks] notify_task_created error: {_e}", flush=True)
     return tids
+
+
+def _handle_split_decision(con, split_id: int, decision: str, response_url: str | None = None) -> None:
+    """「分割する/1件のまま登録する」ボタンの押下処理（#151）。
+    decision='yes'なら保存済みの複数prefillsそのまま、'no'なら元の本文をai_extract_task
+    （単数形）で1件に再抽出してから作成する。ボタンが既に処理済み（二重クリック・保存済み
+    データの期限切れ）ならpending行が見つからないので何もしない。"""
+    pending = sfa_db.get_pending_task_split(con, split_id)
+    if not pending:
+        if response_url:
+            _respond_url(response_url, "⚠ この確認は既に処理済み、または見つかりませんでした。")
+        return
+    sfa_db.delete_pending_task_split(con, split_id)
+    channel, thread_ts = pending["channel"], pending["thread_ts"]
+    token = pending.get("token")
+    user_id = pending.get("user_id")
+    text = pending.get("text") or ""
+    is_admin = bool(pending.get("is_admin"))
+    if decision == "yes":
+        prefills = pending.get("prefills") or []
+        if not prefills:
+            return
+    else:
+        prefills = [ai_extract_task(text, categories=(sfa_db.ADMIN_TASK_CATEGORIES if is_admin else None))]
+    if response_url:
+        _respond_url(response_url, "✅ 処理しました。")
+    if is_admin:
+        requester = owner_from_slack_user(user_id, token=token) if user_id else None
+        permalink = _message_permalink(channel, thread_ts, token=token)
+        _finalize_admin_tasks(con, channel=channel, thread_ts=thread_ts, prefills=prefills,
+                              requester=requester, user_id=user_id, token=token, permalink=permalink,
+                              source_text=text)
+    else:
+        owner = owner_from_slack_user(user_id, token=token) if user_id else None
+        _finalize_normal_tasks(con, channel=channel, thread_ts=thread_ts, prefills=prefills,
+                               assignee=owner, user_id=user_id, token=token)
 
 
 # ── ボタン付きブロック（消込UI） ───────────────────────────────────────────
@@ -1014,6 +1109,16 @@ def _handle_block_action(con, payload: dict) -> None:
     action_id = act.get("action_id", "")
     trigger_id = payload.get("trigger_id", "")
     resp_url = payload.get("response_url", "")
+    if action_id.startswith("task_split_yes:") or action_id.startswith("task_split_no:"):
+        # 複数タスクへの分割確認ボタン（#151）。task_{done,start,...}系とはtid空間が異なる
+        # （タスクIDではなくpending_task_splits.idを指す）ため、通常の処理より先に分岐する。
+        try:
+            _split_id = int(action_id.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return
+        _decision = "yes" if action_id.startswith("task_split_yes:") else "no"
+        _handle_split_decision(con, _split_id, _decision, resp_url)
+        return
     try:
         # task_effortのみ action_id が "task_effort:{tid}:{level}" と3分割（ボタンごとに
         # action_idを一意にするため。値自体は act["value"] から別途取得するので3つ目は無視）。

@@ -853,6 +853,22 @@ CREATE TABLE IF NOT EXISTS task_links (
 );
 CREATE INDEX IF NOT EXISTS idx_task_links_task ON task_links(task_id);
 
+-- Slack起票(@メンション/リアクション)がAIで複数タスクに分割できると判定した際の、
+-- 「分割するか/1件のまま登録するか」ユーザー確認待ちの一時データ（#151、2026-09-02）。
+-- 確認ボタンが押されるまでタスクは作成しない。行はボタン押下後（または一定時間放置後の
+-- クリーンアップ）に削除する使い捨てデータ。
+CREATE TABLE IF NOT EXISTS pending_task_splits (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel       TEXT NOT NULL,
+    thread_ts     TEXT NOT NULL,
+    user_id       TEXT,
+    text          TEXT NOT NULL,
+    is_admin      INTEGER DEFAULT 0,
+    token         TEXT,
+    prefills_json TEXT NOT NULL,
+    created_at    TEXT DEFAULT (datetime('now'))
+);
+
 -- タスクの大項目＝プロジェクト（取り組み）。期限＋状態を持つ管理対象（#30）。
 -- tasks.project は名前(name)で緩く参照する。
 CREATE TABLE IF NOT EXISTS task_projects (
@@ -4185,6 +4201,39 @@ def add_task_link(con, task_id: int, url: str, label: str | None = None) -> int 
 
 def delete_task_link(con, link_id: int) -> None:
     con.execute("DELETE FROM task_links WHERE id=?", (int(link_id),))
+    con.commit()
+
+
+# ── Slack起票の「分割するか確認」待ち（#151） ──
+
+def create_pending_task_split(con, *, channel: str, thread_ts: str, text: str,
+                              prefills: list[dict], is_admin: bool = False,
+                              user_id: str | None = None, token: str | None = None) -> int:
+    """AIが複数タスクに分割できると判定した際の確認待ちデータを保存する。
+    ボタン押下(get_pending_task_split→delete_pending_task_split)まではタスク化しない。"""
+    cur = con.execute(
+        "INSERT INTO pending_task_splits (channel, thread_ts, user_id, text, is_admin, token, "
+        "prefills_json) VALUES (?,?,?,?,?,?,?)",
+        (channel, thread_ts, user_id, text, 1 if is_admin else 0, token,
+         _json.dumps(prefills, ensure_ascii=False)))
+    con.commit()
+    return cur.lastrowid
+
+
+def get_pending_task_split(con, split_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM pending_task_splits WHERE id=?", (int(split_id),)).fetchone()
+    if not r:
+        return None
+    out = dict(r)
+    try:
+        out["prefills"] = _json.loads(out.get("prefills_json") or "[]")
+    except Exception:
+        out["prefills"] = []
+    return out
+
+
+def delete_pending_task_split(con, split_id: int) -> None:
+    con.execute("DELETE FROM pending_task_splits WHERE id=?", (int(split_id),))
     con.commit()
 
 
