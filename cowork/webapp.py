@@ -5867,7 +5867,8 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
     容量データが無い担当者は従来通りtask_gantt_range（工数感×期日→所要日数・開始日を
     期日から単純逆算、他タスクとの競合は見ない）にフォールバックする（無停止移行）。
     group_by='type'（既定）は大分類(project×category)ごと、group_by='link'は紐づけ単位
-    （Delivery→商談→論点→紐づけ無し、の順にグループのグループを並べる）でグループ化。
+    （紐づけ無し→Delivery→商談→論点、の順にグループのグループを並べる。ユーザー要望
+    2026-09-03: 紐づけ無し案件を一番上に）でグループ化。
     グループ間の並び順（type/linkとも同じ）＝グループ内タスクの所要日数合計が多い順
     （linkはさらに紐づけ種別の優先順が最優先）。
     グループ内＝開始日が古い順（今日以前は同列扱い）→期日が近い順。
@@ -5909,7 +5910,8 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
     def _days(t):
         return sfa_db.TASK_EFFORT_DAYS.get(t.get("effort_level") or "", 0)
 
-    _LINK_TYPE_ORDER = {"delivery": 0, "deal": 1, "issue": 2, None: 3}
+    # 紐づけ無し(None)を一番上に（ユーザー要望2026-09-03）。以降はDelivery→商談→論点の順。
+    _LINK_TYPE_ORDER = {None: 0, "delivery": 1, "deal": 2, "issue": 3}
     _LINK_TYPE_ICON = {"delivery": "🚚", "deal": "🤝", "issue": "📌"}
     groups: dict = {}
     if group_by == "link":
@@ -5925,7 +5927,7 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
                 groups.setdefault((None, None), []).append(t)
         group_items = sorted(
             groups.items(),
-            key=lambda kv: (_LINK_TYPE_ORDER.get(kv[0][0], 3), -sum(_days(t) for t in kv[1])))
+            key=lambda kv: (_LINK_TYPE_ORDER.get(kv[0][0], 99), -sum(_days(t) for t in kv[1])))
     else:
         for t in ready:
             key = (t.get("project") or "（未設定）", t.get("category") or "（未設定）")
@@ -6040,7 +6042,7 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
 
     _group_desc = ("大分類（プロジェクト×種類）ごとに、合計所要日数が多いグループから表示。"
                    if group_by != "link" else
-                   "紐づけ単位（Delivery→商談→論点→紐づけ無し、の順）で、各単位内は合計所要日数が多いグループから表示。")
+                   "紐づけ単位（紐づけ無し→Delivery→商談→論点、の順）で、各単位内は合計所要日数が多いグループから表示。")
     _group_tabs = f"""
     <div style="display:flex;gap:6px;margin:4px 0 8px">
       <a class="btn sec" href="/tasks/gantt?group=type"

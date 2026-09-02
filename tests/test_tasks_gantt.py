@@ -137,8 +137,9 @@ def test_gantt_group_tabs_render_with_active_state(con):
     assert "background:#4f46e5;color:#fff" in html_link  # どちらかのタブがアクティブ表示される
 
 
-def test_gantt_link_grouping_orders_delivery_deal_issue_then_unlinked(con):
-    """#124: 紐づけ単位モードは、単位のグループをDelivery→商談→論点→紐づけ無し、の順に並べる。
+def test_gantt_link_grouping_orders_unlinked_first_then_delivery_deal_issue(con):
+    """#124/#153: 紐づけ単位モードは、単位のグループを紐づけ無し→Delivery→商談→論点、の順に
+    並べる（#153・2026-09-03: 紐づけ無し案件を一番上にというユーザー要望で並び順を変更）。
     グループ内タスクは着手日の早い順（=期日の逆算で開始日が早いものが上）。"""
     today = webapp._today_jst()
     far = (today + timedelta(days=30)).isoformat()
@@ -161,7 +162,7 @@ def test_gantt_link_grouping_orders_delivery_deal_issue_then_unlinked(con):
     pos_issue = html.find("📌")
     pos_none = html.find("（紐づけ無し）")
     assert -1 not in (pos_delivery, pos_deal, pos_issue, pos_none)
-    assert pos_delivery < pos_deal < pos_issue < pos_none
+    assert pos_none < pos_delivery < pos_deal < pos_issue
 
 
 def test_gantt_link_grouping_within_group_sorted_by_start_date(con):

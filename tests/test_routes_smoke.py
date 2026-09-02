@@ -1163,7 +1163,7 @@ def test_tasks_gantt_route_defaults_to_link_grouping_and_wide_main(server):
     body = resp.read().decode("utf-8")
     assert code == 200
     assert '<main class="main-wide">' in body
-    assert "紐づけ単位（Delivery→商談→論点→紐づけ無し" in body  # 既定=紐づけ単位の説明文
+    assert "紐づけ単位（紐づけ無し→Delivery→商談→論点" in body  # 既定=紐づけ単位の説明文（#153）
 
     code2, resp2 = _get(server + "/tasks/gantt?group=type", headers=_auth_header())
     body2 = resp2.read().decode("utf-8")
