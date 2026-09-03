@@ -869,6 +869,7 @@ _CLOSE_MODAL_HTML = (
     ' var tgtEl=document.getElementById("tgtFilter"); var tgt=tgtEl?tgtEl.value:"";'
     ' var l1El=document.getElementById("l1Filter"); var l1v=l1El?l1El.value:"";'
     ' var l2El=document.getElementById("l2Filter"); var l2v=l2El?l2El.value:"";'
+    ' var leadEl=document.getElementById("leadFilter"); var leadv=leadEl?leadEl.value:"";'
     ' var n=0;'
     ' document.querySelectorAll("tr[data-account]").forEach(function(tr){'
     '  var dind=tr.getAttribute("data-industry")||"";'
@@ -879,7 +880,8 @@ _CLOSE_MODAL_HTML = (
     '  var dtg=tr.getAttribute("data-target")||""; var okTg=!tgt||(tgt==="__none__"?dtg==="":dtg===tgt);'
     '  var dl1=tr.getAttribute("data-l1")||""; var okL1=!l1v||(l1v==="__none__"?dl1==="":dl1===l1v);'
     '  var dl2=tr.getAttribute("data-l2")||""; var okL2=!l2v||(l2v==="__none__"?dl2==="":dl2===l2v);'
-    '  var show=(okA&&okS&&okI&&okInd&&okTg&&okL1&&okL2); tr.style.display=show?"":"none";'
+    '  var dlead=tr.getAttribute("data-leadpattern")||""; var okLead=!leadv||(leadv==="__none__"?dlead==="":dlead===leadv.toLowerCase());'
+    '  var show=(okA&&okS&&okI&&okInd&&okTg&&okL1&&okL2&&okLead); tr.style.display=show?"":"none";'
     '  if(show)n++; else {var c=tr.querySelector("[name=ids]"); if(c)c.checked=false;}});'
     ' var lbl=document.getElementById("stgFilterLbl"); if(lbl)lbl.textContent=useSt?("ステージ:"+st.length+"選択"):"ステージ:全て";'
     ' var ilbl=document.getElementById("impFilterLbl"); if(ilbl)ilbl.textContent=useImp?("重要度:"+imp.length+"選択"):"重要度:全て";'
@@ -898,6 +900,7 @@ _CLOSE_MODAL_HTML = (
     ' var tgt=document.getElementById("tgtFilter"); if(tgt)s.tgt=tgt.value;'
     ' var l1=document.getElementById("l1Filter"); if(l1)s.l1=l1.value;'
     ' var l2=document.getElementById("l2Filter"); if(l2)s.l2=l2.value;'
+    ' var lead=document.getElementById("leadFilter"); if(lead)s.lead=lead.value;'
     ' sessionStorage.setItem(_dealFilterKey(),JSON.stringify(s));}catch(e){}}'
     'function _restoreDealFilters(){try{var raw=sessionStorage.getItem(_dealFilterKey()); if(!raw)return false; var s=JSON.parse(raw);'
     ' var i=document.getElementById("accSearchInput"); if(i&&s.q!=null)i.value=s.q;'
@@ -906,6 +909,7 @@ _CLOSE_MODAL_HTML = (
     ' var tgt=document.getElementById("tgtFilter"); if(tgt&&s.tgt!=null)tgt.value=s.tgt;'
     ' var l1=document.getElementById("l1Filter"); if(l1&&s.l1!=null){l1.value=s.l1; if(typeof onL1FilterChange==="function")onL1FilterChange();}'
     ' var l2=document.getElementById("l2Filter"); if(l2&&s.l2!=null)l2.value=s.l2;'
+    ' var lead=document.getElementById("leadFilter"); if(lead&&s.lead!=null)lead.value=s.lead;'
     ' return true;}catch(e){return false;}}'
     # リセット: サーバ側フィルタ(URL)に加え、sessionStorageに保存したクライアント側フィルタも消してから遷移。
     # これをしないと遷移先で _restoreDealFilters() が復元してしまい「リセットが効かない」ように見える。
@@ -8081,11 +8085,12 @@ def _udeal_sel(deal_id, field, values, current, *, sel_id=None, cascade_l1=False
 
 
 def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = False) -> str:
-    """商談一覧の共通テーブル（全タブ同一の14列・全インライン編集・全行クローズ）を返す。
+    """商談一覧の共通テーブル（全タブ同一の15列・全インライン編集・全行クローズ）を返す。
     bulk=Trueで先頭に一括選択チェックボックス列を出す（呼び出し側が<form>で包む）。"""
     stages = sfa_db.get_master_list(con, "deal_stages")
     owners = sfa_db.get_master_list(con, "owners")
     l1_list = sfa_db.get_master_list(con, "business_type_l1")
+    lead_patterns = sfa_db.get_master_list(con, "lead_patterns")
     _tgt_map = sfa_db.get_industry_target_map(con)  # 業界→ターゲット領域（行に自動付随・フィルタ用）
     # ツール表示用に、開発案件を商談ごとにまとめる（1クエリ）
     dev_by_deal: dict = {}
@@ -8105,6 +8110,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
         f'<tr>{cb_th}<th class="dlfz">#</th><th class="dlfz dlfz-last">アカウント</th>'
         f'{_sticky_th("案件名")}{_sticky_th("ステージ")}'
         f'{_sticky_th("重要度")}{_sticky_th("主担当")}{_sticky_th("サブ担当")}{_sticky_th("種別L1")}{_sticky_th("種別L2")}'
+        f'{_sticky_th("リード経路")}'
         f'{_sticky_th("予算")}{_th_total}'
         f'{_sticky_th("次回MS日")}{_sticky_th("次回MS")}{_sticky_th("ツール")}{_sticky_th("クローズ")}</tr>'
     )
@@ -8181,7 +8187,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                        f'onchange="updateDealField({did}, \'deal_name\', this.value)" '
                        f'style="font-size:12px;padding:2px 4px;width:150px{_ro_sty}">')
         rows.append(
-            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-industry="{_esc((d.get("industry") or "").lower())}" data-target="{_esc(_tgt_map.get(d.get("industry") or "", ""))}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}" data-l1="{_esc(d.get("business_type_l1") or "")}" data-l2="{_esc(d.get("business_type_l2") or "")}">'
+            f'<tr class="deal-row{" deal-row-closed" if _ro else ""}" data-account="{_esc((d.get("account_name") or "").lower())}" data-industry="{_esc((d.get("industry") or "").lower())}" data-target="{_esc(_tgt_map.get(d.get("industry") or "", ""))}" data-stage="{_esc(d.get("stage") or "")}" data-importance="{_esc(d.get("importance") or "")}" data-l1="{_esc(d.get("business_type_l1") or "")}" data-l2="{_esc(d.get("business_type_l2") or "")}" data-leadpattern="{_esc((d.get("lead_pattern") or "").lower())}">'
             f'{cb_td}'
             f'<td class="muted dlfz" style="font-size:.8em;color:#888;white-space:nowrap">#{did}{_closed_badge}</td>'
             f'<td class="dlfz dlfz-last"><div style="display:flex;align-items:center;gap:5px">'
@@ -8200,11 +8206,12 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
             f'<td>{_udeal_sel(did, "sub_owner", owners, d.get("sub_owner") or "", disabled=False)}</td>'
             f'<td>{_udeal_sel(did, "business_type_l1", l1_list, d.get("business_type_l1") or "", cascade_l1=True, disabled=False)}</td>'
             f'<td>{_udeal_sel(did, "business_type_l2", l2_values, d.get("business_type_l2") or "", sel_id=f"l2_{did}", disabled=False)}</td>'
+            f'<td>{_udeal_sel(did, "lead_pattern", lead_patterns, d.get("lead_pattern") or "", disabled=False)}</td>'
             f'<td>{inp_budget}</td><td>{inp_total}</td>'
             f'<td>{inp_ms_date}</td><td>{inp_ms_label}</td>'
             f'<td>{tool_cell}</td><td>{close_btn}</td></tr>'
         )
-    body = "".join(rows) or f'<tr><td colspan={17 if bulk else 16} class=muted>商談がありません。</td></tr>'
+    body = "".join(rows) or f'<tr><td colspan={18 if bulk else 17} class=muted>商談がありません。</td></tr>'
     # 横スクロール時に「#」「アカウント」までを左に固定。列の実幅を測ってleftを算出（幅可変のため）。
     _frz_js = ('<script>(function(){'
                'function dlFreeze(){var t=document.getElementById("dealTbl");if(!t)return;'
@@ -8215,7 +8222,7 @@ def unified_deal_table(con, deals: list, *, return_to_url: str, bulk: bool = Fal
                'window.addEventListener("load",dlFreeze);window.addEventListener("resize",dlFreeze);'
                'if(document.readyState!=="loading")dlFreeze();else document.addEventListener("DOMContentLoaded",dlFreeze);'
                '})();</script>')
-    return (f'<div style="overflow:auto;max-height:70vh"><table id="dealTbl" style="min-width:1560px">'
+    return (f'<div style="overflow:auto;max-height:70vh"><table id="dealTbl" style="min-width:1660px">'
             f'{header}{body}</table></div>' + _frz_js + _MS_PANEL_BLOCK + _TOOL_LINK_PANEL_BLOCK)
 
 
@@ -8491,6 +8498,17 @@ def _target_filter_select(con) -> str:
     )
 
 
+def _lead_pattern_filter_select(con) -> str:
+    """リード経路の絞り込み<select>（クライアント側・filterDealsByAccount()で使用）。全タブ共通（#156）。"""
+    patterns = sfa_db.get_master_list(con, "lead_patterns")
+    return (
+        '<select id="leadFilter" onchange="filterDealsByAccount()" title="リード経路で絞り込み">'
+        '<option value="">全リード経路</option>'
+        + "".join(f'<option value="{html.escape(p)}">{html.escape(p)}</option>' for p in patterns)
+        + '<option value="__none__">経路:未設定</option></select>'
+    )
+
+
 def _l1l2_filter_selects(con) -> str:
     """事業種別L1/L2の絞り込み<select>2つ（クライアント側）。L1選択でL2の選択肢が連動する。
     全タブ共通の filterDealsByAccount() で data-l1 / data-l2 を判定する。"""
@@ -8735,6 +8753,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
         {_industry_filter_select()}
         {_target_filter_select(con)}
         {_l1l2_filter_selects(con)}
+        {_lead_pattern_filter_select(con)}
         <select name="ms_type" onchange="this.form.submit()" title="次回MSの種別で絞り込み">{_ms_type_opts(ms_type)}</select>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:6px">
@@ -8977,6 +8996,7 @@ def deals_by_date_page(con, *, target_date: str | None = None, owner: str | None
         {_industry_filter_select()}
         {_target_filter_select(con)}
         {_l1l2_filter_selects(con)}
+        {_lead_pattern_filter_select(con)}
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:6px">
         <input type="text" id="accSearchInput" placeholder="🔍 アカウント名・業界で検索..."
@@ -9045,6 +9065,7 @@ def overdue_deals_page(con, *, owner: str | None = None, ms_type: str | None = N
         {_industry_filter_select()}
         {_target_filter_select(con)}
         {_l1l2_filter_selects(con)}
+        {_lead_pattern_filter_select(con)}
         {_toggle_btn}
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;width:100%;margin-top:6px">
@@ -18983,7 +19004,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _DEAL_ALLOWED_FIELDS = {"stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
                                              "client_budget", "value_lumpsum", "deal_name", "importance",
                                              "next_milestone_date", "next_milestone_label", "next_milestone_type",
-                                             "close_reason", "exhibition_name"}
+                                             "close_reason", "exhibition_name", "lead_pattern"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -18997,6 +19018,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _err = "不正な次回MS種別"
                         elif field == "close_reason" and value and value not in sfa_db.CLOSE_REASONS:
                             _err = "不正な終了理由"
+                        elif field == "lead_pattern" and value and value not in sfa_db.get_master_list(con, "lead_patterns"):
+                            _err = "不正なリード経路値"
                         elif field == "stage":
                             valid_stages = sfa_db.get_master_list(con, "deal_stages")
                             if value and value not in valid_stages:

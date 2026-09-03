@@ -596,6 +596,35 @@ def test_unified_deal_table_has_dev_project_link(db_path):
     con.close()
 
 
+def test_unified_deal_table_has_lead_pattern_column(db_path):
+    """商談一覧の共通テーブルにリード経路の列(#156)が表示され、値がdata属性・selectに反映されること。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('UT社')").lastrowid
+    con.commit()
+    d = sfa_db.upsert_deal(con, account_id=acc, deal_name="経路あり案件", stage="提案", status="open",
+                            lead_pattern="Exh.")
+    con.commit()
+
+    deals = sfa_db.list_deals(con, status="open")
+    html_out = webapp.unified_deal_table(con, deals, return_to_url="/deals")
+
+    assert "リード経路" in html_out
+    assert f'data-leadpattern="exh."' in html_out
+    assert f"updateDealField({d}, 'lead_pattern', this.value)" in html_out
+    assert '<option value="Exh." selected>Exh.</option>' in html_out
+    con.close()
+
+
+def test_deals_page_has_lead_pattern_filter(server):
+    """商談一覧の3タブすべてにリード経路の絞り込み<select>(#156)が出ること。"""
+    for tab_url in ("/deals?tab=active", "/deals?tab=byDate", "/deals?tab=overdue"):
+        code, resp = _get(server + tab_url, headers=_auth_header())
+        body = resp.read().decode("utf-8")
+        assert code == 200, tab_url
+        assert 'id="leadFilter"' in body, tab_url
+        assert "全リード経路" in body, tab_url
+
+
 def test_resolve_default_deals_tab_fallback(tmp_dir):
     """tab未指定時: MS超過0件なら'active'、超過ありなら'overdue'。明示tabは尊重。"""
     db_path = str(tmp_dir / "tabtest.db")
