@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import shutil
 import tempfile
 import urllib.error
@@ -260,3 +261,89 @@ def test_tasks_page_has_company_function_filter_and_wires_it(con):
     html_filtered = webapp.tasks_page(con, issue_company_function="人事")
     assert "人事タスク" in html_filtered
     assert "無関係タスク" not in html_filtered
+
+
+# ── #158(2026-09-04): 論点一覧から会社機能をその場で変更できるように ──
+# ユーザー報告「変更できない」: 一覧のステータス/責任者/解消期限は他列と同じくその場で
+# 変更できるのに、会社機能だけは編集画面に入らないと変更できなかった。
+
+def test_deal_issues_list_page_company_function_is_inline_editable_select(con):
+    iid = sfa_db.upsert_deal_issue(con, id=None, deal_id=None, issue="採用基準",
+                                   company_function="人事")
+    html = webapp.deal_issues_list_page(con, status=None)
+    assert f"updateDealIssueField({iid}, 'company_function', this.value, true)" in html
+    assert '<option value="人事" selected>人事</option>' in html
+
+
+def test_deal_issues_list_page_deal_linked_issue_has_no_company_function_select(con):
+    """商談に紐づく論点には会社機能の選択肢を出さない（そもそも選ぶ意味が無い）。"""
+    acc = sfa_db.upsert_account(con, name="テスト商事")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件A", status="open")
+    iid = sfa_db.upsert_deal_issue(con, id=None, deal_id=did, issue="案件固有論点")
+    html = webapp.deal_issues_list_page(con, status=None)
+    assert f"updateDealIssueField({iid}, 'company_function'" not in html
+
+
+def test_post_deal_issue_field_company_function_updates_value(server):
+    base, db_path = server
+    con2 = sfa_db.connect(db_path)
+    iid = sfa_db.upsert_deal_issue(con2, id=None, deal_id=None, issue="採用基準")
+    con2.close()
+
+    code, body = _post(base + f"/deal-issue/{iid}/field",
+                       {"field": "company_function", "value": "経理"}, headers=_auth_header())
+    assert code == 200
+    assert json.loads(body) == {"ok": True}
+    con3 = sfa_db.connect(db_path)
+    row = con3.execute("SELECT company_function FROM deal_issues WHERE id=?", (iid,)).fetchone()
+    con3.close()
+    assert row["company_function"] == "経理"
+
+
+def test_post_deal_issue_field_company_function_can_clear_value(server):
+    base, db_path = server
+    con2 = sfa_db.connect(db_path)
+    iid = sfa_db.upsert_deal_issue(con2, id=None, deal_id=None, issue="採用基準",
+                                   company_function="人事")
+    con2.close()
+
+    code, body = _post(base + f"/deal-issue/{iid}/field",
+                       {"field": "company_function", "value": ""}, headers=_auth_header())
+    assert code == 200
+    assert json.loads(body) == {"ok": True}
+    con3 = sfa_db.connect(db_path)
+    row = con3.execute("SELECT company_function FROM deal_issues WHERE id=?", (iid,)).fetchone()
+    con3.close()
+    assert row["company_function"] is None
+
+
+def test_post_deal_issue_field_company_function_rejects_invalid_value(server):
+    base, db_path = server
+    con2 = sfa_db.connect(db_path)
+    iid = sfa_db.upsert_deal_issue(con2, id=None, deal_id=None, issue="採用基準")
+    con2.close()
+
+    code, body = _post(base + f"/deal-issue/{iid}/field",
+                       {"field": "company_function", "value": "存在しない機能"}, headers=_auth_header())
+    assert code == 200
+    assert json.loads(body)["ok"] is False
+
+
+def test_post_deal_issue_field_company_function_rejected_for_deal_linked_issue(server):
+    """商談に紐づく論点のcompany_functionは、APIを直接叩かれても変更を拒否する
+    （一覧側では選択肢自体を出さないが、防御的にサーバ側でも弾く）。"""
+    base, db_path = server
+    con2 = sfa_db.connect(db_path)
+    acc = sfa_db.upsert_account(con2, name="テスト商事")
+    did = sfa_db.upsert_deal(con2, account_id=acc, deal_name="案件A", status="open")
+    iid = sfa_db.upsert_deal_issue(con2, id=None, deal_id=did, issue="案件固有論点")
+    con2.close()
+
+    code, body = _post(base + f"/deal-issue/{iid}/field",
+                       {"field": "company_function", "value": "人事"}, headers=_auth_header())
+    assert code == 200
+    assert json.loads(body)["ok"] is False
+    con3 = sfa_db.connect(db_path)
+    row = con3.execute("SELECT company_function FROM deal_issues WHERE id=?", (iid,)).fetchone()
+    con3.close()
+    assert row["company_function"] is None

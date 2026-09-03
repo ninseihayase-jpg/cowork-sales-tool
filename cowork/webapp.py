@@ -11670,6 +11670,17 @@ def _issue_responsible_select_html(issue_id: int, current: str | None, owners: l
             f'style="font-size:11px;padding:2px 4px">{opts}</select>')
 
 
+def _issue_company_function_select_html(issue_id: int, current: str | None, company_functions: list) -> str:
+    """会社機能（#147）のインライン編集セレクト。商談に紐づかない論点（一覧の商談/機能列）でのみ使用。"""
+    _menu = list(company_functions) + ([current] if current and current not in company_functions else [])
+    opts = '<option value="">（未設定）</option>' + "".join(
+        f'<option value="{html.escape(cf)}"{" selected" if cf == current else ""}>{html.escape(cf)}</option>'
+        for cf in _menu
+    )
+    return (f'<select onchange="updateDealIssueField({issue_id}, \'company_function\', this.value, true)" '
+            f'style="font-size:11px;padding:2px 4px">{opts}</select>')
+
+
 def _issue_due_date_input_html(issue_id: int, due_date: str | None) -> str:
     is_overdue = bool(due_date) and due_date <= _today_jst().isoformat()
     style = "font-size:11px;padding:2px 4px"
@@ -11843,11 +11854,13 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
         if it.get('deal_id'):
             deal_cell = (f'<a href="/deal/{it["deal_id"]}">{_esc(it.get("account_name"))}</a>'
                         f'<div class="muted">{_esc(it.get("deal_name"))}</div>')
-        elif it.get('company_function'):
-            # #147: 商談に紐づかない論点は、会社機能があればそれを表示（無ければ「商談共通」）。
-            deal_cell = f'<span class="muted">🏢 {_esc(it["company_function"])}</span>'
         else:
-            deal_cell = '<span class="muted">商談共通</span>'
+            # #147/#158: 商談に紐づかない論点は、一覧からその場で会社機能を選べる
+            # （従来は編集画面に入らないと変更できなかった。ステータス等の他列と同じ
+            # インライン編集に揃えてほしいというユーザー要望2026-09-04）。
+            _cf_label = f'🏢 {_esc(it["company_function"])}' if it.get('company_function') else '商談共通'
+            deal_cell = (f'<div class="muted" style="margin-bottom:2px">{_cf_label}</div>'
+                        f'{_issue_company_function_select_html(it["id"], it.get("company_function"), _company_functions)}')
         # 論点名クリックで詳細ページ（左:編集項目／右:サマリ＋論点メモ）を開く。
         rows += f"""
         <tr>
@@ -18799,7 +18812,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect("/docs")
 
                 elif path.startswith("/deal-issue/") and path.endswith("/field"):
-                    _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "responsible", "due_date"}
+                    _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "responsible", "due_date",
+                                                   "company_function"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -18814,6 +18828,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         elif field == "responsible" and value and value not in (
                                 sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)):
                             _err = "不正な責任者"
+                        elif field == "company_function":
+                            # #147/#158: 会社機能は商談に紐づかない論点でのみ意味を持つ。
+                            _existing_issue = sfa_db.get_deal_issue(con, iid)
+                            if not _existing_issue:
+                                _err = "論点が見つかりません"
+                            elif _existing_issue.get("deal_id"):
+                                _err = "商談に紐づく論点には設定できません"
+                            elif value and value not in (
+                                    sfa_db.get_master_list(con, "company_functions") or list(sfa_db.COMPANY_FUNCTIONS)):
+                                _err = "不正な会社機能"
+                            else:
+                                con.execute(
+                                    "UPDATE deal_issues SET company_function=?, updated_at=datetime('now') WHERE id=?",
+                                    (value or None, iid),
+                                )
+                                con.commit()
+                                _ok = True
                         else:
                             con.execute(
                                 f"UPDATE deal_issues SET {field}=?, updated_at=datetime('now') WHERE id=?",
