@@ -36,6 +36,29 @@ SLACK_OPS_CHANNEL_ID = os.environ.get("SLACK_OPS_CHANNEL_ID", "")
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Slackの自動リンク記法 <https://...> / <https://...|表示名> と、素のhttp(s)://... の両方を拾う（#157）。
+# 素のURLは、直後に空白無しで日本語の句読点・括弧類が続くケース（例:「...z、以上です」）を
+# URLの一部として拾ってしまわないよう、それらの文字で区切る。
+_URL_RE = re.compile(r"<(https?://[^>|]+)(?:\|[^>]*)?>|(https?://[^\s<>、。，．！？」』】）\)]+)")
+
+
+def _extract_urls(text: str, limit: int = 5) -> list[str]:
+    """本文からURLを抽出する（#157: TaskBot起票時、本文にリンクがあればタスクの
+    「リンク」に自動セットするための下準備）。末尾の句読点・括弧は誤爆しやすいので削る。
+    重複除去のうえ最大limit件まで（長文の暴走的な貼り付け対策）。"""
+    if not text:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _URL_RE.finditer(text):
+        url = (m.group(1) or m.group(2) or "").rstrip(").,;:、。」』")
+        if url and url not in seen:
+            seen.add(url)
+            out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
 
 # ── 担当解決（Slackユーザー → SFA担当名） ─────────────────────────────────
 
@@ -420,14 +443,18 @@ def _view_val(state: dict, block_id: str):
 def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_date=None,
                             project=None, category=None, slack_channel=None, slack_ts=None,
                             slack_permalink=None, created_by=None, ai_category=True,
-                            is_admin=0, requester=None, return_created=False, effort_level=None):
+                            is_admin=0, requester=None, return_created=False, effort_level=None,
+                            source_text=None):
     """モーダル/AI抽出の値からタスク作成。種類が空かつai_category=Trueならその場でAI判定
     （モーダル送信＝3秒制約のある文脈では ai_category=False にして背景で後追い判定）。
     is_admin=1 で事務タスク（requester=依頼者）。事務タスクは分類体系が異なるためAI後追い判定はしない。
     事務タスクは期限未指定なら既定で3営業日後にし、受信箱に留める（受付=受信箱の運用のため自動整理しない）。
     同一Slackメッセージ(slack_channel+slack_ts+is_admin)から既にタスクがあれば新規作成せず既存idを返す
     （Slackの再送・別event_id二重配信・再操作による重複起票を防ぐ）。同一メッセージの
-    重複判定(SELECT)→INSERT は _CREATE_LOCK で直列化する（AI呼び出しはロック外）。"""
+    重複判定(SELECT)→INSERT は _CREATE_LOCK で直列化する（AI呼び出しはロック外）。
+    source_text を渡すと、その本文からURLを抽出しタスクの「リンク」(task_links)に自動セットする
+    （#157: TaskBotへの起票時にリンクを同時に送ると、タスクのリンクに自動で入っていてほしいという
+    要望。新規作成時のみ実行——重複配信で既存タスクを返す場合は追加しない）。"""
     # AIカテゴリ判定はロック外で先に済ませる（遅い呼び出しでの直列化を避ける）。事務は判定しない。
     if not category and ai_category and not is_admin:
         try:
@@ -463,6 +490,13 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
         if is_admin and slack_channel and slack_ts:
             con.execute("UPDATE tasks SET due_date_confirmed=0 WHERE id=?", (tid,))
         con.commit()
+        # #157: 起票元の本文にURLがあれば、タスクの「リンク」に自動セットする。
+        if source_text:
+            for _url in _extract_urls(source_text):
+                try:
+                    sfa_db.add_task_link(con, tid, _url)
+                except Exception as _e:  # noqa: BLE001
+                    print(f"[slack_tasks] add_task_link failed: {_e}", flush=True)
         # 担当＋期限が揃えば受信箱→未着手へ自動整理（通常/事務とも）。ユーザー報告2026-08-27
         # 「Slackで期限指定しても(担当がセットできていても)受信箱にたまる」対策として、ローカル
         # 変数(assignee/due_date)を信頼せず、実際に保存された行を読み直して判定するように変更
@@ -677,7 +711,7 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
             category=prefills[0]["category"] or None, slack_channel=channel, slack_ts=ts,
             slack_permalink=permalink,
             created_by=owner_from_slack_user(user_id, token=token) or user_id,
-            is_admin=1, requester=requester, return_created=True)
+            is_admin=1, requester=requester, return_created=True, source_text=text)
         if created:   # 新規起票時のみ担当者へDM（重複配信では送らない）
             try:
                 notify_task_created(con, tid, source_text=text, token=token)
@@ -713,7 +747,8 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
     tid = create_task_from_fields(
         con, title=prefills[0]["title"], next_action=prefills[0]["next_action"] or None,
         assignee=owner, due_date=prefills[0]["due_date"] or None, category=prefills[0]["category"] or None,
-        slack_channel=channel, slack_ts=ts, slack_permalink=permalink, created_by=owner or user_id)
+        slack_channel=channel, slack_ts=ts, slack_permalink=permalink, created_by=owner or user_id,
+        source_text=text)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
     # 起票したらスレッド投稿（@メンション起票・事務タスクのリアクション起票と同仕様）。
     _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
@@ -751,7 +786,7 @@ def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: s
     tid = create_task_from_fields(
         con, title=prefills[0]["title"], next_action=prefills[0]["next_action"] or None,
         assignee=owner, due_date=prefills[0]["due_date"] or None, category=prefills[0]["category"] or None,
-        slack_channel=channel, slack_ts=thread_ts, created_by=owner or user_id)
+        slack_channel=channel, slack_ts=thread_ts, created_by=owner or user_id, source_text=text)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
     _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
                      text=f"コンサルタスク化しました: {prefills[0]['title']}",
@@ -794,7 +829,7 @@ def handle_admin_mention_task(con, channel: str, thread_ts: str, text: str, user
         assignee=(DESK_ASSIGNEE or None), due_date=prefills[0]["due_date"] or None,
         category=prefills[0]["category"] or None, slack_channel=channel, slack_ts=thread_ts,
         slack_permalink=permalink, created_by=requester or user_id, is_admin=1, requester=requester,
-        return_created=True)
+        return_created=True, source_text=text)
     if not created:
         # 同一メッセージからの多重配信（別event_id）＝既に起票済み。返信もしない（3重返信の抑止）。
         return [tid]
@@ -847,13 +882,18 @@ def _post_split_confirm(con, *, channel: str, thread_ts: str, token: str | None,
 
 
 def _finalize_normal_tasks(con, *, channel: str, thread_ts: str, prefills: list[dict],
-                           assignee: str | None, user_id: str | None, token: str | None) -> list[int]:
+                           assignee: str | None, user_id: str | None, token: str | None,
+                           source_text: str = "") -> list[int]:
     """分割確認(#151)の決着後（「分割する」で複数件、または「1件のまま登録」で1件）に、
-    コンサルタスクを実際に作成し、まとめて1回のスレッド返信で通知する。"""
+    コンサルタスクを実際に作成し、まとめて1回のスレッド返信で通知する。
+    source_text（起票元の本文全体）を渡すと、含まれるURLを全タスクのリンクに自動セットする
+    （#157。分割された各タスクのどれに属するURLかまでは判定せず、元の依頼に含まれていた
+    リンクは分割後の全タスクに付ける、という単純な仕様にしている）。"""
     tids = [create_task_from_fields(
         con, title=p["title"], next_action=p["next_action"] or None,
         assignee=assignee, due_date=p["due_date"] or None, category=p["category"] or None,
-        slack_channel=channel, slack_ts=_mention_ts(thread_ts, i), created_by=assignee or user_id)
+        slack_channel=channel, slack_ts=_mention_ts(thread_ts, i), created_by=assignee or user_id,
+        source_text=source_text)
         for i, p in enumerate(prefills)]
     if len(tids) == 1:
         link = f"{SFA_TOOL_URL}/tasks#tc-{tids[0]}"
@@ -884,7 +924,9 @@ def _finalize_admin_tasks(con, *, channel: str, thread_ts: str, prefills: list[d
                           requester: str | None, user_id: str | None, token: str | None,
                           permalink: str | None = None, source_text: str = "") -> list[int]:
     """分割確認(#151)の決着後（「分割する」で複数件、または「1件のまま登録」で1件）に、
-    事務タスクを実際に作成し、まとめて1回のスレッド返信で通知する。"""
+    事務タスクを実際に作成し、まとめて1回のスレッド返信で通知する。
+    source_text（起票元の本文全体）に含まれるURLは全タスクのリンクに自動セットする（#157。
+    分割後のどのタスクに属するURLかは判定しない単純仕様。_finalize_normal_tasksと同じ扱い）。"""
     created_pairs = []  # (tid, prefill, created)
     for i, p in enumerate(prefills):
         tid, created = create_task_from_fields(
@@ -892,7 +934,7 @@ def _finalize_admin_tasks(con, *, channel: str, thread_ts: str, prefills: list[d
             assignee=(DESK_ASSIGNEE or None), due_date=p["due_date"] or None,
             category=p["category"] or None, slack_channel=channel, slack_ts=_mention_ts(thread_ts, i),
             slack_permalink=permalink, created_by=requester or user_id, is_admin=1, requester=requester,
-            return_created=True)
+            return_created=True, source_text=source_text)
         created_pairs.append((tid, p, created))
     tids = [tid for tid, _, _ in created_pairs]
     new_pairs = [(tid, p) for tid, p, created in created_pairs if created]
@@ -965,7 +1007,7 @@ def _handle_split_decision(con, split_id: int, decision: str, response_url: str 
     else:
         owner = owner_from_slack_user(user_id, token=token) if user_id else None
         _finalize_normal_tasks(con, channel=channel, thread_ts=thread_ts, prefills=prefills,
-                               assignee=owner, user_id=user_id, token=token)
+                               assignee=owner, user_id=user_id, token=token, source_text=text)
 
 
 # ── ボタン付きブロック（消込UI） ───────────────────────────────────────────
