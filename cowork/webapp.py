@@ -2680,26 +2680,37 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
     def _box_html(b):
         # ⠿=セル間のドラッグ移動ハンドル（#164フェーズ2）、🔗=矢印接続ハンドル（フェーズ3、
         # ドラッグして別のボックスにドロップすると矢印が作成される）。
+        # 一般的な業務フロー図の「箱」らしい見た目にするため、十分な余白・角丸・枠線・影を持たせる
+        # （2026-09-06: 「業務フローの形を成していない」というユーザー指摘への対応で刷新）。
         return (
-            f'<div class="bf-box" data-box-id="{b["id"]}" style="background:#fffdf5;'
-            f'border:1.5px solid #cbb26a;border-radius:6px;padding:5px 7px;margin-bottom:4px;'
-            f'font-size:12px;display:flex;align-items:center;gap:5px">'
-            f'<span class="drag-handle" draggable="true" title="ドラッグして別セルへ移動" '
-            f'style="cursor:grab;color:#8a7a4a;font-size:12px">⠿</span>'
-            f'<span style="flex:1;font-weight:600;color:#3a3220">{_esc(b["label"])}</span>'
-            f'<span class="bf-connect-handle" draggable="true" title="ドラッグして別のボックスに矢印を接続" '
-            f'style="cursor:crosshair;font-size:12px">🔗</span>'
+            f'<div class="bf-box" data-box-id="{b["id"]}" style="background:#fffaf0;'
+            f'border:2px solid #d4a94b;border-radius:8px;padding:10px 12px;margin-bottom:8px;'
+            f'min-height:20px;box-shadow:0 2px 4px rgba(0,0,0,.08);'
+            f'font-size:13px;display:flex;align-items:center;gap:6px">'
+            f'<span class="drag-handle no-print" draggable="true" title="ドラッグして別セルへ移動" '
+            f'style="cursor:grab;color:#a68a3d;font-size:12px">⠿</span>'
+            f'<span style="flex:1;font-weight:700;color:#3a3220;text-align:center;line-height:1.3">{_esc(b["label"])}</span>'
+            f'<span class="bf-connect-handle no-print" draggable="true" title="ドラッグして別のボックスに矢印を接続" '
+            f'style="cursor:crosshair;font-size:13px">🔗</span>'
             f'<form method="post" action="/business-flow-box/{b["id"]}/delete" style="margin:0" '
             f'onsubmit="return confirm(\'このボックスを削除しますか？\')">'
             f'<button type="submit" class="btn sec no-print" style="font-size:10px;padding:1px 5px">×</button></form></div>'
         )
 
     def _add_box_form(lane_id, process_id):
+        # 空セルを「＋タスク」フォームで埋め尽くすとスプレッドシートのように見えてしまうため
+        # （同上のユーザー指摘）、既定は控えめな「＋」トリガーのみを表示し、クリックで初めて
+        # 入力欄を展開する（ボックス自体を主役に見せる狙い）。
         return (
-            f'<form method="post" action="/business-flow/{flow_id}/box" style="display:flex;gap:3px">'
+            f'<div class="bf-add-trigger no-print" onclick="this.style.display=\'none\';'
+            f'this.nextElementSibling.style.display=\'flex\'"'
+            f' style="font-size:11px;color:#94a3b8;cursor:pointer;padding:3px 2px;text-align:center;'
+            f'border:1px dashed #cbd5e1;border-radius:6px">＋ タスク追加</div>'
+            f'<form method="post" action="/business-flow/{flow_id}/box" class="no-print" '
+            f'style="display:none;gap:3px;margin-top:2px">'
             f'<input type="hidden" name="lane_id" value="{lane_id}">'
             f'<input type="hidden" name="process_id" value="{process_id}">'
-            f'<input type="text" name="label" placeholder="＋タスク" required '
+            f'<input type="text" name="label" placeholder="タスク名" required autofocus '
             f'style="font-size:11px;padding:2px 4px;width:100%">'
             f'<button type="submit" class="btn sec" style="font-size:11px;padding:1px 6px">追加</button></form>'
         )
@@ -2725,7 +2736,7 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
     for lane in lanes:
         cells = "".join(
             f'<td class="bf-cell" data-lane-id="{lane["id"]}" data-process-id="{p["id"]}" '
-            f'style="vertical-align:top;background:#fff;border:{_CELL_BORDER};padding:8px">'
+            f'style="vertical-align:top;background:#fafbfc;border:{_CELL_BORDER};padding:10px;min-height:64px">'
             f'{"".join(_box_html(b) for b in box_by_cell.get((lane["id"], p["id"]), []))}'
             f'{_add_box_form(lane["id"], p["id"])}</td>'
             for p in processes
@@ -2788,13 +2799,18 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
         # 常に表(ヘッダー行+レーン行)を描く（片方が0件でもヘッダーだけ/行だけの表になる）。
         # 矢印はSVGオーバーレイで描画（DESIGN.md推奨方式）。ボックス位置は論理座標(lane×process)
         # のみで持ち、矢印の始点/終点はJSが実際のDOM位置から都度計算する（自由配置は許さない）。
-        grid = (f'<div id="bfGridWrap" style="position:relative;overflow-x:auto">'
-                f'<svg id="bfArrowSvg" style="position:absolute;top:0;left:0;pointer-events:none">'
-                f'<defs><marker id="bfArrowHead" markerWidth="8" markerHeight="8" refX="7" refY="4" '
-                f'orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#7c8ba1"/></marker></defs></svg>'
+        # 【重要】<svg>は<table>より後にDOM上へ置くか明示的なz-indexが無いと、テーブルセルの
+        # 不透明な背景に矢印線が完全に隠れてしまう（2026-09-06発覚: 「矢印一覧」に矢印は
+        # 登録されているのにグリッド上に線が全く見えていなかった根本原因）。z-indexで明示的に
+        # svgを最前面に固定する（pointer-events:noneのままなのでクリック操作は妨げない）。
+        grid = (f'<div id="bfGridWrap" style="position:relative;overflow-x:auto;padding:4px">'
                 f'<table id="bfGridTable" style="border-collapse:collapse;position:relative">'
                 f'<tr><th style="border:{_HDR_BORDER};background:{_PROC_HDR_BG}"></th>{head_cells}</tr>'
-                f'{body_rows}</table></div>')
+                f'{body_rows}</table>'
+                f'<svg id="bfArrowSvg" style="position:absolute;top:0;left:0;pointer-events:none;z-index:5">'
+                f'<defs><marker id="bfArrowHead" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" '
+                f'orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#5b6b85"/></marker></defs></svg>'
+                f'</div>')
         if not processes:
             grid += '<p class="muted" style="font-size:12px;margin-top:8px">プロセス（工程）を追加すると、ボックスを配置できるようになります。</p>'
         elif not lanes:
@@ -2968,6 +2984,17 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
     // 矢印はSVGオーバーレイに<line>で描画する。ボックスの位置は自由配置ではなく常に
     // レーン×プロセスのグリッドから決まるため、始点/終点はDOM実測位置から都度計算する
     // （DESIGN.md推奨のSVGオーバーレイ方式。ボックス移動・並び替えのたびに再計算が要る）。
+    // 矩形の中心から目標点方向へ伸ばしたレイが矩形の縁と交わる点を返す（一般的な業務フロー図の
+    // 「矢印は箱の辺から出て辺に刺さる」見た目にするため、中心同士を直結せず縁で止める）。
+    function bfEdgePoint(rect, cx, cy, tx, ty) {{
+      var dx = tx - cx, dy = ty - cy;
+      if (dx === 0 && dy === 0) return {{x: cx, y: cy}};
+      var halfW = rect.width / 2, halfH = rect.height / 2;
+      var scaleX = dx !== 0 ? halfW / Math.abs(dx) : Infinity;
+      var scaleY = dy !== 0 ? halfH / Math.abs(dy) : Infinity;
+      var scale = Math.min(scaleX, scaleY);
+      return {{x: cx + dx * scale, y: cy + dy * scale}};
+    }}
     function renderBfArrows() {{
       var svg = document.getElementById('bfArrowSvg');
       var wrap = document.getElementById('bfGridWrap');
@@ -2975,22 +3002,26 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
       if (!svg || !wrap || !table) return;
       svg.setAttribute('width', table.scrollWidth);
       svg.setAttribute('height', table.scrollHeight);
-      svg.innerHTML = '<defs><marker id="bfArrowHead" markerWidth="8" markerHeight="8" refX="7" refY="4" '
-        + 'orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#7c8ba1"/></marker></defs>';
+      svg.innerHTML = '<defs><marker id="bfArrowHead" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" '
+        + 'orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#5b6b85"/></marker></defs>';
       var wrapRect = wrap.getBoundingClientRect();
       (BF_ARROWS || []).forEach(function(a) {{
         var fromEl = document.querySelector('.bf-box[data-box-id="' + a.from + '"]');
         var toEl = document.querySelector('.bf-box[data-box-id="' + a.to + '"]');
         if (!fromEl || !toEl) return;
         var fr = fromEl.getBoundingClientRect(), tr = toEl.getBoundingClientRect();
-        var x1 = fr.left + fr.width / 2 - wrapRect.left + wrap.scrollLeft;
-        var y1 = fr.top + fr.height / 2 - wrapRect.top + wrap.scrollTop;
-        var x2 = tr.left + tr.width / 2 - wrapRect.left + wrap.scrollLeft;
-        var y2 = tr.top + tr.height / 2 - wrapRect.top + wrap.scrollTop;
+        var frRel = {{left: fr.left - wrapRect.left + wrap.scrollLeft, top: fr.top - wrapRect.top + wrap.scrollTop,
+                     width: fr.width, height: fr.height}};
+        var trRel = {{left: tr.left - wrapRect.left + wrap.scrollLeft, top: tr.top - wrapRect.top + wrap.scrollTop,
+                     width: tr.width, height: tr.height}};
+        var cx1 = frRel.left + frRel.width / 2, cy1 = frRel.top + frRel.height / 2;
+        var cx2 = trRel.left + trRel.width / 2, cy2 = trRel.top + trRel.height / 2;
+        var p1 = bfEdgePoint(frRel, cx1, cy1, cx2, cy2);
+        var p2 = bfEdgePoint(trRel, cx2, cy2, cx1, cy1);
         var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', x1); line.setAttribute('y1', y1);
-        line.setAttribute('x2', x2); line.setAttribute('y2', y2);
-        line.setAttribute('stroke', '#7c8ba1'); line.setAttribute('stroke-width', '2');
+        line.setAttribute('x1', p1.x); line.setAttribute('y1', p1.y);
+        line.setAttribute('x2', p2.x); line.setAttribute('y2', p2.y);
+        line.setAttribute('stroke', '#5b6b85'); line.setAttribute('stroke-width', '2.5');
         line.setAttribute('marker-end', 'url(#bfArrowHead)');
         svg.appendChild(line);
       }});

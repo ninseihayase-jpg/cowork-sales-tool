@@ -596,3 +596,64 @@ def test_detail_page_renders_arrow_svg_and_print_button(con):
     assert "window.print()" in html
     assert "bf-connect-handle" in html
     assert f'"from": {b1}, "to": {b2}' in html or f'"from":{b1},"to":{b2}' in html.replace(" ", "")
+
+
+# ── 2026-09-06: 「業務フローの形を成していない」というユーザー指摘への修正 ──
+
+def test_arrow_svg_rendered_after_table_so_it_paints_on_top(con):
+    """根本原因の回帰防止: <svg>が<table>より先にDOMへ置かれると、テーブルセルの不透明な
+    背景（z-index/DOM順の都合でsvgの上に重なる）に矢印線が完全に隠れてしまっていた。
+    svgをtableの後に置く（またはz-indexで最前面固定する）ことで解消したことを確認する。"""
+    fid = sfa_db.create_business_flow(con, "フローA")
+    lid = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    pid = sfa_db.add_business_flow_process(con, fid, "受領")
+    sfa_db.add_business_flow_box(con, fid, lid, pid, "A")
+
+    html = webapp.business_flow_detail_page(con, fid)
+    table_idx = html.index('id="bfGridTable"')
+    svg_idx = html.index('id="bfArrowSvg"')
+    assert svg_idx > table_idx, "svgがtableより先にDOM上へ現れており、テーブル背景に隠れる可能性がある"
+    assert "z-index:5" in html  # DOM順に加えてz-indexでも最前面固定している
+
+
+def test_box_has_flowchart_style_box_appearance(con):
+    """ボックスが「業務フロー図の箱」らしい見た目（角丸・枠線・十分な余白・影）を持つこと。
+    以前は薄いピル状のインライン要素で視認性が低かった。"""
+    fid = sfa_db.create_business_flow(con, "フローA")
+    lid = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    pid = sfa_db.add_business_flow_process(con, fid, "受領")
+    sfa_db.add_business_flow_box(con, fid, lid, pid, "受領登録")
+
+    html = webapp.business_flow_detail_page(con, fid)
+    assert "border-radius:8px" in html
+    assert "box-shadow" in html
+    assert "受領登録" in html
+
+
+def test_empty_cell_add_form_is_hidden_behind_trigger(con):
+    """空セルの「＋タスク」フォームが常時全面表示されずスプレッドシート状に見えないよう、
+    クリックで展開する控えめなトリガーの後ろに隠れていること。"""
+    fid = sfa_db.create_business_flow(con, "フローA")
+    lid = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    sfa_db.add_business_flow_process(con, fid, "受領")
+
+    html = webapp.business_flow_detail_page(con, fid)
+    assert "bf-add-trigger" in html
+    assert "display:none;gap:3px" in html  # フォーム本体は既定非表示
+    assert "＋ タスク追加" in html
+
+
+def test_arrow_lines_route_to_box_edges_not_centers(con):
+    """矢印の座標計算が箱の中心同士を直結するのではなく、矩形の縁で止まる
+    （bfEdgePoint）方式になっていること。"""
+    fid = sfa_db.create_business_flow(con, "フローA")
+    lid = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    pid = sfa_db.add_business_flow_process(con, fid, "受領")
+    pid2 = sfa_db.add_business_flow_process(con, fid, "確認")
+    b1 = sfa_db.add_business_flow_box(con, fid, lid, pid, "A")
+    b2 = sfa_db.add_business_flow_box(con, fid, lid, pid2, "B")
+    sfa_db.add_business_flow_arrow(con, fid, b1, b2)
+
+    html = webapp.business_flow_detail_page(con, fid)
+    assert "function bfEdgePoint" in html
+    assert "bfEdgePoint(frRel" in html and "bfEdgePoint(trRel" in html
