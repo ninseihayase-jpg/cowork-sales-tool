@@ -758,6 +758,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <!-- 次: ヒアリング・論点 -->
   <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
   <a href="/deal-issues" style="opacity:.85;font-size:13px">論点</a>
+  <a href="/deal-issues/gantt" style="opacity:.85;font-size:13px">📊 論点ガント</a>
   <a href="/docs" style="opacity:.85;font-size:13px">📄 資料庫</a>
   <a href="/business-flows" style="opacity:.85;font-size:13px">🔀 業務フロー</a>
   <span class="nav-sep"></span>
@@ -6929,6 +6930,394 @@ _GANTT_CSS = """<style>
   padding:3px 8px;border-radius:4px;pointer-events:none;white-space:nowrap;display:none;
   box-shadow:0 4px 10px rgba(0,0,0,.25)}
 </style>"""
+
+
+def _parse_issue_period_text(text: str) -> tuple[str | None, str | None]:
+    """サブ論点の期間を自由記述から解釈する（#163、2026-09-06ユーザー確定:
+    「自由記述。精度をあげるための指示を精緻に設計して」）。
+    「来週から3週間」「9/20〜10/10」「今月中」等、多様な言い回しに耐えられるよう、
+    相対表現・年省略・単一日付・片側省略・曜日名の扱いをプロンプトで明示する。
+    ANTHROPIC_API_KEY未設定・解釈失敗時は (None, None)（呼び出し側は「要確認」として
+    残し、人間が手直しできるようにする＝Haikuの誤判定をそのまま確定させない設計）。"""
+    text = (text or "").strip()
+    if not text:
+        return None, None
+    today = _today_jst()
+    prompt = (
+        f"今日の日付は{today.isoformat()}（{today.year}年{today.month}月{today.day}日、"
+        f"{'月火水木金土日'[today.weekday()]}曜日）です。日本のオフィスワーカーが、あるプロジェクトの"
+        "サブタスクの実施期間を自由な言い回しで書いたテキストを解釈し、開始日と終了日を"
+        "ISO8601形式(YYYY-MM-DD)で求めてください。\n\n"
+        f"テキスト: 「{text}」\n\n"
+        "解釈のルール:\n"
+        "1. 「来週」「今月」「月末」「再来週」等の相対表現は、今日の日付を起点に判断してください。\n"
+        "2. 「今月中」「月末まで」のような曖昧な終了表現は、その月の末日を終了日にしてください。\n"
+        "3. 「3週間」「10日間」のような期間表現は、開始日から起算した期間の最終日を終了日に"
+        "してください（例: 9/1開始+2週間 → 終了日は9/14）。\n"
+        "4. 開始日が省略され「◯月◯日まで」のように終了日だけが書かれている場合、開始日は"
+        "今日の日付にしてください。\n"
+        "5. 終了日が省略され「◯月◯日から」のように開始日だけが書かれている場合、終了日は"
+        "「開始日の2週間後」を仮の終了日にしてください（後で人間が調整する前提の概算値）。\n"
+        "6. 日付が1つだけ書かれている場合（例:「9/20」「金曜日まで」）は、開始日・終了日とも"
+        "その日付にしてください（1日だけの短い作業として扱う）。\n"
+        f"7. 西暦・年が省略されている場合は今日の年（{today.year}年）を使ってください。ただし、"
+        "その解釈だと今日より3ヶ月以上過去の日付になってしまう場合は、翌年の日付として"
+        "解釈し直してください（例: 12月に「1月中」と言われたら翌年の1月）。\n"
+        "8. 曜日名（月曜/火曜等、「来週の水曜」等も含む）は、その指定に沿った直近の該当曜日"
+        "（今日を含む）と解釈してください。\n"
+        "9. 期間の情報が全く読み取れない、意味不明なテキストの場合は、start_date・end_dateの"
+        "両方をnullにしてください（憶測で埋めないでください）。\n\n"
+        "回答は次のJSON形式のみで返してください（説明・コメント・前置き不要）:\n"
+        '{"start_date": "YYYY-MM-DD"またはnull, "end_date": "YYYY-MM-DD"またはnull}'
+    )
+    out = _call_claude_haiku(prompt, timeout=15, max_wait=18, max_tokens=80)
+    if not out:
+        return None, None
+    try:
+        start_i, end_i = out.find("{"), out.rfind("}") + 1
+        if start_i < 0 or end_i <= start_i:
+            return None, None
+        data = json.loads(out[start_i:end_i])
+        s, e = data.get("start_date"), data.get("end_date")
+        if s:
+            date.fromisoformat(s)
+        if e:
+            date.fromisoformat(e)
+        if s and e and e < s:
+            s, e = e, s
+        return s, e
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None, None
+
+
+def deal_issues_gantt_page(con) -> str:
+    """論点プロジェクト管理（#163、2026-09-06）。論点ごとにサブ論点（人間が設定する
+    ざっくりした作業単位）をガントチャートで管理する。UI・ドラッグ移動/リサイズは
+    コンサルタスクガント（#152, tasks_gantt_page）と同じ操作感（ユーザー確定）。
+    コンサルタスクと異なり、開始日/終了日はdeal_issue_subitemsの直接列であり、
+    工数感からの逆算・容量スケジューリングは無い単純な期間管理。
+    サブ論点の追加は自由記述の期間テキスト→Haikuで解釈（_parse_issue_period_text）。
+    解釈に失敗した行は「要確認」として別枠に出し、人間が日付ピッカーで直す。"""
+    today = _today_jst()
+    all_issues = [i for i in sfa_db.list_deal_issues(con) if (i.get("status") or "") != "取り消し"]
+    by_issue: dict[int, list] = {}
+    for s in sfa_db.list_deal_issue_subitems(con):
+        by_issue.setdefault(s["issue_id"], []).append(s)
+
+    groups = []       # (issue, ready_subitems)
+    missing_items = []  # (issue, subitem) — 期間が未解決でガント化できない
+    for issue in all_issues:
+        subs = by_issue.get(issue["id"], [])
+        ready = [s for s in subs if s.get("start_date") and s.get("end_date")]
+        miss = [s for s in subs if not (s.get("start_date") and s.get("end_date"))]
+        if ready:
+            groups.append((issue, ready))
+        for m in miss:
+            missing_items.append((issue, m))
+    groups.sort(key=lambda g: min(s["start_date"] for s in g[1]))
+
+    issue_picker_opts = "".join(
+        f'<option value="{i["id"]}">{_esc(sfa_db.task_link_label(con, "issue", i["id"]) or i.get("issue") or "")}</option>'
+        for i in all_issues
+    )
+    new_group_form = f"""
+    <div class="card">
+      <h3 style="margin:0 0 8px">＋ 論点を選んでサブ論点を追加</h3>
+      <form method="post" action="/deal-issue-subitem/new" style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end">
+        <label style="font-size:11px;flex:2;min-width:220px">論点<br>
+          <select name="issue_id" required style="width:100%;font-size:12px"><option value=""></option>{issue_picker_opts}</select></label>
+        <label style="font-size:11px;flex:1;min-width:140px">サブ論点名<br>
+          <input type="text" name="title" required placeholder="例: 要件整理" style="width:100%;font-size:12px"></label>
+        <label style="font-size:11px;flex:2;min-width:220px">期間（自由記述）<br>
+          <input type="text" name="period_text" required placeholder="例: 来週から3週間、9/20〜10/10、今月中"
+                 style="width:100%;font-size:12px"></label>
+        <button type="submit" class="btn sec" style="font-size:12px">＋追加</button>
+      </form>
+    </div>"""
+
+    if not groups:
+        grid_html = '<p class="muted" style="margin:0">サブ論点がまだありません。上のフォームから追加してください。</p>'
+        _ig_min_date_iso: str | None = None
+        _ig_n_days = 0
+        _item_data: dict = {}
+    else:
+        all_ready = [s for _, items in groups for s in items]
+        min_d = min(date.fromisoformat(s["start_date"]) for s in all_ready)
+        min_d = min(min_d, today)
+        max_d = max(date.fromisoformat(s["end_date"]) for s in all_ready)
+        n_days = max((max_d - min_d).days + 1, 21)
+        col_tpl = f"220px repeat({n_days}, minmax(28px, 1fr))"
+        _ig_min_date_iso, _ig_n_days = min_d.isoformat(), n_days
+
+        def _col_of(d: date) -> int:
+            return (d - min_d).days + 2
+
+        def _day_bg_cells(row: int) -> str:
+            out = []
+            for i in range(n_days):
+                dd = min_d + timedelta(days=i)
+                cls = "gantt-daycell"
+                if not sfa_db.is_business_day(dd):
+                    cls += " weekend"
+                if dd == today:
+                    cls += " today"
+                out.append(f'<div class="{cls}" style="grid-row:{row};grid-column:{i + 2}"></div>')
+            return "".join(out)
+
+        d3 = sfa_db.add_business_days(today, 3).isoformat()
+        weekend_end = (today + timedelta(days=6 - today.weekday())).isoformat()
+        today_iso = today.isoformat()
+
+        cells = ['<div class="gantt-lbl grp" style="grid-row:1;grid-column:1"></div>']
+        for i in range(n_days):
+            dd = min_d + timedelta(days=i)
+            cls = "gantt-daylabel"
+            if not sfa_db.is_business_day(dd):
+                cls += " weekend"
+            if dd == today:
+                cls += " today"
+            label = f"{dd.month}/{dd.day}" if dd.day == 1 else str(dd.day)
+            cells.append(f'<div class="{cls}" style="grid-row:1;grid-column:{i + 2}">{label}</div>')
+
+        row = 2
+        _item_data = {}
+        for issue, items in groups:
+            grp_label = _esc(sfa_db.task_link_label(con, "issue", issue["id"]) or issue.get("issue") or "")
+            cells.append(
+                f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
+                f'📌{grp_label}（{len(items)}件）</div>')
+            row += 1
+            for s in sorted(items, key=lambda x: (x["start_date"], x["end_date"])):
+                _item_data[s["id"]] = {"title": s["title"], "start_date": s["start_date"],
+                                       "end_date": s["end_date"], "issue_id": issue["id"]}
+                cells.append(_day_bg_cells(row))
+                sd = date.fromisoformat(s["start_date"])
+                ed = date.fromisoformat(s["end_date"])
+                ucolor, _ = _task_urgency(s["end_date"], today_iso, d3, weekend_end)
+                cells.append(
+                    f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1">'
+                    f'<a href="#" onclick="return igOpenItem({s["id"]})" style="color:inherit;'
+                    f'text-decoration:none;overflow:hidden;text-overflow:ellipsis" title="{_esc(s["title"])}">'
+                    f'{_esc(s["title"])}</a></div>')
+                c1, c2 = _col_of(sd), _col_of(ed) + 1
+                cells.append(
+                    f'<div class="gantt-bar" draggable="true" data-iid="{s["id"]}" '
+                    f'data-start="{s["start_date"]}" data-end="{s["end_date"]}" '
+                    f'style="grid-row:{row};grid-column:{c1} / {c2};background:{ucolor}" '
+                    f'onclick="return igBarClick(event,{s["id"]})" '
+                    f'title="{_esc(s["title"])}｜{_esc(s["start_date"])}〜{_esc(s["end_date"])}">'
+                    f'<span class="gt-grip gt-grip-l"></span>'
+                    f'<span class="gt-bar-label">{_esc(s["title"])}</span>'
+                    f'<span class="gt-grip gt-grip-r"></span></div>')
+                row += 1
+            # 論点内に直接「＋サブ論点」を追加できるミニフォーム（グリッド最下行に挿入）
+            cells.append(
+                f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1 / -1;background:#fafbfc">'
+                f'<form method="post" action="/deal-issue-subitem/new" '
+                f'style="display:flex;gap:4px;width:100%;align-items:center">'
+                f'<input type="hidden" name="issue_id" value="{issue["id"]}">'
+                f'<input type="text" name="title" placeholder="サブ論点名" required '
+                f'style="flex:1;font-size:11px;min-width:0">'
+                f'<input type="text" name="period_text" required '
+                f'placeholder="期間（例: 来週から3週間、9/20〜10/10、今月中）" '
+                f'style="flex:2;font-size:11px;min-width:0">'
+                f'<button type="submit" class="btn sec" style="font-size:11px;flex:none">＋追加</button>'
+                f'</form></div>')
+            row += 1
+        grid_html = (f'<div class="gantt-wrap"><div class="gantt-grid" '
+                    f'style="grid-template-columns:{col_tpl}">{"".join(cells)}</div></div>')
+
+    missing_html = ""
+    if missing_items:
+        _miss_rows = "".join(
+            f'<div style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:4px;'
+            f'border-bottom:1px solid #f1f5f9;padding-bottom:4px">'
+            f'<span style="flex:2">📌{_esc(sfa_db.task_link_label(con, "issue", issue["id"]) or "")} '
+            f'／ {_esc(s["title"])}</span>'
+            f'<form method="post" action="/deal-issue-subitem/{s["id"]}/fix-date" style="display:flex;gap:4px">'
+            f'<input type="date" name="start_date" required style="font-size:11px">'
+            f'<button type="submit" class="btn sec" style="font-size:11px">設定</button></form>'
+            f'<form method="post" action="/deal-issue-subitem/{s["id"]}/delete" style="margin:0" '
+            f'onsubmit="return confirm(\'削除しますか？\')">'
+            f'<button type="submit" class="btn sec" style="font-size:10px;color:#c53030">削除</button></form>'
+            f'</div>'
+            for issue, s in missing_items
+        )
+        missing_html = f"""
+        <div class="card">
+          <h3 style="margin:0 0 8px">⚠️ 期間を解釈できなかったサブ論点（{len(missing_items)}件）</h3>
+          <p class="muted" style="font-size:12px;margin:0 0 8px">自由記述の解釈に失敗しました。
+            開始日を手入力すると、終了日はその2週間後の仮設定で自動補完されます（後でガント上で調整できます）。</p>
+          {_miss_rows}
+        </div>"""
+
+    import json as _json_mod
+    items_json = _json_mod.dumps(_item_data, ensure_ascii=False)
+
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 6px">📊 論点プロジェクト管理（ガント）</h2>
+      <p class="muted" style="font-size:12px;margin:0">論点ごとにサブ論点を設定し、期間をガントチャートで管理します。
+        バーをドラッグすると日程スライド、左右の端をドラッグすると期間の伸縮ができます（コンサルタスクガントと同じ操作）。</p>
+    </div>
+    {new_group_form}
+    <div class="card">{grid_html}</div>
+    {missing_html}
+    {_GANTT_CSS}
+    <div id="igBackdrop" style="position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)" onclick="closeIgItem()"></div>
+    <div id="igPop" style="position:fixed;z-index:9999;display:none;left:50%;top:50%;transform:translate(-50%,-50%);
+      background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.25);
+      padding:14px;width:360px;max-width:92vw"></div>
+    <script>
+    var IG_ITEMS = {items_json};
+    var IG_MIN_DATE = {json.dumps(_ig_min_date_iso)};
+    var IG_NUM_DAYS = {json.dumps(_ig_n_days)};
+    function _igEsc(s){{ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }}
+    function igPopHtml(id,it){{
+      return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:8px">'
+        +'<input type="text" style="flex:1;font-size:13px;font-weight:700;border:none;border-bottom:1px solid #eef1f5;'
+        +'padding:2px 0" value="'+_igEsc(it.title)+'" onchange="igField('+id+',\\'title\\',this.value)">'
+        +'<span onclick="closeIgItem()" style="cursor:pointer;color:#94a3b8;flex:none">✕</span></div>'
+        +'<div style="display:flex;gap:8px">'
+        +'<label style="font-size:11px;flex:1">開始日<br><input type="date" style="width:100%;box-sizing:border-box" '
+        +'value="'+_igEsc(it.start_date)+'" onchange="igField('+id+',\\'start_date\\',this.value)"></label>'
+        +'<label style="font-size:11px;flex:1">終了日<br><input type="date" style="width:100%;box-sizing:border-box" '
+        +'value="'+_igEsc(it.end_date)+'" onchange="igField('+id+',\\'end_date\\',this.value)"></label></div>'
+        +'<div style="margin-top:12px;text-align:right;display:flex;justify-content:space-between">'
+        +'<button type="button" class="btn sec" style="color:#c53030" onclick="igDeleteItem('+id+')">削除</button>'
+        +'<button type="button" class="btn" onclick="closeIgItem()">保存して閉じる</button></div>';
+    }}
+    function igOpenItem(id){{
+      var it=IG_ITEMS[id]; if(!it) return false;
+      var pop=document.getElementById('igPop'), bd=document.getElementById('igBackdrop');
+      pop.innerHTML=igPopHtml(id,it);
+      bd.style.display='block'; pop.style.display='block';
+      return false;
+    }}
+    function igBarClick(ev,id){{
+      if (window.IG_JUST_DRAGGED) {{ ev.preventDefault(); return false; }}
+      return igOpenItem(id);
+    }}
+    function closeIgItem(){{
+      var pop=document.getElementById('igPop'), bd=document.getElementById('igBackdrop');
+      if(pop) pop.style.display='none'; if(bd) bd.style.display='none';
+      location.reload();
+    }}
+    function igField(id,field,value){{
+      if(IG_ITEMS[id]) IG_ITEMS[id][field]=value;
+      fetch('/deal-issue-subitem/'+id+'/field',{{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok) alert('更新エラー: '+(d.error||''));
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function igDeleteItem(id){{
+      if(!confirm('このサブ論点を削除しますか？')) return;
+      fetch('/deal-issue-subitem/'+id+'/delete',{{method:'POST'}}).then(function(){{ location.reload(); }});
+    }}
+    document.addEventListener('keydown',function(ev){{
+      if(ev.key==='Escape'){{ var pop=document.getElementById('igPop');
+        if(pop&&pop.style.display==='block'){{ ev.preventDefault(); closeIgItem(); }} }}
+    }});
+    // バーのドラッグ移動・リサイズ（#152と同じ操作感。コンサルタスクと違い開始/終了日は
+    // 直接列のため、リサイズ時の「開始日ピン留め」ワークアラウンドは不要）。
+    (function(){{
+      if (!IG_MIN_DATE || !IG_NUM_DAYS) return;
+      var LABEL_W = 220;
+      window.IG_JUST_DRAGGED = false;
+      var resizing = false;
+      function parseISO(s){{ var p=s.split('-'); return new Date(Date.UTC(+p[0],+p[1]-1,+p[2])); }}
+      function fmtISO(d){{ var y=d.getUTCFullYear(), m=d.getUTCMonth()+1, day=d.getUTCDate();
+        return y+'-'+(m<10?'0':'')+m+'-'+(day<10?'0':'')+day; }}
+      function dateForOffset(offset){{ var d=parseISO(IG_MIN_DATE); d.setUTCDate(d.getUTCDate()+offset); return fmtISO(d); }}
+      function offsetForDate(s){{ var d=parseISO(s), min=parseISO(IG_MIN_DATE);
+        return Math.round((d.getTime()-min.getTime())/86400000); }}
+      function grid(){{ return document.querySelector('.gantt-grid'); }}
+      function dayColWidth(){{ var g=grid(); if(!g) return 28; return Math.max(1,(g.clientWidth-LABEL_W)/IG_NUM_DAYS); }}
+      function offsetForClientX(clientX){{ var g=grid(); if(!g) return 0; var rect=g.getBoundingClientRect();
+        var raw=(clientX-rect.left-LABEL_W)/dayColWidth();
+        return Math.max(0, Math.min(IG_NUM_DAYS-1, Math.round(raw))); }}
+      var previewEl=null;
+      function showPreview(text, clientX, clientY){{
+        if(!previewEl){{ previewEl=document.createElement('div'); previewEl.className='gt-drag-preview';
+          document.body.appendChild(previewEl); }}
+        previewEl.textContent=text; previewEl.style.left=(clientX+12)+'px'; previewEl.style.top=(clientY-24)+'px';
+        previewEl.style.display='block';
+      }}
+      function hidePreview(){{ if(previewEl) previewEl.style.display='none'; }}
+      function afterJustDragged(){{ window.IG_JUST_DRAGGED=true; setTimeout(function(){{ window.IG_JUST_DRAGGED=false; }},250); }}
+      function saveField(iid,field,value,cb){{
+        fetch('/deal-issue-subitem/'+iid+'/field',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+          body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)}})
+         .then(function(r){{return r.json();}}).then(function(d){{
+           if(!d.ok){{ alert('更新エラー: '+(d.error||'')); return; }}
+           if (cb) cb();
+         }}).catch(function(){{ alert('通信エラー'); }});
+      }}
+      var dragIid=null, dragStartOffset=0, dragEndOffset=0, dragGrabOffset=0;
+      document.querySelectorAll('.gantt-bar').forEach(function(bar){{
+        bar.addEventListener('dragstart', function(e){{
+          if (resizing) {{ e.preventDefault(); return; }}
+          dragIid = bar.dataset.iid;
+          dragStartOffset = offsetForDate(bar.dataset.start);
+          dragEndOffset = offsetForDate(bar.dataset.end);
+          var rect = bar.getBoundingClientRect();
+          dragGrabOffset = Math.round((e.clientX - rect.left) / dayColWidth());
+          if (e.dataTransfer) {{ e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain', dragIid); }}
+        }});
+        bar.addEventListener('drag', function(e){{
+          if (!dragIid || (e.clientX===0 && e.clientY===0)) return;
+          var delta = (offsetForClientX(e.clientX) - dragGrabOffset) - dragStartOffset;
+          showPreview(dateForOffset(dragStartOffset+delta)+' 〜 '+dateForOffset(dragEndOffset+delta), e.clientX, e.clientY);
+        }});
+        bar.addEventListener('dragend', function(e){{
+          hidePreview();
+          if (!dragIid) return;
+          var delta = (offsetForClientX(e.clientX) - dragGrabOffset) - dragStartOffset;
+          var iid = dragIid; dragIid = null;
+          afterJustDragged();
+          if (!delta) return;
+          var newStart = dateForOffset(dragStartOffset+delta), newEnd = dateForOffset(dragEndOffset+delta);
+          bar.style.gridColumn = (offsetForDate(newStart)+2)+' / '+(offsetForDate(newEnd)+3);
+          saveField(iid,'start_date',newStart,function(){{ saveField(iid,'end_date',newEnd,function(){{ location.reload(); }}); }});
+        }});
+      }});
+      function wireGrip(grip, side){{
+        grip.addEventListener('mousedown', function(e){{
+          e.preventDefault(); e.stopPropagation();
+          resizing = true;
+          var bar = grip.closest('.gantt-bar');
+          var iid = bar.dataset.iid;
+          var startOffset = offsetForDate(bar.dataset.start), endOffset = offsetForDate(bar.dataset.end);
+          function onMove(ev){{
+            var off = offsetForClientX(ev.clientX);
+            var s = side==='l' ? Math.min(off,endOffset) : startOffset;
+            var en = side==='r' ? Math.max(off,startOffset) : endOffset;
+            bar.style.gridColumn = (s+2)+' / '+(en+3);
+            showPreview(dateForOffset(s)+' 〜 '+dateForOffset(en), ev.clientX, ev.clientY);
+          }}
+          function onUp(ev){{
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            hidePreview(); resizing = false; afterJustDragged();
+            var off = offsetForClientX(ev.clientX);
+            if (side==='l') {{
+              var newStart = dateForOffset(Math.min(off,endOffset));
+              if (newStart !== bar.dataset.start) saveField(iid,'start_date',newStart,function(){{ location.reload(); }});
+            }} else {{
+              var newEnd = dateForOffset(Math.max(off,startOffset));
+              if (newEnd !== bar.dataset.end) saveField(iid,'end_date',newEnd,function(){{ location.reload(); }});
+            }}
+          }}
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        }});
+      }}
+      document.querySelectorAll('.gt-grip-l').forEach(function(g){{ wireGrip(g,'l'); }});
+      document.querySelectorAll('.gt-grip-r').forEach(function(g){{ wireGrip(g,'r'); }});
+    }})();
+    </script>"""
 
 
 def tasks_gantt_page(con, group_by: str = "type") -> str:
@@ -17531,6 +17920,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _group = (_gq.get("group", ["link"])[0] or "link")
                     self._send(render(tasks_gantt_page(con, group_by=_group if _group == "type" else "link"),
                                       wide=True))
+                elif path == "/deal-issues/gantt":
+                    self._send(render(deal_issues_gantt_page(con), wide=True))
                 elif path == "/tasks/capacity":
                     self._send(render(tasks_capacity_page(con)))
                 elif path == "/tasks/daily-plan":
@@ -20268,6 +20659,67 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _err = "不正なリクエスト"
                     _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
                     self._send(_resp, ctype="application/json")
+
+                # ── 論点プロジェクト管理（#163、2026-09-06） ──
+                elif path == "/deal-issue-subitem/new":
+                    try:
+                        _issue_id = int(f.get("issue_id", ""))
+                    except ValueError:
+                        self._redirect("/deal-issues/gantt")
+                        return
+                    _title = (f.get("title") or "").strip()
+                    _period_text = (f.get("period_text") or "").strip()
+                    if _title and sfa_db.get_deal_issue(con, _issue_id):
+                        _s, _e = _parse_issue_period_text(_period_text)
+                        sfa_db.create_deal_issue_subitem(con, _issue_id, _title, _s, _e)
+                    self._redirect("/deal-issues/gantt")
+
+                elif path.startswith("/deal-issue-subitem/") and path.endswith("/field"):
+                    _DEAL_ISSUE_SUBITEM_ALLOWED_FIELDS = {"title", "start_date", "end_date"}
+                    parts = path.split("/")
+                    if len(parts) == 4 and parts[2].isdigit():
+                        _sid = int(parts[2])
+                        _field = f.get("field", "")
+                        _value = f.get("value", "")
+                        if _field not in _DEAL_ISSUE_SUBITEM_ALLOWED_FIELDS:
+                            self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(),
+                                      ctype="application/json")
+                        else:
+                            sfa_db.update_deal_issue_subitem(con, _sid, **{_field: _value or None})
+                            self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                    else:
+                        self._send(json.dumps({"ok": False, "error": "不正なリクエスト"}).encode(),
+                                  ctype="application/json")
+
+                elif path.startswith("/deal-issue-subitem/") and path.endswith("/fix-date"):
+                    # 「要確認」枠（自由記述の解釈に失敗した行）の手直し。開始日だけ人間が入れ、
+                    # 終了日が未設定ならその2週間後を仮設定する（_parse_issue_period_textの
+                    # ルール5と同じ考え方）。
+                    try:
+                        _sid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues/gantt")
+                        return
+                    _start = (f.get("start_date") or "").strip()
+                    if _start:
+                        _item = sfa_db.get_deal_issue_subitem(con, _sid)
+                        _end = (_item or {}).get("end_date")
+                        if not _end:
+                            try:
+                                _end = (date.fromisoformat(_start) + timedelta(days=14)).isoformat()
+                            except ValueError:
+                                _end = None
+                        sfa_db.update_deal_issue_subitem(con, _sid, start_date=_start, end_date=_end)
+                    self._redirect("/deal-issues/gantt")
+
+                elif path.startswith("/deal-issue-subitem/") and path.endswith("/delete"):
+                    try:
+                        _sid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/deal-issues/gantt")
+                        return
+                    sfa_db.delete_deal_issue_subitem(con, _sid)
+                    self._redirect("/deal-issues/gantt")
 
                 elif (path.startswith("/deal-issue/") and path.endswith("/note-lock/set")
                       and len(path.split("/")) == 5 and path.split("/")[2].isdigit()):

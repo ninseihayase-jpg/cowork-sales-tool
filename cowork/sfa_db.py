@@ -739,6 +739,22 @@ CREATE TABLE IF NOT EXISTS deal_issues (
 );
 CREATE INDEX IF NOT EXISTS idx_deal_issues_deal ON deal_issues(deal_id);
 
+-- 論点プロジェクト管理（#163、2026-09-06）。論点(deal_issues)に対して人間がサブ論点を設定し、
+-- サブ論点ごとに開始日/終了日をざっくり設定してガントチャートで管理する（コンサルタスクの
+-- ガント(#152)と同じドラッグ移動/リサイズUIを流用）。コンサルタスクと違い、開始日/終了日は
+-- このテーブルの直接列（工数感からの逆算や容量スケジューリングは無い、単純な期間管理）。
+CREATE TABLE IF NOT EXISTS deal_issue_subitems (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id    INTEGER NOT NULL REFERENCES deal_issues(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL,
+    start_date  TEXT,             -- YYYY-MM-DD。未設定=まだガント化できない(要確認リストへ)
+    end_date    TEXT,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT DEFAULT (datetime('now')),
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_deal_issue_subitems_issue ON deal_issue_subitems(issue_id);
+
 -- 論点の検討材料（社内資料の体系化・層1、2026-08-28）。論点メモ(人が書く)とは別の、
 -- 調査結果・AIレポート等を雑に投げ込むだけの置き場。層2(検討資料)生成時にAIがまとめて読む。
 CREATE TABLE IF NOT EXISTS issue_materials (
@@ -3629,6 +3645,61 @@ def list_deal_issues(con, *, deal_id: int | None = None, status: str | None = No
 def get_deal_issue(con, id: int) -> dict | None:
     r = con.execute(_DEAL_ISSUE_SELECT + " WHERE i.id = ?", (int(id),)).fetchone()
     return dict(r) if r else None
+
+
+# ── 論点プロジェクト管理（#163、2026-09-06） ──
+
+def create_deal_issue_subitem(con, issue_id: int, title: str, start_date: str | None = None,
+                              end_date: str | None = None) -> int:
+    next_order = (con.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM deal_issue_subitems WHERE issue_id=?",
+        (int(issue_id),)).fetchone()[0])
+    cur = con.execute(
+        "INSERT INTO deal_issue_subitems (issue_id, title, start_date, end_date, sort_order) "
+        "VALUES (?,?,?,?,?)", (int(issue_id), title, start_date, end_date, next_order))
+    con.commit()
+    return cur.lastrowid
+
+
+def list_deal_issue_subitems(con, issue_id: int | None = None) -> list[dict]:
+    if issue_id is not None:
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM deal_issue_subitems WHERE issue_id=? ORDER BY sort_order, id", (int(issue_id),))]
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM deal_issue_subitems ORDER BY issue_id, sort_order, id")]
+
+
+def get_deal_issue_subitem(con, id: int) -> dict | None:
+    r = con.execute("SELECT * FROM deal_issue_subitems WHERE id=?", (int(id),)).fetchone()
+    return dict(r) if r else None
+
+
+def update_deal_issue_subitem(con, id: int, *, title: str | None = None,
+                              start_date: str | None = None, end_date: str | None = None,
+                              clear_dates: bool = False) -> None:
+    """部分更新（渡したフィールドだけ更新。upsert系のfootgunを避ける専用ヘルパー）。
+    clear_dates=Trueの時だけ start_date/end_date を明示的にNULLへ戻せる
+    （通常はstart_date/end_dateにNoneを渡しても「変更しない」の意味で無視する）。"""
+    sets, args = [], []
+    if title is not None:
+        sets.append("title=?"); args.append(title)
+    if clear_dates:
+        sets.append("start_date=NULL"); sets.append("end_date=NULL")
+    else:
+        if start_date is not None:
+            sets.append("start_date=?"); args.append(start_date)
+        if end_date is not None:
+            sets.append("end_date=?"); args.append(end_date)
+    if not sets:
+        return
+    args.append(int(id))
+    con.execute(f"UPDATE deal_issue_subitems SET {', '.join(sets)}, updated_at=datetime('now') WHERE id=?", args)
+    con.commit()
+
+
+def delete_deal_issue_subitem(con, id: int) -> None:
+    con.execute("DELETE FROM deal_issue_subitems WHERE id=?", (int(id),))
+    con.commit()
 
 
 # ── 論点メモのパスワードロック（2026-08）。鍵の単位は論点(deal_issue)1件ごと。 ──
