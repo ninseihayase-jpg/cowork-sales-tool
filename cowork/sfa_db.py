@@ -103,6 +103,14 @@ DELIVERY_PERFORMANCE_FEE_OPTIONS = ["有", "無"]  # 成果報酬有無（2026-0
 # 場合に、社内のどの機能に紐づくかを選択する。マスタ画面で編集可能。
 COMPANY_FUNCTIONS = ["経営企画", "総務", "法務", "人事", "財務", "経理"]
 
+# 開発要件管理（#165、2026-09-04）。商談/Deliveryとは別テーブル（dev_projectsは営業側の
+# 開発専用機能として現状維持・ユーザー確定）。「開発有無=無」の行は識別情報以外を
+# "-"表示にする（webapp側の一覧・xlsx出力の両方で適用）。
+DEV_INVOLVED_OPTIONS = ["有", "無", "未判定"]
+DEV_REQUIREMENT_CONFIDENTIALITY_LEVELS = ["高（個人情報・機密情報あり）", "中", "低", "不明"]
+DEV_REQUIREMENT_CONTRACT_TYPES = ["準委任", "請負", "成果報酬", "未定"]
+DEV_REQUIREMENT_STATUSES = ["未着手", "検討中", "技術検証中", "リソース確保済み", "対応不可", "要相談"]
+
 MASTER_KEYS = {
     "owners":            OWNERS,
     "deal_stages":       DEAL_STAGES,
@@ -117,6 +125,9 @@ MASTER_KEYS = {
     "delivery_billing_methods": DELIVERY_BILLING_METHODS,
     "delivery_billing_due":     DELIVERY_BILLING_DUE_OPTIONS,
     "company_functions":        COMPANY_FUNCTIONS,
+    "dev_req_confidentiality":  DEV_REQUIREMENT_CONFIDENTIALITY_LEVELS,
+    "dev_req_contract_types":   DEV_REQUIREMENT_CONTRACT_TYPES,
+    "dev_req_statuses":         DEV_REQUIREMENT_STATUSES,
 }
 MASTER_LABELS = {
     "owners":            "担当者",
@@ -132,6 +143,9 @@ MASTER_LABELS = {
     "delivery_billing_methods": "Delivery請求方法",
     "delivery_billing_due":     "Delivery請求期日",
     "company_functions":        "論点の会社機能（商談共通論点向け）",
+    "dev_req_confidentiality":  "開発要件: データの機密性",
+    "dev_req_contract_types":   "開発要件: 契約形態",
+    "dev_req_statuses":         "開発要件: 開発側ステータス",
 }
 COST_STAGES = ["診断中", "削減機会発見", "削減提案中", "削減実行中", "成果確定", "不発"]
 
@@ -1122,6 +1136,36 @@ CREATE TABLE IF NOT EXISTS daily_task_plan_items (
     lane          INTEGER NOT NULL DEFAULT 0,
     bucket        TEXT NOT NULL            -- '軽い' / '重い'
 );
+
+-- 開発要件一覧（#165、2026-09-04）。商談が「提案」以降ステージに到達、またはDeliveryが
+-- 作成された時点で1行を自動起票（詳細は空欄）。開発チームが技術検証・リソース確保を
+-- 判断するための材料をSFA上でExcelライクに管理する。dev_projectsとは別物（あちらは
+-- 営業側の開発専用機能として現状維持）。link_type='deal'/'delivery' で商談起点/Delivery起点の
+-- 2種類のトリガーがあり、両方から行ができるケースを許容する（同一商談が両トリガーを
+-- 踏むと2行になり得る＝仕様として許容、ユーザー確定）。
+CREATE TABLE IF NOT EXISTS dev_requirements (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    link_type         TEXT NOT NULL,     -- 'deal' / 'delivery'
+    link_id           INTEGER NOT NULL,
+    dev_involved      TEXT,              -- DEV_INVOLVED_OPTIONS（未設定=NULL=未判定）
+    start_date        TEXT,              -- プロジェクト開始日（希望）
+    end_date          TEXT,              -- プロジェクト終了日（希望）
+    release_target    TEXT,              -- リリース希望時期（自由記述、時期の粒度が案件により異なるため）
+    overview          TEXT,              -- プロジェクト概要・ゴール（初回はHaiku自動生成→人間が編集可）
+    scale             TEXT,              -- 想定利用規模
+    tech_seeds        TEXT,              -- 必要な技術シード（tech_seed_treeのL2をカンマ区切り、dev_projects.tech_seedsと同形式）
+    integration_note  TEXT,              -- 既存システムとの連携有無
+    confidentiality   TEXT,              -- データの機密性（マスタ dev_req_confidentiality）
+    budget            TEXT,              -- 予算感
+    contract_type     TEXT,              -- 契約形態（マスタ dev_req_contract_types）
+    demo_link         TEXT,              -- デモリンク
+    memo              TEXT,              -- 自由記述メモ
+    dev_status        TEXT,              -- 開発側ステータス（マスタ dev_req_statuses）
+    created_at        TEXT DEFAULT (datetime('now')),
+    updated_at        TEXT DEFAULT (datetime('now')),
+    UNIQUE(link_type, link_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dev_requirements_link ON dev_requirements(link_type, link_id);
 """
 
 
@@ -4640,7 +4684,13 @@ def create_delivery(con, *, deal_id: int, title: str = "", start_week: str | Non
         (int(deal_id), title or None, start_week or None, end_week or None,
          status or "進行中", overview or None, confidence_override))
     con.commit()
-    return cur.lastrowid
+    _dv_id = cur.lastrowid
+    # #165: Delivery作成時は必ず開発要件行も自動起票する（呼び出し元を問わず一箇所に集約）。
+    try:
+        ensure_dev_requirement_for_delivery(con, _dv_id)
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[dev_requirements] ensure_dev_requirement_for_delivery failed: {_exc}", flush=True)
+    return _dv_id
 
 
 def get_delivery(con, delivery_id: int) -> dict | None:
@@ -4896,6 +4946,112 @@ def ensure_delivery_on_stage(con, deal_id: int, stage: str | None) -> int | None
     if not deal:
         return None
     return create_delivery(con, deal_id=deal_id, title=(deal.get("deal_name") or ""))
+
+
+# ── 開発要件一覧（#165、2026-09-04） ─────────────────────────────────────────
+
+DEV_REQUIREMENT_FIELDS = [
+    "link_type", "link_id", "dev_involved", "start_date", "end_date", "release_target",
+    "overview", "scale", "tech_seeds", "integration_note", "confidentiality", "budget",
+    "contract_type", "demo_link", "memo", "dev_status",
+]
+# 「開発有無=無」の行で"-"表示にする対象（識別情報・開発有無自体は対象外）。
+DEV_REQUIREMENT_DASH_FIELDS_ON_NO_DEV = [
+    f for f in DEV_REQUIREMENT_FIELDS if f not in ("link_type", "link_id", "dev_involved")
+]
+
+
+def upsert_dev_requirement(con, *, id: int | None = None, commit: bool = True, **fields) -> int:
+    """開発要件一覧の1行を作成/更新する。既存フィールドの部分更新には
+    set_dev_requirement_field を使うこと（ここはtask_link_label系と同じ全列上書き方式）。"""
+    data = {k: fields.get(k) for k in DEV_REQUIREMENT_FIELDS}
+    if id is not None:
+        sets = ", ".join(f"{k}=?" for k in DEV_REQUIREMENT_FIELDS) + ", updated_at=datetime('now')"
+        con.execute(f"UPDATE dev_requirements SET {sets} WHERE id=?",
+                    [data[k] for k in DEV_REQUIREMENT_FIELDS] + [int(id)])
+        if commit:
+            con.commit()
+        return int(id)
+    cols = ", ".join(DEV_REQUIREMENT_FIELDS)
+    ph = ", ".join("?" for _ in DEV_REQUIREMENT_FIELDS)
+    cur = con.execute(f"INSERT INTO dev_requirements ({cols}) VALUES ({ph})",
+                       [data[k] for k in DEV_REQUIREMENT_FIELDS])
+    if commit:
+        con.commit()
+    return cur.lastrowid
+
+
+def set_dev_requirement_field(con, id: int, field: str, value) -> None:
+    """開発要件一覧の1フィールドだけを安全に更新する（upsert_dev_requirementの全列上書きを避ける）。"""
+    if field not in DEV_REQUIREMENT_FIELDS:
+        raise ValueError(f"invalid field: {field}")
+    con.execute(f"UPDATE dev_requirements SET {field}=?, updated_at=datetime('now') WHERE id=?",
+                (value, int(id)))
+    con.commit()
+
+
+def get_dev_requirement(con, id: int) -> dict | None:
+    r = con.execute("SELECT * FROM dev_requirements WHERE id=?", (int(id),)).fetchone()
+    return dict(r) if r else None
+
+
+def get_dev_requirement_by_link(con, link_type: str, link_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM dev_requirements WHERE link_type=? AND link_id=?",
+                    (link_type, int(link_id))).fetchone()
+    return dict(r) if r else None
+
+
+def delete_dev_requirement(con, id: int) -> None:
+    con.execute("DELETE FROM dev_requirements WHERE id=?", (int(id),))
+    con.commit()
+
+
+def ensure_dev_requirement_for_deal(con, deal_id: int, stage: str | None) -> int | None:
+    """商談が「提案」以降に到達し、まだ当該商談向けの開発要件行が無ければ1件自動起票（#165）。
+    詳細は空欄（dev_involved=NULL=未判定）。作成したidを返す（既存/対象外はNone）。"""
+    if (stage or "") not in DELIVERY_TRIGGER_STAGES:
+        return None
+    if get_dev_requirement_by_link(con, "deal", deal_id):
+        return None
+    return upsert_dev_requirement(con, link_type="deal", link_id=deal_id)
+
+
+def ensure_dev_requirement_for_delivery(con, delivery_id: int) -> int | None:
+    """Delivery作成時に、まだ当該Delivery向けの開発要件行が無ければ1件自動起票（#165）。
+    商談トリガー(ensure_dev_requirement_for_deal)とは独立しており、同一商談から2行できるケースを
+    許容する（ユーザー確定仕様）。作成したidを返す（既存はNone）。"""
+    if get_dev_requirement_by_link(con, "delivery", delivery_id):
+        return None
+    return upsert_dev_requirement(con, link_type="delivery", link_id=delivery_id)
+
+
+def list_dev_requirements(con) -> list[dict]:
+    """開発要件一覧を、商談/Deliveryの識別情報（アカウント名・案件名・ステージ・営業主担当）を
+    付与して返す（一覧表示・xlsx出力の共通データソース）。参照先が削除済みの行は除外する。"""
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM dev_requirements ORDER BY id DESC")]
+    out = []
+    for r in rows:
+        if r["link_type"] == "deal":
+            d = get_deal(con, r["link_id"])
+            if not d:
+                continue
+            r["account_name"] = d.get("account_name")
+            r["project_name"] = d.get("deal_name")
+            r["stage"] = d.get("stage")
+            r["owner"] = d.get("owner")
+        elif r["link_type"] == "delivery":
+            dv = get_delivery(con, r["link_id"])
+            if not dv:
+                continue
+            r["account_name"] = dv.get("account_name")
+            r["project_name"] = dv.get("title") or dv.get("deal_name")
+            r["stage"] = dv.get("deal_stage")
+            r["owner"] = dv.get("responsible_owner") or None
+        else:
+            continue
+        out.append(r)
+    return out
 
 
 def close_won_if_needed(con, deal_id: int, *, commit: bool = False) -> bool:

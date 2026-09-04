@@ -2059,6 +2059,79 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
     return buf.getvalue()
 
 
+# 開発要件一覧（#165）のxlsx出力・upload取り込みの両方で使う共通の列定義。
+# キーはdev_requirementsのカラム名 or list_dev_requirementsが付与する派生キー、
+# 値は列見出し。DEV_REQ_XLSX_DASH_KEYS は「開発有無=無」の行で"-"表示にする対象
+# （識別情報・開発有無自体は対象外、sfa_db.DEV_REQUIREMENT_DASH_FIELDS_ON_NO_DEV相当）。
+DEV_REQ_XLSX_COLUMNS = [
+    ("id", "ID"),
+    ("dev_involved", "開発有無"),
+    ("link_type_label", "紐づけ種別"),
+    ("account_name", "アカウント"),
+    ("project_name", "案件名"),
+    ("stage", "ステージ"),
+    ("owner", "営業主担当"),
+    ("start_date", "プロジェクト開始日"),
+    ("end_date", "プロジェクト終了日"),
+    ("release_target", "リリース希望時期"),
+    ("overview", "プロジェクト概要・ゴール"),
+    ("scale", "想定利用規模"),
+    ("tech_seeds", "必要な技術シード"),
+    ("integration_note", "既存システム連携有無"),
+    ("confidentiality", "データの機密性"),
+    ("budget", "予算感"),
+    ("contract_type", "契約形態"),
+    ("demo_link", "デモリンク"),
+    ("memo", "メモ"),
+    ("dev_status", "開発側ステータス"),
+    ("created_at", "作成日時"),
+    ("updated_at", "更新日時"),
+]
+DEV_REQ_XLSX_DASH_KEYS = [
+    "start_date", "end_date", "release_target", "overview", "scale", "tech_seeds",
+    "integration_note", "confidentiality", "budget", "contract_type", "demo_link",
+    "memo", "dev_status",
+]
+
+
+def build_dev_requirements_xlsx(con) -> bytes:
+    """開発要件一覧のxlsx出力（#165）。開発有無=無の行はスケジュール・要件・メモ系を
+    "-"表示にする（一覧の可視性を保つ運用）。フォントはメイリオUI 10ptで他のxlsx出力と統一。"""
+    import openpyxl
+    from openpyxl.styles import Font
+    from io import BytesIO
+
+    rows = sfa_db.list_dev_requirements(con)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "開発要件一覧"
+    _font = Font(name="Meiryo UI", size=10)
+    _font_bold = Font(name="Meiryo UI", size=10, bold=True)
+
+    hdr = [label for _, label in DEV_REQ_XLSX_COLUMNS]
+    for c, h in enumerate(hdr, 1):
+        ws.cell(row=1, column=c, value=h).font = _font_bold
+
+    for r, row in enumerate(rows, 2):
+        row = dict(row)
+        row["link_type_label"] = "商談" if row.get("link_type") == "deal" else "Delivery"
+        is_no_dev = (row.get("dev_involved") == "無")
+        for c, (key, _label) in enumerate(DEV_REQ_XLSX_COLUMNS, 1):
+            if is_no_dev and key in DEV_REQ_XLSX_DASH_KEYS:
+                v = "-"
+            else:
+                v = row.get(key)
+            ws.cell(row=r, column=c, value=v).font = _font
+
+    last_col = openpyxl.utils.get_column_letter(len(hdr))
+    ws.auto_filter.ref = f"A1:{last_col}{max(len(rows) + 1, 1)}"
+    ws.freeze_panes = "A2"
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def build_deals_full_xlsx(con) -> bytes:
     """商談・アカウント・活動履歴を全カラムJOINしたxlsx（1商談1活動=1行、活動がない商談も1行残す）。
     カラムはPRAGMA table_infoで動的取得するため、スキーマ変更が入っても手直し不要。"""
@@ -16610,6 +16683,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     except Exception as _e:  # noqa: BLE001
                         import traceback as _tb; _tb.print_exc()
                         self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
+                elif path == "/dev-requirements/export.xlsx":
+                    try:
+                        _xls = build_dev_requirements_xlsx(con)
+                        _name = f"dev_requirements_{_today_jst().isoformat()}.xlsx"
+                        self.send_response(200)
+                        self.send_header("Content-Type",
+                                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                        self.send_header("Content-Disposition", _content_disposition(_name))
+                        self.send_header("Content-Length", str(len(_xls)))
+                        self.end_headers()
+                        self.wfile.write(_xls)
+                    except Exception as _e:  # noqa: BLE001
+                        import traceback as _tb; _tb.print_exc()
+                        self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
                 elif path == "/deliveries/payment-schedule.xlsx":
                     try:
                         _xls = build_delivery_payment_schedule_xlsx(con)
@@ -18217,6 +18304,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                             sfa_db.ensure_delivery_on_stage(con, did, value)
                                         except Exception:  # noqa: BLE001
                                             pass
+                                        try:
+                                            sfa_db.ensure_dev_requirement_for_deal(con, did, value)
+                                        except Exception:  # noqa: BLE001
+                                            pass
                             if theme_client is not None:
                                 for did in ids:
                                     try:
@@ -18311,6 +18402,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         sfa_db.ensure_delivery_on_stage(con, did, f.get("stage") or "")
                     except Exception as _exc:  # noqa: BLE001
                         print(f"[delivery] ensure_delivery_on_stage failed: {_exc}")
+                    # #165: 提案以降ステージで保存されたら開発要件行を自動起票（未作成時のみ）
+                    try:
+                        sfa_db.ensure_dev_requirement_for_deal(con, did, f.get("stage") or "")
+                    except Exception as _exc:  # noqa: BLE001
+                        print(f"[dev_requirements] ensure_dev_requirement_for_deal failed: {_exc}")
                     # 次回MS（複数, #48）: フォームからのMS行で置き換え→キャッシュ(next_milestone_*)再計算。
                     # deal_formは ms_*[] 配列を、quick-add等は単一 next_milestone_* を送る。両対応。
                     _ms_dates = f_list.get("ms_date[]", [])
@@ -19120,6 +19216,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     sfa_db.ensure_delivery_on_stage(con, deal_id, value)
                                 except Exception as _exc:  # noqa: BLE001
                                     print(f"[delivery] ensure_delivery_on_stage failed: {_exc}")
+                                # #165: 提案以降に到達したら開発要件行を自動起票（未作成時のみ）
+                                try:
+                                    sfa_db.ensure_dev_requirement_for_deal(con, deal_id, value)
+                                except Exception as _exc:  # noqa: BLE001
+                                    print(f"[dev_requirements] ensure_dev_requirement_for_deal failed: {_exc}")
                         elif field in ("next_milestone_date", "next_milestone_label", "next_milestone_type"):
                             # 次回MSは複数対応（#48）: 未完了で最古のMSを更新（無ければ作成）→キャッシュ再計算
                             _mf = {"next_milestone_date": "date", "next_milestone_label": "label",
@@ -19573,6 +19674,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                     sfa_db.ensure_delivery_on_stage(con, _did, _new_stage)
                                 except Exception as _e:  # noqa: BLE001
                                     print(f"[intake] ensure_delivery failed: {_e}", flush=True)
+                                try:
+                                    sfa_db.ensure_dev_requirement_for_deal(con, _did, _new_stage)
+                                except Exception as _e:  # noqa: BLE001
+                                    print(f"[intake] ensure_dev_requirement_for_deal failed: {_e}", flush=True)
                             if "state_note" in f:
                                 con.execute("UPDATE deals SET note=?, updated_at=datetime('now') WHERE id=?",
                                             ((f.get("state_note") or "").strip() or None, _did))
