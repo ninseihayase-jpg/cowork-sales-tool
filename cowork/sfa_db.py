@@ -5048,6 +5048,11 @@ def list_dev_requirements(con) -> list[dict]:
             r["project_name"] = dv.get("title") or dv.get("deal_name")
             r["stage"] = dv.get("deal_stage")
             r["owner"] = dv.get("responsible_owner") or None
+            # #165追補（2026-09-04・ユーザー要望）: Delivery起点の行は、プロジェクト開始日/
+            # 終了日をdeliveries.start_week/end_weekから自動反映する（人間が明示的に
+            # start_date/end_dateへ手入力していれば、その値を優先＝手修正が常に勝つ）。
+            r["start_date"] = r.get("start_date") or dv.get("start_week")
+            r["end_date"] = r.get("end_date") or dv.get("end_week")
         else:
             continue
         out.append(r)

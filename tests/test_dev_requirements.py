@@ -148,6 +148,33 @@ def test_list_dev_requirements_enriches_with_deal_and_delivery_context(con):
     assert rows[0]["owner"] == "早瀬"
 
 
+def test_list_dev_requirements_delivery_row_pulls_dates_from_delivery(con):
+    """#165追補(2026-09-04ユーザー要望): Delivery起点の行はプロジェクト開始日/終了日を
+    deliveries.start_week/end_weekから自動反映する。"""
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="受注", status="open")
+    dv_id = sfa_db.create_delivery(con, deal_id=did, title="DeliveryX",
+                                   start_week="2026-09-07", end_week="2026-10-05")
+    rows = sfa_db.list_dev_requirements(con)
+    row = next(r for r in rows if r["link_type"] == "delivery")
+    assert row["start_date"] == "2026-09-07"
+    assert row["end_date"] == "2026-10-05"
+
+
+def test_list_dev_requirements_delivery_row_manual_override_wins(con):
+    """開発要件行にstart_date/end_dateを人間が明示入力していれば、そちらを優先する。"""
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="受注", status="open")
+    dv_id = sfa_db.create_delivery(con, deal_id=did, title="DeliveryX",
+                                   start_week="2026-09-07", end_week="2026-10-05")
+    rid = sfa_db.get_dev_requirement_by_link(con, "delivery", dv_id)["id"]
+    sfa_db.set_dev_requirement_field(con, rid, "start_date", "2026-08-01")
+    rows = sfa_db.list_dev_requirements(con)
+    row = next(r for r in rows if r["link_type"] == "delivery")
+    assert row["start_date"] == "2026-08-01"
+    assert row["end_date"] == "2026-10-05"  # 上書きしていない方はDelivery側の値のまま
+
+
 def test_list_dev_requirements_excludes_rows_with_deleted_link_target(con):
     """紐づけ先の商談が削除されると、開発要件一覧からも除外される（参照切れガード）。"""
     acc = sfa_db.upsert_account(con, name="A社")
@@ -246,7 +273,8 @@ def test_backfill_generate_overview_empty_when_no_deal(con):
 
 def test_backfill_apply_creates_rows_and_sets_overview(con, monkeypatch):
     acc = sfa_db.upsert_account(con, name="A社")
-    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="提案", status="open")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="提案", status="open",
+                             note="要件は請求書自動化の相談")
     monkeypatch.setattr(webapp, "_call_claude_haiku", lambda prompt, **kw: "自動生成された概要")
 
     candidates = backfill_mod.find_candidates(con)
@@ -256,10 +284,27 @@ def test_backfill_apply_creates_rows_and_sets_overview(con, monkeypatch):
     assert row["overview"] == "自動生成された概要"
 
 
+def test_backfill_apply_skips_haiku_when_no_material(con, monkeypatch):
+    """現状メモ・活動履歴のどちらも無い場合、Haikuを呼ばずoverviewは空欄のまま
+    （2026-09-04ユーザー報告: 材料が無いとHaikuが謝罪文を書いてしまっていた不具合の修正）。"""
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="提案", status="open")
+    calls = []
+    monkeypatch.setattr(webapp, "_call_claude_haiku",
+                        lambda prompt, **kw: calls.append(prompt) or "呼ばれないはず")
+
+    candidates = backfill_mod.find_candidates(con)
+    backfill_mod.apply_backfill(con, candidates)
+    row = sfa_db.get_dev_requirement_by_link(con, "deal", did)
+    assert row["overview"] is None
+    assert calls == []
+
+
 def test_backfill_apply_survives_haiku_failure(con, monkeypatch):
     """Haiku生成が失敗しても、行の作成自体は失敗しない（overview空欄で継続）。"""
     acc = sfa_db.upsert_account(con, name="A社")
-    sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="提案", status="open")
+    sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="提案", status="open",
+                       note="請求書自動化を検討中")
 
     def _boom(prompt, **kw):
         raise RuntimeError("API error")
@@ -270,3 +315,49 @@ def test_backfill_apply_survives_haiku_failure(con, monkeypatch):
     assert n == 1
     rows = sfa_db.list_dev_requirements(con)
     assert rows[0]["overview"] is None
+
+
+# ── scripts/backfill_dev_requirements.py --fix-overviews ──
+
+def test_find_apology_overview_rows_detects_marker_text(con):
+    acc = sfa_db.upsert_account(con, name="A社")
+    did1 = sfa_db.upsert_deal(con, account_id=acc, deal_name="正常", stage="提案", status="open")
+    rid1 = sfa_db.ensure_dev_requirement_for_deal(con, did1, "提案")
+    sfa_db.set_dev_requirement_field(con, rid1, "overview", "正常な概要文")
+
+    did2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="謝罪混入", stage="提案", status="open")
+    rid2 = sfa_db.ensure_dev_requirement_for_deal(con, did2, "提案")
+    sfa_db.set_dev_requirement_field(con, rid2, "overview", "申し訳ございませんが、情報が不足しております。")
+
+    rows = backfill_mod.find_apology_overview_rows(con)
+    assert [r["id"] for r in rows] == [rid2]
+
+
+def test_fix_overviews_regenerates_with_material_and_clears_without(con, monkeypatch):
+    acc = sfa_db.upsert_account(con, name="A社")
+    did1 = sfa_db.upsert_deal(con, account_id=acc, deal_name="材料あり", stage="提案", status="open",
+                              note="請求書自動化の相談")
+    rid1 = sfa_db.ensure_dev_requirement_for_deal(con, did1, "提案")
+    sfa_db.set_dev_requirement_field(con, rid1, "overview", "申し訳ございませんが情報不足です")
+
+    did2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="材料なし", stage="提案", status="open")
+    rid2 = sfa_db.ensure_dev_requirement_for_deal(con, did2, "提案")
+    sfa_db.set_dev_requirement_field(con, rid2, "overview", "申し訳ございませんが情報不足です")
+
+    monkeypatch.setattr(webapp, "_call_claude_haiku", lambda prompt, **kw: "再生成された概要")
+
+    rows = backfill_mod.find_apology_overview_rows(con)
+    assert len(rows) == 2
+    n = backfill_mod.fix_overviews(con, rows)
+    assert n == 2
+
+    assert sfa_db.get_dev_requirement(con, rid1)["overview"] == "再生成された概要"
+    assert sfa_db.get_dev_requirement(con, rid2)["overview"] is None  # 材料なし=Haiku呼ばず空欄に戻る
+
+
+def test_resolve_deal_id_for_delivery_row(con):
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="受注", status="open")
+    dv_id = sfa_db.create_delivery(con, deal_id=did, title="DeliveryX")
+    row = sfa_db.get_dev_requirement_by_link(con, "delivery", dv_id)
+    assert backfill_mod._resolve_deal_id(con, row) == did
