@@ -416,3 +416,62 @@ def test_resolve_deal_id_for_delivery_row(con):
     dv_id = sfa_db.create_delivery(con, deal_id=did, title="DeliveryX")
     row = sfa_db.get_dev_requirement_by_link(con, "delivery", dv_id)
     assert backfill_mod._resolve_deal_id(con, row) == did
+
+
+# ── #165画面フェーズ1: 一覧ページ ──
+
+def test_dev_requirements_page_lists_rows_and_masks_no_dev_row(con):
+    acc = sfa_db.upsert_account(con, name="A社")
+    did1 = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="提案", status="open")
+    sfa_db.ensure_dev_requirement_for_deal(con, did1, "提案")
+    did2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件Y", stage="提案", status="open")
+    rid2 = sfa_db.ensure_dev_requirement_for_deal(con, did2, "提案")
+    sfa_db.set_dev_requirement_field(con, rid2, "dev_involved", "無")
+    sfa_db.set_dev_requirement_field(con, rid2, "overview", "これは表示されないはず")
+
+    html = webapp.dev_requirements_page(con)
+    assert "案件X" in html
+    assert "案件Y" in html
+    assert "これは表示されないはず" not in html
+
+
+def test_dev_requirements_page_filters_by_dev_involved(con):
+    acc = sfa_db.upsert_account(con, name="A社")
+    did1 = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="提案", status="open")
+    sfa_db.ensure_dev_requirement_for_deal(con, did1, "提案")
+    did2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件Y", stage="提案", status="open")
+    rid2 = sfa_db.ensure_dev_requirement_for_deal(con, did2, "提案")
+    sfa_db.set_dev_requirement_field(con, rid2, "dev_involved", "無")
+
+    html_no = webapp.dev_requirements_page(con, dev_involved="無")
+    assert "案件Y" in html_no
+    assert "案件X" not in html_no
+
+    html_mikan = webapp.dev_requirements_page(con, dev_involved="未判定")
+    assert "案件X" in html_mikan
+    assert "案件Y" not in html_mikan
+
+
+def test_dev_requirements_page_shows_empty_message_when_no_rows(con):
+    html = webapp.dev_requirements_page(con)
+    assert "該当する開発要件がありません" in html
+
+
+def test_dev_requirements_page_demo_link_and_account_link(con):
+    """デモリンクは🔗アイコン、アカウント名は紐づく商談/Deliveryへのリンクになる（#165画面設計確定仕様）。"""
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="受注", status="open")
+    sfa_db.upsert_dev_project(con, deal_id=did, theme="デモ", status="開発中", stage="プロト",
+                              tool_url="https://example.com/demo")
+    rid = sfa_db.ensure_dev_requirement_for_deal(con, did, "受注")
+
+    html = webapp.dev_requirements_page(con)
+    assert f'href="/deal/{did}"' in html
+    assert 'href="https://example.com/demo"' in html
+    assert "🔗" in html
+
+
+def test_dev_requirements_route_via_http(server):
+    code, body = _get_bytes(f"{server}/dev-requirements")
+    assert code == 200
+    assert "開発要件一覧".encode() in body

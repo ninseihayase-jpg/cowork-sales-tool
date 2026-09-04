@@ -752,6 +752,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <!-- 日常: 商談(ホーム)・開発案件・Delivery(受注後アサイン計画・#75) -->
   <a href="/deals">商談</a>
   <a href="/dev-projects">開発</a>
+  <a href="/dev-requirements" style="opacity:.85;font-size:13px">🧩 開発要件一覧</a>
   <a href="/deliveries" style="opacity:.85;font-size:13px">🚚 Delivery</a>
   <span class="nav-sep"></span>
   <!-- 次: ヒアリング・論点 -->
@@ -2101,6 +2102,80 @@ DEV_REQ_XLSX_COLUMN_WIDTHS = {
     "integration_note": 18, "confidentiality": 12, "budget": 12, "contract_type": 12,
     "demo_link": 20, "memo": 30, "dev_status": 14, "created_at": 16, "updated_at": 16,
 }
+
+
+# 一覧の常時表示11列（#165画面設計フェーズ1、2026-09-04ユーザー確定: 提案9列＋デモリンク＋概要）。
+# 残りはxlsxのみ（フェーズ2で行クリック詳細ポップアップに出す予定）。
+DEV_REQ_LIST_COLUMNS = [
+    ("dev_involved", "開発有無"), ("account_name", "アカウント"), ("project_name", "案件名"),
+    ("stage", "ステージ"), ("owner", "営業主担当"), ("start_date", "開始日"),
+    ("end_date", "終了日"), ("release_target", "リリース希望"), ("dev_status", "開発側ステータス"),
+    ("demo_link", "デモ"), ("overview", "概要"),
+]
+
+
+def dev_requirements_page(con, *, dev_involved: str = "") -> str:
+    """開発要件一覧（#165フェーズ1）。Excelライクな一覧表示のみ（インライン編集はフェーズ2）。
+    常時表示は11列（DEV_REQ_LIST_COLUMNS）、残りはxlsxダウンロードで見る。"""
+    rows = sfa_db.list_dev_requirements(con)
+    if dev_involved:
+        rows = [r for r in rows if (r.get("dev_involved") or "未判定") == dev_involved]
+
+    def _cell(r, key):
+        is_no_dev = (r.get("dev_involved") == "無")
+        if is_no_dev and key in DEV_REQ_XLSX_DASH_KEYS:
+            return '<span class="muted">-</span>'
+        v = r.get(key)
+        if key == "demo_link":
+            return (f'<a href="{_esc(v)}" target="_blank" rel="noopener" title="{_esc(v)}">🔗</a>'
+                    if v else '<span class="muted">-</span>')
+        if key == "overview":
+            return (f'<span title="{_esc(v)}" style="display:block;overflow:hidden;'
+                    f'text-overflow:ellipsis;white-space:nowrap;max-width:320px">{_esc(v)}</span>'
+                    if v else '<span class="muted">-</span>')
+        if key == "account_name" and r.get("link_type") == "deal":
+            return f'<a href="/deal/{r["link_id"]}">{_esc(v or "")}</a>'
+        if key == "account_name" and r.get("link_type") == "delivery":
+            return f'<a href="/delivery/{r["link_id"]}">{_esc(v or "")}</a>'
+        return _esc(v) if v is not None else '<span class="muted">-</span>'
+
+    head = "".join(f'<th>{_esc(label)}</th>' for _, label in DEV_REQ_LIST_COLUMNS)
+    body = "".join(
+        '<tr>' + "".join(f'<td>{_cell(r, key)}</td>' for key, _ in DEV_REQ_LIST_COLUMNS) + '</tr>'
+        for r in rows
+    ) or f'<tr><td colspan="{len(DEV_REQ_LIST_COLUMNS)}" class="muted">該当する開発要件がありません。</td></tr>'
+
+    def _tab(label, value):
+        active = 'style="font-weight:700"' if dev_involved == value else ''
+        href = f"/dev-requirements?dev_involved={_esc(value)}" if value else "/dev-requirements"
+        return f'<a href="{href}" {active}>{_esc(label)}</a>'
+
+    tabs = " / ".join(_tab(l, v) for l, v in
+                      [("全部", ""), ("有", "有"), ("無", "無"), ("未判定", "未判定")])
+
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 6px">🧩 開発要件一覧</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 10px">商談が「提案」以降のステージに到達、
+        またはDeliveryが作成されると自動で行が追加されます。開発チームが技術検証・リソース確保を
+        判断するためのインプットです。全項目はxlsxで確認・編集できます（アプリ上のインライン編集は今後追加予定）。</p>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <div style="font-size:13px">{tabs}</div>
+        <a class="btn sec" href="/dev-requirements/export.xlsx" style="font-size:12px">⬇ xlsxダウンロード（全{len(DEV_REQ_XLSX_COLUMNS)}列）</a>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="table-layout:fixed;width:100%">
+          <colgroup>
+            <col style="width:70px"><col style="width:140px"><col style="width:220px">
+            <col style="width:90px"><col style="width:90px"><col style="width:100px">
+            <col style="width:100px"><col style="width:110px"><col style="width:110px">
+            <col style="width:50px"><col>
+          </colgroup>
+          <thead><tr>{head}</tr></thead>
+          <tbody>{body}</tbody>
+        </table>
+      </div>
+    </div>"""
 
 
 def build_dev_requirements_xlsx(con) -> bytes:
@@ -16900,6 +16975,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     except Exception as _e:  # noqa: BLE001
                         import traceback as _tb; _tb.print_exc()
                         self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
+                elif path == "/dev-requirements":
+                    _di = (self._qs().get("dev_involved", [""])[0] or "")
+                    self._send(render(dev_requirements_page(con, dev_involved=_di), wide=True))
                 elif path == "/dev-requirements/export.xlsx":
                     try:
                         _xls = build_dev_requirements_xlsx(con)
