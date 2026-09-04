@@ -225,3 +225,229 @@ def test_delete_flow_via_http_removes_it_from_list(server):
     code, body = _get(f"{server}/business-flows")
     assert code == 200
     assert "削除対象フロー".encode() not in body
+
+
+# ── #164追加要望(2026-09-04): 一覧の表形式化・複製・AIドラフト ──
+
+def test_business_flows_page_is_single_flat_table_not_grouped_sections(con):
+    """一覧は分類ごとにセクションを分けず、1本の表に「分類」列で出す（ユーザー確定）。"""
+    sfa_db.create_business_flow(con, "NDA締結", "", "契約業務")
+    sfa_db.create_business_flow(con, "請求書処理フロー", "", "請求業務")
+    html = webapp.business_flows_page(con)
+    assert html.count("<table>") == 1  # カテゴリごとの複数<table>ではなく単一の表
+    assert "<th>分類</th>" in html
+    assert "契約業務" in html and "請求業務" in html
+
+
+def test_duplicate_business_flow_copies_structure(con):
+    fid = sfa_db.create_business_flow(con, "フローA", "説明", "経理業務")
+    lid = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    pid1 = sfa_db.add_business_flow_process(con, fid, "受領")
+    pid2 = sfa_db.add_business_flow_process(con, fid, "確認")
+    b1 = sfa_db.add_business_flow_box(con, fid, lid, pid1, "受領登録")
+    b2 = sfa_db.add_business_flow_box(con, fid, lid, pid2, "確認")
+    sfa_db.add_business_flow_arrow(con, fid, b1, b2, "note")
+
+    new_id = sfa_db.duplicate_business_flow(con, fid)
+
+    new_flow = sfa_db.get_business_flow(con, new_id)
+    assert new_flow["name"] == "フローA(コピー)"
+    assert new_flow["category"] == "経理業務"
+    assert [l["name"] for l in sfa_db.list_business_flow_lanes(con, new_id)] == ["経理/磯部"]
+    assert [p["name"] for p in sfa_db.list_business_flow_processes(con, new_id)] == ["受領", "確認"]
+    new_boxes = sfa_db.list_business_flow_boxes(con, new_id)
+    assert {b["label"] for b in new_boxes} == {"受領登録", "確認"}
+    new_arrows = sfa_db.list_business_flow_arrows(con, new_id)
+    assert len(new_arrows) == 1 and new_arrows[0]["label"] == "note"
+    # 元フローは変更されない
+    assert len(sfa_db.list_business_flow_boxes(con, fid)) == 2
+
+
+def test_duplicate_business_flow_missing_returns_none(con):
+    assert sfa_db.duplicate_business_flow(con, 999) is None
+
+
+def test_duplicate_route_via_http_creates_copy_and_redirects(server):
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "元フロー", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+    code, new_url, body = _post(f"{server}/business-flow/{fid}/duplicate", {})
+    assert code == 200
+    assert new_url != f"{server}/business-flow/{fid}"
+    assert "元フロー(コピー)".encode() in body
+
+
+# ── AIドラフト機能 ──
+
+def test_ai_draft_block_shows_start_button_when_empty(con):
+    fid = sfa_db.create_business_flow(con, "請求書処理フロー", "")
+    html = webapp.business_flow_detail_page(con, fid)
+    assert "質問を生成" in html
+    assert "action=\"/business-flow/%d/ai-draft/questions\"" % fid in html
+
+
+def test_ai_draft_block_hidden_once_lanes_exist(con):
+    fid = sfa_db.create_business_flow(con, "請求書処理フロー", "")
+    sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    html = webapp.business_flow_detail_page(con, fid)
+    assert "質問を生成" not in html
+    assert "AIにドラフトを作ってもらう" not in html
+
+
+def test_ai_draft_block_renders_question_form(con):
+    fid = sfa_db.create_business_flow(con, "請求書処理フロー", "")
+    html = webapp.business_flow_detail_page(con, fid, ai_questions=["どの部署が関わりますか？", "承認は何段階ですか？"])
+    assert "どの部署が関わりますか？" in html
+    assert "承認は何段階ですか？" in html
+    assert html.count('name="question"') == 2
+    assert 'action="/business-flow/%d/ai-draft/build"' % fid in html
+
+
+def test_ai_draft_block_renders_error(con):
+    fid = sfa_db.create_business_flow(con, "請求書処理フロー", "")
+    html = webapp.business_flow_detail_page(con, fid, ai_error="生成に失敗しました")
+    assert "生成に失敗しました" in html
+
+
+def test_ai_draft_questions_route_renders_form(server, monkeypatch):
+    monkeypatch.setattr(webapp, "_business_flow_ai_questions",
+                        lambda name, desc: ["どの部署が関わりますか？", "承認フローはありますか？"])
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "請求書処理フロー", "description": "説明"})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+
+    code, _, body = _post(f"{server}/business-flow/{fid}/ai-draft/questions", {})
+    assert code == 200
+    assert "どの部署が関わりますか？".encode() in body
+    assert "承認フローはありますか？".encode() in body
+
+
+def test_ai_draft_questions_route_failure_shows_error(server, monkeypatch):
+    monkeypatch.setattr(webapp, "_business_flow_ai_questions", lambda name, desc: [])
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "請求書処理フロー", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+
+    code, _, body = _post(f"{server}/business-flow/{fid}/ai-draft/questions", {})
+    assert code == 200
+    assert "質問の生成に失敗しました".encode() in body
+
+
+def test_ai_draft_build_creates_lanes_processes_boxes(monkeypatch, server):
+    monkeypatch.setattr(webapp, "_business_flow_ai_draft", lambda name, desc, qa: {
+        "lanes": ["経理/磯部", "経企/早瀬"],
+        "processes": ["受領", "確認", "支払い"],
+        "boxes": [
+            {"lane": "経理/磯部", "process": "受領", "label": "受領登録"},
+            {"lane": "経企/早瀬", "process": "確認", "label": "承認判断"},
+        ],
+    })
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "請求書処理フロー", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+
+    code, redirected_url, body = _post(f"{server}/business-flow/{fid}/ai-draft/build",
+                                       {"question": "どの部署が関わりますか？", "answer": "経理と経企です"})
+    assert code == 200
+    assert redirected_url == f"{server}/business-flow/{fid}"
+    assert "受領登録".encode() in body
+    assert "承認判断".encode() in body
+    assert "経理/磯部".encode() in body
+    assert "経企/早瀬".encode() in body
+
+
+def test_ai_draft_build_ignores_boxes_with_unknown_lane_or_process(monkeypatch, server):
+    """AIがlanes/processesリストに無い値をboxに書いてきても無視する（データ不整合防止）。"""
+    monkeypatch.setattr(webapp, "_business_flow_ai_draft", lambda name, desc, qa: {
+        "lanes": ["経理/磯部"],
+        "processes": ["受領"],
+        "boxes": [
+            {"lane": "経理/磯部", "process": "受領", "label": "正常なボックス"},
+            {"lane": "存在しないレーン", "process": "受領", "label": "無視されるはず"},
+        ],
+    })
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "フローA", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+
+    _code, _, body = _post(f"{server}/business-flow/{fid}/ai-draft/build", {})
+    assert "正常なボックス".encode() in body
+    assert "無視されるはず".encode() not in body
+
+
+def test_reorder_business_flow_lanes(con):
+    fid = sfa_db.create_business_flow(con, "フローA")
+    l1 = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    l2 = sfa_db.add_business_flow_lane(con, fid, "経企/早瀬")
+    assert [l["id"] for l in sfa_db.list_business_flow_lanes(con, fid)] == [l1, l2]
+
+    sfa_db.reorder_business_flow_lanes(con, fid, [l2, l1])
+    assert [l["id"] for l in sfa_db.list_business_flow_lanes(con, fid)] == [l2, l1]
+
+    l3 = sfa_db.add_business_flow_lane(con, fid, "PM")
+    assert [l["id"] for l in sfa_db.list_business_flow_lanes(con, fid)] == [l2, l1, l3]
+
+
+def test_reorder_business_flow_lanes_ignores_other_flow_ids(con):
+    f1 = sfa_db.create_business_flow(con, "フローA")
+    f2 = sfa_db.create_business_flow(con, "フローB")
+    l1 = sfa_db.add_business_flow_lane(con, f1, "経理/磯部")
+    l2 = sfa_db.add_business_flow_lane(con, f1, "経企/早瀬")
+    other = sfa_db.add_business_flow_lane(con, f2, "他フローのレーン")
+
+    sfa_db.reorder_business_flow_lanes(con, f1, [l2, other, l1])
+
+    assert [l["id"] for l in sfa_db.list_business_flow_lanes(con, f1)] == [l2, l1]
+
+
+def test_reorder_business_flow_processes(con):
+    fid = sfa_db.create_business_flow(con, "フローA")
+    p1 = sfa_db.add_business_flow_process(con, fid, "受領")
+    p2 = sfa_db.add_business_flow_process(con, fid, "確認")
+    sfa_db.reorder_business_flow_processes(con, fid, [p2, p1])
+    assert [p["id"] for p in sfa_db.list_business_flow_processes(con, fid)] == [p2, p1]
+
+
+def test_lanes_reorder_route_via_http(server):
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "フローA", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+    import re
+    _, _, body1 = _post(f"{server}/business-flow/{fid}/lane", {"name": "経理/磯部"})
+    l1 = int(re.search(rb"/business-flow-lane/(\d+)/delete", body1).group(1))
+    _, _, body2 = _post(f"{server}/business-flow/{fid}/lane", {"name": "経企/早瀬"})
+    ids2 = [int(m) for m in re.findall(rb"/business-flow-lane/(\d+)/delete", body2)]
+    l2 = [x for x in ids2 if x != l1][0]
+
+    code, _, _ = _post(f"{server}/business-flow/{fid}/lanes/reorder", {"order": f"{l2},{l1}"})
+    assert code == 204
+
+
+def test_processes_reorder_route_via_http(server):
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "フローA", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+    import re
+    _, _, body1 = _post(f"{server}/business-flow/{fid}/process", {"name": "受領"})
+    p1 = int(re.search(rb"/business-flow-process/(\d+)/delete", body1).group(1))
+    _, _, body2 = _post(f"{server}/business-flow/{fid}/process", {"name": "確認"})
+    ids2 = [int(m) for m in re.findall(rb"/business-flow-process/(\d+)/delete", body2)]
+    p2 = [x for x in ids2 if x != p1][0]
+
+    code, _, _ = _post(f"{server}/business-flow/{fid}/processes/reorder", {"order": f"{p2},{p1}"})
+    assert code == 204
+
+
+def test_detail_page_grid_has_drag_handles_and_data_attrs(con):
+    fid = sfa_db.create_business_flow(con, "フローA")
+    lid = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    pid = sfa_db.add_business_flow_process(con, fid, "受領")
+    html = webapp.business_flow_detail_page(con, fid)
+    assert 'id="bfGridTable"' in html
+    assert f'data-lane-id="{lid}"' in html
+    assert f'data-process-id="{pid}"' in html
+    assert "initBusinessFlowDrag(" in html
+    assert html.count("drag-handle") >= 2  # レーン用+プロセス用
+
+
+def test_ai_draft_build_failure_shows_error_and_creates_nothing(server, monkeypatch):
+    monkeypatch.setattr(webapp, "_business_flow_ai_draft", lambda name, desc, qa: {})
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "フローA", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+
+    code, _, body = _post(f"{server}/business-flow/{fid}/ai-draft/build", {})
+    assert code == 200
+    assert "ドラフトの生成に失敗しました".encode() in body

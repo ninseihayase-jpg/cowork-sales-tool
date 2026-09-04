@@ -2234,41 +2234,121 @@ def _business_flow_suggest_category(name: str, description: str) -> str:
     return out.strip().splitlines()[0].strip() if out.strip() else ""
 
 
+def _business_flow_ai_questions(name: str, description: str) -> list[str]:
+    """フロー名・説明からHaiku(Web検索併用)で、ドラフト作成に必要な質問を3〜5件生成する
+    （#164追加要望2026-09-04: 「白紙から作るのは大変なので、AIと質疑してドラフトを作りたい」）。
+    ANTHROPIC_API_KEY未設定・anthropicライブラリ未インストール・生成失敗時は空リスト
+    （呼び出し側は「生成に失敗しました」と案内し、手動追加に誘導する）。"""
+    if not ANTHROPIC_API_KEY:
+        return []
+    try:
+        import anthropic  # noqa: PLC0415
+    except ImportError:
+        return []
+    try:
+        client = anthropic.Anthropic()
+        prompt = (
+            "社内の業務フロー図（部署/担当者レーン×工程プロセスのスイムレーン図）を作成する準備をしています。\n"
+            f"フロー名: {name}\n説明: {description or '(未入力)'}\n\n"
+            "このフローの実態を把握するために、担当者に聞くべき質問を3〜5個、日本語で考えてください。"
+            "必要であれば同種の業務の一般的な進め方をWeb検索で調べて参考にしてください。"
+            "質問は「どの部署/担当者が関わるか」「工程の順序」「承認/分岐/例外処理の有無」など、"
+            "後でスイムレーン図（レーン×プロセス×タスクボックス）を組み立てるのに必要な情報に絞ってください。\n\n"
+            '回答はJSON配列のみで返してください（説明不要）。例: ["質問1", "質問2", "質問3"]'
+        )
+        response = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1024,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        for block in response.content:
+            if getattr(block, "text", None):
+                text = block.text.strip()
+                start, end = text.find("["), text.rfind("]") + 1
+                if start >= 0 and end > start:
+                    qs = json.loads(text[start:end])
+                    return [str(q).strip() for q in qs if str(q).strip()][:5]
+    except Exception as _e:  # noqa: BLE001
+        print(f"[business-flow-ai] 質問生成失敗: {_e}", flush=True)
+    return []
+
+
+def _business_flow_ai_draft(name: str, description: str, qa_pairs: list[tuple[str, str]]) -> dict:
+    """質疑応答を踏まえ、レーン・プロセス・ボックスのドラフト構成をJSONで生成する。
+    失敗時は空dict（呼び出し側は何も作成しない・エラー表示のみ）。"""
+    if not ANTHROPIC_API_KEY:
+        return {}
+    try:
+        import anthropic  # noqa: PLC0415
+    except ImportError:
+        return {}
+    qa_text = "\n".join(f"Q: {q}\nA: {a}" for q, a in qa_pairs if (a or "").strip())
+    try:
+        client = anthropic.Anthropic()
+        prompt = (
+            "社内の業務フロー図（部署/担当者レーン×工程プロセスのスイムレーン図）のドラフトを作成してください。\n"
+            f"フロー名: {name}\n説明: {description or '(未入力)'}\n\n質疑応答:\n{qa_text or '(なし)'}\n\n"
+            "レーン（3〜5本程度、部署/担当者名）、プロセス（工程、3〜6個程度、実施順）、"
+            "各レーン×プロセスに配置するタスクボックス（無理に全セルを埋めなくてよい。実際に発生する"
+            "作業のみ）を考えてください。必要であれば同種の業務の一般的な進め方をWeb検索で参考にしてください。\n\n"
+            "回答は次のJSON形式のみで返してください（説明・コメント不要）:\n"
+            '{"lanes": ["部署A", "部署B"], "processes": ["工程1", "工程2"], '
+            '"boxes": [{"lane": "部署A", "process": "工程1", "label": "タスク名"}]}\n'
+            "lane/processの値は必ず上のlanes/processesリストに含まれる文字列と完全一致させてください。"
+        )
+        response = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=2000,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        for block in response.content:
+            if getattr(block, "text", None):
+                text = block.text.strip()
+                start, end = text.find("{"), text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    data = json.loads(text[start:end])
+                    if isinstance(data, dict) and isinstance(data.get("lanes"), list):
+                        return data
+    except Exception as _e:  # noqa: BLE001
+        print(f"[business-flow-ai] ドラフト生成失敗: {_e}", flush=True)
+    return {}
+
+
 def business_flows_page(con) -> str:
-    """業務フロー一覧（#164）。分類(category)別にグルーピング表示。"""
+    """業務フロー一覧（#164）。表形式1本（分類はグルーピングせず列として表示、
+    2026-09-04ユーザー確定: 「フロー一覧は表形式で。分類ごとにセクションを分けない」）。"""
     flows = sfa_db.list_business_flows(con)
-    groups: dict = {}
-    for fl in flows:
-        groups.setdefault(fl.get("category") or "未分類", []).append(fl)
-    order = sorted(k for k in groups if k != "未分類")
-    if "未分類" in groups:
-        order.append("未分類")
+    flows_sorted = sorted(flows, key=lambda fl: (fl.get("category") or "未分類", fl.get("name") or ""))
 
     def _flow_row(fl):
         return (
-            f'<tr><td><a href="/business-flow/{fl["id"]}">{_esc(fl["name"])}</a></td>'
+            f'<tr><td>{_esc(fl.get("category") or "未分類")}</td>'
+            f'<td><a href="/business-flow/{fl["id"]}">{_esc(fl["name"])}</a></td>'
             f'<td class="muted">{_esc(fl.get("description") or "")}</td>'
             f'<td>{fl["lane_count"]}</td><td>{fl["process_count"]}</td>'
             f'<td class="muted" style="font-size:12px">{_esc((fl.get("updated_at") or "")[:16])}</td>'
-            f'<td><form method="post" action="/business-flow/{fl["id"]}/delete" style="display:inline" '
+            f'<td style="white-space:nowrap">'
+            f'<form method="post" action="/business-flow/{fl["id"]}/duplicate" style="display:inline">'
+            f'<button type="submit" class="btn sec" style="font-size:12px">複製</button></form> '
+            f'<form method="post" action="/business-flow/{fl["id"]}/delete" style="display:inline" '
             f'onsubmit="return confirm(\'このフロー図を削除します。よろしいですか？\')">'
             f'<button type="submit" class="btn sec" style="color:#c53030;font-size:12px">削除</button></form></td></tr>'
         )
 
-    sections = "".join(f"""
-        <div class="card" style="margin-bottom:16px">
-          <h3 style="margin:0 0 10px">{_esc(cat)}</h3>
-          <table><tr><th>フロー名</th><th>説明</th><th>レーン数</th><th>プロセス数</th><th>更新</th><th></th></tr>
-          {"".join(_flow_row(fl) for fl in groups[cat])}</table>
-        </div>""" for cat in order)
-    if not flows:
-        sections = '<div class="card"><p class="muted">まだ業務フロー図がありません。</p></div>'
+    table = (
+        '<table><tr><th>分類</th><th>フロー名</th><th>説明</th><th>レーン数</th>'
+        '<th>プロセス数</th><th>更新</th><th></th></tr>'
+        + "".join(_flow_row(fl) for fl in flows_sorted)
+        + '</table>'
+    ) if flows else '<p class="muted">まだ業務フロー図がありません。</p>'
 
     return f"""
     <div class="card">
       <h2 style="margin:0 0 8px">🔀 業務フロー一覧</h2>
       <p class="muted" style="font-size:12px;margin:0 0 12px">部署/担当者レーン×プロセスのスイムレーン図で、
-        請求書処理等の社内業務フローを管理します。</p>
+        請求書処理等の社内業務フローを管理します。既存フローの「複製」から作り始めることもできます。</p>
       <form method="post" action="/business-flows/new"
             style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px">
         <label style="font-size:12px">フロー名＊<br><input type="text" name="name" required
@@ -2280,11 +2360,13 @@ def business_flows_page(con) -> str:
       <p class="muted" style="font-size:11px;margin:6px 0 0">分類はHaikuが名前・説明から自動提案します
         （作成後、詳細画面でいつでも修正できます）。</p>
     </div>
-    {sections}"""
+    <div class="card">{table}</div>"""
 
 
-def business_flow_detail_page(con, flow_id: int) -> str:
-    """業務フロー編集画面（フェーズ1: 手動追加のみ・静的グリッド表示。ドラッグ移動・矢印はフェーズ2/3）。"""
+def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | None = None,
+                              ai_error: str = "") -> str:
+    """業務フロー編集画面（フェーズ1: 手動追加のみ・静的グリッド表示。ドラッグ移動・矢印はフェーズ2/3）。
+    ai_questions: AIが生成した質問（Q&Aフォームを表示中）。ai_error: 質問/ドラフト生成失敗時のメッセージ。"""
     flow = sfa_db.get_business_flow(con, flow_id)
     if not flow:
         return '<div class="card">業務フロー図が見つかりません。<a href="/business-flows">← 一覧へ</a></div>'
@@ -2316,10 +2398,18 @@ def business_flow_detail_page(con, flow_id: int) -> str:
             f'<button type="submit" class="btn sec" style="font-size:11px;padding:1px 6px">追加</button></form>'
         )
 
+    # ドラッグで並び替え可能にするため、レーン<th>・プロセス<th>ともdata属性+⠿ハンドルを付ける
+    # （#164追加要望2026-09-04:「プロセス、レーンをドラッグを動かせるように」）。
+    # あわせて見た目のコントラストを強化（同要望:「現在は薄く読みづらい」への対応）。
+    _LANE_HDR_BG = "#eef2ff"; _PROC_HDR_BG = "#f1f5f9"; _HDR_BORDER = "1px solid #94a3b8"
+    _CELL_BORDER = "1px solid #cbd5e1"
     head_cells = "".join(
-        f'<th style="min-width:150px">'
+        f'<th data-process-id="{p["id"]}" style="min-width:160px;background:{_PROC_HDR_BG};'
+        f'border:{_HDR_BORDER};padding:8px">'
         f'<div style="display:flex;align-items:center;justify-content:space-between;gap:4px">'
-        f'<span>{_esc(p["name"])}</span>'
+        f'<span class="drag-handle" draggable="true" title="ドラッグで並び替え" '
+        f'style="cursor:grab;color:#64748b;font-size:14px">⠿</span>'
+        f'<span style="font-weight:700;color:#1e293b;font-size:13px">{_esc(p["name"])}</span>'
         f'<form method="post" action="/business-flow-process/{p["id"]}/delete" style="margin:0" '
         f'onsubmit="return confirm(\'このプロセス列を削除します（列内のボックスも削除されます）。よろしいですか？\')">'
         f'<button type="submit" class="btn sec" style="font-size:10px;padding:1px 5px">×</button></form></div></th>'
@@ -2328,27 +2418,71 @@ def business_flow_detail_page(con, flow_id: int) -> str:
     body_rows = ""
     for lane in lanes:
         cells = "".join(
-            f'<td style="vertical-align:top;background:#fafbfc;border:1px solid #e6e9f0;padding:6px">'
+            f'<td data-process-id="{p["id"]}" style="vertical-align:top;background:#fff;'
+            f'border:{_CELL_BORDER};padding:8px">'
             f'{"".join(_box_html(b) for b in box_by_cell.get((lane["id"], p["id"]), []))}'
             f'{_add_box_form(lane["id"], p["id"])}</td>'
             for p in processes
         )
         body_rows += (
-            f'<tr><th style="text-align:left;vertical-align:top;white-space:nowrap">'
-            f'<div style="display:flex;align-items:center;justify-content:space-between;gap:4px">'
-            f'<span>{_esc(lane["name"])}</span>'
+            f'<tr data-lane-id="{lane["id"]}">'
+            f'<th style="text-align:left;vertical-align:top;white-space:nowrap;background:{_LANE_HDR_BG};'
+            f'border:{_HDR_BORDER};padding:8px">'
+            f'<div style="display:flex;align-items:center;gap:6px">'
+            f'<span class="drag-handle" draggable="true" title="ドラッグで並び替え" '
+            f'style="cursor:grab;color:#64748b;font-size:14px">⠿</span>'
+            f'<span style="font-weight:700;color:#1e293b;font-size:13px;flex:1">{_esc(lane["name"])}</span>'
             f'<form method="post" action="/business-flow-lane/{lane["id"]}/delete" style="margin:0" '
             f'onsubmit="return confirm(\'このレーンを削除します（レーン内のボックスも削除されます）。よろしいですか？\')">'
             f'<button type="submit" class="btn sec" style="font-size:10px;padding:1px 5px">×</button></form></div>'
             f'</th>{cells}</tr>'
         )
 
+    # AIドラフト機能（#164追加要望2026-09-04）。白紙のフロー（レーン・プロセスとも0件）にのみ出す
+    # （ドラフト後は既存の手動編集フォームで人間が修正・確定する運用のため、追加済みなら不要）。
+    ai_draft_block = ""
+    if not lanes and not processes:
+        if ai_error:
+            ai_draft_block = (f'<div class="card"><p style="color:#b91c1c;font-size:13px;margin:0">'
+                              f'⚠️ {_esc(ai_error)}</p></div>')
+        elif ai_questions:
+            qa_rows = "".join(
+                f'<div style="margin-bottom:10px">'
+                f'<label style="font-size:12px;font-weight:600;display:block;margin-bottom:3px">{_esc(q)}</label>'
+                f'<input type="hidden" name="question" value="{_esc(q)}">'
+                f'<textarea name="answer" rows="2" style="width:100%;font-size:13px" '
+                f'placeholder="わかる範囲で回答してください（空欄可）"></textarea></div>'
+                for q in ai_questions
+            )
+            ai_draft_block = f"""
+            <div class="card">
+              <h3 style="margin:0 0 8px">🤖 AIからの質問</h3>
+              <p class="muted" style="font-size:12px;margin:0 0 10px">回答を踏まえてドラフト（レーン・プロセス・
+                タスクボックス）を作成します。わからない項目は空欄のままでも構いません。</p>
+              <form method="post" action="/business-flow/{flow_id}/ai-draft/build">
+                {qa_rows}
+                <button type="submit" class="btn" style="font-size:12px">ドラフトを作成</button>
+              </form>
+            </div>"""
+        else:
+            ai_draft_block = f"""
+            <div class="card">
+              <h3 style="margin:0 0 6px">🤖 AIにドラフトを作ってもらう</h3>
+              <p class="muted" style="font-size:12px;margin:0 0 10px">フロー名・説明をもとにAIがWeb検索も使って
+                質問を考えます。回答するとレーン・プロセス・タスクボックスのドラフトを自動生成します
+                （生成後は下のフォームで自由に修正・確定できます）。</p>
+              <form method="post" action="/business-flow/{flow_id}/ai-draft/questions">
+                <button type="submit" class="btn sec" style="font-size:12px">質問を生成</button>
+              </form>
+            </div>"""
+
     grid = "まだレーン・プロセスがありません。下のフォームから追加してください。"
     if lanes or processes:
         # レーンのみ/プロセスのみの状態でも、追加済みのものが見える・削除できるように
         # 常に表(ヘッダー行+レーン行)を描く（片方が0件でもヘッダーだけ/行だけの表になる）。
-        grid = (f'<div style="overflow-x:auto"><table style="border-collapse:collapse">'
-                f'<tr><th></th>{head_cells}</tr>{body_rows}</table></div>')
+        grid = (f'<div style="overflow-x:auto"><table id="bfGridTable" style="border-collapse:collapse">'
+                f'<tr><th style="border:{_HDR_BORDER};background:{_PROC_HDR_BG}"></th>{head_cells}</tr>'
+                f'{body_rows}</table></div>')
         if not processes:
             grid += '<p class="muted" style="font-size:12px;margin-top:8px">プロセス（工程）を追加すると、ボックスを配置できるようになります。</p>'
         elif not lanes:
@@ -2376,8 +2510,10 @@ def business_flow_detail_page(con, flow_id: int) -> str:
         <button type="submit" class="btn sec" style="font-size:12px">保存</button>
       </form>
     </div>
+    {ai_draft_block}
     <div class="card">
-      <h3 style="margin:0 0 10px">フロー図（手動追加・静的表示。ドラッグ移動・矢印接続は今後追加予定）</h3>
+      <h3 style="margin:0 0 10px">フロー図（⠿をドラッグしてレーン・プロセスの並び替えができます。
+        ボックスのドラッグ移動・矢印接続は今後追加予定）</h3>
       {grid}
       <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid #e6e9f0">
         <form method="post" action="/business-flow/{flow_id}/lane" style="display:flex;gap:6px;align-items:flex-end">
@@ -2391,7 +2527,59 @@ def business_flow_detail_page(con, flow_id: int) -> str:
           <button type="submit" class="btn sec" style="font-size:12px">追加</button>
         </form>
       </div>
-    </div>"""
+    </div>
+    <script>
+    function initBusinessFlowDrag(flowId) {{
+      var table = document.getElementById('bfGridTable'); if (!table) return;
+      var headerRow = table.rows[0];
+      // レーン(行)のドラッグ並び替え
+      Array.from(table.rows).slice(1).forEach(function(tr) {{
+        var handle = tr.querySelector('th .drag-handle'); if (!handle) return;
+        handle.addEventListener('dragstart', function(e) {{
+          e.dataTransfer.effectAllowed = 'move'; table._draggingRow = tr;
+        }});
+        tr.addEventListener('dragover', function(e) {{
+          e.preventDefault();
+          var dragging = table._draggingRow; if (!dragging || dragging === tr) return;
+          var rect = tr.getBoundingClientRect();
+          if (e.clientY < rect.top + rect.height / 2) tr.parentNode.insertBefore(dragging, tr);
+          else tr.parentNode.insertBefore(dragging, tr.nextSibling);
+        }});
+        handle.addEventListener('dragend', function() {{
+          table._draggingRow = null;
+          var ids = Array.from(table.rows).slice(1).map(function(r) {{ return r.dataset.laneId; }});
+          fetch('/business-flow/' + flowId + '/lanes/reorder', {{method: 'POST',
+            headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body: 'order=' + ids.join(',')}});
+        }});
+      }});
+      // プロセス(列)のドラッグ並び替え。ヘッダーの並びを直接動かし、確定時に各行のセルもその順に揃える。
+      Array.from(headerRow.cells).slice(1).forEach(function(th) {{
+        var handle = th.querySelector('.drag-handle'); if (!handle) return;
+        handle.addEventListener('dragstart', function(e) {{
+          e.dataTransfer.effectAllowed = 'move'; table._draggingCol = th;
+        }});
+        th.addEventListener('dragover', function(e) {{
+          e.preventDefault();
+          var dragging = table._draggingCol; if (!dragging || dragging === th) return;
+          var rect = th.getBoundingClientRect();
+          if (e.clientX < rect.left + rect.width / 2) th.parentNode.insertBefore(dragging, th);
+          else th.parentNode.insertBefore(dragging, th.nextSibling);
+        }});
+        handle.addEventListener('dragend', function() {{
+          table._draggingCol = null;
+          var order = Array.from(headerRow.cells).slice(1).map(function(c) {{ return c.dataset.processId; }});
+          Array.from(table.rows).slice(1).forEach(function(tr) {{
+            var cellMap = {{}};
+            Array.from(tr.cells).slice(1).forEach(function(td) {{ cellMap[td.dataset.processId] = td; }});
+            order.forEach(function(pid) {{ if (cellMap[pid]) tr.appendChild(cellMap[pid]); }});
+          }});
+          fetch('/business-flow/' + flowId + '/processes/reorder', {{method: 'POST',
+            headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body: 'order=' + order.join(',')}});
+        }});
+      }});
+    }}
+    initBusinessFlowDrag({flow_id});
+    </script>"""
 
 
 def build_deals_full_xlsx(con) -> bytes:
@@ -19294,6 +19482,60 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     sfa_db.delete_business_flow(con, _fid)
                     self._redirect("/business-flows")
 
+                elif path.startswith("/business-flow/") and path.endswith("/ai-draft/questions"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _flow = sfa_db.get_business_flow(con, _fid)
+                    if not _flow:
+                        self._redirect("/business-flows")
+                        return
+                    _qs = _business_flow_ai_questions(_flow["name"], _flow.get("description") or "")
+                    _err = "" if _qs else "質問の生成に失敗しました（AI未設定、または通信エラー）。手動でレーン・プロセスを追加してください。"
+                    self._send(render(business_flow_detail_page(con, _fid, ai_questions=_qs, ai_error=_err)))
+
+                elif path.startswith("/business-flow/") and path.endswith("/ai-draft/build"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _flow = sfa_db.get_business_flow(con, _fid)
+                    if not _flow:
+                        self._redirect("/business-flows")
+                        return
+                    _questions = f_list.get("question") or []
+                    _answers = f_list.get("answer") or []
+                    _qa_pairs = list(zip(_questions, _answers))
+                    _draft = _business_flow_ai_draft(_flow["name"], _flow.get("description") or "", _qa_pairs)
+                    _lanes = [str(x).strip() for x in (_draft.get("lanes") or []) if str(x).strip()]
+                    _procs = [str(x).strip() for x in (_draft.get("processes") or []) if str(x).strip()]
+                    if not _lanes or not _procs:
+                        self._send(render(business_flow_detail_page(
+                            con, _fid, ai_error="ドラフトの生成に失敗しました（AI未設定、または通信エラー）。"
+                                                "手動でレーン・プロセスを追加してください。")))
+                        return
+                    _lane_ids = {name: sfa_db.add_business_flow_lane(con, _fid, name) for name in _lanes}
+                    _proc_ids = {name: sfa_db.add_business_flow_process(con, _fid, name) for name in _procs}
+                    for _box in (_draft.get("boxes") or []):
+                        _lname = str(_box.get("lane", "")).strip()
+                        _pname = str(_box.get("process", "")).strip()
+                        _label = str(_box.get("label", "")).strip()
+                        if _label and _lname in _lane_ids and _pname in _proc_ids:
+                            sfa_db.add_business_flow_box(con, _fid, _lane_ids[_lname], _proc_ids[_pname], _label)
+                    self._redirect(f"/business-flow/{_fid}")
+
+                elif path.startswith("/business-flow/") and path.endswith("/duplicate"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _new_fid = sfa_db.duplicate_business_flow(con, _fid)
+                    self._redirect(f"/business-flow/{_new_fid}" if _new_fid else "/business-flows")
+
                 elif path.startswith("/business-flow/") and path.endswith("/lane"):
                     try:
                         _fid = int(path.split("/")[2])
@@ -19315,6 +19557,28 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if _name:
                         sfa_db.add_business_flow_process(con, _fid, _name)
                     self._redirect(f"/business-flow/{_fid}")
+
+                elif path.startswith("/business-flow/") and path.endswith("/lanes/reorder"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _order = [int(x) for x in (f.get("order") or "").split(",") if x.isdigit()]
+                    if _order:
+                        sfa_db.reorder_business_flow_lanes(con, _fid, _order)
+                    self._send(b"", status=204)
+
+                elif path.startswith("/business-flow/") and path.endswith("/processes/reorder"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _order = [int(x) for x in (f.get("order") or "").split(",") if x.isdigit()]
+                    if _order:
+                        sfa_db.reorder_business_flow_processes(con, _fid, _order)
+                    self._send(b"", status=204)
 
                 elif path.startswith("/business-flow/") and path.endswith("/box"):
                     try:

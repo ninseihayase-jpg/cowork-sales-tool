@@ -5883,6 +5883,30 @@ def delete_business_flow(con, flow_id: int) -> None:
     con.commit()
 
 
+def duplicate_business_flow(con, flow_id: int) -> int | None:
+    """既存フロー図を、レーン・プロセス・ボックス・矢印ごと複製する（#164追加要望、2026-09-04）。
+    新しいフロー名は元の名前+「(コピー)」、分類は引き継ぐ。"""
+    src = get_business_flow(con, flow_id)
+    if not src:
+        return None
+    new_id = create_business_flow(con, f'{src["name"]}(コピー)', src.get("description") or "",
+                                  src.get("category"))
+    lane_map = {lane["id"]: add_business_flow_lane(con, new_id, lane["name"])
+                for lane in list_business_flow_lanes(con, flow_id)}
+    process_map = {proc["id"]: add_business_flow_process(con, new_id, proc["name"])
+                   for proc in list_business_flow_processes(con, flow_id)}
+    box_map = {
+        box["id"]: add_business_flow_box(con, new_id, lane_map[box["lane_id"]],
+                                         process_map[box["process_id"]],
+                                         box["label"], box.get("note") or "")
+        for box in list_business_flow_boxes(con, flow_id)
+    }
+    for arrow in list_business_flow_arrows(con, flow_id):
+        add_business_flow_arrow(con, new_id, box_map[arrow["from_box_id"]],
+                                box_map[arrow["to_box_id"]], arrow.get("label") or "")
+    return new_id
+
+
 def add_business_flow_lane(con, flow_id: int, name: str) -> int:
     next_order = (con.execute(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM business_flow_lanes WHERE flow_id=?",
@@ -5909,6 +5933,16 @@ def delete_business_flow_lane(con, lane_id: int) -> None:
     con.commit()
 
 
+def reorder_business_flow_lanes(con, flow_id: int, ordered_ids: list[int]) -> None:
+    """レーンの表示順をドラッグ結果通りに更新する（#164追加要望2026-09-04）。
+    このフローに属さないIDは無視する（不正操作対策）。"""
+    valid_ids = {l["id"] for l in list_business_flow_lanes(con, flow_id)}
+    for i, lid in enumerate(ordered_ids):
+        if lid in valid_ids:
+            con.execute("UPDATE business_flow_lanes SET sort_order=? WHERE id=?", (i, lid))
+    con.commit()
+
+
 def add_business_flow_process(con, flow_id: int, name: str) -> int:
     next_order = (con.execute(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM business_flow_processes WHERE flow_id=?",
@@ -5932,6 +5966,16 @@ def update_business_flow_process(con, process_id: int, name: str) -> None:
 
 def delete_business_flow_process(con, process_id: int) -> None:
     con.execute("DELETE FROM business_flow_processes WHERE id=?", (process_id,))
+    con.commit()
+
+
+def reorder_business_flow_processes(con, flow_id: int, ordered_ids: list[int]) -> None:
+    """プロセス（列）の表示順をドラッグ結果通りに更新する（#164追加要望2026-09-04）。
+    このフローに属さないIDは無視する（不正操作対策）。"""
+    valid_ids = {p["id"] for p in list_business_flow_processes(con, flow_id)}
+    for i, pid in enumerate(ordered_ids):
+        if pid in valid_ids:
+            con.execute("UPDATE business_flow_processes SET sort_order=? WHERE id=?", (i, pid))
     con.commit()
 
 
