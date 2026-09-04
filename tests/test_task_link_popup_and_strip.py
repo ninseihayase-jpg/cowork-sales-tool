@@ -270,7 +270,10 @@ def test_tasks_page_link_strip_order_is_delivery_deal_issue(con, deal_issue_deli
     sfa_db.upsert_task(con, title="論点タスク", link_type="issue", link_id=iid, status="未着手")
     sfa_db.upsert_task(con, title="Deliveryタスク", link_type="delivery", link_id=dv, status="未着手")
     html = webapp.tasks_page(con)
-    pos_delivery, pos_deal, pos_issue = html.find("Delivery:"), html.find("商談:"), html.find("論点:")
+    # #159: 論点行は会社機能別にグルーピングされ見出しが「論点（機能名）:」になる
+    # （このケースは商談紐づけの論点なので「論点（商談個別）:」）。
+    pos_delivery, pos_deal, pos_issue = (
+        html.find("Delivery:"), html.find("商談:"), html.find("論点（商談個別）:"))
     assert -1 not in (pos_delivery, pos_deal, pos_issue)
     assert pos_delivery < pos_deal < pos_issue
 

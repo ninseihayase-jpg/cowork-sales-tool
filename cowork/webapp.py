@@ -5697,6 +5697,29 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         _entries = _link_summary.get(_lt) or []
         if not _entries:
             continue
+        if _lt == "issue":
+            # #159: 論点は会社機能別にグルーピングして表示する（見出しに機能名が出るため、
+            # 個々のチップ内の「（会社機能）」「（商談共通）」表記は冗長になるので外し、
+            # 論点名のみ表示する。ユーザー要望2026-09-04）。
+            _cf_order = sfa_db.get_master_list(con, "company_functions") or list(sfa_db.COMPANY_FUNCTIONS)
+            _UNSET_GRP, _DEAL_GRP = "商談共通（機能未設定）", "商談個別"
+            _groups: dict[str, list[dict]] = {}
+            for e in _entries:
+                _grp = _DEAL_GRP if e.get("has_deal") else (e.get("company_function") or _UNSET_GRP)
+                _groups.setdefault(_grp, []).append(e)
+            _grp_order = [g for g in _cf_order if g in _groups] + \
+                [g for g in (_UNSET_GRP, _DEAL_GRP) if g in _groups]
+            _grp_order += [g for g in _groups if g not in _grp_order]  # 想定外キーの取りこぼし防止
+            for _grp in _grp_order:
+                _grp_entries = sorted(_groups[_grp], key=lambda x: -x["open_n"])[:30]
+                _chips = "".join(
+                    f'<a class="pj-chip{" active" if (link_type == _lt and link_id == e["id"]) else ""}" '
+                    f'href="/tasks?link_type={_lt}&link_id={e["id"]}">'
+                    f'{_lt_icon}{_esc((e.get("title") or e["label"])[:24])}<span class="pj-cnt">{e["open_n"]}件</span></a>'
+                    for e in _grp_entries)
+                _link_strip_rows += (f'<div class="pj-strip"><span class="muted" style="font-size:11px;flex:none;'
+                                     f'padding:3px 4px">{_lbl_prefix}（{_esc(_grp)}）:</span>{_chips}</div>')
+            continue
         _chips = "".join(
             f'<a class="pj-chip{" active" if (link_type == _lt and link_id == e["id"]) else ""}" '
             f'href="/tasks?link_type={_lt}&link_id={e["id"]}">'

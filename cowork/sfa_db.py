@@ -4378,7 +4378,15 @@ def task_link_summary(con) -> dict:
         label = task_link_label(con, lt, lid)
         if not label:
             continue
-        out[lt].append({"id": lid, "label": label, "open_n": slot["open_n"], "done_n": slot["done_n"]})
+        entry = {"id": lid, "label": label, "open_n": slot["open_n"], "done_n": slot["done_n"]}
+        if lt == "issue":
+            # #159: 看板上部の論点チップを会社機能別にグルーピングして表示するための材料。
+            it = get_deal_issue(con, lid)
+            if it:
+                entry["title"] = it.get("issue") or "(無題)"
+                entry["company_function"] = it.get("company_function") or None
+                entry["has_deal"] = bool(it.get("deal_id"))
+        out[lt].append(entry)
     for k in out:
         out[k].sort(key=lambda x: -x["open_n"])
     return out
