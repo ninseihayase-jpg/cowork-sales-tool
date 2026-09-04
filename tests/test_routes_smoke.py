@@ -625,6 +625,25 @@ def test_deals_page_has_lead_pattern_filter(server):
         assert "全リード経路" in body, tab_url
 
 
+def test_accounts_page_shows_account_number_and_deal_links(db_path):
+    """アカウント一覧(#160)に、アカウント番号(#id)と、紐づく各商談への直リンクが出ること。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('UT社')").lastrowid
+    con.commit()
+    d1 = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", status="open")
+    d2 = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件Y", status="open")
+    acc_no_deal = con.execute("INSERT INTO accounts(name) VALUES('商談なし社')").lastrowid
+    con.commit()
+
+    html_out = webapp.accounts_page(con)
+
+    assert f"#{acc}" in html_out
+    assert f"#{acc_no_deal}" in html_out
+    assert f'href="/deal/{d1}"' in html_out and "案件X" in html_out
+    assert f'href="/deal/{d2}"' in html_out and "案件Y" in html_out
+    con.close()
+
+
 def test_resolve_default_deals_tab_fallback(tmp_dir):
     """tab未指定時: MS超過0件なら'active'、超過ありなら'overdue'。明示tabは尊重。"""
     db_path = str(tmp_dir / "tabtest.db")

@@ -9537,17 +9537,38 @@ def accounts_page(con) -> str:
             "SELECT account_id, COUNT(*) as cnt FROM deals WHERE account_id IS NOT NULL GROUP BY account_id"
         )
     }
+    # #160: 行から直接、紐づく商談へ飛べるように（アカウント名クリック→詳細ページ経由を挟まない）。
+    deals_by_account: dict[int, list[dict]] = {}
+    for r in con.execute(
+        "SELECT id, account_id, deal_name FROM deals WHERE account_id IS NOT NULL ORDER BY account_id, id"
+    ):
+        deals_by_account.setdefault(r["account_id"], []).append({"id": r["id"], "deal_name": r["deal_name"]})
+
+    def _deal_chips_html(aid: int) -> str:
+        ds = deals_by_account.get(aid) or []
+        if not ds:
+            return '<span class="muted">―</span>'
+        chips = "".join(
+            f'<a href="/deal/{d["id"]}" style="display:inline-block;flex:none;background:#eff6ff;color:#1d4ed8;'
+            f'border:1px solid #bfdbfe;border-radius:6px;padding:2px 7px;font-size:11px;white-space:nowrap;'
+            f'text-decoration:none">{_esc(d.get("deal_name") or "―")}</a>'
+            for d in ds
+        )
+        return f'<div style="display:flex;gap:4px;overflow-x:auto;max-width:100%">{chips}</div>'
+
     rows_html = "".join(
         f'<tr class="acc-row" data-name="{_esc((a.get("name") or "").lower())}" '
         f'data-ind="{_esc(a.get("industry") or "")}" data-size="{_esc(a.get("company_size") or "")}">'
         f'<td style="width:32px"><input type="checkbox" name="ids" value="{a["id"]}"></td>'
+        f'<td class="muted" style="font-size:.85em">#{a["id"]}</td>'
         f'<td><a href="/account/{a["id"]}">{_esc(a["name"])}</a></td>'
         f'<td>{_esc(a.get("industry")) or "<span class=muted>―</span>"}</td>'
         f'<td>{_esc(a.get("company_size")) or "<span class=muted>―</span>"}</td>'
         f'<td class="right muted">{deal_counts.get(a["id"], 0)}</td>'
+        f'<td>{_deal_chips_html(a["id"])}</td>'
         f'</tr>'
         for a in accounts
-    ) or '<tr><td colspan=5 class=muted>アカウントがありません。</td></tr>'
+    ) or '<tr><td colspan=7 class=muted>アカウントがありません。</td></tr>'
     deal_counts_json = json.dumps(deal_counts, ensure_ascii=False)
     _dup_n = len(sfa_db.find_duplicate_accounts(con))
     dup_link = (f'<a class="btn" style="background:#c53030" href="/accounts/duplicates">'
@@ -9579,10 +9600,13 @@ def accounts_page(con) -> str:
       {filter_row}
       <form id="acc_bulk_form" method="post" action="/accounts/bulk_delete">
       <div style="overflow:auto;max-height:70vh">
-      <table>
+      <table style="table-layout:fixed;width:100%;min-width:900px">
         <tr><th class="sticky" style="width:32px"><input type="checkbox" id="acc_chk_all" title="全選択"
               onchange="document.querySelectorAll('#acc_bulk_form [name=ids]').forEach(c=>c.checked=this.checked)"></th>
-            {_sticky_th('企業名')}{_sticky_th('業界')}{_sticky_th('企業規模')}<th class="right sticky">商談数</th></tr>
+            <th class="sticky" style="width:56px">#</th>
+            {_sticky_th('企業名', width='22%')}{_sticky_th('業界', width='20%')}
+            {_sticky_th('企業規模', width='13%')}<th class="right sticky" style="width:64px">商談数</th>
+            {_sticky_th('商談')}</tr>
         {rows_html}
       </table>
       </div>
