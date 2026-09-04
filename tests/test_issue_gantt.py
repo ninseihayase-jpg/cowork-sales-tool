@@ -210,7 +210,7 @@ def test_parse_issue_period_text_prompt_includes_today_and_rules(monkeypatch):
 
 def test_gantt_page_empty_state(con):
     html = webapp.deal_issues_gantt_page(con)
-    assert "サブ論点がまだありません" in html
+    assert "論点がまだありません" in html
 
 
 def test_gantt_page_renders_ready_group_and_bar(con):
@@ -242,22 +242,41 @@ def test_gantt_page_excludes_cancelled_issues(con):
     assert "取消済み論点" not in html
 
 
-def test_gantt_page_groups_sorted_by_earliest_start(con):
-    i1 = _issue(con, issue="論点遅い")
-    i2 = _issue(con, issue="論点早い")
-    sfa_db.create_deal_issue_subitem(con, i1, "遅", "2026-10-01", "2026-10-05")
-    sfa_db.create_deal_issue_subitem(con, i2, "早", "2026-09-01", "2026-09-05")
+def test_gantt_page_categories_sorted_by_account_name(con):
+    """分類（商談=アカウント名/商談名）別に一覧表示し、分類はアカウント名順に並ぶこと
+    （2026-09-06要望: 「先に論点一覧が分類別に並んでいて」）。"""
+    i1 = _issue(con, acc_name="B社", deal_name="乙", issue="論点1")
+    i2 = _issue(con, acc_name="A社", deal_name="甲", issue="論点2")
     html = webapp.deal_issues_gantt_page(con)
-    # グループ見出し(📌)の出現順で判定（issue_idピッカーの<select>内にも issue名が
-    # 出現するため、素の文字列検索だとそちらを拾ってしまう）
-    assert html.find("📌論点早い") < html.find("📌論点遅い")
+    assert html.find("🗂 A社 / 甲") < html.find("🗂 B社 / 乙")
 
 
-def test_gantt_page_new_subitem_form_lists_issue_picker(con):
-    iid = _issue(con, issue="論点A")
+def test_gantt_page_issue_without_subitems_still_listed_with_add_form(con):
+    """サブ論点が1件も無い論点も一覧に表示され、その場で追加できるフォームが付くこと
+    （2026-09-06要望: 「一覧画面内でサブ論点を追加していく運用」）。"""
+    iid = _issue(con, issue="サブ論点なしの論点")
     html = webapp.deal_issues_gantt_page(con)
-    assert f'<option value="{iid}">' in html
+    assert "サブ論点なしの論点" in html
+    assert f'<input type="hidden" name="issue_id" value="{iid}">' in html
     assert "/deal-issue-subitem/new" in html
+
+
+def test_gantt_page_no_top_level_flat_form(con):
+    """画面最上部の独立した論点セレクタ式フォーム（複数論点を1つの<select>にまとめたもの）は
+    廃止されていること。追加は各論点ブロック内の固有フォームのみ。"""
+    _issue(con, issue="論点A")
+    _issue(con, issue="論点B")
+    html = webapp.deal_issues_gantt_page(con)
+    assert "論点を選んでサブ論点を追加" not in html
+
+
+def test_gantt_page_company_common_issue_category_label(con):
+    """商談に紐づかない論点(company_function)は、その分類名で表示されること。"""
+    iid = sfa_db.upsert_deal_issue(con, deal_id=None, issue="共通論点", company_function="経理")
+    html = webapp.deal_issues_gantt_page(con)
+    assert "🗂 🏢 経理" in html
+    assert "共通論点" in html
+    assert f'value="{iid}"' in html
 
 
 # ── HTTPルート ──

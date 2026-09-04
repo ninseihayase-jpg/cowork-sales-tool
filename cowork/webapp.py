@@ -2196,10 +2196,12 @@ def dev_requirements_page(con, *, dev_involved: str = "", owner: str = "", stage
             return (f'<span title="{_esc(v)}" style="display:block;overflow:hidden;'
                     f'text-overflow:ellipsis;white-space:nowrap;max-width:320px">{_esc(v)}</span>'
                     if v else '<span class="muted">-</span>')
-        if key == "account_name" and r.get("link_type") == "deal":
-            return f'<a href="/deal/{r["link_id"]}">{_esc(v or "")}</a>'
-        if key == "account_name" and r.get("link_type") == "delivery":
-            return f'<a href="/delivery/{r["link_id"]}">{_esc(v or "")}</a>'
+        if key == "account_name":
+            _href = (f'/deal/{r["link_id"]}' if r.get("link_type") == "deal"
+                     else f'/delivery/{r["link_id"]}' if r.get("link_type") == "delivery" else None)
+            _inner = f'<a href="{_href}" title="{_esc(v or "")}">{_esc(v or "")}</a>' if _href else _esc(v or "")
+            return (f'<span style="display:block;overflow:hidden;text-overflow:ellipsis;'
+                    f'white-space:nowrap" title="{_esc(v or "")}">{_inner}</span>')
         return _esc(v) if v is not None else '<span class="muted">-</span>'
 
     def _detail_row(r):
@@ -2311,10 +2313,10 @@ def dev_requirements_page(con, *, dev_involved: str = "", owner: str = "", stage
       <div style="overflow-x:auto">
         <table style="table-layout:fixed;width:100%">
           <colgroup>
-            <col style="width:36px"><col style="width:70px"><col style="width:140px"><col style="width:220px">
-            <col style="width:90px"><col style="width:90px"><col style="width:100px">
-            <col style="width:100px"><col style="width:110px"><col style="width:110px">
-            <col style="width:50px"><col>
+            <col style="width:32px"><col style="width:90px"><col style="width:190px"><col style="width:240px">
+            <col style="width:80px"><col style="width:70px"><col style="width:96px">
+            <col style="width:96px"><col style="width:90px"><col style="width:92px">
+            <col style="width:90px"><col>
           </colgroup>
           <thead><tr>{head}</tr></thead>
           <tbody>{body}</tbody>
@@ -2341,8 +2343,13 @@ def dev_requirements_page(con, *, dev_involved: str = "", owner: str = "", stage
 
 
 def _dr_normalize_cell(v):
-    """xlsxセル値をDBに保存できる形へ正規化する（openpyxlは日付セルをdatetime/dateで返す）。"""
+    """xlsxセル値をDBに保存できる形へ正規化する（openpyxlは日付セルをdatetime/dateで返す）。
+    "na"はエクスポート時に未入力箇所へ明示的に埋める表示用プレースホルダ（build_dev_requirements_xlsx
+    参照）なので、素通しせずNoneへ戻す（そのままアップロードし直すと「未入力→na」への変更として
+    誤検知されてしまうため）。"""
     if v is None:
+        return None
+    if isinstance(v, str) and v.strip().lower() == "na":
         return None
     if hasattr(v, "isoformat"):
         return v.isoformat()[:10]
@@ -2478,9 +2485,13 @@ def dev_requirements_review_page(con, upload_id: int) -> str:
 
 def build_dev_requirements_xlsx(con) -> bytes:
     """開発要件一覧のxlsx出力（#165）。開発有無=無の行はスケジュール・要件・メモ系を
-    "-"表示にする（一覧の可視性を保つ運用）。フォントはメイリオUI 10ptで他のxlsx出力と統一。"""
+    "-"表示にする（一覧の可視性を保つ運用）。フォントはメイリオUI 10ptで他のxlsx出力と統一。
+    開発チームが入力すべき項目（DEV_REQ_XLSX_DASH_KEYS＋営業主担当）が未入力の場合は
+    "na"と明示しハイライトする（2026-09-06要望: 未入力箇所を一目で分かるようにしたい）。
+    ID・紐づけ種別・SFA商談#/Delivery#・アカウント・案件名等の識別列は対象外
+    （設計上どちらかが必ず空になるため、"未入力"扱いすると誤検知になる）。"""
     import openpyxl
-    from openpyxl.styles import Font
+    from openpyxl.styles import Font, PatternFill
     from io import BytesIO
 
     rows = sfa_db.list_dev_requirements(con)
@@ -2489,6 +2500,8 @@ def build_dev_requirements_xlsx(con) -> bytes:
     ws.title = "開発要件一覧"
     _font = Font(name="Meiryo UI", size=10)
     _font_bold = Font(name="Meiryo UI", size=10, bold=True)
+    _na_fill = PatternFill(start_color="FFF9C4", end_color="FFF9C4", fill_type="solid")
+    _na_keys = set(DEV_REQ_XLSX_DASH_KEYS) | {"owner"}
 
     hdr = [label for _, label in DEV_REQ_XLSX_COLUMNS]
     for c, h in enumerate(hdr, 1):
@@ -2503,11 +2516,18 @@ def build_dev_requirements_xlsx(con) -> bytes:
         row["link_type_label"] = "商談" if row.get("link_type") == "deal" else "Delivery"
         is_no_dev = (row.get("dev_involved") == "無")
         for c, (key, _label) in enumerate(DEV_REQ_XLSX_COLUMNS, 1):
+            cell = ws.cell(row=r, column=c)
+            cell.font = _font
             if is_no_dev and key in DEV_REQ_XLSX_DASH_KEYS:
-                v = "-"
+                cell.value = "-"
+                continue
+            v = row.get(key)
+            is_blank = v is None or (isinstance(v, str) and not v.strip())
+            if is_blank and key in _na_keys:
+                cell.value = "na"
+                cell.fill = _na_fill
             else:
-                v = row.get(key)
-            ws.cell(row=r, column=c, value=v).font = _font
+                cell.value = v
 
     last_col = openpyxl.utils.get_column_letter(len(hdr))
     ws.auto_filter.ref = f"A1:{last_col}{max(len(rows) + 1, 1)}"
@@ -7022,103 +7042,125 @@ def _parse_issue_period_text(text: str) -> tuple[str | None, str | None]:
 
 
 def deal_issues_gantt_page(con) -> str:
-    """論点プロジェクト管理（#163、2026-09-06）。論点ごとにサブ論点（人間が設定する
-    ざっくりした作業単位）をガントチャートで管理する。UI・ドラッグ移動/リサイズは
-    コンサルタスクガント（#152, tasks_gantt_page）と同じ操作感（ユーザー確定）。
-    コンサルタスクと異なり、開始日/終了日はdeal_issue_subitemsの直接列であり、
-    工数感からの逆算・容量スケジューリングは無い単純な期間管理。
-    サブ論点の追加は自由記述の期間テキスト→Haikuで解釈（_parse_issue_period_text）。
-    解釈に失敗した行は「要確認」として別枠に出し、人間が日付ピッカーで直す。"""
+    """論点プロジェクト管理（#163、2026-09-06。同日追加要望で構成変更）。
+    論点を「商談/会社機能」の分類別に常時全件一覧表示し、各論点のブロック内に
+    サブ論点追加フォームを常設する（画面最上部の独立した論点セレクタ式フォームは廃止し、
+    一覧画面内でサブ論点を追加していく運用に統一——ユーザー要望2026-09-06）。
+    UI・ドラッグ移動/リサイズはコンサルタスクガント（#152, tasks_gantt_page）と
+    同じ操作感（ユーザー確定）。コンサルタスクと異なり、開始日/終了日は
+    deal_issue_subitemsの直接列であり、工数感からの逆算・容量スケジューリングは無い
+    単純な期間管理。サブ論点の追加は自由記述の期間テキスト→Haikuで解釈
+    （_parse_issue_period_text）。解釈に失敗した行は「要確認」として別枠に出し、
+    人間が日付ピッカーで直す。"""
     today = _today_jst()
     all_issues = [i for i in sfa_db.list_deal_issues(con) if (i.get("status") or "") != "取り消し"]
     by_issue: dict[int, list] = {}
     for s in sfa_db.list_deal_issue_subitems(con):
         by_issue.setdefault(s["issue_id"], []).append(s)
 
-    groups = []       # (issue, ready_subitems)
+    # 分類（商談ごと／会社機能ごと）。/deal-issues一覧の「商談/機能」列と同じ分類軸に揃える。
+    def _cat_sort_key(issue):
+        if issue.get("deal_id"):
+            return (0, issue.get("account_name") or "", issue.get("deal_name") or "")
+        return (1, issue.get("company_function") or "￿", "")
+
+    def _cat_label(issue):
+        if issue.get("deal_id"):
+            return f'{issue.get("account_name") or ""} / {issue.get("deal_name") or ""}'
+        return f'🏢 {issue["company_function"]}' if issue.get("company_function") else "商談共通（会社機能未設定）"
+
+    cats: dict[tuple, dict] = {}
+    for issue in sorted(all_issues, key=_cat_sort_key):  # stable sort→分類内は元のdue_date順を保持
+        key = _cat_sort_key(issue)
+        cat = cats.setdefault(key, {"label": _cat_label(issue), "issues": []})
+        cat["issues"].append(issue)
+    cat_list = list(cats.values())
+
     missing_items = []  # (issue, subitem) — 期間が未解決でガント化できない
+    all_ready: list[dict] = []
     for issue in all_issues:
-        subs = by_issue.get(issue["id"], [])
-        ready = [s for s in subs if s.get("start_date") and s.get("end_date")]
-        miss = [s for s in subs if not (s.get("start_date") and s.get("end_date"))]
-        if ready:
-            groups.append((issue, ready))
-        for m in miss:
-            missing_items.append((issue, m))
-    groups.sort(key=lambda g: min(s["start_date"] for s in g[1]))
+        for s in by_issue.get(issue["id"], []):
+            if s.get("start_date") and s.get("end_date"):
+                all_ready.append(s)
+            else:
+                missing_items.append((issue, s))
 
-    issue_picker_opts = "".join(
-        f'<option value="{i["id"]}">{_esc(sfa_db.task_link_label(con, "issue", i["id"]) or i.get("issue") or "")}</option>'
-        for i in all_issues
-    )
-    new_group_form = f"""
-    <div class="card">
-      <h3 style="margin:0 0 8px">＋ 論点を選んでサブ論点を追加</h3>
-      <form method="post" action="/deal-issue-subitem/new" style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end">
-        <label style="font-size:11px;flex:2;min-width:220px">論点<br>
-          <select name="issue_id" required style="width:100%;font-size:12px"><option value=""></option>{issue_picker_opts}</select></label>
-        <label style="font-size:11px;flex:1;min-width:140px">サブ論点名<br>
-          <input type="text" name="title" required placeholder="例: 要件整理" style="width:100%;font-size:12px"></label>
-        <label style="font-size:11px;flex:2;min-width:220px">期間（自由記述）<br>
-          <input type="text" name="period_text" required placeholder="例: 来週から3週間、9/20〜10/10、今月中"
-                 style="width:100%;font-size:12px"></label>
-        <button type="submit" class="btn sec" style="font-size:12px">＋追加</button>
-      </form>
-    </div>"""
-
-    if not groups:
-        grid_html = '<p class="muted" style="margin:0">サブ論点がまだありません。上のフォームから追加してください。</p>'
-        _ig_min_date_iso: str | None = None
-        _ig_n_days = 0
-        _item_data: dict = {}
-    else:
-        all_ready = [s for _, items in groups for s in items]
+    if all_ready:
         min_d = min(date.fromisoformat(s["start_date"]) for s in all_ready)
         min_d = min(min_d, today)
         max_d = max(date.fromisoformat(s["end_date"]) for s in all_ready)
-        n_days = max((max_d - min_d).days + 1, 21)
-        col_tpl = f"220px repeat({n_days}, minmax(28px, 1fr))"
-        _ig_min_date_iso, _ig_n_days = min_d.isoformat(), n_days
+    else:
+        min_d = max_d = today
+    n_days = max((max_d - min_d).days + 1, 21)
+    col_tpl = f"260px repeat({n_days}, minmax(28px, 1fr))"
+    _ig_min_date_iso, _ig_n_days = min_d.isoformat(), n_days
 
-        def _col_of(d: date) -> int:
-            return (d - min_d).days + 2
+    def _col_of(d: date) -> int:
+        return (d - min_d).days + 2
 
-        def _day_bg_cells(row: int) -> str:
-            out = []
-            for i in range(n_days):
-                dd = min_d + timedelta(days=i)
-                cls = "gantt-daycell"
-                if not sfa_db.is_business_day(dd):
-                    cls += " weekend"
-                if dd == today:
-                    cls += " today"
-                out.append(f'<div class="{cls}" style="grid-row:{row};grid-column:{i + 2}"></div>')
-            return "".join(out)
-
-        d3 = sfa_db.add_business_days(today, 3).isoformat()
-        weekend_end = (today + timedelta(days=6 - today.weekday())).isoformat()
-        today_iso = today.isoformat()
-
-        cells = ['<div class="gantt-lbl grp" style="grid-row:1;grid-column:1"></div>']
+    def _day_bg_cells(row: int) -> str:
+        out = []
         for i in range(n_days):
             dd = min_d + timedelta(days=i)
-            cls = "gantt-daylabel"
+            cls = "gantt-daycell"
             if not sfa_db.is_business_day(dd):
                 cls += " weekend"
             if dd == today:
                 cls += " today"
-            label = f"{dd.month}/{dd.day}" if dd.day == 1 else str(dd.day)
-            cells.append(f'<div class="{cls}" style="grid-row:1;grid-column:{i + 2}">{label}</div>')
+            out.append(f'<div class="{cls}" style="grid-row:{row};grid-column:{i + 2}"></div>')
+        return "".join(out)
 
-        row = 2
-        _item_data = {}
-        for issue, items in groups:
-            grp_label = _esc(sfa_db.task_link_label(con, "issue", issue["id"]) or issue.get("issue") or "")
+    d3 = sfa_db.add_business_days(today, 3).isoformat()
+    weekend_end = (today + timedelta(days=6 - today.weekday())).isoformat()
+    today_iso = today.isoformat()
+
+    cells = ['<div class="gantt-lbl grp" style="grid-row:1;grid-column:1"></div>']
+    for i in range(n_days):
+        dd = min_d + timedelta(days=i)
+        cls = "gantt-daylabel"
+        if not sfa_db.is_business_day(dd):
+            cls += " weekend"
+        if dd == today:
+            cls += " today"
+        label = f"{dd.month}/{dd.day}" if dd.day == 1 else str(dd.day)
+        cells.append(f'<div class="{cls}" style="grid-row:1;grid-column:{i + 2}">{label}</div>')
+
+    row = 2
+    _item_data: dict = {}
+    if not all_issues:
+        cells.append(
+            f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
+            f'論点がまだありません。<a href="/deal-issue/new">＋新規論点</a>から作成してください。</div>')
+        row += 1
+    for cat in cat_list:
+        cells.append(
+            f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
+            f'🗂 {_esc(cat["label"])}（{len(cat["issues"])}件）</div>')
+        row += 1
+        for issue in cat["issues"]:
+            ready = sorted(
+                (s for s in by_issue.get(issue["id"], []) if s.get("start_date") and s.get("end_date")),
+                key=lambda x: (x["start_date"], x["end_date"]))
+            issue_label = _esc(sfa_db.task_link_label(con, "issue", issue["id"]) or issue.get("issue") or "")
+            # 論点1件＝常設の「＋サブ論点追加」フォーム付き行（一覧画面内で追加する運用。2026-09-06要望）。
             cells.append(
-                f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
-                f'📌{grp_label}（{len(items)}件）</div>')
+                f'<div style="grid-row:{row};grid-column:1 / -1;background:#fafbfc;'
+                f'border-top:1px solid #e2e8f0;padding:4px 8px;display:flex;gap:6px;align-items:center;'
+                f'flex-wrap:wrap">'
+                f'<a href="/deal-issue/{issue["id"]}" style="font-weight:600;font-size:12px;flex:none;'
+                f'white-space:nowrap">📌{issue_label}</a>'
+                f'<form method="post" action="/deal-issue-subitem/new" '
+                f'style="display:flex;gap:4px;flex:1;min-width:280px;align-items:center">'
+                f'<input type="hidden" name="issue_id" value="{issue["id"]}">'
+                f'<input type="text" name="title" placeholder="サブ論点名" required '
+                f'style="flex:1;font-size:11px;min-width:0">'
+                f'<input type="text" name="period_text" required '
+                f'placeholder="期間（例: 来週から3週間、9/20〜10/10、今月中）" '
+                f'style="flex:2;font-size:11px;min-width:0">'
+                f'<button type="submit" class="btn sec" style="font-size:11px;flex:none">＋追加</button>'
+                f'</form></div>')
             row += 1
-            for s in sorted(items, key=lambda x: (x["start_date"], x["end_date"])):
+            for s in ready:
                 _item_data[s["id"]] = {"title": s["title"], "start_date": s["start_date"],
                                        "end_date": s["end_date"], "issue_id": issue["id"]}
                 cells.append(_day_bg_cells(row))
@@ -7141,22 +7183,8 @@ def deal_issues_gantt_page(con) -> str:
                     f'<span class="gt-bar-label">{_esc(s["title"])}</span>'
                     f'<span class="gt-grip gt-grip-r"></span></div>')
                 row += 1
-            # 論点内に直接「＋サブ論点」を追加できるミニフォーム（グリッド最下行に挿入）
-            cells.append(
-                f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1 / -1;background:#fafbfc">'
-                f'<form method="post" action="/deal-issue-subitem/new" '
-                f'style="display:flex;gap:4px;width:100%;align-items:center">'
-                f'<input type="hidden" name="issue_id" value="{issue["id"]}">'
-                f'<input type="text" name="title" placeholder="サブ論点名" required '
-                f'style="flex:1;font-size:11px;min-width:0">'
-                f'<input type="text" name="period_text" required '
-                f'placeholder="期間（例: 来週から3週間、9/20〜10/10、今月中）" '
-                f'style="flex:2;font-size:11px;min-width:0">'
-                f'<button type="submit" class="btn sec" style="font-size:11px;flex:none">＋追加</button>'
-                f'</form></div>')
-            row += 1
-        grid_html = (f'<div class="gantt-wrap"><div class="gantt-grid" '
-                    f'style="grid-template-columns:{col_tpl}">{"".join(cells)}</div></div>')
+    grid_html = (f'<div class="gantt-wrap"><div class="gantt-grid" '
+                f'style="grid-template-columns:{col_tpl}">{"".join(cells)}</div></div>')
 
     missing_html = ""
     if missing_items:
@@ -7188,10 +7216,10 @@ def deal_issues_gantt_page(con) -> str:
     return f"""
     <div class="card">
       <h2 style="margin:0 0 6px">📊 論点プロジェクト管理（ガント）</h2>
-      <p class="muted" style="font-size:12px;margin:0">論点ごとにサブ論点を設定し、期間をガントチャートで管理します。
+      <p class="muted" style="font-size:12px;margin:0">論点は分類（商談/会社機能）別に一覧表示されます。各論点の行にあるフォームから
+        その場でサブ論点を追加でき、期間が確定した論点はガントバーで表示されます。
         バーをドラッグすると日程スライド、左右の端をドラッグすると期間の伸縮ができます（コンサルタスクガントと同じ操作）。</p>
     </div>
-    {new_group_form}
     <div class="card">{grid_html}</div>
     {missing_html}
     {_GANTT_CSS}
