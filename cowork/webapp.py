@@ -17561,6 +17561,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         ).fetchall()
                         result = {str(row["theme_id"]): row["id"] for row in rows}
                         self._send_cors_json(json.dumps(result, ensure_ascii=False).encode())
+                elif path == "/api/deal_timeline":
+                    # Hisho案件カレンダー用(#166): theme_id→活動履歴/MS一覧/最初の活動日
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        self._send_cors_json(json.dumps(sfa_db.bulk_deal_timeline(con), ensure_ascii=False).encode())
                 elif path == "/api/dev_capacity":
                     # ダッシュボード用: 開発担当の週次キャパ {owner: {base, from, base2}}（#42）
                     qs = self._qs()

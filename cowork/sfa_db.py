@@ -2516,6 +2516,49 @@ def list_deal_milestones(con, deal_id: int) -> list[dict]:
         (int(deal_id),))]
 
 
+def bulk_deal_timeline(con) -> dict:
+    """Hisho案件カレンダー(#166)向け: theme連携済みの全商談の活動履歴・MS一覧・最初の
+    活動日をまとめて返す（N+1回避のため3クエリで集計）。Hisho dashboard.htmlが
+    `/api/deal_timeline` 経由でブラウザから直接フェッチする（既存の`/api/theme_deal_map`と
+    同じ「Hisho DBへは同期せずSFA側APIを直接叩く」方式。INTEGRATION.md参照）。
+    戻り値: {str(theme_id): {"deal_id","activities":[{date,type}],
+    "milestones":[{date,label,type,done}],"first_activity_date","updated_at"}}"""
+    deals = con.execute(
+        "SELECT id, theme_id, updated_at FROM deals WHERE theme_id IS NOT NULL"
+    ).fetchall()
+    if not deals:
+        return {}
+    deal_ids = [d["id"] for d in deals]
+    ph = ",".join("?" for _ in deal_ids)
+
+    activities_by_deal: dict[int, list[dict]] = {}
+    for r in con.execute(
+        f"SELECT deal_id, occurred_on, type FROM activities WHERE deal_id IN ({ph}) "
+        f"AND occurred_on IS NOT NULL ORDER BY occurred_on ASC", deal_ids
+    ):
+        activities_by_deal.setdefault(r["deal_id"], []).append({"date": r["occurred_on"], "type": r["type"]})
+
+    milestones_by_deal: dict[int, list[dict]] = {}
+    for r in con.execute(
+        f"SELECT deal_id, ms_date, ms_label, ms_type, done FROM deal_milestones WHERE deal_id IN ({ph}) "
+        f"AND ms_date IS NOT NULL ORDER BY ms_date ASC", deal_ids
+    ):
+        milestones_by_deal.setdefault(r["deal_id"], []).append(
+            {"date": r["ms_date"], "label": r["ms_label"], "type": r["ms_type"], "done": r["done"]})
+
+    result = {}
+    for d in deals:
+        acts = activities_by_deal.get(d["id"], [])
+        result[str(d["theme_id"])] = {
+            "deal_id": d["id"],
+            "activities": acts,
+            "milestones": milestones_by_deal.get(d["id"], []),
+            "first_activity_date": acts[0]["date"] if acts else None,
+            "updated_at": d["updated_at"],
+        }
+    return result
+
+
 def count_open_milestones(con, deal_ids: list[int]) -> dict:
     """deal_id -> 未完了MS件数。一覧の「ほかN件」バッジ用（0件=レガシー扱い）。"""
     ids = [int(x) for x in deal_ids if x is not None]
