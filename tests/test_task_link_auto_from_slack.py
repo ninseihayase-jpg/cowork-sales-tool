@@ -56,6 +56,15 @@ def test_extract_urls_strips_trailing_punctuation():
     assert urls == ["https://example.com/z"]
 
 
+def test_extract_urls_handles_slack_message_permalink_with_query_string():
+    """#161調査: Slackのメッセージパーマリンク（クエリ文字列付き）を貼り付けたケース。
+    Slackがmrkdwn上で<>ラップした場合・素のままの場合の両方を確認する。"""
+    permalink = ("https://del-hayashi-telempu-axpartner.slack.com/archives/"
+                 "C0123ABC/p1725436677123456?thread_ts=1725400000.000100&cid=C0123ABC")
+    assert slack_tasks._extract_urls(f"テレンプ向け営業\n{permalink}") == [permalink]
+    assert slack_tasks._extract_urls(f"テレンプ向け営業\n<{permalink}>") == [permalink]
+
+
 def test_extract_urls_dedupes_and_caps_at_limit():
     text = " ".join(f"https://example.com/{i}" for i in range(10)) + " https://example.com/0"
     urls = slack_tasks._extract_urls(text)

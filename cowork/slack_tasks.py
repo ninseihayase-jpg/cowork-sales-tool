@@ -492,7 +492,15 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
         con.commit()
         # #157: 起票元の本文にURLがあれば、タスクの「リンク」に自動セットする。
         if source_text:
-            for _url in _extract_urls(source_text):
+            _urls = _extract_urls(source_text)
+            if not _urls and re.search(r"https?://", source_text):
+                # ユーザー報告(2026-09-04, #161): Slackのメッセージパーマリンクを本文に
+                # 貼り付けたのにリンクが付かないケースがあった。本番に生ログが残っておらず
+                # 再現できなかったため、本文にhttp(s)://らしき文字列があるのに抽出結果が
+                # 空だった場合だけ、該当箇所をログに残す（原因特定用の一時計装）。
+                _raw_hint = re.findall(r"https?://\S{0,160}", source_text)
+                print(f"[slack_tasks] link-extract-miss: task={tid} raw_hint={_raw_hint!r}", flush=True)
+            for _url in _urls:
                 try:
                     sfa_db.add_task_link(con, tid, _url)
                 except Exception as _e:  # noqa: BLE001
