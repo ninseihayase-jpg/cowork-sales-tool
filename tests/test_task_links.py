@@ -79,6 +79,63 @@ def test_deleting_task_cascades_task_links(con):
     assert sfa_db.list_task_links(con, tid) == []
 
 
+def test_list_task_links_map_groups_by_task(con):
+    t1 = sfa_db.upsert_task(con, title="T1")
+    t2 = sfa_db.upsert_task(con, title="T2")
+    t3 = sfa_db.upsert_task(con, title="T3")  # リンク無し
+    sfa_db.add_task_link(con, t1, "https://a.com", "A")
+    sfa_db.add_task_link(con, t1, "https://b.com", "B")
+    sfa_db.add_task_link(con, t2, "https://c.com", "C")
+
+    m = sfa_db.list_task_links_map(con, [t1, t2, t3])
+    assert [l["label"] for l in m[t1]] == ["A", "B"]
+    assert [l["label"] for l in m[t2]] == ["C"]
+    assert t3 not in m
+
+
+def test_list_task_links_map_empty_ids_returns_empty_dict(con):
+    assert sfa_db.list_task_links_map(con, []) == {}
+
+
+# ── #167: 看板カード（通常/事務タスク）に関連リンク(task_links)も表示する ──
+
+def test_tasks_page_shows_task_links_chip(con):
+    tid = sfa_db.upsert_task(con, title="通常タスク", status="未着手")
+    sfa_db.add_task_link(con, tid, "https://example.com/doc", "資料")
+    html = webapp.tasks_page(con)
+    assert "tc-url-chip" in html
+    assert "資料" in html
+    assert f"tcUrlLinkDelete(" in html
+    # 既存のSlackリンク・task_entity_links（🔗関連）ボタンと同時に出ていること（#167本題）
+    assert "🔗 リンク追加" in html  # Slack用（既存機能）
+    assert "🔗 関連" in html or "✎" in html  # task_entity_links用（既存機能）
+
+
+def test_tasks_page_shows_add_button_when_no_links(con):
+    tid = sfa_db.upsert_task(con, title="通常タスク", status="未着手")
+    html = webapp.tasks_page(con)
+    assert f"tcUrlLinkAdd({tid})" in html
+    assert "📎 リンク追加" in html
+
+
+def test_desk_tasks_page_shows_task_links_chip(con):
+    tid = sfa_db.upsert_task(con, title="事務タスク", is_admin=1, status="未着手")
+    sfa_db.add_task_link(con, tid, "https://example.com/doc", "資料")
+    html = webapp.desk_tasks_page(con)
+    assert "tc-url-chip" in html
+    assert "資料" in html
+    assert f"tcUrlLinkAdd({tid})" in html
+
+
+def test_task_url_link_html_falls_back_to_domain_when_no_label(con):
+    tid = sfa_db.upsert_task(con, title="T")
+    lid = sfa_db.add_task_link(con, tid, "https://www.example.com/path")
+    links = sfa_db.list_task_links(con, tid)
+    html = webapp._task_url_link_html(tid, links)
+    assert "example.com" in html
+    assert f'id="tcUrlLink-{lid}"' in html
+
+
 def test_gantt_popup_embeds_links_and_ui(con):
     """#127: ガントのフローティング編集に、リンク追加UIと進捗追記UIが含まれること。"""
     tid = sfa_db.upsert_task(con, title="T", due_date="2026-09-01", effort_level="軽",

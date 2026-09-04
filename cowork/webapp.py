@@ -5626,6 +5626,12 @@ _TASKS_JS = """
 .tc-actions .done{background:#10b981;color:#fff;border-color:#10b981}
 .tc-actions .del{color:#c53030;border:none;background:transparent;margin-left:auto}
 .tc-edit{font-size:10px;color:#94a3b8;text-decoration:none}
+.tc-url-chip{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;margin:1px 2px 1px 0;
+  background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;border-radius:12px;font-size:10px}
+.tc-url-chip a{color:inherit;text-decoration:none;max-width:120px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.tc-url-del{cursor:pointer;color:#94a3b8;font-weight:700;padding:0 1px}
+.tc-url-del:hover{color:#c53030}
 #notesBackdrop{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}
 #notesPop{position:fixed;z-index:9999;display:none;background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.18);width:340px;max-width:92vw;max-height:70vh;overflow:auto;padding:12px}
 #linkBackdrop{position:fixed;inset:0;z-index:9998;display:none;background:rgba(15,23,42,.15)}
@@ -5902,6 +5908,37 @@ function tcSlack(id){
   taskField(id,'slack_permalink',url).then(function(){ if(!box)return;
     if(url){ box.outerHTML='<span id="tcslk-'+id+'"><a class="tc-edit" href="'+_tcEsc(url)+'" target="_blank" rel="noopener" title="Slackメッセージを開く" style="color:#2563eb">🔗 Slack</a><button type="button" class="tc-edit" style="border:none;background:none;cursor:pointer" title="リンクを編集" onclick="tcSlack('+id+')">✎</button></span>'; }
     else { box.outerHTML='<button type="button" id="tcslk-'+id+'" class="tc-edit" style="border:none;background:none;cursor:pointer;color:#94a3b8" title="Slackリンクを追加" onclick="tcSlack('+id+')">🔗 リンク追加</button>'; } }); }
+// 関連リンク（task_links、URL群。#127/#157由来。従来はガントのポップアップにしか出ておらず、
+// カード上に見えないという#167の報告を受けて看板カード（通常/事務タスク共通）にも追加）。
+function _tcUrlDomainOf(url){ try{ return new URL(url).hostname.replace(/^www\\./,''); }catch(e){ return 'リンク'; } }
+function _tcUrlChipHtml(tid,l){
+  var lbl=l.label||_tcUrlDomainOf(l.url);
+  return '<span class="tc-url-chip" id="tcUrlLink-'+l.id+'">'
+    +'<a href="'+_tcEsc(l.url)+'" target="_blank" rel="noopener" title="'+_tcEsc(l.url)+'">📎 '+_tcEsc(lbl.slice(0,16))+'</a>'
+    +'<span class="tc-url-del" onclick="tcUrlLinkDelete('+l.id+','+tid+')" title="削除">×</span></span>';
+}
+function tcUrlLinkAdd(id){
+  var url=prompt('関連リンクのURL');
+  if(url===null) return;
+  url=url.trim(); if(!url) return;
+  fetch('/task/'+id+'/link/add',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'url='+encodeURIComponent(url)})
+   .then(function(r){return r.json();}).then(function(d){
+     if(!d.ok){ alert('リンク追加エラー: '+(d.error||'')); return; }
+     var slot=document.getElementById('tcUrlSlot-'+id);
+     if(slot) slot.insertAdjacentHTML('beforeend', _tcUrlChipHtml(id,{id:d.id,url:d.url,label:d.label}));
+     var btn=document.getElementById('tcUrlAdd-'+id); if(btn) btn.textContent='➕';
+   }).catch(function(){ alert('通信エラー'); });
+}
+function tcUrlLinkDelete(linkId,tid){
+  if(!confirm('このリンクを削除しますか？')) return;
+  fetch('/task-link/'+linkId+'/delete',{method:'POST'}).then(function(){
+    var el=document.getElementById('tcUrlLink-'+linkId); if(el) el.remove();
+    var slot=document.getElementById('tcUrlSlot-'+tid);
+    var btn=document.getElementById('tcUrlAdd-'+tid);
+    if(btn && slot && !slot.children.length) btn.textContent='📎 リンク追加';
+  }).catch(function(){ alert('通信エラー'); });
+}
 document.addEventListener('DOMContentLoaded',function(){ document.querySelectorAll('.task-card').forEach(tcRenderActions);
   // 「今日明日」のフローティングポップアップ(#dpGatePop/#dpPickBar)は、サーバー側で最初から
   // 表示状態(?pick=1)でレンダリングされることがあるため、読み込み時にも位置合わせする。
@@ -6145,6 +6182,32 @@ def _task_link_datalists_html(con, prefix: str) -> str:
     return (f'<datalist id="{prefix}DealsDL">{deal_opts}</datalist>'
             f'<datalist id="{prefix}IssuesDL">{issue_opts}</datalist>'
             f'<datalist id="{prefix}DeliveryDL">{delivery_opts}</datalist>')
+
+
+def _task_url_link_html(tid: int, links: list[dict]) -> str:
+    """タスクカード上の「関連リンク」（task_links、URL群。#127/#157由来）表示。
+    従来はガント(tasks_gantt_page)のポップアップにしか出ておらず、看板カード上には
+    見えていなかった（#167、ユーザー報告「カード画面でもSlackリンクも関連リンクも
+    どちらも表示してほしい」）。通常/事務タスク両方の看板カードで共用する。
+    追加/削除は既存の /task/{id}/link/add・/task-link/{id}/delete をそのまま使う
+    （tasks_gantt_pageの矢印描画と同じエンドポイント、JS側はtcUrlLinkAdd/Delete）。"""
+    def _chip(l):
+        label = (l.get("label") or "").strip()
+        if not label:
+            try:
+                host = urllib.parse.urlparse(l["url"]).hostname or "リンク"
+            except ValueError:
+                host = "リンク"
+            label = host[4:] if host.startswith("www.") else host
+        return (f'<span class="tc-url-chip" id="tcUrlLink-{l["id"]}">'
+                f'<a href="{_esc(l["url"])}" target="_blank" rel="noopener" title="{_esc(l["url"])}">'
+                f'📎 {_esc(label[:16])}</a>'
+                f'<span class="tc-url-del" onclick="tcUrlLinkDelete({l["id"]},{tid})" title="削除">×</span></span>')
+    chips = "".join(_chip(l) for l in links)
+    add_btn = (f'<button type="button" id="tcUrlAdd-{tid}" class="tc-edit" style="border:none;'
+               f'background:none;cursor:pointer;color:#94a3b8" title="関連リンクを追加" '
+               f'onclick="tcUrlLinkAdd({tid})">{"➕" if chips else "📎 リンク追加"}</button>')
+    return f'<span class="tc-url-slot" id="tcUrlSlot-{tid}">{chips}</span>{add_btn}'
 
 
 def _task_link_href_icon(link_type: str, link_id: int) -> tuple[str, str]:
@@ -6445,6 +6508,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         cols.setdefault(t.get("status") or "受信箱", []).append(t)
     # 表示中タスク分の関連付け（複数可, #146）をまとめて取得（N+1回避）。
     _links_map = sfa_db.get_task_links_map(con, [t["id"] for t in tasks])
+    # 表示中タスク分の関連リンク（URL群, #127/#157）もまとめて取得（#167でカードに追加表示）。
+    _url_links_map = sfa_db.list_task_links_map(con, [t["id"] for t in tasks])
 
     def card(t):
         tid = t["id"]
@@ -6513,6 +6578,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                          f'cursor:pointer;color:#94a3b8" title="関連を設定" onclick="openLinkPop({tid})">'
                          f'{"✎" if link_chip else "🔗 関連"}</button>')
         link_html = f'<span class="tc-link-slot">{link_chip}</span>{link_edit_btn}'
+        # 関連リンク（task_links、URL群。#127/#157由来。#167でカードに追加表示）。
+        url_link_html = _task_url_link_html(tid, _url_links_map.get(tid, []))
         _plink = (t.get("slack_permalink") or "").strip()
         if _plink:
             slack_html = (
@@ -6603,7 +6670,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'<div class="tc-na{" empty" if not na else ""}"><span>▶</span>'
             f'<input value="{_esc(na)}" placeholder="次アクション未設定" title="次アクション" '
             f'onchange="taskField({tid},&#39;next_action&#39;,this.value)"></div>'
-            f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{effort_sel}{effort_hours_input}{link_html}{slack_html}</div>'
+            f'<div class="tc-meta">{proj_sel}{asg_sel}{cat_sel}{ai_btn}{effort_sel}{effort_hours_input}{link_html}{url_link_html}{slack_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}{rec}</div>'
             f'<div class="tc-notes" onclick="openNotes({tid},&#39;progress&#39;)" title="進捗ログを見る・追記">📝 {note_snip}</div>'
             f'{summary_html}'
@@ -8319,6 +8386,8 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
     cols = {s: [] for s in sfa_db.TASK_STATUSES}
     for t in tasks:
         cols.setdefault(t.get("status") or "受信箱", []).append(t)
+    # 表示中タスク分の関連リンク（URL群, #127/#157）をまとめて取得（#167でカードに追加表示）。
+    _url_links_map = sfa_db.list_task_links_map(con, [t["id"] for t in tasks])
 
     # 期限クイック候補（今日＋N営業日）
     qdates = {n: sfa_db.add_business_days(_td, n).isoformat() for n in (0, 1, 3, 5, 8)}
@@ -8368,6 +8437,8 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'<button type="button" class="tc-q" onclick="tcDue({tid},&#39;{qdates[n]}&#39;)">'
             f'{"当日" if n == 0 else f"+{n}営"}</button>'
             for n in (0, 1, 3, 5, 8))
+        # 関連リンク（task_links、URL群。#127/#157由来。#167でカードに追加表示）。
+        url_link_html = _task_url_link_html(tid, _url_links_map.get(tid, []))
         _plink = (t.get("slack_permalink") or "").strip()
         # Slackリンク: あれば「🔗 Slack」で開く＋✎で編集、なければ「🔗 リンク追加」。どちらもtcSlackで設定。
         if _plink:
@@ -8449,7 +8520,7 @@ def desk_tasks_page(con, *, requester: str | None = None, status: str | None = N
             f'<div class="tc-meta">'
             f'<input type="text" class="tc-sel" value="{_esc(req)}" placeholder="👤依頼者" title="依頼者" '
             f'list="deskReqList" onchange="tcReq({tid},this.value)" style="min-width:88px">'
-            f'{asg_sel}{cat_sel}{slack_html}</div>'
+            f'{asg_sel}{cat_sel}{url_link_html}{slack_html}</div>'
             f'<div class="tc-meta"><span class="tc-lbl">期限</span>{due_input}{quick}</div>'
             f'<div class="tc-notes" onclick="openSummary({tid})" title="進捗メモのAIサマリを見る">📝 {log_snip}</div>'
             f'<div class="tc-foot">'

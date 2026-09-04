@@ -4302,6 +4302,21 @@ def list_task_links(con, task_id: int) -> list[dict]:
         "SELECT * FROM task_links WHERE task_id=? ORDER BY id", (int(task_id),))]
 
 
+def list_task_links_map(con, task_ids: list[int]) -> dict[int, list[dict]]:
+    """複数タスク分のtask_links（URL群）をまとめて取得する（#167、看板カード表示用のN+1回避）。
+    get_task_links_map（task_entity_links側、別物）と同じ発想の一括版。"""
+    ids = [int(i) for i in task_ids]
+    if not ids:
+        return {}
+    ph = ",".join("?" for _ in ids)
+    rows = con.execute(
+        f"SELECT * FROM task_links WHERE task_id IN ({ph}) ORDER BY id", ids).fetchall()
+    out: dict[int, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r["task_id"], []).append(dict(r))
+    return out
+
+
 def add_task_link(con, task_id: int, url: str, label: str | None = None) -> int | None:
     """関連リンクを1件追加。urlが空なら何もしない（Noneを返す）。httpスキーム無しは https:// を補う。"""
     url = (url or "").strip()
