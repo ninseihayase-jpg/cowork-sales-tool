@@ -2069,6 +2069,8 @@ DEV_REQ_XLSX_COLUMNS = [
     ("id", "ID"),
     ("dev_involved", "開発有無"),
     ("link_type_label", "紐づけ種別"),
+    ("sfa_deal_no", "SFA商談#"),
+    ("sfa_delivery_no", "Delivery#"),
     ("account_name", "アカウント"),
     ("project_name", "案件名"),
     ("stage", "ステージ"),
@@ -2096,12 +2098,13 @@ DEV_REQ_XLSX_DASH_KEYS = [
 ]
 # 列幅（Excel列幅単位。ユーザー確認済みの見やすい比率、2026-09-04）。
 DEV_REQ_XLSX_COLUMN_WIDTHS = {
-    "id": 6, "dev_involved": 10, "link_type_label": 10, "account_name": 18,
-    "project_name": 40, "stage": 12, "owner": 10, "start_date": 13, "end_date": 13,
+    "id": 6, "dev_involved": 10, "link_type_label": 10, "sfa_deal_no": 10, "sfa_delivery_no": 11,
+    "account_name": 18, "project_name": 40, "stage": 12, "owner": 10, "start_date": 13, "end_date": 13,
     "release_target": 13, "overview": 45, "scale": 16, "tech_seeds": 16,
     "integration_note": 18, "confidentiality": 12, "budget": 12, "contract_type": 12,
     "demo_link": 20, "memo": 30, "dev_status": 14, "created_at": 16, "updated_at": 16,
 }
+_DEV_REQ_FIELD_LABELS = dict(DEV_REQ_XLSX_COLUMNS)
 
 
 # 一覧の常時表示11列（#165画面設計フェーズ1、2026-09-04ユーザー確定: 提案9列＋デモリンク＋概要）。
@@ -2114,21 +2117,80 @@ DEV_REQ_LIST_COLUMNS = [
 ]
 
 
-def dev_requirements_page(con, *, dev_involved: str = "") -> str:
-    """開発要件一覧（#165フェーズ1）。Excelライクな一覧表示のみ（インライン編集はフェーズ2）。
-    常時表示は11列（DEV_REQ_LIST_COLUMNS）、残りはxlsxダウンロードで見る。"""
+# インライン編集可能フィールド（#165フェーズ2、2026-09-06）。link_type/link_idは
+# 商談/Deliveryとの紐づけそのものであり、UIから変更させない。
+_DEV_REQUIREMENT_ALLOWED_FIELDS = {
+    "dev_involved", "start_date", "end_date", "release_target", "overview", "scale",
+    "tech_seeds", "integration_note", "confidentiality", "budget", "contract_type",
+    "demo_link", "memo", "dev_status",
+}
+# 一覧の常時11列のうち、値そのものをインライン編集できるもの（残りは詳細行で編集）。
+_DEV_REQ_LIST_EDITABLE = {"dev_involved", "start_date", "end_date", "release_target",
+                          "dev_status", "demo_link"}
+
+
+def _dr_select_html(row_id, field, options, current, *, allow_blank=True, blank_label="（未設定）"):
+    opts = ([(("", blank_label))] if allow_blank else []) + [(o, o) for o in options]
+    cur = current or ""
+    body = "".join(
+        f'<option value="{_esc(val)}"{" selected" if cur == val else ""}>{_esc(label)}</option>'
+        for val, label in opts
+    )
+    return (f'<select class="dr-field" data-dr-id="{row_id}" data-field="{field}" '
+            f'style="font-size:12px;width:100%">{body}</select>')
+
+
+def dev_requirements_page(con, *, dev_involved: str = "", owner: str = "", stage: str = "",
+                          dev_status: str = "", q: str = "", upload_error: str = "") -> str:
+    """開発要件一覧（#165）。常時11列（DEV_REQ_LIST_COLUMNS）はインライン編集可、
+    行の「詳細」を開くと残りの項目（概要・想定利用規模等）もインライン編集できる
+    （フェーズ2）。テンプレxlsxアップロード→差分確認→反映はフェーズ3
+    （/dev-requirements/upload, dev_requirements_review_page）。
+    フィルタ: 開発有無タブに加え、営業主担当・ステージ・開発側ステータス・
+    キーワード検索（アカウント名/案件名）を装備（2026-09-06追加要望）。"""
     rows = sfa_db.list_dev_requirements(con)
     if dev_involved:
         rows = [r for r in rows if (r.get("dev_involved") or "未判定") == dev_involved]
+    if owner:
+        rows = [r for r in rows if (r.get("owner") or "") == owner]
+    if stage:
+        rows = [r for r in rows if (r.get("stage") or "") == stage]
+    if dev_status:
+        rows = [r for r in rows if (r.get("dev_status") or "") == dev_status]
+    if q:
+        _q = q.strip().lower()
+        rows = [r for r in rows if _q in (r.get("account_name") or "").lower()
+               or _q in (r.get("project_name") or "").lower()]
 
     def _cell(r, key):
         is_no_dev = (r.get("dev_involved") == "無")
-        if is_no_dev and key in DEV_REQ_XLSX_DASH_KEYS:
+        if is_no_dev and key in DEV_REQ_XLSX_DASH_KEYS and key not in _DEV_REQ_LIST_EDITABLE:
             return '<span class="muted">-</span>'
         v = r.get(key)
+        if key == "dev_involved":
+            return _dr_select_html(r["id"], "dev_involved", sfa_db.DEV_INVOLVED_OPTIONS, v,
+                                    blank_label="未判定")
+        if key in ("start_date", "end_date"):
+            if is_no_dev:
+                return '<span class="muted">-</span>'
+            return (f'<input type="date" class="dr-field" data-dr-id="{r["id"]}" data-field="{key}" '
+                    f'value="{_esc((v or "")[:10])}" style="font-size:12px;width:100%">')
+        if key == "release_target":
+            if is_no_dev:
+                return '<span class="muted">-</span>'
+            return (f'<input type="text" class="dr-field" data-dr-id="{r["id"]}" data-field="release_target" '
+                    f'value="{_esc(v or "")}" placeholder="例: 2026年内" style="font-size:12px;width:100%">')
+        if key == "dev_status":
+            if is_no_dev:
+                return '<span class="muted">-</span>'
+            return _dr_select_html(r["id"], "dev_status", sfa_db.DEV_REQUIREMENT_STATUSES, v)
         if key == "demo_link":
-            return (f'<a href="{_esc(v)}" target="_blank" rel="noopener" title="{_esc(v)}">🔗</a>'
-                    if v else '<span class="muted">-</span>')
+            if is_no_dev:
+                return '<span class="muted">-</span>'
+            link = f'<a href="{_esc(v)}" target="_blank" rel="noopener" title="開く">🔗</a>' if v else ""
+            return (f'<div style="display:flex;align-items:center;gap:4px">'
+                    f'<input type="text" class="dr-field" data-dr-id="{r["id"]}" data-field="demo_link" '
+                    f'value="{_esc(v or "")}" placeholder="URL" style="font-size:12px;width:100%">{link}</div>')
         if key == "overview":
             return (f'<span title="{_esc(v)}" style="display:block;overflow:hidden;'
                     f'text-overflow:ellipsis;white-space:nowrap;max-width:320px">{_esc(v)}</span>'
@@ -2139,34 +2201,116 @@ def dev_requirements_page(con, *, dev_involved: str = "") -> str:
             return f'<a href="/delivery/{r["link_id"]}">{_esc(v or "")}</a>'
         return _esc(v) if v is not None else '<span class="muted">-</span>'
 
-    head = "".join(f'<th>{_esc(label)}</th>' for _, label in DEV_REQ_LIST_COLUMNS)
-    body = "".join(
-        '<tr>' + "".join(f'<td>{_cell(r, key)}</td>' for key, _ in DEV_REQ_LIST_COLUMNS) + '</tr>'
-        for r in rows
-    ) or f'<tr><td colspan="{len(DEV_REQ_LIST_COLUMNS)}" class="muted">該当する開発要件がありません。</td></tr>'
+    def _detail_row(r):
+        is_no_dev = (r.get("dev_involved") == "無")
+
+        def _text_field(field, label, *, area=False):
+            if is_no_dev:
+                return f'<label style="font-size:11px">{_esc(label)}<br><span class="muted">-</span></label>'
+            v = r.get(field) or ""
+            tag = (f'<textarea class="dr-field" data-dr-id="{r["id"]}" data-field="{field}" rows="3" '
+                   f'style="width:100%;font-size:12px">{_esc(v)}</textarea>' if area else
+                   f'<input type="text" class="dr-field" data-dr-id="{r["id"]}" data-field="{field}" '
+                   f'value="{_esc(v)}" style="width:100%;font-size:12px">')
+            return f'<label style="font-size:11px">{_esc(label)}<br>{tag}</label>'
+
+        def _select_field(field, label, options):
+            if is_no_dev:
+                return f'<label style="font-size:11px">{_esc(label)}<br><span class="muted">-</span></label>'
+            return (f'<label style="font-size:11px">{_esc(label)}<br>'
+                    f'{_dr_select_html(r["id"], field, options, r.get(field))}</label>')
+
+        link_type_label = "商談" if r.get("link_type") == "deal" else "Delivery"
+        ref_line = (f'ID:{r["id"]} / {link_type_label} / SFA商談#{r.get("sfa_deal_no") or "-"}'
+                    f' / Delivery#{r.get("sfa_delivery_no") or "-"} / '
+                    f'作成:{(r.get("created_at") or "")[:16]} / 更新:{(r.get("updated_at") or "")[:16]}')
+        fields = "".join([
+            _text_field("overview", "プロジェクト概要・ゴール", area=True),
+            _text_field("scale", "想定利用規模"),
+            _text_field("tech_seeds", "必要な技術シード"),
+            _text_field("integration_note", "既存システム連携有無"),
+            _select_field("confidentiality", "データの機密性", sfa_db.DEV_REQUIREMENT_CONFIDENTIALITY_LEVELS),
+            _text_field("budget", "予算感"),
+            _select_field("contract_type", "契約形態", sfa_db.DEV_REQUIREMENT_CONTRACT_TYPES),
+            _text_field("memo", "メモ", area=True),
+        ])
+        return (f'<tr class="dr-detail" id="dr-detail-{r["id"]}" style="display:none">'
+                f'<td colspan="{len(DEV_REQ_LIST_COLUMNS) + 1}" style="background:#fafbfc;padding:10px">'
+                f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px">'
+                f'{fields}</div>'
+                f'<p class="muted" style="font-size:11px;margin:8px 0 0">{_esc(ref_line)}</p></td></tr>')
+
+    head = '<th style="width:36px"></th>' + "".join(f'<th>{_esc(label)}</th>' for _, label in DEV_REQ_LIST_COLUMNS)
+    body_parts = []
+    for r in rows:
+        toggle = (f'<button type="button" class="btn sec" style="font-size:11px;padding:1px 6px" '
+                  f'onclick="drToggle({r["id"]})">▶</button>')
+        body_parts.append(
+            '<tr>' + f'<td>{toggle}</td>' +
+            "".join(f'<td>{_cell(r, key)}</td>' for key, _ in DEV_REQ_LIST_COLUMNS) + '</tr>'
+        )
+        body_parts.append(_detail_row(r))
+    body = "".join(body_parts) or (
+        f'<tr><td colspan="{len(DEV_REQ_LIST_COLUMNS) + 1}" class="muted">該当する開発要件がありません。</td></tr>')
 
     def _tab(label, value):
         active = 'style="font-weight:700"' if dev_involved == value else ''
-        href = f"/dev-requirements?dev_involved={_esc(value)}" if value else "/dev-requirements"
+        params = {"dev_involved": value, "owner": owner, "stage": stage, "dev_status": dev_status, "q": q}
+        qstr = "&".join(f"{k}={urllib.parse.quote(v)}" for k, v in params.items() if v)
+        href = f"/dev-requirements?{qstr}" if qstr else "/dev-requirements"
         return f'<a href="{href}" {active}>{_esc(label)}</a>'
 
     tabs = " / ".join(_tab(l, v) for l, v in
                       [("全部", ""), ("有", "有"), ("無", "無"), ("未判定", "未判定")])
+
+    def _filter_opt(values, current, blank_label):
+        opts = f'<option value="">{_esc(blank_label)}</option>'
+        opts += "".join(f'<option value="{_esc(v)}"{" selected" if v == current else ""}>{_esc(v)}</option>'
+                        for v in values)
+        return opts
+
+    _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
+    filter_form = f"""<form method="get" action="/dev-requirements" class="filter-row"
+        style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 10px">
+      <input type="hidden" name="dev_involved" value="{_esc(dev_involved)}">
+      <select name="owner" onchange="this.form.submit()">{_filter_opt(_owners, owner, "営業主担当:全て")}</select>
+      <select name="stage" onchange="this.form.submit()">{_filter_opt(sfa_db.DEAL_STAGES, stage, "ステージ:全て")}</select>
+      <select name="dev_status" onchange="this.form.submit()">
+        {_filter_opt(sfa_db.DEV_REQUIREMENT_STATUSES, dev_status, "開発側ステータス:全て")}</select>
+      <input type="text" name="q" value="{_esc(q)}" placeholder="🔍 アカウント名/案件名で検索"
+             style="font-size:12px;width:200px">
+      <button type="submit" class="btn sec" style="font-size:12px">検索</button>
+      <a class="btn sec" href="/dev-requirements" style="font-size:12px">リセット</a>
+    </form>"""
+
+    upload_error_html = (f'<p style="color:#b91c1c;font-size:12px;margin:6px 0 0">⚠️ {_esc(upload_error)}</p>'
+                         if upload_error else "")
 
     return f"""
     <div class="card">
       <h2 style="margin:0 0 6px">🧩 開発要件一覧</h2>
       <p class="muted" style="font-size:12px;margin:0 0 10px">商談が「提案」以降のステージに到達、
         またはDeliveryが作成されると自動で行が追加されます。開発チームが技術検証・リソース確保を
-        判断するためのインプットです。全項目はxlsxで確認・編集できます（アプリ上のインライン編集は今後追加予定）。</p>
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        判断するためのインプットです。行の▶で詳細項目も編集できます。値を変更すると自動保存されます。</p>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px">
         <div style="font-size:13px">{tabs}</div>
-        <a class="btn sec" href="/dev-requirements/export.xlsx" style="font-size:12px">⬇ xlsxダウンロード（全{len(DEV_REQ_XLSX_COLUMNS)}列）</a>
+        <div style="display:flex;gap:8px;align-items:center">
+          <form method="post" action="/dev-requirements/upload" enctype="multipart/form-data" style="margin:0">
+            <input type="file" name="xlsx_file" accept=".xlsx" required style="font-size:12px">
+            <button type="submit" class="btn sec" style="font-size:12px">⬆ テンプレUpload</button>
+          </form>
+          <a class="btn sec" href="/dev-requirements/export.xlsx" style="font-size:12px">⬇ xlsxダウンロード（全{len(DEV_REQ_XLSX_COLUMNS)}列）</a>
+        </div>
       </div>
+      {filter_form}
+      {upload_error_html}
+      <p class="muted" style="font-size:11px;margin:0 0 10px">Uploadは、ダウンロードしたxlsxを編集した
+        ものを想定しています（SFA商談#/Delivery#列で既存行と突合するため、この列は削除しないでください）。
+        アップロード後は差分を確認してから反映します（即時反映はしません）。</p>
       <div style="overflow-x:auto">
         <table style="table-layout:fixed;width:100%">
           <colgroup>
-            <col style="width:70px"><col style="width:140px"><col style="width:220px">
+            <col style="width:36px"><col style="width:70px"><col style="width:140px"><col style="width:220px">
             <col style="width:90px"><col style="width:90px"><col style="width:100px">
             <col style="width:100px"><col style="width:110px"><col style="width:110px">
             <col style="width:50px"><col>
@@ -2175,7 +2319,160 @@ def dev_requirements_page(con, *, dev_involved: str = "") -> str:
           <tbody>{body}</tbody>
         </table>
       </div>
-    </div>"""
+    </div>
+    <script>
+    function drToggle(id) {{
+      var row = document.getElementById('dr-detail-' + id);
+      if (row) row.style.display = (row.style.display === 'none') ? '' : 'none';
+    }}
+    document.addEventListener('change', function(e) {{
+      var el = e.target;
+      if (!el.classList || !el.classList.contains('dr-field')) return;
+      var id = el.dataset.drId, field = el.dataset.field, value = el.value;
+      fetch('/dev-requirement/' + id + '/field', {{method: 'POST',
+        headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+        body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+      }}).then(function(r) {{
+        if (field === 'dev_involved' && r.ok) location.reload();  // マスク対象列が変わるため再読込
+      }});
+    }});
+    </script>"""
+
+
+def _dr_normalize_cell(v):
+    """xlsxセル値をDBに保存できる形へ正規化する（openpyxlは日付セルをdatetime/dateで返す）。"""
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        return v.isoformat()[:10]
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return v
+
+
+def _dev_requirements_parse_upload(con, data: bytes) -> tuple[list[dict], str]:
+    """アップロードされたxlsxをパースし、既存行との差分リストを作る（#165フェーズ3）。
+    突合はSFA商談#/Delivery#列のID完全一致のみで行う（アカウント名・案件名の表記ゆれの
+    影響を受けない、design doc確定仕様）。エラー時は(空リスト, エラーメッセージ)を返す。"""
+    import openpyxl
+    from io import BytesIO
+    try:
+        wb = openpyxl.load_workbook(BytesIO(data), data_only=True)
+    except Exception as _e:  # noqa: BLE001
+        return [], f"xlsxの読み込みに失敗しました: {_e}"
+    ws = wb.active
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header = next(rows_iter)
+    except StopIteration:
+        return [], "空のファイルです。"
+    label_to_key = {label: key for key, label in DEV_REQ_XLSX_COLUMNS}
+    col_keys = [label_to_key.get(h) for h in header]
+    if "sfa_deal_no" not in col_keys and "sfa_delivery_no" not in col_keys:
+        return [], ("SFA商談#・Delivery#列が見つかりません。/dev-requirements/export.xlsx で"
+                    "ダウンロードしたxlsxのフォーマットのまま編集してください。")
+
+    editable_keys = [k for k in sfa_db.DEV_REQUIREMENT_FIELDS if k not in ("link_type", "link_id")]
+    diffs = []
+    for raw_row in rows_iter:
+        if raw_row is None or all(v is None for v in raw_row):
+            continue
+        raw = {}
+        for key, v in zip(col_keys, raw_row):
+            if key:
+                raw[key] = _dr_normalize_cell(v)
+        deal_no = raw.get("sfa_deal_no")
+        delivery_no = raw.get("sfa_delivery_no")
+        deal_no = int(deal_no) if isinstance(deal_no, (int, float)) else None
+        delivery_no = int(delivery_no) if isinstance(delivery_no, (int, float)) else None
+
+        existing = None
+        if delivery_no:
+            existing = sfa_db.get_dev_requirement_by_link(con, "delivery", delivery_no)
+        if not existing and deal_no:
+            existing = sfa_db.get_dev_requirement_by_link(con, "deal", deal_no)
+
+        label = f"{raw.get('account_name') or ''} / {raw.get('project_name') or ''}".strip(" /") or "(識別不能)"
+        if not existing:
+            link_type = link_id = None
+            if delivery_no and sfa_db.get_delivery(con, delivery_no):
+                link_type, link_id = "delivery", delivery_no
+            elif deal_no and sfa_db.get_deal(con, deal_no):
+                link_type, link_id = "deal", deal_no
+            if not link_type:
+                diffs.append({"status": "error", "label": label,
+                             "sfa_deal_no": deal_no, "sfa_delivery_no": delivery_no,
+                             "message": "該当するSFA商談/Deliveryが見つかりません"
+                                        "（SFA商談#/Delivery#が空欄か、削除済みの可能性があります）。"})
+                continue
+            changes = [{"field": k, "label": _DEV_REQ_FIELD_LABELS.get(k, k), "old": None, "new": raw[k]}
+                      for k in editable_keys if raw.get(k) not in (None, "")]
+            diffs.append({"status": "new", "label": label, "link_type": link_type, "link_id": link_id,
+                         "sfa_deal_no": deal_no, "sfa_delivery_no": delivery_no, "changes": changes})
+        else:
+            changes = []
+            for k in editable_keys:
+                if k not in raw:
+                    continue
+                new_v, old_v = raw.get(k), existing.get(k)
+                if str(new_v if new_v is not None else "").strip() != str(old_v if old_v is not None else "").strip():
+                    changes.append({"field": k, "label": _DEV_REQ_FIELD_LABELS.get(k, k),
+                                    "old": old_v, "new": new_v})
+            if changes:
+                diffs.append({"status": "update", "label": label, "dev_requirement_id": existing["id"],
+                             "sfa_deal_no": deal_no, "sfa_delivery_no": delivery_no, "changes": changes})
+    return diffs, ""
+
+
+def dev_requirements_review_page(con, upload_id: int) -> str:
+    """テンプレUpload後の差分確認画面（#165フェーズ3）。チェックした行だけcommitで反映する。"""
+    diffs = sfa_db.get_dev_requirements_upload(con, upload_id)
+    if diffs is None:
+        return ('<div class="card">アップロード内容が見つかりません'
+                '（既に反映済みか、期限切れの可能性があります）。<a href="/dev-requirements">← 一覧へ</a></div>')
+    if not diffs:
+        return ('<div class="card">変更点はありませんでした（アップロードされた内容は現在の一覧と'
+                f'同じです）。<a href="/dev-requirements">← 一覧へ</a></div>')
+
+    blocks = []
+    for i, d in enumerate(diffs):
+        if d["status"] == "error":
+            blocks.append(
+                f'<div class="card" style="border-left:4px solid #dc2626">'
+                f'<b>{_esc(d["label"])}</b>'
+                f'<p style="color:#b91c1c;font-size:12px;margin:4px 0 0">⚠️ {_esc(d["message"])}'
+                f'（SFA商談#{d.get("sfa_deal_no") or "-"} / Delivery#{d.get("sfa_delivery_no") or "-"}）</p>'
+                f'</div>')
+            continue
+        change_lines = "".join(
+            f'<li>{_esc(c["label"])}: 「{_esc(c["old"]) if c["old"] not in (None, "") else "(空欄)"}」'
+            f'→「{_esc(c["new"])}」</li>'
+            for c in d["changes"]
+        )
+        title = ("🆕 新規: " if d["status"] == "new" else "✏️ 修正: ") + _esc(d["label"])
+        blocks.append(
+            f'<div class="card">'
+            f'<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer">'
+            f'<input type="checkbox" name="apply" value="{i}" checked style="margin-top:3px">'
+            f'<span><b>{title}</b><ul style="margin:4px 0 0;padding-left:18px;font-size:12px">{change_lines}</ul></span>'
+            f'</label></div>')
+
+    n_applicable = sum(1 for d in diffs if d["status"] != "error")
+    n_error = len(diffs) - n_applicable
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 8px">📋 開発要件一覧 — アップロード内容の確認</h2>
+      <p class="muted" style="font-size:12px;margin:0">以下の変更を反映します。チェックを外すとその行は反映されません。
+        （反映対象 {n_applicable}件{f' / エラーのためスキップ {n_error}件' if n_error else ''}）</p>
+    </div>
+    <form method="post" action="/dev-requirements/commit">
+      <input type="hidden" name="upload_id" value="{upload_id}">
+      {"".join(blocks)}
+      <div class="card" style="display:flex;gap:8px">
+        <button type="submit" class="btn"{" disabled" if not n_applicable else ""}>反映する</button>
+        <a class="btn sec" href="/dev-requirements">キャンセル</a>
+      </div>
+    </form>"""
 
 
 def build_dev_requirements_xlsx(con) -> bytes:
@@ -2373,19 +2670,27 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
     lanes = sfa_db.list_business_flow_lanes(con, flow_id)
     processes = sfa_db.list_business_flow_processes(con, flow_id)
     boxes = sfa_db.list_business_flow_boxes(con, flow_id)
+    arrows = sfa_db.list_business_flow_arrows(con, flow_id)
     box_by_cell: dict = {}
     for b in boxes:
         box_by_cell.setdefault((b["lane_id"], b["process_id"]), []).append(b)
+    box_labels = {b["id"]: b["label"] for b in boxes}
 
     def _box_html(b):
+        # ⠿=セル間のドラッグ移動ハンドル（#164フェーズ2）、🔗=矢印接続ハンドル（フェーズ3、
+        # ドラッグして別のボックスにドロップすると矢印が作成される）。
         return (
-            f'<div style="background:#fff;border:1px solid #d8dee8;border-radius:6px;'
-            f'padding:5px 7px;margin-bottom:4px;font-size:12px;display:flex;'
-            f'align-items:center;justify-content:space-between;gap:6px">'
-            f'<span>{_esc(b["label"])}</span>'
+            f'<div class="bf-box" data-box-id="{b["id"]}" style="background:#fffdf5;'
+            f'border:1.5px solid #cbb26a;border-radius:6px;padding:5px 7px;margin-bottom:4px;'
+            f'font-size:12px;display:flex;align-items:center;gap:5px">'
+            f'<span class="drag-handle" draggable="true" title="ドラッグして別セルへ移動" '
+            f'style="cursor:grab;color:#8a7a4a;font-size:12px">⠿</span>'
+            f'<span style="flex:1;font-weight:600;color:#3a3220">{_esc(b["label"])}</span>'
+            f'<span class="bf-connect-handle" draggable="true" title="ドラッグして別のボックスに矢印を接続" '
+            f'style="cursor:crosshair;font-size:12px">🔗</span>'
             f'<form method="post" action="/business-flow-box/{b["id"]}/delete" style="margin:0" '
             f'onsubmit="return confirm(\'このボックスを削除しますか？\')">'
-            f'<button type="submit" class="btn sec" style="font-size:10px;padding:1px 5px">×</button></form></div>'
+            f'<button type="submit" class="btn sec no-print" style="font-size:10px;padding:1px 5px">×</button></form></div>'
         )
 
     def _add_box_form(lane_id, process_id):
@@ -2418,8 +2723,8 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
     body_rows = ""
     for lane in lanes:
         cells = "".join(
-            f'<td data-process-id="{p["id"]}" style="vertical-align:top;background:#fff;'
-            f'border:{_CELL_BORDER};padding:8px">'
+            f'<td class="bf-cell" data-lane-id="{lane["id"]}" data-process-id="{p["id"]}" '
+            f'style="vertical-align:top;background:#fff;border:{_CELL_BORDER};padding:8px">'
             f'{"".join(_box_html(b) for b in box_by_cell.get((lane["id"], p["id"]), []))}'
             f'{_add_box_form(lane["id"], p["id"])}</td>'
             for p in processes
@@ -2480,13 +2785,34 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
     if lanes or processes:
         # レーンのみ/プロセスのみの状態でも、追加済みのものが見える・削除できるように
         # 常に表(ヘッダー行+レーン行)を描く（片方が0件でもヘッダーだけ/行だけの表になる）。
-        grid = (f'<div style="overflow-x:auto"><table id="bfGridTable" style="border-collapse:collapse">'
+        # 矢印はSVGオーバーレイで描画（DESIGN.md推奨方式）。ボックス位置は論理座標(lane×process)
+        # のみで持ち、矢印の始点/終点はJSが実際のDOM位置から都度計算する（自由配置は許さない）。
+        grid = (f'<div id="bfGridWrap" style="position:relative;overflow-x:auto">'
+                f'<svg id="bfArrowSvg" style="position:absolute;top:0;left:0;pointer-events:none">'
+                f'<defs><marker id="bfArrowHead" markerWidth="8" markerHeight="8" refX="7" refY="4" '
+                f'orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#7c8ba1"/></marker></defs></svg>'
+                f'<table id="bfGridTable" style="border-collapse:collapse;position:relative">'
                 f'<tr><th style="border:{_HDR_BORDER};background:{_PROC_HDR_BG}"></th>{head_cells}</tr>'
                 f'{body_rows}</table></div>')
         if not processes:
             grid += '<p class="muted" style="font-size:12px;margin-top:8px">プロセス（工程）を追加すると、ボックスを配置できるようになります。</p>'
         elif not lanes:
             grid += '<p class="muted" style="font-size:12px;margin-top:8px">レーン（部署/担当者）を追加すると、ボックスを配置できるようになります。</p>'
+
+    arrow_list_html = ""
+    if arrows:
+        arrow_rows = "".join(
+            f'<div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:4px">'
+            f'<span>{_esc(box_labels.get(a["from_box_id"], "?"))} → {_esc(box_labels.get(a["to_box_id"], "?"))}</span>'
+            f'<form method="post" action="/business-flow-arrow/{a["id"]}/delete" style="margin:0" '
+            f'onsubmit="return confirm(\'この矢印を削除しますか？\')">'
+            f'<button type="submit" class="btn sec no-print" style="font-size:10px;padding:1px 5px">×</button>'
+            f'</form></div>'
+            for a in arrows
+        )
+        arrow_list_html = f'<div class="card no-print"><h3 style="margin:0 0 8px">🔗 矢印一覧</h3>{arrow_rows}</div>'
+
+    arrows_json = json.dumps([{"from": a["from_box_id"], "to": a["to_box_id"]} for a in arrows])
 
     return f"""
     <div class="card">
@@ -2512,10 +2838,13 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
     </div>
     {ai_draft_block}
     <div class="card">
-      <h3 style="margin:0 0 10px">フロー図（⠿をドラッグしてレーン・プロセスの並び替えができます。
-        ボックスのドラッグ移動・矢印接続は今後追加予定）</h3>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <h3 style="margin:0 0 10px">フロー図（⠿でレーン/プロセスの並び替え・ボックスのセル間移動。
+          🔗を別のボックスへドラッグすると矢印を接続できます）</h3>
+        <button type="button" class="btn sec no-print" style="font-size:12px" onclick="window.print()">🖨 印刷/PDF出力</button>
+      </div>
       {grid}
-      <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid #e6e9f0">
+      <div class="no-print" style="display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid #e6e9f0">
         <form method="post" action="/business-flow/{flow_id}/lane" style="display:flex;gap:6px;align-items:flex-end">
           <label style="font-size:12px">＋レーン追加（部署/担当者）<br>
                  <input type="text" name="name" required placeholder="経理/磯部" style="width:180px"></label>
@@ -2528,7 +2857,15 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
         </form>
       </div>
     </div>
+    {arrow_list_html}
+    <style>
+      @media print {{
+        .no-print, header, .save-bar {{ display: none !important; }}
+        body {{ background: #fff !important; }}
+      }}
+    </style>
     <script>
+    var BF_ARROWS = {arrows_json};
     function initBusinessFlowDrag(flowId) {{
       var table = document.getElementById('bfGridTable'); if (!table) return;
       var headerRow = table.rows[0];
@@ -2576,6 +2913,85 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
           fetch('/business-flow/' + flowId + '/processes/reorder', {{method: 'POST',
             headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body: 'order=' + order.join(',')}});
         }});
+      }});
+      // ボックスのセル間ドラッグ移動（#164フェーズ2）。⠿ハンドルをドラッグし、
+      // 別セル(.bf-cell)にドロップするとサーバへ保存してページを再読込する
+      // （移動先セルの中身をライブ再構築するより単純で確実なため）。
+      var dropTargetCell = null;
+      document.querySelectorAll('.bf-box').forEach(function(box) {{
+        var moveHandle = box.querySelector(':scope > .drag-handle');
+        if (moveHandle) {{
+          moveHandle.addEventListener('dragstart', function(e) {{
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', 'move:' + box.dataset.boxId);
+          }});
+        }}
+        var connectHandle = box.querySelector('.bf-connect-handle');
+        if (connectHandle) {{
+          connectHandle.addEventListener('dragstart', function(e) {{
+            e.dataTransfer.effectAllowed = 'link';
+            e.dataTransfer.setData('text/plain', 'connect:' + box.dataset.boxId);
+          }});
+        }}
+        // ボックス自体を矢印のドロップ先にする（🔗ハンドルからドラッグしてきた場合のみ受け付ける）
+        box.addEventListener('dragover', function(e) {{ e.preventDefault(); }});
+        box.addEventListener('drop', function(e) {{
+          e.preventDefault();
+          var data = e.dataTransfer.getData('text/plain') || '';
+          if (data.indexOf('connect:') !== 0) return;
+          var fromId = data.slice('connect:'.length);
+          var toId = box.dataset.boxId;
+          if (fromId === toId) return;
+          fetch('/business-flow-box/' + fromId + '/arrow', {{method: 'POST',
+            headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+            body: 'to_box_id=' + encodeURIComponent(toId)}}).then(function() {{ location.reload(); }});
+        }});
+      }});
+      document.querySelectorAll('.bf-cell').forEach(function(cell) {{
+        cell.addEventListener('dragover', function(e) {{ e.preventDefault(); dropTargetCell = cell; }});
+        cell.addEventListener('drop', function(e) {{
+          e.preventDefault();
+          var data = e.dataTransfer.getData('text/plain') || '';
+          if (data.indexOf('move:') !== 0) return;
+          var boxId = data.slice('move:'.length);
+          fetch('/business-flow-box/' + boxId + '/move', {{method: 'POST',
+            headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+            body: 'lane_id=' + encodeURIComponent(cell.dataset.laneId)
+              + '&process_id=' + encodeURIComponent(cell.dataset.processId)
+          }}).then(function() {{ location.reload(); }});
+        }});
+      }});
+      renderBfArrows();
+      window.addEventListener('resize', renderBfArrows);
+    }}
+    // 矢印はSVGオーバーレイに<line>で描画する。ボックスの位置は自由配置ではなく常に
+    // レーン×プロセスのグリッドから決まるため、始点/終点はDOM実測位置から都度計算する
+    // （DESIGN.md推奨のSVGオーバーレイ方式。ボックス移動・並び替えのたびに再計算が要る）。
+    function renderBfArrows() {{
+      var svg = document.getElementById('bfArrowSvg');
+      var wrap = document.getElementById('bfGridWrap');
+      var table = document.getElementById('bfGridTable');
+      if (!svg || !wrap || !table) return;
+      svg.setAttribute('width', table.scrollWidth);
+      svg.setAttribute('height', table.scrollHeight);
+      svg.innerHTML = '<defs><marker id="bfArrowHead" markerWidth="8" markerHeight="8" refX="7" refY="4" '
+        + 'orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#7c8ba1"/></marker></defs>';
+      var wrapRect = wrap.getBoundingClientRect();
+      (BF_ARROWS || []).forEach(function(a) {{
+        var fromEl = document.querySelector('.bf-box[data-box-id="' + a.from + '"]');
+        var toEl = document.querySelector('.bf-box[data-box-id="' + a.to + '"]');
+        if (!fromEl || !toEl) return;
+        var fr = fromEl.getBoundingClientRect(), tr = toEl.getBoundingClientRect();
+        var x1 = fr.left + fr.width / 2 - wrapRect.left + wrap.scrollLeft;
+        var y1 = fr.top + fr.height / 2 - wrapRect.top + wrap.scrollTop;
+        var x2 = tr.left + tr.width / 2 - wrapRect.left + wrap.scrollLeft;
+        var y2 = tr.top + tr.height / 2 - wrapRect.top + wrap.scrollTop;
+        var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+        line.setAttribute('stroke', '#7c8ba1'); line.setAttribute('stroke-width', '2');
+        line.setAttribute('marker-end', 'url(#bfArrowHead)');
+        svg.appendChild(line);
       }});
     }}
     initBusinessFlowDrag({flow_id});
@@ -17164,8 +17580,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         import traceback as _tb; _tb.print_exc()
                         self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
                 elif path == "/dev-requirements":
-                    _di = (self._qs().get("dev_involved", [""])[0] or "")
-                    self._send(render(dev_requirements_page(con, dev_involved=_di), wide=True))
+                    _qs2 = self._qs()
+                    def _q1(k): return (_qs2.get(k, [""])[0] or "")
+                    self._send(render(dev_requirements_page(
+                        con, dev_involved=_q1("dev_involved"), owner=_q1("owner"),
+                        stage=_q1("stage"), dev_status=_q1("dev_status"), q=_q1("q")), wide=True))
                 elif path == "/dev-requirements/export.xlsx":
                     try:
                         _xls = build_dev_requirements_xlsx(con)
@@ -17180,6 +17599,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     except Exception as _e:  # noqa: BLE001
                         import traceback as _tb; _tb.print_exc()
                         self._send(render(f"<div class=card>xlsx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
+                elif (path.startswith("/dev-requirements/review/")
+                      and path[len("/dev-requirements/review/"):].isdigit()):
+                    _upid = int(path[len("/dev-requirements/review/"):])
+                    self._send(render(dev_requirements_review_page(con, _upid), wide=True))
                 elif path == "/deliveries/payment-schedule.xlsx":
                     try:
                         _xls = build_delivery_payment_schedule_xlsx(con)
@@ -18950,6 +19373,72 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _rt = f.get("return_to") or ""
                     self._redirect(_rt if _rt.startswith("/") else "/deals")
 
+                # ── 開発要件一覧（#165フェーズ2/3） ──
+                elif path.startswith("/dev-requirement/") and path.endswith("/field"):
+                    parts = path.split("/")
+                    if len(parts) == 4 and parts[2].isdigit():
+                        _drid = int(parts[2])
+                        _field = f.get("field", "")
+                        _value = f.get("value", "")
+                        _err = ""
+                        if _field not in _DEV_REQUIREMENT_ALLOWED_FIELDS:
+                            _err = "不正なフィールド"
+                        elif _field == "dev_involved" and _value and _value not in sfa_db.DEV_INVOLVED_OPTIONS:
+                            _err = "不正な値"
+                        elif _field == "dev_status" and _value and _value not in sfa_db.DEV_REQUIREMENT_STATUSES:
+                            _err = "不正な値"
+                        elif (_field == "confidentiality" and _value
+                              and _value not in sfa_db.DEV_REQUIREMENT_CONFIDENTIALITY_LEVELS):
+                            _err = "不正な値"
+                        elif (_field == "contract_type" and _value
+                              and _value not in sfa_db.DEV_REQUIREMENT_CONTRACT_TYPES):
+                            _err = "不正な値"
+                        if _err:
+                            self._send(_err.encode(), status=400)
+                        else:
+                            sfa_db.set_dev_requirement_field(con, _drid, _field, _value or None)
+                            self._send(b"", status=204)
+                    else:
+                        self._send(b"", status=400)
+
+                elif path == "/dev-requirements/upload":
+                    _file = f.get("xlsx_file")
+                    if not (isinstance(_file, tuple) and _file[1]):
+                        self._send(render(dev_requirements_page(
+                            con, upload_error="ファイルが選択されていません。"), wide=True))
+                        return
+                    _diffs, _err = _dev_requirements_parse_upload(con, _file[1])
+                    if _err:
+                        self._send(render(dev_requirements_page(con, upload_error=_err), wide=True))
+                        return
+                    _upid = sfa_db.create_dev_requirements_upload(con, _diffs)
+                    self._redirect(f"/dev-requirements/review/{_upid}")
+
+                elif path == "/dev-requirements/commit":
+                    try:
+                        _upid = int(f.get("upload_id", ""))
+                    except ValueError:
+                        self._redirect("/dev-requirements")
+                        return
+                    _diffs = sfa_db.get_dev_requirements_upload(con, _upid)
+                    if _diffs:
+                        _apply_idx = {int(x) for x in (f_list.get("apply") or []) if str(x).isdigit()}
+                        for _i in _apply_idx:
+                            if _i < 0 or _i >= len(_diffs):
+                                continue
+                            _d = _diffs[_i]
+                            if _d["status"] == "error":
+                                continue
+                            if _d["status"] == "new":
+                                _drid = sfa_db.upsert_dev_requirement(
+                                    con, link_type=_d["link_type"], link_id=_d["link_id"])
+                            else:
+                                _drid = _d["dev_requirement_id"]
+                            for _c in _d["changes"]:
+                                sfa_db.set_dev_requirement_field(con, _drid, _c["field"], _c["new"])
+                    sfa_db.delete_dev_requirements_upload(con, _upid)
+                    self._redirect("/dev-requirements")
+
                 # ── 開発案件 ──
                 elif path == "/dev-project/new":
                     try:
@@ -19625,6 +20114,43 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         "SELECT flow_id FROM business_flow_boxes WHERE id=?", (_bid,)).fetchone()
                     sfa_db.delete_business_flow_box(con, _bid)
                     self._redirect(f"/business-flow/{_box['flow_id']}" if _box else "/business-flows")
+
+                elif path.startswith("/business-flow-box/") and path.endswith("/move"):
+                    # ボックスをセル間でドラッグ移動する（#164フェーズ2、ajax専用）
+                    try:
+                        _bid = int(path.split("/")[2])
+                        _lane_id = int(f.get("lane_id", ""))
+                        _process_id = int(f.get("process_id", ""))
+                    except (ValueError, IndexError):
+                        self._send(b"", status=400)
+                        return
+                    sfa_db.move_business_flow_box(con, _bid, _lane_id, _process_id)
+                    self._send(b"", status=204)
+
+                elif path.startswith("/business-flow-box/") and path.endswith("/arrow"):
+                    # ボックス間に矢印を接続する（#164フェーズ3、ajax専用）
+                    try:
+                        _from_id = int(path.split("/")[2])
+                        _to_id = int(f.get("to_box_id", ""))
+                    except (ValueError, IndexError):
+                        self._send(b"", status=400)
+                        return
+                    _from_box = sfa_db.get_business_flow_box(con, _from_id)
+                    _to_box = sfa_db.get_business_flow_box(con, _to_id)
+                    if (_from_box and _to_box and _from_box["flow_id"] == _to_box["flow_id"]):
+                        sfa_db.add_business_flow_arrow(con, _from_box["flow_id"], _from_id, _to_id)
+                    self._send(b"", status=204)
+
+                elif path.startswith("/business-flow-arrow/") and path.endswith("/delete"):
+                    try:
+                        _aid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _arrow = con.execute(
+                        "SELECT flow_id FROM business_flow_arrows WHERE id=?", (_aid,)).fetchone()
+                    sfa_db.delete_business_flow_arrow(con, _aid)
+                    self._redirect(f"/business-flow/{_arrow['flow_id']}" if _arrow else "/business-flows")
 
                 elif path.startswith("/deal-issue/") and path.endswith("/field"):
                     _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "responsible", "due_date",

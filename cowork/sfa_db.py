@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -1167,6 +1168,15 @@ CREATE TABLE IF NOT EXISTS dev_requirements (
     UNIQUE(link_type, link_id)
 );
 CREATE INDEX IF NOT EXISTS idx_dev_requirements_link ON dev_requirements(link_type, link_id);
+
+-- 開発要件一覧のテンプレExcelアップロード時の一時保存（#165画面設計フェーズ3、2026-09-06）。
+-- アップロード直後はDBへ即反映せず、パース結果+差分をJSONで一時保存し、確認画面（レビュー）で
+-- 人間が承認した行だけをcommit時に反映する（「一時テーブル方式」、design doc確定）。
+CREATE TABLE IF NOT EXISTS dev_requirements_uploads (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    payload     TEXT NOT NULL,          -- 差分行のJSON配列
+    created_at  TEXT DEFAULT (datetime('now'))
+);
 
 -- 業務フロー作成機能（#164、2026-09-04設計確定）。レーン(縦)×プロセス(横)の論理グリッドに
 -- タスクボックスを配置し、ボックス間を矢印でつなぐスイムレーン図。ボックス位置は
@@ -5083,13 +5093,27 @@ def ensure_dev_requirement_for_delivery(con, delivery_id: int) -> int | None:
 
 def list_dev_requirements(con) -> list[dict]:
     """開発要件一覧を、商談/Deliveryの識別情報（アカウント名・案件名・ステージ・営業主担当）を
-    付与して返す（一覧表示・xlsx出力の共通データソース）。参照先が削除済みの行は除外する。"""
+    付与して返す（一覧表示・xlsx出力の共通データソース）。参照先が削除済みの行は除外する。
+
+    #165追補（2026-09-06・ユーザー要望）: 同一商談が「提案到達」「Delivery作成」の両トリガーを
+    踏むと商談起点行・Delivery起点行の2行がDBには作られる（トリガー自体は#165確定仕様のまま
+    変更しない）が、一覧・xlsx上は分かりづらいため、同一商談にDelivery起点行が存在する場合は
+    商談起点行を非表示にし、Delivery起点行に集約して見せる（DBの商談起点行自体は削除しない＝
+    Deliveryが削除された場合に商談起点行が復元表示されるようにするため）。"""
     rows = [dict(r) for r in con.execute(
         "SELECT * FROM dev_requirements ORDER BY id DESC")]
+    deal_ids_with_delivery_row = set()
+    for r in rows:
+        if r["link_type"] == "delivery":
+            _dv = get_delivery(con, r["link_id"])
+            if _dv and _dv.get("deal_id"):
+                deal_ids_with_delivery_row.add(_dv["deal_id"])
     out = []
     for r in rows:
         deal_id = None
         if r["link_type"] == "deal":
+            if r["link_id"] in deal_ids_with_delivery_row:
+                continue
             d = get_deal(con, r["link_id"])
             if not d:
                 continue
@@ -5114,6 +5138,10 @@ def list_dev_requirements(con) -> list[dict]:
             deal_id = dv.get("deal_id")
         else:
             continue
+        # #165画面設計確定（2026-09-06）: テンプレExcelとの突合はアカウント名・案件名の
+        # 文字列一致ではなく、この2つのID列の完全一致で行う（表記ゆれの影響を受けない）。
+        r["sfa_deal_no"] = deal_id
+        r["sfa_delivery_no"] = r["link_id"] if r["link_type"] == "delivery" else None
         # #165追補（2026-09-04・ユーザー要望）: デモリンクは、その商談に紐づく開発案件
         # （dev_projects）の「制作したツールのリンク」があれば自動反映する（複数あれば
         # 最初の1件。人間が明示的にdemo_linkへ手入力していれば、その値を優先）。
@@ -5124,6 +5152,26 @@ def list_dev_requirements(con) -> list[dict]:
                     break
         out.append(r)
     return out
+
+
+def create_dev_requirements_upload(con, payload: list) -> int:
+    """テンプレExcelアップロード直後の差分をJSONで一時保存する（#165フェーズ3）。
+    まだDBの各行には反映しない。commit_dev_requirements_uploadで初めて反映される。"""
+    cur = con.execute("INSERT INTO dev_requirements_uploads (payload) VALUES (?)",
+                       (json.dumps(payload, ensure_ascii=False),))
+    con.commit()
+    return cur.lastrowid
+
+
+def get_dev_requirements_upload(con, upload_id: int) -> list | None:
+    row = con.execute("SELECT payload FROM dev_requirements_uploads WHERE id=?",
+                       (int(upload_id),)).fetchone()
+    return json.loads(row["payload"]) if row else None
+
+
+def delete_dev_requirements_upload(con, upload_id: int) -> None:
+    con.execute("DELETE FROM dev_requirements_uploads WHERE id=?", (int(upload_id),))
+    con.commit()
 
 
 def close_won_if_needed(con, deal_id: int, *, commit: bool = False) -> bool:
@@ -5998,12 +6046,29 @@ def list_business_flow_boxes(con, flow_id: int) -> list[dict]:
         (flow_id,))]
 
 
+def get_business_flow_box(con, box_id: int) -> dict | None:
+    row = con.execute("SELECT * FROM business_flow_boxes WHERE id=?", (box_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def update_business_flow_box(con, box_id: int, *, label: str | None = None,
                              note: str | None = None) -> None:
     if label is not None:
         con.execute("UPDATE business_flow_boxes SET label=? WHERE id=?", (label, box_id))
     if note is not None:
         con.execute("UPDATE business_flow_boxes SET note=? WHERE id=?", (note, box_id))
+    con.commit()
+
+
+def move_business_flow_box(con, box_id: int, lane_id: int, process_id: int) -> None:
+    """ボックスを別のセル（レーン×プロセス）へドラッグ移動する（#164フェーズ2）。
+    自由なピクセル配置は許さず、必ずどこかのレーン×プロセスのセルに属する設計のまま
+    （lane_id, process_idのみを持ち替える）。移動先セルの末尾に積む。"""
+    next_order = (con.execute(
+        "SELECT COALESCE(MAX(stack_order), -1) + 1 FROM business_flow_boxes "
+        "WHERE lane_id=? AND process_id=? AND id!=?", (lane_id, process_id, box_id)).fetchone()[0])
+    con.execute("UPDATE business_flow_boxes SET lane_id=?, process_id=?, stack_order=? WHERE id=?",
+                (lane_id, process_id, next_order, box_id))
     con.commit()
 
 
@@ -6014,6 +6079,13 @@ def delete_business_flow_box(con, box_id: int) -> None:
 
 def add_business_flow_arrow(con, flow_id: int, from_box_id: int, to_box_id: int,
                             label: str = "") -> int:
+    """矢印を追加する。レーン・プロセスをまたいでも、時系列を無視した逆行も自由に引ける
+    （#164確定仕様）。同一組み合わせの矢印が既にあれば重複作成しない（誤操作対策）。"""
+    existing = con.execute(
+        "SELECT id FROM business_flow_arrows WHERE flow_id=? AND from_box_id=? AND to_box_id=?",
+        (flow_id, from_box_id, to_box_id)).fetchone()
+    if existing:
+        return existing["id"]
     cur = con.execute(
         "INSERT INTO business_flow_arrows (flow_id, from_box_id, to_box_id, label) VALUES (?,?,?,?)",
         (flow_id, from_box_id, to_box_id, label or ""))

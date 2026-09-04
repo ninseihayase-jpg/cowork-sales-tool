@@ -451,3 +451,148 @@ def test_ai_draft_build_failure_shows_error_and_creates_nothing(server, monkeypa
     code, _, body = _post(f"{server}/business-flow/{fid}/ai-draft/build", {})
     assert code == 200
     assert "ドラフトの生成に失敗しました".encode() in body
+
+
+# ── #164フェーズ2/3: ボックスのセル間ドラッグ移動・矢印接続 ──
+
+def test_move_business_flow_box_to_another_cell(con):
+    fid = sfa_db.create_business_flow(con, "フローA")
+    l1 = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    l2 = sfa_db.add_business_flow_lane(con, fid, "経企/早瀬")
+    p1 = sfa_db.add_business_flow_process(con, fid, "受領")
+    bid = sfa_db.add_business_flow_box(con, fid, l1, p1, "受領登録")
+
+    sfa_db.move_business_flow_box(con, bid, l2, p1)
+
+    box = sfa_db.get_business_flow_box(con, bid)
+    assert box["lane_id"] == l2 and box["process_id"] == p1
+    assert box["stack_order"] == 0
+
+
+def test_move_business_flow_box_appends_to_end_of_target_cell(con):
+    fid = sfa_db.create_business_flow(con, "フローA")
+    l1 = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    l2 = sfa_db.add_business_flow_lane(con, fid, "経企/早瀬")
+    p1 = sfa_db.add_business_flow_process(con, fid, "受領")
+    sfa_db.add_business_flow_box(con, fid, l2, p1, "既存ボックス")
+    bid = sfa_db.add_business_flow_box(con, fid, l1, p1, "移動対象")
+
+    sfa_db.move_business_flow_box(con, bid, l2, p1)
+
+    moved = sfa_db.get_business_flow_box(con, bid)
+    assert moved["stack_order"] == 1  # 既存ボックス(0)の次に積まれる
+
+
+def test_get_business_flow_box_missing_returns_none(con):
+    assert sfa_db.get_business_flow_box(con, 999) is None
+
+
+def test_add_business_flow_arrow_is_idempotent_for_same_pair(con):
+    fid = sfa_db.create_business_flow(con, "フローA")
+    lid = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    p1 = sfa_db.add_business_flow_process(con, fid, "受領")
+    p2 = sfa_db.add_business_flow_process(con, fid, "確認")
+    b1 = sfa_db.add_business_flow_box(con, fid, lid, p1, "受領登録")
+    b2 = sfa_db.add_business_flow_box(con, fid, lid, p2, "確認")
+
+    aid1 = sfa_db.add_business_flow_arrow(con, fid, b1, b2)
+    aid2 = sfa_db.add_business_flow_arrow(con, fid, b1, b2)
+
+    assert aid1 == aid2
+    assert len(sfa_db.list_business_flow_arrows(con, fid)) == 1
+
+
+def test_move_box_route_via_http(server):
+    import re
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "フローA", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+    _, _, lane_body = _post(f"{server}/business-flow/{fid}/lane", {"name": "経理/磯部"})
+    l1 = int(re.search(rb"/business-flow-lane/(\d+)/delete", lane_body).group(1))
+    _, _, lane_body2 = _post(f"{server}/business-flow/{fid}/lane", {"name": "経企/早瀬"})
+    ids2 = [int(m) for m in re.findall(rb"/business-flow-lane/(\d+)/delete", lane_body2)]
+    l2 = [x for x in ids2 if x != l1][0]
+    _, _, proc_body = _post(f"{server}/business-flow/{fid}/process", {"name": "受領"})
+    p1 = int(re.search(rb"/business-flow-process/(\d+)/delete", proc_body).group(1))
+    _, _, box_body = _post(f"{server}/business-flow/{fid}/box",
+                           {"lane_id": l1, "process_id": p1, "label": "受領登録"})
+    bid = int(re.search(rb'data-box-id="(\d+)"', box_body).group(1))
+
+    code, _, _ = _post(f"{server}/business-flow-box/{bid}/move", {"lane_id": l2, "process_id": p1})
+    assert code == 204
+
+    code, body = _get(f"{server}/business-flow/{fid}")
+    assert code == 200
+    assert f'data-lane-id="{l2}"'.encode() in body
+
+
+def test_arrow_route_via_http_creates_and_shows_in_list(server):
+    import re
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "フローA", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+    _, _, lane_body = _post(f"{server}/business-flow/{fid}/lane", {"name": "経理/磯部"})
+    l1 = int(re.search(rb"/business-flow-lane/(\d+)/delete", lane_body).group(1))
+    _, _, proc_body = _post(f"{server}/business-flow/{fid}/process", {"name": "受領"})
+    p1 = int(re.search(rb"/business-flow-process/(\d+)/delete", proc_body).group(1))
+    _, _, proc_body2 = _post(f"{server}/business-flow/{fid}/process", {"name": "確認"})
+    ids2 = [int(m) for m in re.findall(rb"/business-flow-process/(\d+)/delete", proc_body2)]
+    p2 = [x for x in ids2 if x != p1][0]
+    _, _, box_body1 = _post(f"{server}/business-flow/{fid}/box",
+                            {"lane_id": l1, "process_id": p1, "label": "受領登録"})
+    b1 = int(re.search(rb'data-box-id="(\d+)"', box_body1).group(1))
+    _, _, box_body2 = _post(f"{server}/business-flow/{fid}/box",
+                            {"lane_id": l1, "process_id": p2, "label": "承認判断"})
+    ids2b = [int(m) for m in re.findall(rb'data-box-id="(\d+)"', box_body2)]
+    b2 = [x for x in ids2b if x != b1][0]
+
+    code, _, _ = _post(f"{server}/business-flow-box/{b1}/arrow", {"to_box_id": b2})
+    assert code == 204
+
+    code, body = _get(f"{server}/business-flow/{fid}")
+    assert code == 200
+    assert "受領登録 → 承認判断".encode() in body
+
+
+def test_arrow_delete_route_via_http(server):
+    import re
+    _code, url, _ = _post(f"{server}/business-flows/new", {"name": "フローA", "description": ""})
+    fid = int(url.rstrip("/").rsplit("/", 1)[-1])
+    _, _, lane_body = _post(f"{server}/business-flow/{fid}/lane", {"name": "経理/磯部"})
+    l1 = int(re.search(rb"/business-flow-lane/(\d+)/delete", lane_body).group(1))
+    _, _, proc_body = _post(f"{server}/business-flow/{fid}/process", {"name": "受領"})
+    p1 = int(re.search(rb"/business-flow-process/(\d+)/delete", proc_body).group(1))
+    _, _, box_body1 = _post(f"{server}/business-flow/{fid}/box",
+                            {"lane_id": l1, "process_id": p1, "label": "A"})
+    b1 = int(re.search(rb'data-box-id="(\d+)"', box_body1).group(1))
+    _, _, box_body2 = _post(f"{server}/business-flow/{fid}/box",
+                            {"lane_id": l1, "process_id": p1, "label": "B"})
+    ids2 = [int(m) for m in re.findall(rb'data-box-id="(\d+)"', box_body2)]
+    b2 = [x for x in ids2 if x != b1][0]
+    _post(f"{server}/business-flow-box/{b1}/arrow", {"to_box_id": b2})
+
+    _code, body_get = _get(f"{server}/business-flow/{fid}")
+    aid_match = re.search(rb"/business-flow-arrow/(\d+)/delete", body_get)
+    assert aid_match is not None
+    aid = int(aid_match.group(1))
+
+    code, _, _ = _post(f"{server}/business-flow-arrow/{aid}/delete", {})
+    assert code == 200
+
+    _, body_after = _get(f"{server}/business-flow/{fid}")
+    assert "A → B".encode() not in body_after
+
+
+def test_detail_page_renders_arrow_svg_and_print_button(con):
+    fid = sfa_db.create_business_flow(con, "フローA")
+    lid = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
+    pid = sfa_db.add_business_flow_process(con, fid, "受領")
+    b1 = sfa_db.add_business_flow_box(con, fid, lid, pid, "A")
+    pid2 = sfa_db.add_business_flow_process(con, fid, "確認")
+    b2 = sfa_db.add_business_flow_box(con, fid, lid, pid2, "B")
+    sfa_db.add_business_flow_arrow(con, fid, b1, b2)
+
+    html = webapp.business_flow_detail_page(con, fid)
+    assert 'id="bfArrowSvg"' in html
+    assert "renderBfArrows" in html
+    assert "window.print()" in html
+    assert "bf-connect-handle" in html
+    assert f'"from": {b1}, "to": {b2}' in html or f'"from":{b1},"to":{b2}' in html.replace(" ", "")
