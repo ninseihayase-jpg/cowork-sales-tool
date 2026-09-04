@@ -2688,7 +2688,9 @@ def delivery_form(con, delivery_id: int) -> str:
         role_targets[r["role"]] = {"b": _rb, "a": _ra}
         role_rows += f"""
         <form class="roleRow" method="post" action="/delivery/{delivery_id}/role/{r['id']}/update"
-              style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;border:1px solid #eef1f6;border-radius:6px;padding:6px;margin-bottom:5px">
+              data-role-id="{r['id']}"
+              style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;border:1px solid #eef1f6;border-radius:6px;padding:6px;margin-bottom:5px;background:#fff">
+          <span class="drag-handle" draggable="true" title="ドラッグで並び替え" style="cursor:grab;color:#aab;font-size:15px;line-height:1;align-self:center">⠿</span>
           <label style="font-size:11px">役割<br><input type="text" name="role" class="rRole" value="{_esc(r['role'])}" style="width:120px"></label>
           <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" class="rTgtB" min="0" max="300" step="5" value="{_num_pct(_rb) if _rb is not None else ''}" style="width:74px"></label>
           <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" class="rTgtA" min="0" max="300" step="5" value="{_num_pct(_ra) if _ra is not None else ''}" style="width:74px"></label>
@@ -2698,7 +2700,7 @@ def delivery_form(con, delivery_id: int) -> str:
                   class="btn sec" style="font-size:11px;color:#0e7490" title="この役割のアサイン行を複製（空メンバーで追加）">複製</button>
           <button formaction="/delivery/{delivery_id}/role/{r['id']}/delete" formnovalidate
                   class="btn sec" style="font-size:11px;color:#c53030"
-                  onclick="return confirm('この役割を体制から削除しますか？（アサイン行は消えません）')">×</button>
+                  onclick="return confirm('この役割を体制から削除します。対応するアサイン行も削除されます。よろしいですか？')">×</button>
         </form>"""
     if not role_rows:
         role_rows = '<p class="muted" style="font-size:11px">体制未設定。下で役割を追加すると、その役割のアサイン行が自動生成されます。</p>'
@@ -2819,7 +2821,8 @@ def delivery_form(con, delivery_id: int) -> str:
           </div>
           <div style="flex:1;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
             <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
-            <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。</p>
+            <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。削除すると、対応するアサイン行も削除されます。
+              各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。⠿をドラッグすると並び替えられます。</p>
             <form method="post" action="/delivery/{delivery_id}/role/add"
                   style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-bottom:8px">
               <label style="font-size:11px">役割<br><input type="text" name="role" required placeholder="PM/エンジニア等" style="width:130px"></label>
@@ -2827,7 +2830,7 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="100" style="width:76px"></label>
               <button class="btn sec" style="font-size:12px">＋役割追加（アサイン行も生成）</button>
             </form>
-            <div style="overflow:auto">{role_rows}</div>
+            <div id="dvRoleRows" style="overflow:auto">{role_rows}</div>
           </div>
         </div>
       </div>
@@ -3060,6 +3063,32 @@ def delivery_form(con, delivery_id: int) -> str:
         .then(function(r){{ if(st){{st.textContent=r.ok?'保存済み':'保存失敗';st.style.color=r.ok?'#059669':'#b91c1c';}} }})
         .catch(function(){{ if(st){{st.textContent='保存失敗';st.style.color='#b91c1c';}} }});
     }}
+    // 体制の役割をドラッグで並び替え（#168）。#masters_pageの.master-item並び替えと同じ方式。
+    function initRoleDrag(deliveryId){{
+      var container=document.getElementById('dvRoleRows'); if(!container) return;
+      // ドラッグの起点は⠿ハンドルのみ（行全体をdraggableにすると、役割名/目標%の
+      // 入力欄でテキスト選択できなくなるため、ハンドルだけをdraggable=trueにする）。
+      container.querySelectorAll('.roleRow').forEach(function(row){{
+        var handle=row.querySelector('.drag-handle'); if(!handle) return;
+        handle.addEventListener('dragstart',function(e){{
+          e.dataTransfer.effectAllowed='move'; container._dragging=row;
+        }});
+        row.addEventListener('dragover',function(e){{
+          e.preventDefault();
+          var dragging=container._dragging; if(!dragging||dragging===row) return;
+          var rect=row.getBoundingClientRect();
+          if(e.clientY<rect.top+rect.height/2) container.insertBefore(dragging,row);
+          else container.insertBefore(dragging,row.nextSibling);
+        }});
+        handle.addEventListener('dragend',function(){{
+          container._dragging=null;
+          var ids=Array.from(container.querySelectorAll('.roleRow')).map(function(r){{return r.dataset.roleId;}});
+          fetch('/delivery/'+deliveryId+'/roles/reorder',{{method:'POST',
+            headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+            body:'order='+ids.join(',')}});
+        }});
+      }});
+    }}
     function _heatJs(p){{ if(p<=0) return 'background:transparent;color:#cbd5e1';
       if(p<70) return 'background:#f0fdf4;color:#166534'; if(p<100) return 'background:#dcfce7;color:#166534';
       if(p<150) return 'background:#fef3c7;color:#92400e'; return 'background:#dc2626;color:#fff;font-weight:700'; }}
@@ -3166,6 +3195,7 @@ def delivery_form(con, delivery_id: int) -> str:
       document.querySelectorAll('.asgForm,.roleRow').forEach(function(form){{
         form.addEventListener('change',function(){{autoSave(form);}});
       }});
+      initRoleDrag({delivery_id});
       // 基礎情報: フォーム内の項目変更で自動保存（責任者/担当者selectはform属性経由でも拾う）
       document.addEventListener('change',function(e){{
         var el=e.target;
@@ -18211,6 +18241,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if _rid.isdigit():
                         sfa_db.delete_delivery_role(con, int(_rid))
                     self._redirect(f"/delivery/{_dvid}")
+                elif (path.startswith("/delivery/") and path.endswith("/roles/reorder")
+                      and path.split("/")[2].isdigit()):
+                    # 体制の役割をドラッグ並び替えした結果を保存する（#168、ajax専用）
+                    _dvid = int(path.split("/")[2])
+                    _order = [int(x) for x in (f.get("order") or "").split(",") if x.isdigit()]
+                    if _order:
+                        sfa_db.reorder_delivery_roles(con, _dvid, _order)
+                    self._send(b"", status=204)
                 elif (path.startswith("/delivery/") and "/assignment/" in path
                       and path.endswith("/delete") and path.split("/")[2].isdigit()):
                     _dvid = int(path.split("/")[2])

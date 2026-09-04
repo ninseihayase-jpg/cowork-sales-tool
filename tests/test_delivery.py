@@ -1173,3 +1173,176 @@ def test_deliveries_page_renders_business_type_filter_selects_and_data_attrs(con
     assert 'data-bizl1="コスト削減"' in html
     assert 'data-bizl2="コスト診断(無償)"' in html
     assert "dvBizL1F" in html and "dvBizL2F" in html  # filterDeliveries()内で参照されていること
+
+
+# ── #168: 体制の役割削除でアサインも連動削除・役割のドラッグ並び替え ──
+
+def test_delete_delivery_role_also_deletes_matching_assignments(con, acc_id):
+    """役割を体制から削除すると、同じdelivery×roleのアサイン行も削除される
+    （以前は残っていたため、体制に無い役割のアサインだけが残り整合が取れなくなっていた）。
+    削除しない別役割のアサインは残る。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="D")
+    r_lead = sfa_db.add_delivery_role(con, delivery_id=dvid, role="リード", fte_billing=100, fte_pct=100)
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="コンサルタント", fte_billing=50, fte_pct=60)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-14",
+                                   to_week="2026-11-02", fte_pct=100, fte_billing=100, role="リード")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="山端", from_week="2026-09-14",
+                                   to_week="2026-11-02", fte_pct=60, fte_billing=50, role="コンサルタント")
+    assert len(sfa_db.list_delivery_assignments(con, dvid)) == 2
+
+    sfa_db.delete_delivery_role(con, r_lead)
+
+    remaining = sfa_db.list_delivery_assignments(con, dvid)
+    assert len(remaining) == 1
+    assert remaining[0]["role"] == "コンサルタント"
+    assert [r["role"] for r in sfa_db.list_delivery_roles(con, dvid)] == ["コンサルタント"]
+
+
+def test_delete_delivery_role_clears_responsible_owner_if_referenced(con, acc_id):
+    """削除される役割のアサイン行に紐づくメンバーが責任者/担当者に指定されていた場合、
+    参照切れにならないようクリアする（既存の/assignment/delete同様のロジック、#168）。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="D")
+    r_lead = sfa_db.add_delivery_role(con, delivery_id=dvid, role="リード")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-14",
+                                   to_week="2026-11-02", fte_pct=100, role="リード")
+    sfa_db.update_delivery(con, dvid, responsible_owner="早瀬", handling_owner="早瀬")
+
+    sfa_db.delete_delivery_role(con, r_lead)
+
+    dv = sfa_db.get_delivery(con, dvid)
+    assert dv.get("responsible_owner") is None
+    assert dv.get("handling_owner") is None
+
+
+def test_delete_delivery_role_leaves_other_owner_refs_untouched(con, acc_id):
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="D")
+    r_lead = sfa_db.add_delivery_role(con, delivery_id=dvid, role="リード")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="コンサルタント")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-14",
+                                   to_week="2026-11-02", fte_pct=100, role="リード")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="山端", from_week="2026-09-14",
+                                   to_week="2026-11-02", fte_pct=60, role="コンサルタント")
+    sfa_db.update_delivery(con, dvid, responsible_owner="山端")
+
+    sfa_db.delete_delivery_role(con, r_lead)
+
+    assert sfa_db.get_delivery(con, dvid).get("responsible_owner") == "山端"
+
+
+def test_delivery_roles_ordered_by_sort_order_and_new_role_appended_last(con, acc_id):
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="D")
+    r1 = sfa_db.add_delivery_role(con, delivery_id=dvid, role="リード")
+    r2 = sfa_db.add_delivery_role(con, delivery_id=dvid, role="コンサルタント")
+    assert [r["id"] for r in sfa_db.list_delivery_roles(con, dvid)] == [r1, r2]
+
+    sfa_db.reorder_delivery_roles(con, dvid, [r2, r1])
+    assert [r["id"] for r in sfa_db.list_delivery_roles(con, dvid)] == [r2, r1]
+
+    r3 = sfa_db.add_delivery_role(con, delivery_id=dvid, role="PM")
+    assert [r["id"] for r in sfa_db.list_delivery_roles(con, dvid)] == [r2, r1, r3]
+
+
+def test_reorder_delivery_roles_ignores_ids_from_other_delivery(con, acc_id):
+    """他Deliveryの役割IDが混入しても無視する（不正操作対策）。"""
+    d1 = _deal(con, acc_id, "受注", name="D1")
+    d2 = _deal(con, acc_id, "受注", name="D2")
+    dv1 = sfa_db.create_delivery(con, deal_id=d1, title="D1")
+    dv2 = sfa_db.create_delivery(con, deal_id=d2, title="D2")
+    r1 = sfa_db.add_delivery_role(con, delivery_id=dv1, role="リード")
+    r2 = sfa_db.add_delivery_role(con, delivery_id=dv1, role="コンサルタント")
+    other = sfa_db.add_delivery_role(con, delivery_id=dv2, role="他Deliveryの役割")
+
+    sfa_db.reorder_delivery_roles(con, dv1, [r2, other, r1])
+
+    assert [r["id"] for r in sfa_db.list_delivery_roles(con, dv1)] == [r2, r1]
+    assert sfa_db.get_delivery(con, dv2) is not None  # 他Deliveryは無傷
+
+
+def test_role_delete_route_via_http_removes_matching_assignment(monkeypatch, tmp_path):
+    """/delivery/{id}/role/{rid}/delete がアサイン連動削除まで行うことをHTTP経由でも確認する。"""
+    import base64
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    db_path = str(tmp_path / "srv.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con2, name="テスト社")
+    did = sfa_db.upsert_deal(con2, account_id=aid, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con2, deal_id=did, title="D")
+    rid = sfa_db.add_delivery_role(con2, delivery_id=dvid, role="リード")
+    sfa_db.add_delivery_assignment(con2, delivery_id=dvid, owner="早瀬", from_week="2026-09-14",
+                                   to_week="2026-11-02", fte_pct=100, role="リード")
+    con2.close()
+
+    user, pw = "u", "p"
+    monkeypatch.setattr(webapp, "SFA_BASIC_USER", user)
+    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", pw)
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        token = base64.b64encode(f"{user}:{pw}".encode()).decode()
+        headers = {"Authorization": f"Basic {token}"}
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/delivery/{dvid}/role/{rid}/delete",
+            data=b"", headers=headers, method="POST")
+        urllib.request.urlopen(req, timeout=10)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+    con3 = sfa_db.connect(db_path)
+    assert sfa_db.list_delivery_assignments(con3, dvid) == []
+    assert sfa_db.list_delivery_roles(con3, dvid) == []
+
+
+def test_roles_reorder_route_via_http(monkeypatch, tmp_path):
+    import base64
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    db_path = str(tmp_path / "srv2.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con2, name="テスト社")
+    did = sfa_db.upsert_deal(con2, account_id=aid, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con2, deal_id=did, title="D")
+    r1 = sfa_db.add_delivery_role(con2, delivery_id=dvid, role="リード")
+    r2 = sfa_db.add_delivery_role(con2, delivery_id=dvid, role="コンサルタント")
+    con2.close()
+
+    user, pw = "u", "p"
+    monkeypatch.setattr(webapp, "SFA_BASIC_USER", user)
+    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", pw)
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        token = base64.b64encode(f"{user}:{pw}".encode()).decode()
+        headers = {"Authorization": f"Basic {token}",
+                  "Content-Type": "application/x-www-form-urlencoded"}
+        body = f"order={r2},{r1}".encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/delivery/{dvid}/roles/reorder",
+            data=body, headers=headers, method="POST")
+        resp = urllib.request.urlopen(req, timeout=10)
+        assert resp.getcode() == 204
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+    con3 = sfa_db.connect(db_path)
+    assert [r["id"] for r in sfa_db.list_delivery_roles(con3, dvid)] == [r2, r1]

@@ -1045,6 +1045,7 @@ CREATE TABLE IF NOT EXISTS delivery_roles (
     role         TEXT NOT NULL,            -- 役割（自由入力）
     fte_billing  REAL,                     -- 目標 稼働率(請求)%
     fte_pct      REAL,                     -- 目標 稼働率(実想定)%
+    sort_order   INTEGER NOT NULL DEFAULT 0, -- 表示順（ドラッグ並び替え、#168）
     created_at   TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
 );
@@ -1572,6 +1573,14 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE deliveries ADD COLUMN performance_fee TEXT")
         if _dv_cols and "performance_fee_ratio" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN performance_fee_ratio REAL")
+        # 体制(delivery_roles)の役割ドラッグ並び替え用の表示順（#168、2026-09-04）。
+        # 既存行は現状の並び(id順)をそのままsort_orderの初期値にする。
+        _dr_cols = {r[1] for r in con.execute("PRAGMA table_info(delivery_roles)")}
+        if _dr_cols and "sort_order" not in _dr_cols:
+            con.execute("ALTER TABLE delivery_roles ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+            for _i, _r in enumerate(con.execute(
+                    "SELECT id FROM delivery_roles ORDER BY id").fetchall()):
+                con.execute("UPDATE delivery_roles SET sort_order=? WHERE id=?", (_i, _r[0]))
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
@@ -5378,16 +5387,19 @@ def delivery_grid(con, delivery_id: int) -> dict:
 
 def list_delivery_roles(con, delivery_id: int) -> list[dict]:
     return [dict(r) for r in con.execute(
-        "SELECT * FROM delivery_roles WHERE delivery_id=? ORDER BY id", (int(delivery_id),))]
+        "SELECT * FROM delivery_roles WHERE delivery_id=? ORDER BY sort_order, id", (int(delivery_id),))]
 
 
 def add_delivery_role(con, *, delivery_id: int, role: str, fte_billing: float | None = None,
                       fte_pct: float | None = None) -> int:
+    next_order = (con.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM delivery_roles WHERE delivery_id=?",
+        (int(delivery_id),)).fetchone()[0])
     cur = con.execute(
-        "INSERT INTO delivery_roles (delivery_id, role, fte_billing, fte_pct) VALUES (?,?,?,?)",
+        "INSERT INTO delivery_roles (delivery_id, role, fte_billing, fte_pct, sort_order) VALUES (?,?,?,?,?)",
         (int(delivery_id), role,
          (float(fte_billing) if fte_billing is not None else None),
-         (float(fte_pct) if fte_pct is not None else None)))
+         (float(fte_pct) if fte_pct is not None else None), next_order))
     con.commit()
     return cur.lastrowid
 
@@ -5401,7 +5413,38 @@ def update_delivery_role(con, role_id: int, *, role: str, fte_billing: float | N
     con.commit()
 
 
+def reorder_delivery_roles(con, delivery_id: int, ordered_role_ids: list[int]) -> None:
+    """体制の役割の表示順をドラッグ結果通りに更新する（#168）。渡されたID列の並び=新しいsort_order。
+    このDeliveryに属さないIDは無視する（不正操作対策）。"""
+    valid_ids = {r["id"] for r in list_delivery_roles(con, delivery_id)}
+    for i, rid in enumerate(ordered_role_ids):
+        if rid in valid_ids:
+            con.execute("UPDATE delivery_roles SET sort_order=? WHERE id=?", (i, rid))
+    con.commit()
+
+
 def delete_delivery_role(con, role_id: int) -> None:
+    """役割を体制から削除する。対応するアサイン行（同じdelivery_id×role名）も連動削除し、
+    削除した行のメンバーが責任者/担当者に指定されていた場合はクリアする（#168）。
+    以前はアサイン行を残していたが、体制に無い役割のアサインだけが残り、目標/実績の
+    整合チェックが取れなくなる不具合があった（役割追加時にアサイン行が自動生成される
+    仕様との対称性のため、削除時も連動させる）。"""
+    row = con.execute("SELECT delivery_id, role FROM delivery_roles WHERE id=?", (int(role_id),)).fetchone()
+    if row:
+        dvid, role_name = row["delivery_id"], row["role"]
+        deleted_owners = {r["owner"] for r in con.execute(
+            "SELECT owner FROM delivery_assignments WHERE delivery_id=? AND role=?",
+            (dvid, role_name)) if r["owner"]}
+        con.execute("DELETE FROM delivery_assignments WHERE delivery_id=? AND role=?", (dvid, role_name))
+        if deleted_owners:
+            dv = get_delivery(con, dvid) or {}
+            clear = {}
+            if dv.get("responsible_owner") in deleted_owners:
+                clear["responsible_owner"] = None
+            if dv.get("handling_owner") in deleted_owners:
+                clear["handling_owner"] = None
+            if clear:
+                update_delivery(con, dvid, **clear)
     con.execute("DELETE FROM delivery_roles WHERE id=?", (int(role_id),))
     con.commit()
 
