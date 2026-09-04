@@ -758,6 +758,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
   <a href="/deal-issues" style="opacity:.85;font-size:13px">論点</a>
   <a href="/docs" style="opacity:.85;font-size:13px">📄 資料庫</a>
+  <a href="/business-flows" style="opacity:.85;font-size:13px">🔀 業務フロー</a>
   <span class="nav-sep"></span>
   <!-- クライアント管理: リード・アカウント -->
   <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
@@ -2142,6 +2143,180 @@ def build_dev_requirements_xlsx(con) -> bytes:
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+# ── 業務フロー作成機能（#164、フェーズ1: DBスキーマ＋一覧＋静的グリッド表示） ──────
+def _business_flow_suggest_category(name: str, description: str) -> str:
+    """新規フロー作成時、名前・説明からHaikuで分類（例:「経理業務」）を1つだけ提案する。
+    人間が詳細画面でいつでも修正できるため、提案を鵜呑みにする設計で問題ない。
+    APIキー未設定・失敗時は空文字（未分類のまま作成）。"""
+    prompt = (
+        "次の社内業務フローの名前・説明から、分類名を1つだけ日本語の短い名詞句（例: 経理業務、"
+        "契約業務、人事業務）で出力してください。説明文や記号は不要、分類名のみを出力してください。\n\n"
+        f"フロー名: {name}\n説明: {description or '(なし)'}"
+    )
+    out = _call_claude_haiku(prompt, timeout=15, max_wait=18, max_tokens=30)
+    return out.strip().splitlines()[0].strip() if out.strip() else ""
+
+
+def business_flows_page(con) -> str:
+    """業務フロー一覧（#164）。分類(category)別にグルーピング表示。"""
+    flows = sfa_db.list_business_flows(con)
+    groups: dict = {}
+    for fl in flows:
+        groups.setdefault(fl.get("category") or "未分類", []).append(fl)
+    order = sorted(k for k in groups if k != "未分類")
+    if "未分類" in groups:
+        order.append("未分類")
+
+    def _flow_row(fl):
+        return (
+            f'<tr><td><a href="/business-flow/{fl["id"]}">{_esc(fl["name"])}</a></td>'
+            f'<td class="muted">{_esc(fl.get("description") or "")}</td>'
+            f'<td>{fl["lane_count"]}</td><td>{fl["process_count"]}</td>'
+            f'<td class="muted" style="font-size:12px">{_esc((fl.get("updated_at") or "")[:16])}</td>'
+            f'<td><form method="post" action="/business-flow/{fl["id"]}/delete" style="display:inline" '
+            f'onsubmit="return confirm(\'このフロー図を削除します。よろしいですか？\')">'
+            f'<button type="submit" class="btn sec" style="color:#c53030;font-size:12px">削除</button></form></td></tr>'
+        )
+
+    sections = "".join(f"""
+        <div class="card" style="margin-bottom:16px">
+          <h3 style="margin:0 0 10px">{_esc(cat)}</h3>
+          <table><tr><th>フロー名</th><th>説明</th><th>レーン数</th><th>プロセス数</th><th>更新</th><th></th></tr>
+          {"".join(_flow_row(fl) for fl in groups[cat])}</table>
+        </div>""" for cat in order)
+    if not flows:
+        sections = '<div class="card"><p class="muted">まだ業務フロー図がありません。</p></div>'
+
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 8px">🔀 業務フロー一覧</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 12px">部署/担当者レーン×プロセスのスイムレーン図で、
+        請求書処理等の社内業務フローを管理します。</p>
+      <form method="post" action="/business-flows/new"
+            style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px">
+        <label style="font-size:12px">フロー名＊<br><input type="text" name="name" required
+               placeholder="請求書処理フロー" style="width:220px"></label>
+        <label style="font-size:12px;flex:1;min-width:200px">説明<br>
+               <input type="text" name="description" placeholder="任意" style="width:100%"></label>
+        <button class="btn" type="submit" style="font-size:12px">＋ 新規フロー作成</button>
+      </form>
+      <p class="muted" style="font-size:11px;margin:6px 0 0">分類はHaikuが名前・説明から自動提案します
+        （作成後、詳細画面でいつでも修正できます）。</p>
+    </div>
+    {sections}"""
+
+
+def business_flow_detail_page(con, flow_id: int) -> str:
+    """業務フロー編集画面（フェーズ1: 手動追加のみ・静的グリッド表示。ドラッグ移動・矢印はフェーズ2/3）。"""
+    flow = sfa_db.get_business_flow(con, flow_id)
+    if not flow:
+        return '<div class="card">業務フロー図が見つかりません。<a href="/business-flows">← 一覧へ</a></div>'
+    lanes = sfa_db.list_business_flow_lanes(con, flow_id)
+    processes = sfa_db.list_business_flow_processes(con, flow_id)
+    boxes = sfa_db.list_business_flow_boxes(con, flow_id)
+    box_by_cell: dict = {}
+    for b in boxes:
+        box_by_cell.setdefault((b["lane_id"], b["process_id"]), []).append(b)
+
+    def _box_html(b):
+        return (
+            f'<div style="background:#fff;border:1px solid #d8dee8;border-radius:6px;'
+            f'padding:5px 7px;margin-bottom:4px;font-size:12px;display:flex;'
+            f'align-items:center;justify-content:space-between;gap:6px">'
+            f'<span>{_esc(b["label"])}</span>'
+            f'<form method="post" action="/business-flow-box/{b["id"]}/delete" style="margin:0" '
+            f'onsubmit="return confirm(\'このボックスを削除しますか？\')">'
+            f'<button type="submit" class="btn sec" style="font-size:10px;padding:1px 5px">×</button></form></div>'
+        )
+
+    def _add_box_form(lane_id, process_id):
+        return (
+            f'<form method="post" action="/business-flow/{flow_id}/box" style="display:flex;gap:3px">'
+            f'<input type="hidden" name="lane_id" value="{lane_id}">'
+            f'<input type="hidden" name="process_id" value="{process_id}">'
+            f'<input type="text" name="label" placeholder="＋タスク" required '
+            f'style="font-size:11px;padding:2px 4px;width:100%">'
+            f'<button type="submit" class="btn sec" style="font-size:11px;padding:1px 6px">追加</button></form>'
+        )
+
+    head_cells = "".join(
+        f'<th style="min-width:150px">'
+        f'<div style="display:flex;align-items:center;justify-content:space-between;gap:4px">'
+        f'<span>{_esc(p["name"])}</span>'
+        f'<form method="post" action="/business-flow-process/{p["id"]}/delete" style="margin:0" '
+        f'onsubmit="return confirm(\'このプロセス列を削除します（列内のボックスも削除されます）。よろしいですか？\')">'
+        f'<button type="submit" class="btn sec" style="font-size:10px;padding:1px 5px">×</button></form></div></th>'
+        for p in processes
+    )
+    body_rows = ""
+    for lane in lanes:
+        cells = "".join(
+            f'<td style="vertical-align:top;background:#fafbfc;border:1px solid #e6e9f0;padding:6px">'
+            f'{"".join(_box_html(b) for b in box_by_cell.get((lane["id"], p["id"]), []))}'
+            f'{_add_box_form(lane["id"], p["id"])}</td>'
+            for p in processes
+        )
+        body_rows += (
+            f'<tr><th style="text-align:left;vertical-align:top;white-space:nowrap">'
+            f'<div style="display:flex;align-items:center;justify-content:space-between;gap:4px">'
+            f'<span>{_esc(lane["name"])}</span>'
+            f'<form method="post" action="/business-flow-lane/{lane["id"]}/delete" style="margin:0" '
+            f'onsubmit="return confirm(\'このレーンを削除します（レーン内のボックスも削除されます）。よろしいですか？\')">'
+            f'<button type="submit" class="btn sec" style="font-size:10px;padding:1px 5px">×</button></form></div>'
+            f'</th>{cells}</tr>'
+        )
+
+    grid = "まだレーン・プロセスがありません。下のフォームから追加してください。"
+    if lanes or processes:
+        # レーンのみ/プロセスのみの状態でも、追加済みのものが見える・削除できるように
+        # 常に表(ヘッダー行+レーン行)を描く（片方が0件でもヘッダーだけ/行だけの表になる）。
+        grid = (f'<div style="overflow-x:auto"><table style="border-collapse:collapse">'
+                f'<tr><th></th>{head_cells}</tr>{body_rows}</table></div>')
+        if not processes:
+            grid += '<p class="muted" style="font-size:12px;margin-top:8px">プロセス（工程）を追加すると、ボックスを配置できるようになります。</p>'
+        elif not lanes:
+            grid += '<p class="muted" style="font-size:12px;margin-top:8px">レーン（部署/担当者）を追加すると、ボックスを配置できるようになります。</p>'
+
+    return f"""
+    <div class="card">
+      <p style="margin:0 0 10px"><a href="/business-flows">← 業務フロー一覧へ</a></p>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <h2 style="margin:0">{_esc(flow["name"])}</h2>
+        <form method="post" action="/business-flow/{flow_id}/delete"
+              onsubmit="return confirm(\'このフロー図全体を削除します。よろしいですか？\')">
+          <button type="submit" class="btn sec" style="color:#c53030;font-size:12px">フロー図を削除</button>
+        </form>
+      </div>
+      <form method="post" action="/business-flow/{flow_id}/update"
+            style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
+        <label style="font-size:12px">フロー名＊<br><input type="text" name="name" required
+               value="{_esc(flow["name"])}" style="width:220px"></label>
+        <label style="font-size:12px;flex:1;min-width:200px">説明<br>
+               <input type="text" name="description" value="{_esc(flow.get("description") or "")}"
+                      style="width:100%"></label>
+        <label style="font-size:12px">分類<br><input type="text" name="category"
+               value="{_esc(flow.get("category") or "")}" placeholder="経理業務" style="width:150px"></label>
+        <button type="submit" class="btn sec" style="font-size:12px">保存</button>
+      </form>
+    </div>
+    <div class="card">
+      <h3 style="margin:0 0 10px">フロー図（手動追加・静的表示。ドラッグ移動・矢印接続は今後追加予定）</h3>
+      {grid}
+      <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid #e6e9f0">
+        <form method="post" action="/business-flow/{flow_id}/lane" style="display:flex;gap:6px;align-items:flex-end">
+          <label style="font-size:12px">＋レーン追加（部署/担当者）<br>
+                 <input type="text" name="name" required placeholder="経理/磯部" style="width:180px"></label>
+          <button type="submit" class="btn sec" style="font-size:12px">追加</button>
+        </form>
+        <form method="post" action="/business-flow/{flow_id}/process" style="display:flex;gap:6px;align-items:flex-end">
+          <label style="font-size:12px">＋プロセス追加（工程）<br>
+                 <input type="text" name="name" required placeholder="請求書受領" style="width:180px"></label>
+          <button type="submit" class="btn sec" style="font-size:12px">追加</button>
+        </form>
+      </div>
+    </div>"""
 
 
 def build_deals_full_xlsx(con) -> bytes:
@@ -16760,6 +16935,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(doc_view_page(con, _doc), ctype="text/html; charset=utf-8")
                     else:
                         self._send(render("<div class=card>資料が見つかりません</div>"), 404)
+                elif path == "/business-flows":
+                    self._send(render(business_flows_page(con)))
+                elif path.startswith("/business-flow/") and path[len("/business-flow/"):].isdigit():
+                    self._send(render(business_flow_detail_page(
+                        con, int(path[len("/business-flow/"):]))))
                 elif path == "/reports":
                     self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":
@@ -18965,6 +19145,106 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         return
                     sfa_db.delete_doc(con, did)
                     self._redirect("/docs")
+
+                elif path == "/business-flows/new":
+                    _name = (f.get("name") or "").strip()
+                    _desc = (f.get("description") or "").strip()
+                    if not _name:
+                        self._redirect("/business-flows")
+                        return
+                    _cat = _business_flow_suggest_category(_name, _desc)
+                    _fid = sfa_db.create_business_flow(con, _name, _desc, _cat or None)
+                    self._redirect(f"/business-flow/{_fid}")
+
+                elif path.startswith("/business-flow/") and path.endswith("/update"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _name = (f.get("name") or "").strip()
+                    if _name:
+                        sfa_db.set_business_flow_field(con, _fid, "name", _name)
+                    sfa_db.set_business_flow_field(con, _fid, "description", (f.get("description") or "").strip())
+                    sfa_db.set_business_flow_field(con, _fid, "category", (f.get("category") or "").strip() or None)
+                    self._redirect(f"/business-flow/{_fid}")
+
+                elif path.startswith("/business-flow/") and path.endswith("/delete"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    sfa_db.delete_business_flow(con, _fid)
+                    self._redirect("/business-flows")
+
+                elif path.startswith("/business-flow/") and path.endswith("/lane"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _name = (f.get("name") or "").strip()
+                    if _name:
+                        sfa_db.add_business_flow_lane(con, _fid, _name)
+                    self._redirect(f"/business-flow/{_fid}")
+
+                elif path.startswith("/business-flow/") and path.endswith("/process"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _name = (f.get("name") or "").strip()
+                    if _name:
+                        sfa_db.add_business_flow_process(con, _fid, _name)
+                    self._redirect(f"/business-flow/{_fid}")
+
+                elif path.startswith("/business-flow/") and path.endswith("/box"):
+                    try:
+                        _fid = int(path.split("/")[2])
+                        _lane_id = int(f.get("lane_id", ""))
+                        _process_id = int(f.get("process_id", ""))
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _label = (f.get("label") or "").strip()
+                    if _label:
+                        sfa_db.add_business_flow_box(con, _fid, _lane_id, _process_id, _label)
+                    self._redirect(f"/business-flow/{_fid}")
+
+                elif path.startswith("/business-flow-lane/") and path.endswith("/delete"):
+                    try:
+                        _lid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _lane = con.execute(
+                        "SELECT flow_id FROM business_flow_lanes WHERE id=?", (_lid,)).fetchone()
+                    sfa_db.delete_business_flow_lane(con, _lid)
+                    self._redirect(f"/business-flow/{_lane['flow_id']}" if _lane else "/business-flows")
+
+                elif path.startswith("/business-flow-process/") and path.endswith("/delete"):
+                    try:
+                        _pid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _proc = con.execute(
+                        "SELECT flow_id FROM business_flow_processes WHERE id=?", (_pid,)).fetchone()
+                    sfa_db.delete_business_flow_process(con, _pid)
+                    self._redirect(f"/business-flow/{_proc['flow_id']}" if _proc else "/business-flows")
+
+                elif path.startswith("/business-flow-box/") and path.endswith("/delete"):
+                    try:
+                        _bid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        self._redirect("/business-flows")
+                        return
+                    _box = con.execute(
+                        "SELECT flow_id FROM business_flow_boxes WHERE id=?", (_bid,)).fetchone()
+                    sfa_db.delete_business_flow_box(con, _bid)
+                    self._redirect(f"/business-flow/{_box['flow_id']}" if _box else "/business-flows")
 
                 elif path.startswith("/deal-issue/") and path.endswith("/field"):
                     _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "responsible", "due_date",

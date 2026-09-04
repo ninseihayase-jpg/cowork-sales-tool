@@ -1166,6 +1166,53 @@ CREATE TABLE IF NOT EXISTS dev_requirements (
     UNIQUE(link_type, link_id)
 );
 CREATE INDEX IF NOT EXISTS idx_dev_requirements_link ON dev_requirements(link_type, link_id);
+
+-- 業務フロー作成機能（#164、2026-09-04設計確定）。レーン(縦)×プロセス(横)の論理グリッドに
+-- タスクボックスを配置し、ボックス間を矢印でつなぐスイムレーン図。ボックス位置は
+-- 生のピクセル座標でなく(lane_id, process_id)の論理座標のみで持つ（自由配置は許さず、
+-- 見た目のグリッド整列を自動的に担保する設計、ユーザー確定）。矢印はレーン・プロセス列を
+-- またいでも自由に引ける（時系列を無視した逆行も許容、ユーザー確定）。1セルに複数ボックスを
+-- 許容する（stack_orderで並び順管理）。tasks/deal_issues等の既存機能とは連携せず完全独立。
+CREATE TABLE IF NOT EXISTS business_flows (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    description TEXT,
+    category    TEXT,              -- 「契約業務」等の分類（新規作成時にHaikuが提案→人間が確定/修正）
+    created_at  TEXT DEFAULT (datetime('now')),
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS business_flow_lanes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id     INTEGER NOT NULL REFERENCES business_flows(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS business_flow_processes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id     INTEGER NOT NULL REFERENCES business_flows(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS business_flow_boxes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id       INTEGER NOT NULL REFERENCES business_flows(id) ON DELETE CASCADE,
+    lane_id       INTEGER NOT NULL REFERENCES business_flow_lanes(id) ON DELETE CASCADE,
+    process_id    INTEGER NOT NULL REFERENCES business_flow_processes(id) ON DELETE CASCADE,
+    label         TEXT NOT NULL,
+    stack_order   INTEGER NOT NULL DEFAULT 0,
+    note          TEXT
+);
+CREATE TABLE IF NOT EXISTS business_flow_arrows (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id      INTEGER NOT NULL REFERENCES business_flows(id) ON DELETE CASCADE,
+    from_box_id  INTEGER NOT NULL REFERENCES business_flow_boxes(id) ON DELETE CASCADE,
+    to_box_id    INTEGER NOT NULL REFERENCES business_flow_boxes(id) ON DELETE CASCADE,
+    label        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_business_flow_lanes_flow ON business_flow_lanes(flow_id);
+CREATE INDEX IF NOT EXISTS idx_business_flow_processes_flow ON business_flow_processes(flow_id);
+CREATE INDEX IF NOT EXISTS idx_business_flow_boxes_flow ON business_flow_boxes(flow_id);
+CREATE INDEX IF NOT EXISTS idx_business_flow_arrows_flow ON business_flow_arrows(flow_id);
 """
 
 
@@ -5750,4 +5797,148 @@ def upsert_weekly_report(con, slug: str, report_date: str, title: str,
 
 def delete_weekly_report(con, slug: str) -> None:
     con.execute("DELETE FROM weekly_reports WHERE slug=?", (slug,))
+    con.commit()
+
+
+# ── 業務フロー作成機能（#164、2026-09-04） ───────────────────────────────────
+def create_business_flow(con, name: str, description: str = "", category: str | None = None) -> int:
+    cur = con.execute(
+        "INSERT INTO business_flows (name, description, category) VALUES (?,?,?)",
+        (name, description or "", category or None),
+    )
+    con.commit()
+    return cur.lastrowid
+
+
+def list_business_flows(con) -> list[dict]:
+    """フロー一覧。レーン数・プロセス数を併せて返す（一覧ページの表示用）。"""
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM business_flows ORDER BY category IS NULL, category, updated_at DESC")]
+    for r in rows:
+        r["lane_count"] = con.execute(
+            "SELECT COUNT(*) FROM business_flow_lanes WHERE flow_id=?", (r["id"],)).fetchone()[0]
+        r["process_count"] = con.execute(
+            "SELECT COUNT(*) FROM business_flow_processes WHERE flow_id=?", (r["id"],)).fetchone()[0]
+    return rows
+
+
+def get_business_flow(con, flow_id: int) -> dict | None:
+    row = con.execute("SELECT * FROM business_flows WHERE id=?", (flow_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_business_flow_field(con, flow_id: int, field: str, value) -> None:
+    if field not in ("name", "description", "category"):
+        raise ValueError(f"invalid field: {field}")
+    con.execute(f"UPDATE business_flows SET {field}=?, updated_at=datetime('now') WHERE id=?",
+                (value, flow_id))
+    con.commit()
+
+
+def delete_business_flow(con, flow_id: int) -> None:
+    con.execute("DELETE FROM business_flows WHERE id=?", (flow_id,))
+    con.commit()
+
+
+def add_business_flow_lane(con, flow_id: int, name: str) -> int:
+    next_order = (con.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM business_flow_lanes WHERE flow_id=?",
+        (flow_id,)).fetchone()[0])
+    cur = con.execute(
+        "INSERT INTO business_flow_lanes (flow_id, name, sort_order) VALUES (?,?,?)",
+        (flow_id, name, next_order))
+    con.commit()
+    return cur.lastrowid
+
+
+def list_business_flow_lanes(con, flow_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM business_flow_lanes WHERE flow_id=? ORDER BY sort_order", (flow_id,))]
+
+
+def update_business_flow_lane(con, lane_id: int, name: str) -> None:
+    con.execute("UPDATE business_flow_lanes SET name=? WHERE id=?", (name, lane_id))
+    con.commit()
+
+
+def delete_business_flow_lane(con, lane_id: int) -> None:
+    con.execute("DELETE FROM business_flow_lanes WHERE id=?", (lane_id,))
+    con.commit()
+
+
+def add_business_flow_process(con, flow_id: int, name: str) -> int:
+    next_order = (con.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM business_flow_processes WHERE flow_id=?",
+        (flow_id,)).fetchone()[0])
+    cur = con.execute(
+        "INSERT INTO business_flow_processes (flow_id, name, sort_order) VALUES (?,?,?)",
+        (flow_id, name, next_order))
+    con.commit()
+    return cur.lastrowid
+
+
+def list_business_flow_processes(con, flow_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM business_flow_processes WHERE flow_id=? ORDER BY sort_order", (flow_id,))]
+
+
+def update_business_flow_process(con, process_id: int, name: str) -> None:
+    con.execute("UPDATE business_flow_processes SET name=? WHERE id=?", (name, process_id))
+    con.commit()
+
+
+def delete_business_flow_process(con, process_id: int) -> None:
+    con.execute("DELETE FROM business_flow_processes WHERE id=?", (process_id,))
+    con.commit()
+
+
+def add_business_flow_box(con, flow_id: int, lane_id: int, process_id: int,
+                          label: str, note: str = "") -> int:
+    next_order = (con.execute(
+        "SELECT COALESCE(MAX(stack_order), -1) + 1 FROM business_flow_boxes "
+        "WHERE lane_id=? AND process_id=?", (lane_id, process_id)).fetchone()[0])
+    cur = con.execute(
+        "INSERT INTO business_flow_boxes (flow_id, lane_id, process_id, label, stack_order, note) "
+        "VALUES (?,?,?,?,?,?)",
+        (flow_id, lane_id, process_id, label, next_order, note or ""))
+    con.commit()
+    return cur.lastrowid
+
+
+def list_business_flow_boxes(con, flow_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM business_flow_boxes WHERE flow_id=? ORDER BY lane_id, process_id, stack_order",
+        (flow_id,))]
+
+
+def update_business_flow_box(con, box_id: int, *, label: str | None = None,
+                             note: str | None = None) -> None:
+    if label is not None:
+        con.execute("UPDATE business_flow_boxes SET label=? WHERE id=?", (label, box_id))
+    if note is not None:
+        con.execute("UPDATE business_flow_boxes SET note=? WHERE id=?", (note, box_id))
+    con.commit()
+
+
+def delete_business_flow_box(con, box_id: int) -> None:
+    con.execute("DELETE FROM business_flow_boxes WHERE id=?", (box_id,))
+    con.commit()
+
+
+def add_business_flow_arrow(con, flow_id: int, from_box_id: int, to_box_id: int,
+                            label: str = "") -> int:
+    cur = con.execute(
+        "INSERT INTO business_flow_arrows (flow_id, from_box_id, to_box_id, label) VALUES (?,?,?,?)",
+        (flow_id, from_box_id, to_box_id, label or ""))
+    con.commit()
+    return cur.lastrowid
+
+
+def list_business_flow_arrows(con, flow_id: int) -> list[dict]:
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM business_flow_arrows WHERE flow_id=?", (flow_id,))]
+
+
+def delete_business_flow_arrow(con, arrow_id: int) -> None:
+    con.execute("DELETE FROM business_flow_arrows WHERE id=?", (arrow_id,))
     con.commit()
