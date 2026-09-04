@@ -5032,6 +5032,7 @@ def list_dev_requirements(con) -> list[dict]:
         "SELECT * FROM dev_requirements ORDER BY id DESC")]
     out = []
     for r in rows:
+        deal_id = None
         if r["link_type"] == "deal":
             d = get_deal(con, r["link_id"])
             if not d:
@@ -5040,6 +5041,7 @@ def list_dev_requirements(con) -> list[dict]:
             r["project_name"] = d.get("deal_name")
             r["stage"] = d.get("stage")
             r["owner"] = d.get("owner")
+            deal_id = r["link_id"]
         elif r["link_type"] == "delivery":
             dv = get_delivery(con, r["link_id"])
             if not dv:
@@ -5053,8 +5055,17 @@ def list_dev_requirements(con) -> list[dict]:
             # start_date/end_dateへ手入力していれば、その値を優先＝手修正が常に勝つ）。
             r["start_date"] = r.get("start_date") or dv.get("start_week")
             r["end_date"] = r.get("end_date") or dv.get("end_week")
+            deal_id = dv.get("deal_id")
         else:
             continue
+        # #165追補（2026-09-04・ユーザー要望）: デモリンクは、その商談に紐づく開発案件
+        # （dev_projects）の「制作したツールのリンク」があれば自動反映する（複数あれば
+        # 最初の1件。人間が明示的にdemo_linkへ手入力していれば、その値を優先）。
+        if not r.get("demo_link") and deal_id:
+            for _dp in list_dev_projects(con, deal_id=deal_id):
+                if _dp.get("tool_url"):
+                    r["demo_link"] = _dp["tool_url"]
+                    break
         out.append(r)
     return out
 

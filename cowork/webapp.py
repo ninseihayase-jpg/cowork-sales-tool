@@ -2092,6 +2092,14 @@ DEV_REQ_XLSX_DASH_KEYS = [
     "integration_note", "confidentiality", "budget", "contract_type", "demo_link",
     "memo", "dev_status",
 ]
+# 列幅（Excel列幅単位。ユーザー確認済みの見やすい比率、2026-09-04）。
+DEV_REQ_XLSX_COLUMN_WIDTHS = {
+    "id": 6, "dev_involved": 10, "link_type_label": 10, "account_name": 18,
+    "project_name": 40, "stage": 12, "owner": 10, "start_date": 13, "end_date": 13,
+    "release_target": 13, "overview": 45, "scale": 16, "tech_seeds": 16,
+    "integration_note": 18, "confidentiality": 12, "budget": 12, "contract_type": 12,
+    "demo_link": 20, "memo": 30, "dev_status": 14, "created_at": 16, "updated_at": 16,
+}
 
 
 def build_dev_requirements_xlsx(con) -> bytes:
@@ -2111,6 +2119,10 @@ def build_dev_requirements_xlsx(con) -> bytes:
     hdr = [label for _, label in DEV_REQ_XLSX_COLUMNS]
     for c, h in enumerate(hdr, 1):
         ws.cell(row=1, column=c, value=h).font = _font_bold
+    for c, (key, _label) in enumerate(DEV_REQ_XLSX_COLUMNS, 1):
+        w = DEV_REQ_XLSX_COLUMN_WIDTHS.get(key)
+        if w:
+            ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = w
 
     for r, row in enumerate(rows, 2):
         row = dict(row)

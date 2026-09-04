@@ -175,6 +175,41 @@ def test_list_dev_requirements_delivery_row_manual_override_wins(con):
     assert row["end_date"] == "2026-10-05"  # 上書きしていない方はDelivery側の値のまま
 
 
+def test_list_dev_requirements_pulls_demo_link_from_dev_project(con):
+    """#165追補(2026-09-04ユーザー要望): デモリンクは、その商談に紐づく開発案件の
+    「制作したツールのリンク」があれば自動反映する（商談起点・Delivery起点の両方）。"""
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="受注", status="open")
+    sfa_db.upsert_dev_project(con, deal_id=did, theme="デモ", status="開発中", stage="プロト",
+                              tool_url="https://example.com/demo")
+    sfa_db.ensure_dev_requirement_for_deal(con, did, "受注")
+    dv_id = sfa_db.create_delivery(con, deal_id=did, title="DeliveryX")
+
+    rows = sfa_db.list_dev_requirements(con)
+    assert {r.get("demo_link") for r in rows} == {"https://example.com/demo"}
+
+
+def test_list_dev_requirements_demo_link_manual_override_wins(con):
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="受注", status="open")
+    sfa_db.upsert_dev_project(con, deal_id=did, theme="デモ", status="開発中", stage="プロト",
+                              tool_url="https://example.com/demo")
+    rid = sfa_db.ensure_dev_requirement_for_deal(con, did, "受注")
+    sfa_db.set_dev_requirement_field(con, rid, "demo_link", "https://example.com/manual")
+
+    row = sfa_db.get_dev_requirement(con, rid)
+    rows = sfa_db.list_dev_requirements(con)
+    assert next(r for r in rows if r["id"] == rid)["demo_link"] == "https://example.com/manual"
+
+
+def test_list_dev_requirements_demo_link_blank_when_no_dev_project(con):
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="受注", status="open")
+    sfa_db.ensure_dev_requirement_for_deal(con, did, "受注")
+    rows = sfa_db.list_dev_requirements(con)
+    assert rows[0].get("demo_link") is None
+
+
 def test_list_dev_requirements_excludes_rows_with_deleted_link_target(con):
     """紐づけ先の商談が削除されると、開発要件一覧からも除外される（参照切れガード）。"""
     acc = sfa_db.upsert_account(con, name="A社")
@@ -221,6 +256,26 @@ def test_build_dev_requirements_xlsx_masks_fields_when_no_dev(con):
     assert by_project["案件Y"][overview_idx] == "-"
     # 識別情報は「開発有無=無」でもマスクされない
     assert by_project["案件Y"][account_idx] == "A社"
+
+
+def test_build_dev_requirements_xlsx_sets_column_widths(con):
+    import io
+    import openpyxl
+
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件X", stage="提案", status="open")
+    sfa_db.ensure_dev_requirement_for_deal(con, did, "提案")
+
+    xls = webapp.build_dev_requirements_xlsx(con)
+    wb = openpyxl.load_workbook(io.BytesIO(xls))
+    ws = wb.active
+
+    for c, (key, _label) in enumerate(webapp.DEV_REQ_XLSX_COLUMNS, 1):
+        expected = webapp.DEV_REQ_XLSX_COLUMN_WIDTHS.get(key)
+        if expected is None:
+            continue
+        letter = openpyxl.utils.get_column_letter(c)
+        assert ws.column_dimensions[letter].width == expected, key
 
 
 def test_dev_requirements_export_route(server):
