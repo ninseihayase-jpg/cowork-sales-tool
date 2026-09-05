@@ -150,7 +150,7 @@ def test_reset_token_expired_is_rejected(con, issue_id, monkeypatch):
 def test_detail_page_shows_lock_button_when_unlocked(con, issue_id):
     html = webapp.deal_issue_detail_page(con, sfa_db.get_deal_issue(con, issue_id))
     assert "🔒 鍵をかける" in html
-    assert "🔒 論点メモがロックされているため非表示です" not in html
+    assert "🔒 社内PJメモがロックされているため非表示です" not in html
 
 
 def test_detail_page_redacts_summary_and_notes_when_locked(con, issue_id):
@@ -161,7 +161,7 @@ def test_detail_page_redacts_summary_and_notes_when_locked(con, issue_id):
     assert "極秘の中身" not in html
     assert "機密内容" not in html
     assert "秘密メモ" not in html
-    assert "🔒 論点メモがロックされているため非表示です" in html
+    assert "🔒 社内PJメモがロックされているため非表示です" in html
     assert "🔓 鍵を外す" in html and "パスワードを忘れた" in html
 
 

@@ -100,7 +100,7 @@ DELIVERY_BILLING_DUE_OPTIONS = ["当月末日", "翌月1日", "翌月2日", "翌
 DELIVERY_BILLING_DUE_DEFAULT = "当月末日"
 DELIVERY_EXPENSE_BILLING_OPTIONS = ["有", "無", "不明(要確認)"]
 DELIVERY_PERFORMANCE_FEE_OPTIONS = ["有", "無"]  # 成果報酬有無（2026-08-30）。「有」の場合のみ比率入力が必須。
-# 論点(deal_issues)の会社機能（#147）。商談に紐づかない論点（deal_id IS NULL＝商談共通）の
+# 社内PJ(deal_issues)の会社機能（#147）。商談に紐づかない社内PJ（deal_id IS NULL＝商談共通）の
 # 場合に、社内のどの機能に紐づくかを選択する。マスタ画面で編集可能。
 COMPANY_FUNCTIONS = ["経営企画", "総務", "法務", "人事", "財務", "経理"]
 
@@ -143,7 +143,7 @@ MASTER_LABELS = {
     "target_domains":    "ターゲット領域",
     "delivery_billing_methods": "Delivery請求方法",
     "delivery_billing_due":     "Delivery請求期日",
-    "company_functions":        "論点の会社機能（商談共通論点向け）",
+    "company_functions":        "社内PJの会社機能（商談共通社内PJ向け）",
     "dev_req_confidentiality":  "開発要件: データの機密性",
     "dev_req_contract_types":   "開発要件: 契約形態",
     "dev_req_statuses":         "開発要件: 開発側ステータス",
@@ -195,7 +195,10 @@ def delivery_is_active(dv: dict) -> bool:
 
 # 開発案件（商談に紐づく開発テーマの管理）
 DEV_PROJECT_STATUSES = ["開発中", "完成", "中止"]
-DEV_PROJECT_STAGES = ["プロト", "PoC", "本番"]
+DEV_PROJECT_STAGES = ["プロト", "PoC"]  # #163後の運用整理: 本番開発は「開発要件一覧」(dev_requirements)
+# へ切り出したため選択肢から撤廃（2026-09-05）。既存の stage='本番' データは _opt()/_dsel() が
+# マスタ外の現値も表示する仕組みのため壊れず、DEV_STAGE_COEF・dev_period_days の係数もそのまま
+# 有効（既存計算結果を変えないため意図的に残す。#67のstage='失注'撤廃と同じ後方互換方針）。
 DEV_ORDER_POTENTIALS = ["低", "中", "高"]
 DEV_RESOLUTIONS = ["〇", "△", "×"]
 DEV_BUDGET_CONFIRMED = ["〇", "×"]
@@ -230,7 +233,7 @@ def compute_dev_points(con, *, work_type, stage, difficulty, has_backend=None) -
     coef = coefs["stage"].get(stage or "", 1.0) * coefs["difficulty"].get(difficulty or "", 1.0)
     return round((base + bonus) * coef, 1)
 
-# 社内論点管理
+# 社内PJ管理
 DEAL_ISSUE_STATUSES = ["議論中", "議論済み", "取り消し"]
 DEAL_ISSUE_MEMBERS = ["経営", "営業担当", "営業+開発担当", "開発コア"]
 
@@ -301,7 +304,7 @@ DESK_ASSIGNEES = [x.strip() for x in
                   if x.strip()]
 DESK_ASSIGNEE_DEFAULT = DESK_ASSIGNEES[0] if DESK_ASSIGNEES else ""
 TASK_LINK_TYPES = ["dev_project", "deal", "issue", "delivery", "org", "personal"]
-TASK_LINK_LABELS = {"dev_project": "開発案件", "deal": "商談", "issue": "論点", "delivery": "Delivery",
+TASK_LINK_LABELS = {"dev_project": "開発案件", "deal": "商談", "issue": "社内PJ", "delivery": "Delivery",
                     "org": "全社", "personal": "個人"}
 
 
@@ -664,7 +667,7 @@ CREATE INDEX IF NOT EXISTS idx_hearing_sessions_deal ON hearing_sessions(deal_id
 CREATE TABLE IF NOT EXISTS intake_transcripts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     kind        TEXT NOT NULL,               -- 'issue'|'deal'|'inbox'（inbox=自動受信の未割り当て）
-    entity_id   INTEGER NOT NULL,            -- 論点id/商談id（inboxは0）
+    entity_id   INTEGER NOT NULL,            -- 社内PJid/商談id（inboxは0）
     source      TEXT DEFAULT 'paste',        -- 'paste'|'file'|'jamie'|'zoom'
     filename    TEXT,                        -- アップロード時の元ファイル名
     transcript  TEXT,                        -- 抽出した文字起こし本文（生データ）
@@ -717,19 +720,19 @@ CREATE TABLE IF NOT EXISTS dev_projects (
 );
 CREATE INDEX IF NOT EXISTS idx_dev_projects_deal ON dev_projects(deal_id);
 
--- 社内論点（商談に紐づく議論すべき論点。1商談:N論点）
+-- 社内PJ（商談に紐づく議論すべき社内PJ。1商談:N社内PJ）
 CREATE TABLE IF NOT EXISTS deal_issues (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    deal_id     INTEGER REFERENCES deals(id) ON DELETE CASCADE,  -- NULL=商談に紐づかない共通論点
-    issue       TEXT NOT NULL,        -- 論点
+    deal_id     INTEGER REFERENCES deals(id) ON DELETE CASCADE,  -- NULL=商談に紐づかない共通社内PJ
+    issue       TEXT NOT NULL,        -- 社内PJ
     members     TEXT,                 -- 議論メンバー（社員名の複数選択、カンマ区切り。OWNERS準拠）
     responsible TEXT,                 -- 責任者（社員1名、OWNERS）
     status      TEXT DEFAULT '議論中', -- 議論中/議論済み/取り消し
     due_date    TEXT,                 -- 解消期限（YYYY-MM-DD）
     ai_summary  TEXT,                 -- メモ全履歴からAI自動生成したサマリー
-    company_function TEXT,            -- 会社機能（#147。deal_id IS NULLの商談共通論点向け。
+    company_function TEXT,            -- 会社機能（#147。deal_id IS NULLの商談共通社内PJ向け。
                                        -- 経営企画/総務/法務/人事/財務/経理等。company_functionsマスタ準拠）
-    note_lock_salt TEXT,              -- 論点メモのパスワードロック（2026-08）。NULL=ロック無し
+    note_lock_salt TEXT,              -- 社内PJメモのパスワードロック（2026-08）。NULL=ロック無し
     note_lock_hash TEXT,              -- sha256(salt+password)。NULL=ロック無し
     note_lock_recovery_email TEXT,    -- パスワード忘れ時の連絡先（本人確認クリック用リンクの送付先）
     note_lock_reset_token TEXT,       -- パスワード忘れリセット用トークン（発行後24h有効）
@@ -739,8 +742,8 @@ CREATE TABLE IF NOT EXISTS deal_issues (
 );
 CREATE INDEX IF NOT EXISTS idx_deal_issues_deal ON deal_issues(deal_id);
 
--- 論点プロジェクト管理（#163、2026-09-06）。論点(deal_issues)に対して人間がサブ論点を設定し、
--- サブ論点ごとに開始日/終了日をざっくり設定してガントチャートで管理する（コンサルタスクの
+-- 社内PJ管理（#163、2026-09-06）。社内PJ(deal_issues)に対して人間がサブ社内PJを設定し、
+-- サブ社内PJごとに開始日/終了日をざっくり設定してガントチャートで管理する（コンサルタスクの
 -- ガント(#152)と同じドラッグ移動/リサイズUIを流用）。コンサルタスクと違い、開始日/終了日は
 -- このテーブルの直接列（工数感からの逆算や容量スケジューリングは無い、単純な期間管理）。
 CREATE TABLE IF NOT EXISTS deal_issue_subitems (
@@ -755,7 +758,7 @@ CREATE TABLE IF NOT EXISTS deal_issue_subitems (
 );
 CREATE INDEX IF NOT EXISTS idx_deal_issue_subitems_issue ON deal_issue_subitems(issue_id);
 
--- 論点の検討材料（社内資料の体系化・層1、2026-08-28）。論点メモ(人が書く)とは別の、
+-- 社内PJの検討材料（社内資料の体系化・層1、2026-08-28）。社内PJメモ(人が書く)とは別の、
 -- 調査結果・AIレポート等を雑に投げ込むだけの置き場。層2(検討資料)生成時にAIがまとめて読む。
 CREATE TABLE IF NOT EXISTS issue_materials (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -775,14 +778,14 @@ CREATE TABLE IF NOT EXISTS docs (
     kind       TEXT NOT NULL,        -- '検討資料' / '報告ペーパー' / 'その他'
     template   TEXT,                 -- テンプレ種別キー（例: 'process_change'）。手動アップロード分はNULL
     title      TEXT NOT NULL,
-    issue_id   INTEGER REFERENCES deal_issues(id) ON DELETE SET NULL,  -- 紐づく論点（任意）
+    issue_id   INTEGER REFERENCES deal_issues(id) ON DELETE SET NULL,  -- 紐づく社内PJ（任意）
     body_html  TEXT NOT NULL,        -- 本文HTMLフラグメント（表示時に共通レイアウトで包む）
     created_by TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_docs_issue ON docs(issue_id);
 
--- 論点メモ（論点ごとの追記型ディスカッションログ）
+-- 社内PJメモ（社内PJごとの追記型ディスカッションログ）
 CREATE TABLE IF NOT EXISTS deal_issue_memos (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     issue_id   INTEGER NOT NULL REFERENCES deal_issues(id) ON DELETE CASCADE,
@@ -807,7 +810,7 @@ CREATE TABLE IF NOT EXISTS rich_notes (
 );
 CREATE INDEX IF NOT EXISTS idx_rich_notes_entity ON rich_notes(kind, entity_id);
 
--- タスク管理（#30）。開発案件/商談/論点等にひも付け可能。受信箱=未整理(Triage)。
+-- タスク管理（#30）。開発案件/商談/社内PJ等にひも付け可能。受信箱=未整理(Triage)。
 CREATE TABLE IF NOT EXISTS tasks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     title         TEXT NOT NULL,           -- タスク名（中項目）
@@ -847,7 +850,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_link ON tasks(link_type, link_id);
 -- （既存DBではSCHEMA実行時点でproject列が無く、ここに置くと executescript が失敗する）。
 
 -- タスクの追記式ログ（履歴が残る）。kind='progress'(進捗) / 'discussion'(議論メモ)。
--- 議論メモを追記するとタスクのAIサマリ(tasks.summary)が再生成される（論点管理の吸収, #30）。
+-- 議論メモを追記するとタスクのAIサマリ(tasks.summary)が再生成される（社内PJ管理の吸収, #30）。
 CREATE TABLE IF NOT EXISTS task_notes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -858,7 +861,7 @@ CREATE TABLE IF NOT EXISTS task_notes (
 );
 CREATE INDEX IF NOT EXISTS idx_task_notes_task ON task_notes(task_id);
 
--- タスクと商談/論点/Delivery/開発案件の多対多関連付け（#146、2026-09-02）。
+-- タスクと商談/社内PJ/Delivery/開発案件の多対多関連付け（#146、2026-09-02）。
 -- tasks.link_type/link_idは単一紐づけ時代の名残の列で、以後は新規に書き込まない
 -- （非破壊のため列自体は残置）。読み出しは両方をマージする(sfa_db.get_task_links等)ため、
 -- 旧データのバックフィルは不要——新UIでその タスクの関連付けを一度編集すれば、
@@ -1416,7 +1419,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
                 "WHERE d.rich_note IS NOT NULL AND trim(d.rich_note) <> '' "
                 "AND NOT EXISTS (SELECT 1 FROM rich_notes r WHERE r.kind='deal' AND r.entity_id=d.id)")
         # 旧: deal_issue_memos（追記式メモ）→ rich_notes(kind='issue') へ一度だけ集約移行（冪等）。
-        # 論点ごとに全メモを「旧メモ（移行）」1ノートへ時系列で連結（各行=日時付きの段落）。
+        # 社内PJごとに全メモを「旧メモ（移行）」1ノートへ時系列で連結（各行=日時付きの段落）。
         # HTMLとして描画されるため <,&,> をエスケープし、改行は <br> にする。
         con.execute(
             "INSERT INTO rich_notes (kind, entity_id, title, body, sort_order, created_at, updated_at) "
@@ -1626,7 +1629,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # 開発点数マスタ・係数の初期シード（空のときのみ・#41）
         seed_dev_point_master(con)
         seed_dev_coefficients(con)
-        # deal_issues.deal_id を NOT NULL → NULL可に変更（商談共通の論点に対応）。
+        # deal_issues.deal_id を NOT NULL → NULL可に変更（商談共通の社内PJに対応）。
         # SQLiteはNOT NULL制約を直接ALTERできないため、テーブルを作り直す。
         issue_deal_id_col = next(
             (c for c in con.execute("PRAGMA table_info(deal_issues)") if c[1] == "deal_id"), None
@@ -1661,13 +1664,13 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("CREATE INDEX IF NOT EXISTS idx_deal_issues_deal ON deal_issues(deal_id)")
             con.commit()
             con.execute("PRAGMA foreign_keys = ON")
-        # 論点: 責任者カラムを後方互換で追加。
+        # 社内PJ: 責任者カラムを後方互換で追加。
         _issue_cols = {c[1] for c in con.execute("PRAGMA table_info(deal_issues)")}
         if "responsible" not in _issue_cols:
             con.execute("ALTER TABLE deal_issues ADD COLUMN responsible TEXT")
         if "company_function" not in _issue_cols:  # #147
             con.execute("ALTER TABLE deal_issues ADD COLUMN company_function TEXT")
-        # 論点メモのパスワードロック（2026-08）。
+        # 社内PJメモのパスワードロック（2026-08）。
         for _col, _ddl in (
             ("note_lock_salt", "TEXT"), ("note_lock_hash", "TEXT"),
             ("note_lock_recovery_email", "TEXT"), ("note_lock_reset_token", "TEXT"),
@@ -2592,7 +2595,7 @@ def upsert_deal(con, *, id=None, commit: bool = True, **fields) -> int:
 def duplicate_deal(con, deal_id: int) -> int | None:
     """商談を複製し新規商談(status='open')を作成する。ユーザー確定方針:
     ステージは先頭ステージへリセット、現状メモは「複製である旨」を明示した上で引き継ぐ。
-    活動履歴・マイルストーン・ヒアリング結果・論点・取り込み文字起こし・Hisho同期状態
+    活動履歴・マイルストーン・ヒアリング結果・社内PJ・取り込み文字起こし・Hisho同期状態
     (theme_id)・Slack紐付け・終了理由・次回MSは引き継がない（新規案件として真っ白から
     始める）。開発案件(dev_projects)は元商談を参照したまま＝新商談には何も紐付かない。
     戻り値は新規商談id（元商談が無ければNone）。"""
@@ -3436,7 +3439,7 @@ def count_inbox_transcripts(con) -> int:
 
 
 def assign_inbox_transcript(con, id: int, *, kind: str, entity_id: int) -> None:
-    """インボックスの受信を商談/論点へ割り当て（以後その対象の取り込み原本として表示される）。"""
+    """インボックスの受信を商談/社内PJへ割り当て（以後その対象の取り込み原本として表示される）。"""
     con.execute(
         "UPDATE intake_transcripts SET kind=?, entity_id=?, status='assigned' WHERE id=?",
         (kind, int(entity_id), int(id)))
@@ -3763,7 +3766,7 @@ def set_dev_coef(con, coef_type: str, coef_key: str, coef_value: float) -> None:
     con.commit()
 
 
-# ---- 社内論点（deal_id:N の議論ポイント管理） ----
+# ---- 社内PJ（deal_id:N の議論ポイント管理） ----
 
 DEAL_ISSUE_FIELDS = ["deal_id", "issue", "members", "responsible", "status", "due_date", "company_function"]
 
@@ -3780,11 +3783,11 @@ def list_deal_issues(con, *, deal_id: int | None = None, status: str | None = No
                       member: str | None = None, responsible: str | None = None,
                       q: str | None = None, company_function: str | None = None,
                       sort: str = "due_date") -> list[dict]:
-    """論点一覧。deal_id以外はすべて一覧画面の絞り込み用。
-    member指定時は議論メンバー（社員名のカンマ区切り複数選択）にその名前を含む論点のみ返す。
-    responsible指定時は責任者がその社員名の論点のみ返す。
+    """社内PJ一覧。deal_id以外はすべて一覧画面の絞り込み用。
+    member指定時は議論メンバー（社員名のカンマ区切り複数選択）にその名前を含む社内PJのみ返す。
+    responsible指定時は責任者がその社員名の社内PJのみ返す。
     q指定時はアカウント名・商談名の部分一致で絞り込む。
-    company_function指定時は会社機能（#147、商談共通論点のみ持つ）で絞り込む。"""
+    company_function指定時は会社機能（#147、商談共通社内PJのみ持つ）で絞り込む。"""
     q_sql = _DEAL_ISSUE_SELECT
     conds: list = []
     params: list = []
@@ -3822,7 +3825,7 @@ def get_deal_issue(con, id: int) -> dict | None:
     return dict(r) if r else None
 
 
-# ── 論点プロジェクト管理（#163、2026-09-06） ──
+# ── 社内PJ管理（#163、2026-09-06） ──
 
 def create_deal_issue_subitem(con, issue_id: int, title: str, start_date: str | None = None,
                               end_date: str | None = None) -> int:
@@ -3877,7 +3880,7 @@ def delete_deal_issue_subitem(con, id: int) -> None:
     con.commit()
 
 
-# ── 論点メモのパスワードロック（2026-08）。鍵の単位は論点(deal_issue)1件ごと。 ──
+# ── 社内PJメモのパスワードロック（2026-08）。鍵の単位は社内PJ(deal_issue)1件ごと。 ──
 ISSUE_NOTE_LOCK_RESET_VALID_HOURS = 24
 
 
@@ -3895,7 +3898,7 @@ def issue_note_lock_status(con, issue_id: int) -> dict:
 
 
 def set_issue_note_lock(con, issue_id: int, password: str, recovery_email: str) -> None:
-    """論点メモにパスワードロックを設定（既存ロックも上書き）。パスワード忘れ時の連絡先メール必須。"""
+    """社内PJメモにパスワードロックを設定（既存ロックも上書き）。パスワード忘れ時の連絡先メール必須。"""
     salt = secrets.token_hex(16)
     con.execute(
         "UPDATE deal_issues SET note_lock_salt=?, note_lock_hash=?, note_lock_recovery_email=?, "
@@ -3913,7 +3916,7 @@ def clear_issue_note_lock(con, issue_id: int) -> None:
 
 
 def verify_issue_note_lock(con, issue_id: int, password: str) -> bool:
-    """ロック無し（or 論点が存在しない）ならTrue。ロックありならパスワード一致でTrue。"""
+    """ロック無し（or 社内PJが存在しない）ならTrue。ロックありならパスワード一致でTrue。"""
     row = con.execute("SELECT note_lock_salt, note_lock_hash FROM deal_issues WHERE id=?",
                        (int(issue_id),)).fetchone()
     if not row or not row["note_lock_hash"]:
@@ -4000,7 +4003,7 @@ def get_deal_issue_memo(con, memo_id: int) -> dict | None:
 
 
 def list_issue_materials(con, issue_id: int) -> list[dict]:
-    """論点の検討材料（社内資料の体系化・層1）を追加順で返す。"""
+    """社内PJの検討材料（社内資料の体系化・層1）を追加順で返す。"""
     return [dict(r) for r in con.execute(
         "SELECT * FROM issue_materials WHERE issue_id=? ORDER BY id", (int(issue_id),))]
 
@@ -4044,7 +4047,7 @@ def get_doc(con, doc_id: int) -> dict | None:
 
 
 def list_docs(con, *, issue_id: int | None = None) -> list[dict]:
-    """新しい順。issue_id指定でその論点分のみ。"""
+    """新しい順。issue_id指定でその社内PJ分のみ。"""
     q = "SELECT * FROM docs"
     params: list = []
     if issue_id is not None:
@@ -4106,9 +4109,9 @@ def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
     """admin=True で事務タスク(is_admin=1)のみ、admin=False で通常タスク(is_admin=0/NULL)のみ、
     admin=None（既定）で両方。既存呼び出しは admin=None のため挙動不変。
     既定はソフト削除済み(deleted_at)を除外。only_deleted=True で削除済みのみ（復活画面用）。
-    issue_company_function指定時（#147）は、紐づく論点(issue)のcompany_functionがその値の
+    issue_company_function指定時（#147）は、紐づく社内PJ(issue)のcompany_functionがその値の
     タスクのみ返す（レガシー単一列・task_entity_linksの両方の紐づけを対象、商談紐づけの
-    論点はcompany_functionを持たないため対象外）。"""
+    社内PJはcompany_functionを持たないため対象外）。"""
     q = "SELECT * FROM tasks"
     conds: list = []
     params: list = []
@@ -4152,7 +4155,7 @@ def list_tasks(con, *, status: str | None = None, assignee: str | None = None,
                 "AND tel.link_type = ?))")
             params += [link_type, link_type]
     if issue_company_function:
-        # #147: 紐づく論点(issue)のcompany_functionで絞り込む（レガシー単一列/
+        # #147: 紐づく社内PJ(issue)のcompany_functionで絞り込む（レガシー単一列/
         # task_entity_linksの両方の紐づけ経路を対象）。
         conds.append(
             "(EXISTS (SELECT 1 FROM deal_issues di WHERE di.id = tasks.link_id "
@@ -4176,7 +4179,7 @@ def get_task(con, id: int) -> dict | None:
 def task_link_label(con, link_type: str | None, link_id: int | None) -> str | None:
     """タスクのlink_type/link_id（deal/issue/delivery/dev_project）の表示ラベル。
     対象が消えていたらNone。
-    ユーザー要望2026-08-24: コンサルタスクを商談/論点に紐づけられるようにする機能で使用。
+    ユーザー要望2026-08-24: コンサルタスクを商談/社内PJに紐づけられるようにする機能で使用。
     2026-08-27にDeliveryを追加。2026-09-02(#146)にdev_projectを追加
     （複数関連付け対応で、従来webapp.py側に別出しだったdev_projectのラベル解決を統一）。"""
     if not link_type or not link_id:
@@ -4194,7 +4197,7 @@ def task_link_label(con, link_type: str | None, link_id: int | None) -> str | No
         if it.get("deal_name"):
             return f'{base}（{it.get("account_name") or "—"}：{it["deal_name"]}）'
         if it.get("company_function"):
-            # #147: 商談共通論点に会社機能が設定されていれば、コンサルタスク側の
+            # #147: 商談共通社内PJに会社機能が設定されていれば、コンサルタスク側の
             # 紐づけラベルにも反映する（「商談共通」より具体的な文脈になる）。
             return f'{base}（{it["company_function"]}）'
         return f"{base}（商談共通）"
@@ -4215,7 +4218,7 @@ TASK_LINK_TYPES_MULTI = ("deal", "issue", "delivery", "dev_project")
 
 
 def set_task_links(con, task_id: int, links: list[tuple[str, int]], commit: bool = True) -> None:
-    """タスクの関連付け（商談/論点/Delivery/開発案件、複数可）を一括置き換える（#146）。
+    """タスクの関連付け（商談/社内PJ/Delivery/開発案件、複数可）を一括置き換える（#146）。
     linksは[(link_type, link_id), ...]。種別が不正・link_id欠落・重複は無視する。
     旧来の単一紐づけ(tasks.link_type/link_id)は、後方互換のため先頭の1件を反映する
     （レガシー参照箇所向けのミラー。実体はtask_entity_linksが正）。"""
@@ -4245,7 +4248,7 @@ def set_task_links(con, task_id: int, links: list[tuple[str, int]], commit: bool
 
 
 def get_task_links(con, task_id: int) -> list[dict]:
-    """タスクの全関連付け（商談/論点/Delivery/開発案件、複数可, #146）。
+    """タスクの全関連付け（商談/社内PJ/Delivery/開発案件、複数可, #146）。
     task_entity_links（正）とtasks.link_type/link_id（レガシー単一列。#146以前の
     upsert_task経由の紐づけがまだこちらにしか無いケースを拾う）の両方を見て、
     重複除去のうえ返す。ラベルが解決できない（参照切れ）ものは除外。"""
@@ -4682,9 +4685,9 @@ def delete_task_project(con, id: int) -> None:
 
 
 def clear_orphaned_task_links(con) -> int:
-    """紐づけ先(商談/論点/Delivery/開発案件)が削除済みで参照切れになっている紐づけを
+    """紐づけ先(商談/社内PJ/Delivery/開発案件)が削除済みで参照切れになっている紐づけを
     クリアする（自己修復）。返り値はクリア・削除した件数の合計。
-    ユーザー報告2026-08-29: 商談/論点/Deliveryを削除すると、それを参照していたタスクの
+    ユーザー報告2026-08-29: 商談/社内PJ/Deliveryを削除すると、それを参照していたタスクの
     link_type/link_idが残ったままになり、看板上部の「紐づけられている案件」一覧から
     静かに消えてしまっていた（task_link_labelが参照先を解決できずNoneを返すため）。
     delete_deal/delete_deal_issue/delete_deliveryの直後、およびtask_link_summary計算時に
@@ -4715,7 +4718,7 @@ def clear_orphaned_task_links(con) -> int:
 
 
 def task_link_summary(con) -> dict:
-    """コンサルタスクの紐づけ先(商談/論点/Delivery)ごとの未完了/完了件数集計
+    """コンサルタスクの紐づけ先(商談/社内PJ/Delivery)ごとの未完了/完了件数集計
     （看板上部の「紐づけられている案件」一覧用、ユーザー要望2026-08-27）。
     未完了タスクが1件も無い紐づけ先（完了にしか登場しない案件）は結果に含めない。
     2026-09-02(#146): 複数関連付け対応。1タスクが複数の紐づけ先を持つ場合、
@@ -4751,7 +4754,7 @@ def task_link_summary(con) -> dict:
             continue
         entry = {"id": lid, "label": label, "open_n": slot["open_n"], "done_n": slot["done_n"]}
         if lt == "issue":
-            # #159: 看板上部の論点チップを会社機能別にグルーピングして表示するための材料。
+            # #159: 看板上部の社内PJチップを会社機能別にグルーピングして表示するための材料。
             it = get_deal_issue(con, lid)
             if it:
                 entry["title"] = it.get("issue") or "(無題)"
@@ -4894,7 +4897,7 @@ def delete_deal(con, deal_id: int) -> None:
     SET NULL（＝そのリードは「未商談化」に戻る）。foreign_keys=ON 前提（connect()で常時ON）。
     slack_threads.deal_id はFK未設定のため孤児として残るが害はない（Botのスレッド状態のみ）。
     Hisho側（todos/dev_projects）のクリーンアップは呼び出し側でtheme_client経由の best-effort。
-    タスクの紐づけ(link_type/link_id)がこの商談・配下の論点・Deliveryを参照していた場合は
+    タスクの紐づけ(link_type/link_id)がこの商談・配下の社内PJ・Deliveryを参照していた場合は
     clear_orphaned_task_linksで自己修復する（削除後に静かに参照切れになるのを防ぐ）。"""
     con.execute("DELETE FROM deals WHERE id=?", (int(deal_id),))
     con.commit()
@@ -4903,7 +4906,7 @@ def delete_deal(con, deal_id: int) -> None:
 
 # ---- OneNote風リッチメモ（rich_notes・#70）: (kind, entity_id)に複数ノート ----
 
-RICH_NOTE_KINDS = ("deal", "issue", "htmpl")  # 商談 / 論点 / ヒアリングテンプレ
+RICH_NOTE_KINDS = ("deal", "issue", "htmpl")  # 商談 / 社内PJ / ヒアリングテンプレ
 
 
 def list_rich_notes(con, kind: str, entity_id: int) -> list[dict]:

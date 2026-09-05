@@ -166,7 +166,7 @@ def test_daily_plan_page_tray_grouped_by_linked_entity(con):
     assert f'id="dpBox-issue-{iid}"' in html
     assert f'id="dpBox-delivery-{dv}"' in html
     assert 'id="dpBox-none"' in html
-    assert "🚚 Delivery" in html and "🤝 商談" in html and "📌 論点" in html and "紐づけなし" in html
+    assert "🚚 Delivery" in html and "🤝 商談" in html and "📌 社内PJ" in html and "紐づけなし" in html
     # ハコの見出しは具体的な案件名（"論点A（テスト商事：案件A）"等）
     assert "論点A" in html and "DeliveryA" in html
     assert "function dpLinkGroupIds" in html

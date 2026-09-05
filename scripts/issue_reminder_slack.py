@@ -1,7 +1,7 @@
-"""論点(deal_issues)の議論メンバー区分ごとに、対象担当者へ毎週金曜にSlackでリマインドする（#47）。
+"""社内PJ(deal_issues)の議論メンバー区分ごとに、対象担当者へ毎週金曜にSlackでリマインドする（#47）。
 
 【現在は停止中（スケジュール未登録）】
-論点の登録がまだ少ないため、本スクリプトは render.yaml のcronに登録していない＝自動実行されない。
+社内PJの登録がまだ少ないため、本スクリプトは render.yaml のcronに登録していない＝自動実行されない。
 有効化するには:
   1. config/issue_member_map.json の各区分に対象担当者名（owner_slack_map.json のキー）を入れる。
   2. render.yaml に cron サービスを追加（例: 金曜17:00 JST = "0 8 * * 5"）:
@@ -71,7 +71,7 @@ def _load_json(path: Path) -> dict:
 
 
 def fetch_open_issues() -> list[dict]:
-    """議論中の論点を取得。ローカルDBがあればDB、無ければAPI経由。"""
+    """議論中の社内PJを取得。ローカルDBがあればDB、無ければAPI経由。"""
     if Path(DB_PATH).exists():
         con = sqlite3.connect(DB_PATH)
         con.row_factory = sqlite3.Row
@@ -91,10 +91,10 @@ def fetch_open_issues() -> list[dict]:
 def build_message(owner: str, issues: list[dict]) -> str:
     tool_url = f"{TOOL_URL}/deal-issues" if TOOL_URL else ""
     lines = [
-        "【論点リマインド（金曜）】",
-        f"{owner}さん、あなたが議論メンバーに入っている「議論中」の論点です。",
+        "【社内PJリマインド（金曜）】",
+        f"{owner}さん、あなたが議論メンバーに入っている「議論中」の社内PJです。",
         "",
-        f"🧩 議論中の論点: {len(issues)}件",
+        f"🧩 議論中の社内PJ: {len(issues)}件",
     ]
     for it in issues[:15]:
         due = (it.get("due_date") or "").strip()
@@ -105,7 +105,7 @@ def build_message(owner: str, issues: list[dict]) -> str:
         lines.append(f"  …ほか {len(issues) - 15}件")
     lines.append("")
     if tool_url:
-        lines.append(f"🔗 論点一覧: {tool_url}")
+        lines.append(f"🔗 社内PJ一覧: {tool_url}")
     lines.append("")
     lines.append("今週中に、議論・更新・クローズをお願いします。")
     return "\n".join(lines)
@@ -123,10 +123,10 @@ def main() -> None:
 
     issues = fetch_open_issues()
     if not issues:
-        print("[INFO] 議論中の論点がありません。通知をスキップします。")
+        print("[INFO] 議論中の社内PJがありません。通知をスキップします。")
         return
 
-    # 担当者名 → その人に見せる論点リスト（区分マッチ・重複排除）
+    # 担当者名 → その人に見せる社内PJリスト（区分マッチ・重複排除）
     per_owner: dict[str, list[dict]] = {}
     for it in issues:
         members = [m.strip() for m in (it.get("members") or "").split(",") if m.strip()]
@@ -138,7 +138,7 @@ def main() -> None:
             per_owner.setdefault(owner, []).append(it)
 
     if not per_owner:
-        print("[INFO] どの論点も区分→担当者マッピングに一致しませんでした。")
+        print("[INFO] どの社内PJも区分→担当者マッピングに一致しませんでした。")
         return
 
     test_owner = os.environ.get("TEST_OWNER", "")
@@ -162,12 +162,12 @@ def main() -> None:
         res = slack_api("chat.postMessage", channel=dm["channel"]["id"],
                         text=build_message(owner, owner_issues))
         if res.get("ok"):
-            print(f"[OK] {owner} に論点リマインド送信（{len(owner_issues)}件）")
+            print(f"[OK] {owner} に社内PJリマインド送信（{len(owner_issues)}件）")
             sent += 1
         else:
             print(f"[ERROR] {owner} への送信失敗: {res.get('error')}")
 
-    print(f"\n完了: {sent}人に論点リマインド送信。")
+    print(f"\n完了: {sent}人に社内PJリマインド送信。")
 
 
 if __name__ == "__main__":

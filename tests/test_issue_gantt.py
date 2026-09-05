@@ -210,7 +210,7 @@ def test_parse_issue_period_text_prompt_includes_today_and_rules(monkeypatch):
 
 def test_gantt_page_empty_state(con):
     html = webapp.deal_issues_gantt_page(con)
-    assert "論点がまだありません" in html
+    assert "社内PJがまだありません" in html
 
 
 def test_gantt_page_renders_ready_group_and_bar(con):
@@ -284,7 +284,7 @@ def test_gantt_page_company_common_issue_category_label(con):
 def test_gantt_route_via_http(server):
     code, body = _get(f"{server}/deal-issues/gantt")
     assert code == 200
-    assert "論点プロジェクト管理".encode() in body
+    assert "社内PJ管理".encode() in body
 
 
 def test_create_subitem_route_via_http(con, server, tmp_path):

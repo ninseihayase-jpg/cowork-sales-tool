@@ -168,7 +168,7 @@ def test_chip_and_button_are_kind_scoped():
     dchip = webapp._rich_note_chip("deal", 5)
     assert "rnOpen(&#39;deal&#39;,5)" in dchip and "📝 商談ノート" in dchip
     ichip = webapp._rich_note_chip("issue", 9)
-    assert "rnOpen(&#39;issue&#39;,9)" in ichip and "論点メモ" in ichip
+    assert "rnOpen(&#39;issue&#39;,9)" in ichip and "社内PJメモ" in ichip
     # 一覧ボタンは kind/id を data 属性に持ち、記入有無で on が付く
     on = webapp._rich_note_btn("issue", 7, True)
     off = webapp._rich_note_btn("htmpl", 8, False)

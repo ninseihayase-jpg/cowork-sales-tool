@@ -252,11 +252,11 @@ def _call_claude_haiku(prompt: str, *, timeout: int = 20, max_wait: int = 25,
 
 
 def _generate_issue_ai_summary(issue: dict, notes_text: str) -> str:
-    """論点メモ(rich_notes)の全文からAIサマリーを生成する。失敗時は空文字（呼び出し側は既存サマリーを保持すること）。"""
+    """社内PJメモ(rich_notes)の全文からAIサマリーを生成する。失敗時は空文字（呼び出し側は既存サマリーを保持すること）。"""
     if not (notes_text or "").strip():
         return ""
     prompt = (
-        f"以下は社内論点「{issue.get('issue','')}」についての論点メモです。\n"
+        f"以下は社内PJ「{issue.get('issue','')}」についての社内PJメモです。\n"
         "話されているサブトピック・論点ごとに分けて、日本語で箇条書きに要約してください。\n"
         "各行は必ず「・トピック名：内容」の形式で書いてください"
         "（トピック名は名詞句で2〜10文字程度の短い見出し、内容にできれば結論や合意事項が分かるように書く）。\n"
@@ -268,7 +268,7 @@ def _generate_issue_ai_summary(issue: dict, notes_text: str) -> str:
 
 
 def _issue_notes_text(con, issue_id: int) -> str:
-    """論点メモ(rich_notes kind='issue')の全ノートをタグ除去した平文で連結する（AIサマリ生成の入力）。"""
+    """社内PJメモ(rich_notes kind='issue')の全ノートをタグ除去した平文で連結する（AIサマリ生成の入力）。"""
     parts = []
     for n in sfa_db.list_rich_notes(con, "issue", issue_id):
         title = (n.get("title") or "").strip()
@@ -282,7 +282,7 @@ def _issue_notes_text(con, issue_id: int) -> str:
 
 
 # ── 社内資料の体系化・層2(検討資料)生成（2026-08-28） ──────────────────────
-# 層1(issue_materials＋論点メモ)を材料に、AIが「型」に沿って構造化生成する。型（見出し構成・
+# 層1(issue_materials＋社内PJメモ)を材料に、AIが「型」に沿って構造化生成する。型（見出し構成・
 # 順序）はこちらのコード側で固定し、AIには各見出しの中身だけを埋めさせることで、生成のたびに
 # 構成が崩れない（ユーザー要望: 一定の型・骨子を外さない構成に制御）。
 _DOC_TEMPLATE_SECTIONS = {
@@ -365,7 +365,7 @@ def _generate_doc_body_html(con, issue: dict, template_key: str) -> str | None:
         "箇条書きを積極的に使い、読みやすく簡潔に。材料に無い/判断できない項目は"
         "「（検討中・材料不足）」とだけ書いてください）。\n\n"
         f"{heading_list}\n\n"
-        f"---検討材料ここから---\n論点: {issue.get('issue', '')}\n\n{source}\n---検討材料ここまで---"
+        f"---検討材料ここから---\n社内PJ: {issue.get('issue', '')}\n\n{source}\n---検討材料ここまで---"
     )
     raw = _call_claude_haiku(prompt, timeout=45, max_wait=50, max_tokens=3000)
     if not (raw or "").strip():
@@ -408,7 +408,7 @@ def docs_list_page(con, *, issue_id: int | None = None) -> str:
     return f"""
     <div class="card">
       <h2 style="margin:0 0 8px">📄 資料庫</h2>
-      <p class="muted" style="font-size:12px">検討資料・社内報告ペーパーの置き場です。論点ページの「検討材料」から生成するか、
+      <p class="muted" style="font-size:12px">検討資料・社内報告ペーパーの置き場です。社内PJページの「検討材料」から生成するか、
         既存のHTMLファイルをそのまま入稿できます。</p>
       <form method="post" action="/docs/upload" enctype="multipart/form-data"
             style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:10px;margin-bottom:12px">
@@ -640,7 +640,7 @@ function filterSelectOptions(selectId, inputId) {{
     o.style.display = (!q || o.text.toLowerCase().indexOf(q) >= 0) ? '' : 'none';
   }}
 }}
-/* 全SFA共通: タスクの「関連（商談/論点/開発案件）」ピッカー（ユーザー要望2026-08-24）。
+/* 全SFA共通: タスクの「関連（商談/社内PJ/開発案件）」ピッカー（ユーザー要望2026-08-24）。
    種別select→検索input（<datalist>で候補が自動表示、ドロップダウンを開く操作は不要）→
    完全一致した候補のdata-idを隠しinput({{prefix}}Type/{{prefix}}Id)へ書き込む。
    HTML側は_task_link_picker_html()が生成する（task_form・tasks_pageの絞り込みで共用）。*/
@@ -755,10 +755,10 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <a href="/dev-requirements" style="opacity:.85;font-size:13px">🧩 開発要件一覧</a>
   <a href="/deliveries" style="opacity:.85;font-size:13px">🚚 Delivery</a>
   <span class="nav-sep"></span>
-  <!-- 次: ヒアリング・論点 -->
+  <!-- 次: ヒアリング・社内PJ -->
   <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
-  <a href="/deal-issues" style="opacity:.85;font-size:13px">論点</a>
-  <a href="/deal-issues/gantt" style="opacity:.85;font-size:13px">📊 論点ガント</a>
+  <a href="/deal-issues" style="opacity:.85;font-size:13px">社内PJ</a>
+  <a href="/deal-issues/gantt" style="opacity:.85;font-size:13px">📊 社内PJガント</a>
   <a href="/docs" style="opacity:.85;font-size:13px">📄 資料庫</a>
   <a href="/business-flows" style="opacity:.85;font-size:13px">🔀 業務フロー</a>
   <span class="nav-sep"></span>
@@ -6674,7 +6674,7 @@ function closeNotes(){ var i=document.getElementById('noteInput');
   document.getElementById('notesPop').style.display='none'; document.getElementById('notesBackdrop').style.display='none'; }
 document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ var p=document.getElementById('notesPop'); if(p&&p.style.display==='block'){ e.preventDefault(); closeNotes(); } } });
 // 関連付けポップアップ(2026-08-27。#146で複数関連付けに対応): カード上の「🔗関連」から
-// 商談/論点/Delivery/開発案件へ複数紐づけできる。ピッカー本体はページに1回だけ埋め込み済み
+// 商談/社内PJ/Delivery/開発案件へ複数紐づけできる。ピッカー本体はページに1回だけ埋め込み済み
 // (prefix="tcLink")で、開く時にそのタスクの現在の紐づけ一覧(card.dataset.links=JSON配列)を
 // 差し込む（taskLinkKindChanged/taskLinkMultiPick等は共通スクリプト側で定義済み）。
 function tcRenderLinks(){
@@ -7046,7 +7046,7 @@ def _ai_summarize_project(pname: str, meta: str, task_lines: list) -> str | None
 
 
 def _task_link_datalists_html(con, prefix: str) -> str:
-    """タスクの商談/論点/Delivery紐づけ用<datalist>（検索して選ぶと自動でdata-idを解決する、
+    """タスクの商談/社内PJ/Delivery紐づけ用<datalist>（検索して選ぶと自動でdata-idを解決する、
     ユーザー要望2026-08-24。Deliveryは2026-08-27追加）。1ページに1回だけ埋め込む想定。"""
     deals = sfa_db.list_deals(con, status="open")
     deal_opts = "".join(
@@ -7106,10 +7106,10 @@ def _task_link_href_icon(link_type: str, link_id: int) -> tuple[str, str]:
 def _task_link_picker_html(con, *, prefix: str, cur_type: str | None, cur_id, include_dev: bool = False,
                            dev_opts: str = "", auto_submit_form_id: str | None = None,
                            allow_none_filter: bool = False, emit_name_attrs: bool = True) -> str:
-    """タスクの「関連（商談/論点/開発案件/Delivery）」ピッカー。種別を選ぶ→単語で検索→候補から選ぶ
+    """タスクの「関連（商談/社内PJ/開発案件/Delivery）」ピッカー。種別を選ぶ→単語で検索→候補から選ぶ
     （ネイティブ<datalist>なので、候補が自動表示されドロップダウンを開く必要がない）。
     include_dev=Trueの時だけ開発案件<select>（呼び出し側でdev_optsを渡す）も選択肢に含める。
-    Delivery(2026-08-27追加)は商談/論点と同じ検索式。
+    Delivery(2026-08-27追加)は商談/社内PJと同じ検索式。
     allow_none_filter=True（一覧の絞り込み専用、ユーザー要望2026-08-27）で
     「紐づけ無しのみ」(__none__)を選択肢に追加する（タスク編集フォームでは使わない）。
     auto_submit_form_id指定時（一覧の絞り込み用）は、候補が確定した瞬間にそのform_idのフォームを
@@ -7128,7 +7128,7 @@ def _task_link_picker_html(con, *, prefix: str, cur_type: str | None, cur_id, in
                          f'📥 紐づけ無しのみ</option>')
     kind_opts += [
         f'<option value="deal"{" selected" if cur_type == "deal" else ""}>商談</option>',
-        f'<option value="issue"{" selected" if cur_type == "issue" else ""}>論点</option>',
+        f'<option value="issue"{" selected" if cur_type == "issue" else ""}>社内PJ</option>',
         f'<option value="delivery"{" selected" if cur_type == "delivery" else ""}>Delivery</option>']
     if include_dev:
         kind_opts.append(f'<option value="dev_project"{" selected" if cur_type == "dev_project" else ""}>開発案件</option>')
@@ -7158,7 +7158,7 @@ def _task_link_picker_html(con, *, prefix: str, cur_type: str | None, cur_id, in
         f'placeholder="🔍 会社名・商談名で検索" autocomplete="off" oninput="{deal_oninput}"></span>'
         f'<span id="{prefix}IssueWrap" style="display:{"" if cur_type == "issue" else "none"}">'
         f'<input type="text" id="{prefix}IssueQ" list="{prefix}IssuesDL" value="{_esc(issue_label)}" '
-        f'placeholder="🔍 論点名・会社名で検索" autocomplete="off" oninput="{issue_oninput}"></span>'
+        f'placeholder="🔍 社内PJ名・会社名で検索" autocomplete="off" oninput="{issue_oninput}"></span>'
         f'<span id="{prefix}DeliveryWrap" style="display:{"" if cur_type == "delivery" else "none"}">'
         f'<input type="text" id="{prefix}DeliveryQ" list="{prefix}DeliveryDL" value="{_esc(delivery_label)}" '
         f'placeholder="🔍 会社名・Delivery名で検索" autocomplete="off" oninput="{delivery_oninput}"></span>'
@@ -7186,7 +7186,7 @@ def task_form(con, task=None) -> str:
     for dp in sfa_db.list_dev_projects(con):
         dev_opts += (f'<option value="dev_project:{dp["id"]}">🛠 {_esc(dp.get("theme") or "開発案件")}'
                      f'（{_esc(dp.get("account_name") or "-")}）</option>')
-    # 関連（商談/論点/Delivery/開発案件、複数可, #146）。既存の紐づけをチップ一覧で表示し、
+    # 関連（商談/社内PJ/Delivery/開発案件、複数可, #146）。既存の紐づけをチップ一覧で表示し、
     # ピッカーで選んで「＋追加」するたびにJSでチップを増やす。実際の送信値はlinks_json
     # （[{type,id}, ...]）で、_task_link_picker_html由来の単一項目name属性は使わない。
     _cur_links = sfa_db.get_task_links(con, task["id"]) if is_edit else []
@@ -7231,7 +7231,7 @@ def task_form(con, task=None) -> str:
           <div><label>状態</label><select name="status">{_opt(sfa_db.TASK_STATUSES, task.get('status') or ('未着手' if is_edit else '受信箱'))}</select></div>
           {'' if is_admin_task else f'<div><label>工数感（ガント表示用）</label><select name="effort_level" onchange="tfEffortDefaultHours(this.value)">{_opt(sfa_db.TASK_EFFORT_LEVELS, task.get("effort_level"))}</select></div>'}
           {'' if is_admin_task else f'<div><label>所要時間(h)<span class="muted" style="font-weight:normal"> ※未入力は工数感から自動換算</span></label><input type="number" id="tfEffortHours" step="0.5" min="0" name="effort_hours" value="{"" if task.get("effort_hours") is None else task.get("effort_hours")}"></div>'}
-          <div class="full"><label>関連（商談・論点・開発案件・Delivery、複数可）</label>
+          <div class="full"><label>関連（商談・社内PJ・開発案件・Delivery、複数可）</label>
             <div id="tfLinksList" style="margin-bottom:6px;display:flex;flex-wrap:wrap;gap:4px"></div>
             <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               {_task_link_picker_html(con, prefix="tfLink", cur_type=None, cur_id=None,
@@ -7444,7 +7444,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                        f'onclick="tcDue({tid},&#39;{rec_d.isoformat()}&#39;)">推奨 {rec_d.isoformat()[5:]}</button>')
             except ValueError:
                 rec = ""
-        # 関連付け（商談/論点/Delivery/開発案件、複数可, #146）。カードには全ての紐づけ先を
+        # 関連付け（商談/社内PJ/Delivery/開発案件、複数可, #146）。カードには全ての紐づけ先を
         # チップで並べる。ポップアップの初期値には{link_type,link_id,label,href,icon}の配列
         # (data-links属性)を渡す。
         _card_links = _links_map.get(tid, [])
@@ -7456,7 +7456,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                          f'title="{_esc(_lk["label"])}">{_icon}{_esc(_lk["label"][:20])}</a>')
             _card_links_json.append({"link_type": _lk["link_type"], "link_id": _lk["link_id"],
                                      "label": _lk["label"], "href": _href, "icon": _icon})
-        # #関連付けポップアップ(2026-08-27): カード上から「🔗関連」で商談/論点/Delivery/開発案件へ
+        # #関連付けポップアップ(2026-08-27): カード上から「🔗関連」で商談/社内PJ/Delivery/開発案件へ
         # 紐づけできるようにする（従来はtask_form=別画面の編集フォームでしか設定できなかった）。
         link_edit_btn = (f'<button type="button" class="tc-edit" style="border:none;background:none;'
                          f'cursor:pointer;color:#94a3b8" title="関連を設定" onclick="openLinkPop({tid})">'
@@ -7607,20 +7607,20 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         strip = (f'<div class="pj-strip">{chips}{clear}'
                  f'<a class="pj-chip mng" href="/task-projects">⚙ PJ管理</a></div>')
 
-    # 紐づけられている案件一覧（Delivery/商談/論点を分けて表示。ユーザー要望2026-08-27、
-    # 2026-08-29に並び順を#124のガント紐づけ単位モードと同じDelivery→商談→論点に統一）。
+    # 紐づけられている案件一覧（Delivery/商談/社内PJを分けて表示。ユーザー要望2026-08-27、
+    # 2026-08-29に並び順を#124のガント紐づけ単位モードと同じDelivery→商談→社内PJに統一）。
     # 完了にしか登場しない紐づけ先はtask_link_summary側で除外済み。デフォルトで上部に出すが、
     # PJストリップと同じ横スクロールチップ行×最大3段に留め、全体の可視性を崩さないようにする。
     _link_summary = sfa_db.task_link_summary(con)
     _link_strip_rows = ""
-    for _lt, _lbl_prefix, _lt_icon in (("delivery", "Delivery", "🚚"), ("deal", "商談", "🤝"), ("issue", "論点", "📌")):
+    for _lt, _lbl_prefix, _lt_icon in (("delivery", "Delivery", "🚚"), ("deal", "商談", "🤝"), ("issue", "社内PJ", "📌")):
         _entries = _link_summary.get(_lt) or []
         if not _entries:
             continue
         if _lt == "issue":
-            # #159: 論点は会社機能別にグルーピングして表示する（見出しに機能名が出るため、
+            # #159: 社内PJは会社機能別にグルーピングして表示する（見出しに機能名が出るため、
             # 個々のチップ内の「（会社機能）」「（商談共通）」表記は冗長になるので外し、
-            # 論点名のみ表示する。ユーザー要望2026-09-04）。
+            # 社内PJ名のみ表示する。ユーザー要望2026-09-04）。
             _cf_order = sfa_db.get_master_list(con, "company_functions") or list(sfa_db.COMPANY_FUNCTIONS)
             _UNSET_GRP, _DEAL_GRP = "商談共通（機能未設定）", "商談個別"
             _groups: dict[str, list[dict]] = {}
@@ -7666,9 +7666,9 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     _link_filter_html = _task_link_picker_html(
         con, prefix="tfFilterLink", cur_type=link_type, cur_id=link_id,
         auto_submit_form_id="tasksFilterForm", allow_none_filter=True)
-    # 会社機能フィルタ（#147）: 紐づく論点(issue)にcompany_functionが設定されているタスクを
-    # 絞り込む。「経営企画関連のタスクだけ見たい」等、論点の会社機能フラグをコンサルタスク側で
-    # 活用する導線として新設（商談に紐づく論点はcompany_functionを持たないため対象外）。
+    # 会社機能フィルタ（#147）: 紐づく社内PJ(issue)にcompany_functionが設定されているタスクを
+    # 絞り込む。「経営企画関連のタスクだけ見たい」等、社内PJの会社機能フラグをコンサルタスク側で
+    # 活用する導線として新設（商談に紐づく社内PJはcompany_functionを持たないため対象外）。
     _company_functions = sfa_db.get_master_list(con, "company_functions") or list(sfa_db.COMPANY_FUNCTIONS)
     _cf_fopt = '<option value="">会社機能:全て</option>' + "".join(
         f'<option value="{html.escape(cf)}"{" selected" if cf == issue_company_function else ""}>{html.escape(cf)}</option>'
@@ -7736,7 +7736,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'<span id="dpPickCount">0</span>件</b>'
             f'<button class="btn" type="button" onclick="tcGoDailyPlan()">次へ（仕分けへ）</button>'
             f'<button class="btn sec" type="button" onclick="tcToggleDailyPick()">キャンセル</button></div>')
-    # 関連付けポップアップ(2026-08-27): カード上の「🔗関連」から商談/論点/Delivery/開発案件へ
+    # 関連付けポップアップ(2026-08-27): カード上の「🔗関連」から商談/社内PJ/Delivery/開発案件へ
     # 紐づけできるように、task_formと同じピッカーをページに1回だけ埋め込む（prefix="tcLink"）。
     _link_dev_opts = '<option value="">（なし）</option>' + "".join(
         f'<option value="dev_project:{dp["id"]}">🛠 {_esc(dp.get("theme") or "開発案件")}'
@@ -7816,7 +7816,7 @@ _GANTT_CSS = """<style>
 
 
 def _parse_issue_period_text(text: str) -> tuple[str | None, str | None]:
-    """サブ論点の期間を自由記述から解釈する（#163、2026-09-06ユーザー確定:
+    """サブ社内PJの期間を自由記述から解釈する（#163、2026-09-06ユーザー確定:
     「自由記述。精度をあげるための指示を精緻に設計して」）。
     「来週から3週間」「9/20〜10/10」「今月中」等、多様な言い回しに耐えられるよう、
     相対表現・年省略・単一日付・片側省略・曜日名の扱いをプロンプトで明示する。
@@ -7874,14 +7874,14 @@ def _parse_issue_period_text(text: str) -> tuple[str | None, str | None]:
 
 
 def deal_issues_gantt_page(con) -> str:
-    """論点プロジェクト管理（#163、2026-09-06。同日追加要望で構成変更）。
-    論点を「商談/会社機能」の分類別に常時全件一覧表示し、各論点のブロック内に
-    サブ論点追加フォームを常設する（画面最上部の独立した論点セレクタ式フォームは廃止し、
-    一覧画面内でサブ論点を追加していく運用に統一——ユーザー要望2026-09-06）。
+    """社内PJ管理（#163、2026-09-06。同日追加要望で構成変更）。
+    社内PJを「商談/会社機能」の分類別に常時全件一覧表示し、各社内PJのブロック内に
+    サブ社内PJ追加フォームを常設する（画面最上部の独立した社内PJセレクタ式フォームは廃止し、
+    一覧画面内でサブ社内PJを追加していく運用に統一——ユーザー要望2026-09-06）。
     UI・ドラッグ移動/リサイズはコンサルタスクガント（#152, tasks_gantt_page）と
     同じ操作感（ユーザー確定）。コンサルタスクと異なり、開始日/終了日は
     deal_issue_subitemsの直接列であり、工数感からの逆算・容量スケジューリングは無い
-    単純な期間管理。サブ論点の追加は自由記述の期間テキスト→Haikuで解釈
+    単純な期間管理。サブ社内PJの追加は自由記述の期間テキスト→Haikuで解釈
     （_parse_issue_period_text）。解釈に失敗した行は「要確認」として別枠に出し、
     人間が日付ピッカーで直す。"""
     today = _today_jst()
@@ -7962,7 +7962,7 @@ def deal_issues_gantt_page(con) -> str:
     if not all_issues:
         cells.append(
             f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
-            f'論点がまだありません。<a href="/deal-issue/new">＋新規論点</a>から作成してください。</div>')
+            f'社内PJがまだありません。<a href="/deal-issue/new">＋新規社内PJ</a>から作成してください。</div>')
         row += 1
     for cat in cat_list:
         cells.append(
@@ -7974,7 +7974,7 @@ def deal_issues_gantt_page(con) -> str:
                 (s for s in by_issue.get(issue["id"], []) if s.get("start_date") and s.get("end_date")),
                 key=lambda x: (x["start_date"], x["end_date"]))
             issue_label = _esc(sfa_db.task_link_label(con, "issue", issue["id"]) or issue.get("issue") or "")
-            # 論点1件＝常設の「＋サブ論点追加」フォーム付き行（一覧画面内で追加する運用。2026-09-06要望）。
+            # 社内PJ1件＝常設の「＋サブ社内PJ追加」フォーム付き行（一覧画面内で追加する運用。2026-09-06要望）。
             cells.append(
                 f'<div style="grid-row:{row};grid-column:1 / -1;background:#fafbfc;'
                 f'border-top:1px solid #e2e8f0;padding:4px 8px;display:flex;gap:6px;align-items:center;'
@@ -7984,7 +7984,7 @@ def deal_issues_gantt_page(con) -> str:
                 f'<form method="post" action="/deal-issue-subitem/new" '
                 f'style="display:flex;gap:4px;flex:1;min-width:280px;align-items:center">'
                 f'<input type="hidden" name="issue_id" value="{issue["id"]}">'
-                f'<input type="text" name="title" placeholder="サブ論点名" required '
+                f'<input type="text" name="title" placeholder="サブ社内PJ名" required '
                 f'style="flex:1;font-size:11px;min-width:0">'
                 f'<input type="text" name="period_text" required '
                 f'placeholder="期間（例: 来週から3週間、9/20〜10/10、今月中）" '
@@ -8036,7 +8036,7 @@ def deal_issues_gantt_page(con) -> str:
         )
         missing_html = f"""
         <div class="card">
-          <h3 style="margin:0 0 8px">⚠️ 期間を解釈できなかったサブ論点（{len(missing_items)}件）</h3>
+          <h3 style="margin:0 0 8px">⚠️ 期間を解釈できなかったサブ社内PJ（{len(missing_items)}件）</h3>
           <p class="muted" style="font-size:12px;margin:0 0 8px">自由記述の解釈に失敗しました。
             開始日を手入力すると、終了日はその2週間後の仮設定で自動補完されます（後でガント上で調整できます）。</p>
           {_miss_rows}
@@ -8047,9 +8047,9 @@ def deal_issues_gantt_page(con) -> str:
 
     return f"""
     <div class="card">
-      <h2 style="margin:0 0 6px">📊 論点プロジェクト管理（ガント）</h2>
-      <p class="muted" style="font-size:12px;margin:0">論点は分類（商談/会社機能）別に一覧表示されます。各論点の行にあるフォームから
-        その場でサブ論点を追加でき、期間が確定した論点はガントバーで表示されます。
+      <h2 style="margin:0 0 6px">📊 社内PJ管理（ガント）</h2>
+      <p class="muted" style="font-size:12px;margin:0">社内PJは分類（商談/会社機能）別に一覧表示されます。各社内PJの行にあるフォームから
+        その場でサブ社内PJを追加でき、期間が確定した社内PJはガントバーで表示されます。
         バーをドラッグすると日程スライド、左右の端をドラッグすると期間の伸縮ができます（コンサルタスクガントと同じ操作）。</p>
     </div>
     <div class="card">{grid_html}</div>
@@ -8104,7 +8104,7 @@ def deal_issues_gantt_page(con) -> str:
        }}).catch(function(){{ alert('通信エラー'); }});
     }}
     function igDeleteItem(id){{
-      if(!confirm('このサブ論点を削除しますか？')) return;
+      if(!confirm('このサブ社内PJを削除しますか？')) return;
       fetch('/deal-issue-subitem/'+id+'/delete',{{method:'POST'}}).then(function(){{ location.reload(); }});
     }}
     document.addEventListener('keydown',function(ev){{
@@ -8220,7 +8220,7 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
     容量データが無い担当者は従来通りtask_gantt_range（工数感×期日→所要日数・開始日を
     期日から単純逆算、他タスクとの競合は見ない）にフォールバックする（無停止移行）。
     group_by='type'（既定）は大分類(project×category)ごと、group_by='link'は紐づけ単位
-    （紐づけ無し→Delivery→商談→論点、の順にグループのグループを並べる。ユーザー要望
+    （紐づけ無し→Delivery→商談→社内PJ、の順にグループのグループを並べる。ユーザー要望
     2026-09-03: 紐づけ無し案件を一番上に）でグループ化。
     グループ間の並び順（type/linkとも同じ）＝グループ内タスクの所要日数合計が多い順
     （linkはさらに紐づけ種別の優先順が最優先）。
@@ -8263,7 +8263,7 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
     def _days(t):
         return sfa_db.TASK_EFFORT_DAYS.get(t.get("effort_level") or "", 0)
 
-    # 紐づけ無し(None)を一番上に（ユーザー要望2026-09-03）。以降はDelivery→商談→論点の順。
+    # 紐づけ無し(None)を一番上に（ユーザー要望2026-09-03）。以降はDelivery→商談→社内PJの順。
     _LINK_TYPE_ORDER = {None: 0, "delivery": 1, "deal": 2, "issue": 3}
     _LINK_TYPE_ICON = {"delivery": "🚚", "deal": "🤝", "issue": "📌"}
     groups: dict = {}
@@ -8395,7 +8395,7 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
 
     _group_desc = ("大分類（プロジェクト×種類）ごとに、合計所要日数が多いグループから表示。"
                    if group_by != "link" else
-                   "紐づけ単位（紐づけ無し→Delivery→商談→論点、の順）で、各単位内は合計所要日数が多いグループから表示。")
+                   "紐づけ単位（紐づけ無し→Delivery→商談→社内PJ、の順）で、各単位内は合計所要日数が多いグループから表示。")
     _group_tabs = f"""
     <div style="display:flex;gap:6px;margin:4px 0 8px">
       <a class="btn sec" href="/tasks/gantt?group=type"
@@ -8984,7 +8984,7 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         f'{d.month}/{d.day}({_JP_WEEKDAYS[d.weekday()]}){_day_suffix.get(i, "")}'
         for i, d in enumerate(days)
     ]
-    # タスクの紐づけ先（Delivery/商談/論点、複数可, #146）をまとめて求める（N+1回避）。
+    # タスクの紐づけ先（Delivery/商談/社内PJ、複数可, #146）をまとめて求める（N+1回避）。
     # 参照切れ（対象削除済み等）はget_task_links_map側で既に除外済み——tasks_by_id(JS側)と
     # トレイのHTML(Python側)で判定がズレないように、同じ結果をどちらでも使う。
     _dp_links_map = sfa_db.get_task_links_map(con, [t["id"] for t in tasks])
@@ -9000,13 +9000,13 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
                                 for l in _dp_task_links(t)]}
         for t in tasks
     }
-    # チップ置き場: 縦4段（Delivery/商談/論点/紐づけなし）、各段の中は案件(entity)ごとのハコ、
+    # チップ置き場: 縦4段（Delivery/商談/社内PJ/紐づけなし）、各段の中は案件(entity)ごとのハコ、
     # ハコの中に実際のタスクチップ（ユーザー要望2026-09-01: 従来の仕分けステップを廃止し、
     # いきなりこの構造で表示。軽い/重いはeffort_levelから自動判定してチップの色だけに反映）。
     # 2026-09-02(#146): 1タスクが複数の紐づけ先を持つ場合、該当する全てのハコに同じチップを
     # 重複して配置する（ユーザー確定仕様。どこか1箇所へドラッグ配置すると全ての重複チップが
     # 消える。JS側dpLinkGroupIds/removePlacement参照）。
-    _LINK_TIERS = (("delivery", "🚚 Delivery"), ("deal", "🤝 商談"), ("issue", "📌 論点"))
+    _LINK_TIERS = (("delivery", "🚚 Delivery"), ("deal", "🤝 商談"), ("issue", "📌 社内PJ"))
 
     def _dp_bucket(t: dict) -> str:
         return "軽い" if (t.get("effort_level") or "") == "軽" else "重い"
@@ -9088,8 +9088,8 @@ def daily_plan_page(con, assignee: str | None = None, picked: list[int] | None =
         再ドラッグで移動、×で削除できます。同じ時間帯に重ねて配置できます。</p>
       {_gcal_note}
       <div class="dp-sticky-top">
-        <!-- チップの置き場は紐づけ案件別（Delivery/商談/論点/紐づけなし）に縦4段、各段の中に
-             案件（Delivery1件・商談1件・論点1件）ごとのハコ、ハコの中にタスクチップ、という
+        <!-- チップの置き場は紐づけ案件別（Delivery/商談/社内PJ/紐づけなし）に縦4段、各段の中に
+             案件（Delivery1件・商談1件・社内PJ1件）ごとのハコ、ハコの中にタスクチップ、という
              構造（ユーザー要望2026-09-01: 従来の「①軽い/重いに仕分ける」ステップを廃止し、
              いきなりこの構造でカレンダー配置画面から始める。軽い/重いはeffort_levelから
              自動判定してチップの色だけに反映する）。表示エリアの高さは以前と同程度に保つため、
@@ -9199,7 +9199,7 @@ _DAILY_PLAN_JS = f"""<script>
     dpWireChip(el);
     return el;
   }}
-  // チップ置き場は紐づけ案件別（Delivery/商談/論点/紐づけなし）の縦4段、各段の中に案件ごとの
+  // チップ置き場は紐づけ案件別（Delivery/商談/社内PJ/紐づけなし）の縦4段、各段の中に案件ごとの
   // ハコ、ハコの中にタスクチップ（ユーザー要望2026-09-01）。タスクのlinks配列
   // (window.DP_TASKS_BY_ID、#146で複数関連付けに対応)から、返却先のハコ要素ID群を決める。
   // 1タスクが複数の紐づけ先を持つ場合、全てのハコが対象（重複表示、ユーザー確定仕様）。
@@ -11151,7 +11151,7 @@ def home_page(con, owner: str | None = None, status_filter: str | None = None,
           <div class="tb-panel">
             <a href="/dev-projects/new">＋ 開発案件</a>
             <a href="/hearing/new">＋ ヒアリング</a>
-            <a href="/deal-issue/new">＋ 論点</a>
+            <a href="/deal-issue/new">＋ 社内PJ</a>
           </div>
         </details>
         <details class="tb-menu">
@@ -12129,7 +12129,7 @@ def _rich_note_preview(content: str, limit: int = 70) -> str:
 
 
 # kind → 起動ボタンのラベル
-_RICH_NOTE_LABELS = {"deal": "商談ノート", "issue": "論点メモ", "htmpl": "テンプレメモ"}
+_RICH_NOTE_LABELS = {"deal": "商談ノート", "issue": "社内PJメモ", "htmpl": "テンプレメモ"}
 
 
 def _rich_note_entity_title(con, kind: str, entity_id: int) -> str:
@@ -12142,7 +12142,7 @@ def _rich_note_entity_title(con, kind: str, entity_id: int) -> str:
         return f"SFA#{entity_id} {(acc[0] if acc else '')}／{d.get('deal_name') or ''}".strip("／ ")
     if kind == "issue":
         r = con.execute("SELECT issue FROM deal_issues WHERE id=?", (entity_id,)).fetchone()
-        return f"論点: {r[0]}" if r and r[0] else f"論点 #{entity_id}"
+        return f"社内PJ: {r[0]}" if r and r[0] else f"社内PJ #{entity_id}"
     if kind == "htmpl":
         r = con.execute("SELECT name FROM hearing_templates WHERE id=?", (entity_id,)).fetchone()
         return f"ヒアリングテンプレ: {r[0]}" if r and r[0] else f"テンプレ #{entity_id}"
@@ -12169,7 +12169,7 @@ def _rich_note_btn(kind: str, entity_id: int, has_note: bool) -> str:
 
 class _RichNoteLinkExtractor(html.parser.HTMLParser):
     """リッチメモ本文からリンクチップ(class=rn-linkchip)のhref/表示名を抽出する。
-    個別ページ（商談・論点等）にリンク一覧ボタンを出すため（ユーザー要望2026-08-27）。"""
+    個別ページ（商談・社内PJ等）にリンク一覧ボタンを出すため（ユーザー要望2026-08-27）。"""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -12382,14 +12382,14 @@ function rnOpen(kind,id,noteId){
   b.style.display='block'; m.classList.add('open');
   _rnFetchNotes(id, noteId, 0);
 }
-// 論点メモ(kind='issue')がロック中の場合、サーバがlocked:trueを返す→パスワード入力を促してリトライ。
+// 社内PJメモ(kind='issue')がロック中の場合、サーバがlocked:trueを返す→パスワード入力を促してリトライ。
 // 他のkind（deal/htmpl等）はロック機能が無いため常に1回目で成功する。
 function _rnFetchNotes(id, noteId, tries){
   fetch('/rich-notes?kind='+encodeURIComponent(_rnKind)+'&id='+encodeURIComponent(id)
         +'&pw='+encodeURIComponent(_rnPw)).then(function(r){return r.json();}).then(function(d){
     if(d && d.locked){
       if(tries>=3){ alert('パスワードが正しくないため開けません。'); rnClose(); return; }
-      var pw=prompt('🔒 この論点メモはロックされています。パスワードを入力してください。');
+      var pw=prompt('🔒 この社内PJメモはロックされています。パスワードを入力してください。');
       if(pw==null){ rnClose(); return; }
       _rnPw=pw; _rnFetchNotes(id, noteId, tries+1); return;
     }
@@ -12435,7 +12435,7 @@ function rnSyncTriggers(){ var has=false;
   document.querySelectorAll('.rn-trg[data-kind="'+_rnKind+'"][data-id="'+_rnId+'"]').forEach(function(b){ b.classList.toggle('on',has); }); }
 function rnClose(){ rnLinkPopClose(); var wasDirty=_rnDirty; if(_rnDirty)rnSave(); document.getElementById('rnModal').classList.remove('open');
   document.getElementById('rnBackdrop').style.display='none';
-  // 論点詳細ページ等では、閉じた後にノートカードを最新化するためリロード（保存fetchの完了を少し待つ）。
+  // 社内PJ詳細ページ等では、閉じた後にノートカードを最新化するためリロード（保存fetchの完了を少し待つ）。
   if(window._rnReloadOnClose){ setTimeout(function(){ location.reload(); }, wasDirty?450:60); } }
 function rnCmd(ev,cmd,val){ ev.preventDefault(); var e=_rnEl(); e.focus();
   document.execCommand(cmd,false,val||null); rnNorm(); rnDirty(); return false; }
@@ -12742,9 +12742,9 @@ document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){
   var m=document.getElementById('rnModal');
   if(m&&m.classList.contains('open')){ ev.preventDefault(); rnClose(); } } });
 window.addEventListener('beforeunload',function(){ if(_rnDirty)rnSave(); });
-// 論点メモのパスワードロック管理（ユーザー要望2026-08-23）。
+// 社内PJメモのパスワードロック管理（ユーザー要望2026-08-23）。
 function diLockSet(iid){
-  var pw=prompt('論点メモにかけるパスワードを入力してください'); if(!pw)return;
+  var pw=prompt('社内PJメモにかけるパスワードを入力してください'); if(!pw)return;
   var email=prompt('パスワードを忘れた際の連絡先メールアドレスを入力してください（必須）'); if(!email)return;
   fetch('/deal-issue/'+iid+'/note-lock/set',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'password='+encodeURIComponent(pw)+'&recovery_email='+encodeURIComponent(email)})
@@ -12766,9 +12766,9 @@ function diLockForgot(iid){
     headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'x=1'})
    .then(function(r){return r.json();}).then(function(d){
      if(d&&d.ok){
-       var body=encodeURIComponent('論点メモのパスワードをリセットします。以下のリンクを開いて本人確認してください:\\n'+d.reset_url);
+       var body=encodeURIComponent('社内PJメモのパスワードをリセットします。以下のリンクを開いて本人確認してください:\\n'+d.reset_url);
        location.href='mailto:'+encodeURIComponent(d.recovery_email)
-         +'?subject='+encodeURIComponent('論点メモのパスワードリセット')+'&body='+body;
+         +'?subject='+encodeURIComponent('社内PJメモのパスワードリセット')+'&body='+body;
      } else alert('エラー: '+((d&&d.error)||'')); });
 }
 </script>"""
@@ -12885,7 +12885,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           </h2>
           <p class="muted" style="margin:0">ヒアリング未実施</p>
         </div>"""
-        # 取り込み原本（文字起こし/原本ファイル）を商談側にも表示（論点と同仕様）
+        # 取り込み原本（文字起こし/原本ファイル）を商談側にも表示（社内PJと同仕様）
         _dintake = _intake_originals_html(con, "deal", deal["id"], f"/deal/{deal['id']}")
         if _dintake:
             hearing_html += f'<div class="card">{_dintake}</div>'
@@ -12953,7 +12953,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     if deal.get("id"):
         issues = sfa_db.list_deal_issues(con, deal_id=deal["id"])
         _iss_owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # 社員マスタ連動
-        add_issue_btn = f'<a class="btn sec" href="/deal-issue/new?deal_id={deal["id"]}">＋論点を追加</a>'
+        add_issue_btn = f'<a class="btn sec" href="/deal-issue/new?deal_id={deal["id"]}">＋社内PJを追加</a>'
         if issues:
             issue_rows = ""
             for it in issues:
@@ -12984,10 +12984,10 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         </style>
         <div class="card">
           <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <span>社内論点（{len(issues)}件）</span>{add_issue_btn}
+            <span>社内PJ（{len(issues)}件）</span>{add_issue_btn}
           </h2>
           <table style="table-layout:fixed;width:100%">
-            <tr><th style="width:16%">論点</th><th style="width:8%">ステータス</th><th style="width:16%">議論メンバー</th>
+            <tr><th style="width:16%">社内PJ</th><th style="width:8%">ステータス</th><th style="width:16%">議論メンバー</th>
                 <th style="width:9%">責任者</th><th style="width:8%">解消期限</th><th style="width:37%">サマリー・メモ</th><th style="width:6%"></th></tr>
             {issue_rows}
           </table>
@@ -12999,9 +12999,9 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             deal_issues_html = f"""
         <div class="card">
           <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <span>社内論点</span>{add_issue_btn}
+            <span>社内PJ</span>{add_issue_btn}
           </h2>
-          <p class="muted" style="margin:0">論点なし</p>
+          <p class="muted" style="margin:0">社内PJなし</p>
         </div>"""
 
     attachments_widget = ""
@@ -13153,7 +13153,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         <div style="display:flex;gap:8px;margin:-4px 0 14px;flex-wrap:wrap">
           <a class="btn sec" href="/dev-projects/new?deal_id={_did}">＋新規開発案件</a>
           <a class="btn sec" href="/hearing/new?target=deal:{_did}">＋新規ヒアリング</a>
-          <a class="btn sec" href="/deal-issue/new?deal_id={_did}">＋新規論点</a>
+          <a class="btn sec" href="/deal-issue/new?deal_id={_did}">＋新規社内PJ</a>
           {_delivery_top_btn}
           <form method="post" action="/deal/{_did}/duplicate" style="display:inline;margin:0"
             onsubmit="return confirm('この商談を複製して新規商談を作成します（活動履歴・マイルストーン等は引き継ぎません）。よろしいですか？')">
@@ -13251,7 +13251,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         _imp = sfa_db.deal_delete_impact(con, deal["id"])
         _did = deal["id"]
         _parts = []
-        for _k, _lbl in (("activities", "活動履歴"), ("issues", "論点"), ("milestones", "次回MS"),
+        for _k, _lbl in (("activities", "活動履歴"), ("issues", "社内PJ"), ("milestones", "次回MS"),
                          ("dev_projects", "開発案件"), ("deliveries", "Delivery"), ("attachments", "添付")):
             if _imp[_k]:
                 _parts.append(f"{_lbl}{_imp[_k]}件")
@@ -13494,9 +13494,12 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
         + '</div></details>')
 
     def _dsel(pid, field, values, current):
+        vals = list(values)
+        if current and current not in vals:
+            vals = [current] + vals  # マスタ外の現値も必ず表示（例: 撤廃済みの旧ステージ値）
         opts = "".join(
             f'<option value="{html.escape(v)}"{" selected" if v == current else ""}>{html.escape(v)}</option>'
-            for v in values)
+            for v in vals)
         return (f'<select onchange="updateDevProjectField({pid}, \'{field}\', this.value)"'
                 f' style="font-size:12px;padding:3px 4px;min-width:80px;width:100%">'
                 f'<option value=""></option>{opts}</select>')
@@ -13974,7 +13977,7 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
     </script>"""
 
 
-# ── 社内論点（商談に紐づく議論ポイント管理） ─────────────────────────────────────
+# ── 社内PJ（商談に紐づく議論ポイント管理） ─────────────────────────────────────
 
 def _deal_issues_url(*, status=None, member=None, responsible=None, q=None, sort=None, open_issue=None,
                      company_function=None) -> str:
@@ -14038,7 +14041,7 @@ def _issue_responsible_select_html(issue_id: int, current: str | None, owners: l
 
 
 def _issue_company_function_select_html(issue_id: int, current: str | None, company_functions: list) -> str:
-    """会社機能（#147）のインライン編集セレクト。商談に紐づかない論点（一覧の商談/機能列）でのみ使用。"""
+    """会社機能（#147）のインライン編集セレクト。商談に紐づかない社内PJ（一覧の商談/機能列）でのみ使用。"""
     _menu = list(company_functions) + ([current] if current and current not in company_functions else [])
     opts = '<option value="">（未設定）</option>' + "".join(
         f'<option value="{html.escape(cf)}"{" selected" if cf == current else ""}>{html.escape(cf)}</option>'
@@ -14151,7 +14154,7 @@ def _ai_summary_hover_html(summary: str | None, *, issue_id: int, return_to: str
 
 
 def _issue_memo_panel_html(memos: list[dict], issue: dict, *, return_to: str) -> str:
-    """論点1件分の、メモ履歴＋追加フォーム（<details>展開時に表示する内容）。"""
+    """社内PJ1件分の、メモ履歴＋追加フォーム（<details>展開時に表示する内容）。"""
     memo_html = "".join(
         f'<div style="padding:6px 0;border-bottom:1px solid #eef1f5;display:flex;justify-content:space-between;gap:8px">'
         f'<div style="flex:1;min-width:0">'
@@ -14188,7 +14191,7 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
                                      company_function=company_function)
     _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # 社員マスタ連動
     _company_functions = sfa_db.get_master_list(con, "company_functions") or list(sfa_db.COMPANY_FUNCTIONS)
-    rn_issue_ids = sfa_db.rich_note_entity_ids(con, "issue")  # メモありの論点（📝点灯用）
+    rn_issue_ids = sfa_db.rich_note_entity_ids(con, "issue")  # メモありの社内PJ（📝点灯用）
 
     def _fopt(values, current):
         return '<option value="">全て</option>' + "".join(
@@ -14222,13 +14225,13 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
             deal_cell = (f'<a href="/deal/{it["deal_id"]}">{_esc(it.get("account_name"))}</a>'
                         f'<div class="muted">{_esc(it.get("deal_name"))}</div>')
         else:
-            # #147/#158: 商談に紐づかない論点は、一覧からその場で会社機能を選べる
+            # #147/#158: 商談に紐づかない社内PJは、一覧からその場で会社機能を選べる
             # （従来は編集画面に入らないと変更できなかった。ステータス等の他列と同じ
             # インライン編集に揃えてほしいというユーザー要望2026-09-04）。
             _cf_label = f'🏢 {_esc(it["company_function"])}' if it.get('company_function') else '商談共通'
             deal_cell = (f'<div class="muted" style="margin-bottom:2px">{_cf_label}</div>'
                         f'{_issue_company_function_select_html(it["id"], it.get("company_function"), _company_functions)}')
-        # 論点名クリックで詳細ページ（左:編集項目／右:サマリ＋論点メモ）を開く。
+        # 社内PJ名クリックで詳細ページ（左:編集項目／右:サマリ＋社内PJメモ）を開く。
         rows += f"""
         <tr>
           <td>{deal_cell}</td>
@@ -14250,16 +14253,16 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
     </style>
     <div class="card">
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <span>社内論点一覧（{len(issues)}件）</span>
-        <a class="btn" href="/deal-issue/new">＋新規論点</a>
+        <span>社内PJ一覧（{len(issues)}件）</span>
+        <a class="btn" href="/deal-issue/new">＋新規社内PJ</a>
       </h2>
       {filter_row}
       <div style="overflow:auto;max-height:70vh">
       <table style="table-layout:fixed;width:100%">
-        <tr>{_sticky_th('商談/機能', width='15%')}{_sticky_th('論点', width='13%')}{_sticky_th('ステータス', width='8%')}
+        <tr>{_sticky_th('商談/機能', width='15%')}{_sticky_th('社内PJ', width='13%')}{_sticky_th('ステータス', width='8%')}
             {_sticky_th('議論メンバー', width='13%')}{_sticky_th('責任者', width='8%')}{_sticky_th('解消期限', width='9%')}
-            {_sticky_th('AIサマリー（論点メモから生成）', width='29%')}{_sticky_th('', width='5%')}</tr>
-        {rows or '<tr><td colspan=8 class=muted>論点がまだありません</td></tr>'}
+            {_sticky_th('AIサマリー（社内PJメモから生成）', width='29%')}{_sticky_th('', width='5%')}</tr>
+        {rows or '<tr><td colspan=8 class=muted>社内PJがまだありません</td></tr>'}
       </table>
       </div>
     </div>
@@ -14270,7 +14273,7 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
 
 def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
                      return_to: str | None = None) -> str:
-    """論点の新規/編集フォーム。issue未指定時は新規入力（商談選択欄あり）。"""
+    """社内PJの新規/編集フォーム。issue未指定時は新規入力（商談選択欄あり）。"""
     is_edit = issue is not None
     it = issue or {}
     return_to_field = f'<input type="hidden" name="return_to" value="{_esc(return_to)}">' if return_to else ""
@@ -14291,7 +14294,7 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
     )
     delete_btn = ""
 
-    # 会社機能（#147）: 商談に紐づかない論点（商談共通）の場合のみ選択させる。
+    # 会社機能（#147）: 商談に紐づかない社内PJ（商談共通）の場合のみ選択させる。
     _company_functions = sfa_db.get_master_list(con, "company_functions") or list(sfa_db.COMPANY_FUNCTIONS)
     _cur_cf = it.get("company_function") or ""
 
@@ -14308,7 +14311,7 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
         if it.get("deal_id"):
             deal_label = f'{_esc(it.get("account_name"))} / {_esc(it.get("deal_name"))}'
         else:
-            deal_label = '商談共通（特定の商談に紐づかない論点）'
+            deal_label = '商談共通（特定の商談に紐づかない社内PJ）'
         deal_field_html = (
             f'<input type="hidden" name="deal_id" value="{it.get("deal_id") or ""}">'
             f'<div class="muted" style="margin:4px 0 10px">{deal_label}</div>'
@@ -14344,14 +14347,14 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
     return f"""
     <div class="card" style="max-width:700px">
       <p style="margin:0 0 10px"><a class="btn sec" href="{_esc(back_href)}">← 戻る</a></p>
-      <h2>{'論点を編集' if is_edit else '論点 新規入力'}</h2>
+      <h2>{'社内PJを編集' if is_edit else '社内PJ 新規入力'}</h2>
       {_save_bar('issueForm', cancel_url=back_href)}
       <form method="post" action="{action}" id="issueForm">
         {return_to_field}
         <label>商談</label>
         {deal_field_html}
         {cf_field_html}
-        <label>論点 *</label>
+        <label>社内PJ *</label>
         <input name="issue" required value="{_esc(it.get('issue'))}">
         <label>議論メンバー</label>
         <div style="margin:4px 0 10px">{members_html}</div>
@@ -14382,7 +14385,7 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
 
 
 def _issue_materials_html(con, iid: int, self_url: str) -> str:
-    """論点の検討材料ボックス（社内資料の体系化・層1、2026-08-28）。論点メモ(人が書く)とは
+    """社内PJの検討材料ボックス（社内資料の体系化・層1、2026-08-28）。社内PJメモ(人が書く)とは
     別に、調査結果・AIレポート等を貼り付け／.md・.txtファイルのドラッグ&ドロップで雑に
     投げ込めるだけの置き場。整形はしない（層2=検討資料の生成時にAIがまとめて読む前提）。"""
     materials = sfa_db.list_issue_materials(con, iid)
@@ -14405,7 +14408,7 @@ def _issue_materials_html(con, iid: int, self_url: str) -> str:
       <div class="card" style="flex:1 1 100%">
         <h2 style="margin:0 0 4px">📚 検討材料</h2>
         <p class="muted" style="font-size:11px;margin:0 0 8px">調査結果・AIレポート等をそのまま貼り付け、
-          または.md/.txtファイルを下の枠にドラッグ&ドロップしてください。ここは論点メモと違い整形しません
+          または.md/.txtファイルを下の枠にドラッグ&ドロップしてください。ここは社内PJメモと違い整形しません
           （検討資料を生成する際にAIがまとめて読みます）。</p>
         <div id="matList-{iid}">{cards}</div>
         <form method="post" action="/deal-issue/{iid}/material/add" id="matForm-{iid}" style="margin-top:8px"
@@ -14437,7 +14440,7 @@ def _issue_materials_html(con, iid: int, self_url: str) -> str:
             <input type="hidden" name="return_to" value="{_esc(self_url)}">
             <input type="hidden" name="template" value="process_change">
             <button class="btn sec" type="submit" style="font-size:12px"
-              title="検討材料・論点メモをもとに「業務改善・社内プロセス変更提案資料」の型でAIが生成します">
+              title="検討材料・社内PJメモをもとに「業務改善・社内プロセス変更提案資料」の型でAIが生成します">
               📄 業務改善・社内プロセス変更提案資料を生成
             </button>
           </form>
@@ -14446,7 +14449,7 @@ def _issue_materials_html(con, iid: int, self_url: str) -> str:
 
 
 def _issue_docs_list_html(con, iid: int) -> str:
-    """論点に紐づく生成済み検討資料の一覧（簡易版・_issue_materials_htmlから使う）。"""
+    """社内PJに紐づく生成済み検討資料の一覧（簡易版・_issue_materials_htmlから使う）。"""
     docs = sfa_db.list_docs(con, issue_id=iid)
     if not docs:
         return '<p class="muted" style="font-size:12px;margin:0">まだ生成された検討資料はありません。</p>'
@@ -14459,13 +14462,13 @@ def _issue_docs_list_html(con, iid: int) -> str:
 
 
 def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> str:
-    """論点の詳細ページ。左＝編集項目（保存/削除）、右＝AIサマリ＋論点メモ（クリックで大画面編集）。"""
+    """社内PJの詳細ページ。左＝編集項目（保存/削除）、右＝AIサマリ＋社内PJメモ（クリックで大画面編集）。"""
     it = issue
     iid = it["id"]
     self_url = f"/deal-issue/{iid}"
     back_href = return_to or (f'/deal/{it["deal_id"]}' if it.get("deal_id") else "/deal-issues")
     deal_label = (f'{_esc(it.get("account_name"))} / {_esc(it.get("deal_name"))}'
-                  if it.get("deal_id") else '商談共通（特定の商談に紐づかない論点）')
+                  if it.get("deal_id") else '商談共通（特定の商談に紐づかない社内PJ）')
     _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # 社員マスタ連動
     selected_members = set(m.strip() for m in (it.get("members") or "").split(",") if m.strip())
     _mem_menu = list(_owners) + [m for m in selected_members if m not in _owners]
@@ -14484,12 +14487,12 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
     # 左: 編集フォーム（保存先は既存の /deal-issue/{id}/edit。保存後はこの詳細へ戻る）
     left = f"""
       <div class="card" style="flex:1;min-width:320px;max-width:480px">
-        <h2 style="margin-top:0">論点を編集</h2>
+        <h2 style="margin-top:0">社内PJを編集</h2>
         <form method="post" action="/deal-issue/{iid}/edit" id="issueForm">
           <input type="hidden" name="return_to" value="{_esc(self_url)}">
           <label>商談</label>
           <div class="muted" style="margin:4px 0 10px">{deal_label}</div>
-          <label>論点 *</label>
+          <label>社内PJ *</label>
           <input name="issue" required value="{_esc(it.get('issue'))}">
           <label>議論メンバー</label>
           <div style="margin:4px 0 10px">{members_html}</div>
@@ -14510,17 +14513,17 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
           onsubmit="return confirm('削除しますか？')">
           <button class="btn" style="background:#ef4444" type="submit">削除</button></form>
       </div>"""
-    # 右: AIサマリ（論点メモから生成）＋ 論点メモ一覧（カードクリックで大画面編集）
-    # 論点メモのパスワードロック（2026-08）。ロック中はサマリ・メモ本文プレビューをサーバ側で
+    # 右: AIサマリ（社内PJメモから生成）＋ 社内PJメモ一覧（カードクリックで大画面編集）
+    # 社内PJメモのパスワードロック（2026-08）。ロック中はサマリ・メモ本文プレビューをサーバ側で
     # 一切出力しない（HTMLソースからも内容が読めないようにする）。rnOpen自体が開く際に
     # パスワード入力を促し、正しければ大画面エディタで内容を表示する。
     _lock_st = sfa_db.issue_note_lock_status(con, iid)
     _locked = _lock_st["locked"]
     if _locked:
-        summary_html = '<span class="muted">🔒 論点メモがロックされているため非表示です。</span>'
+        summary_html = '<span class="muted">🔒 社内PJメモがロックされているため非表示です。</span>'
         note_cards = (
             f'<div class="di-note-card" onclick="rnOpen(&#39;issue&#39;,{iid})" '
-            f'title="クリックしてパスワードを入力">🔒 論点メモはロック中です（クリックしてパスワードを入力）</div>')
+            f'title="クリックしてパスワードを入力">🔒 社内PJメモはロック中です（クリックしてパスワードを入力）</div>')
     else:
         summary_html = _format_ai_summary_html(it.get("ai_summary"))
         notes = sfa_db.list_rich_notes(con, "issue", iid)
@@ -14533,7 +14536,7 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
                 for n in notes
             )
         else:
-            note_cards = '<div class="muted">論点メモはまだありません。「📝 論点メモ」から追加してください。</div>'
+            note_cards = '<div class="muted">社内PJメモはまだありません。「📝 社内PJメモ」から追加してください。</div>'
     _lock_ctl = (
         f'<button type="button" class="btn sec" style="font-size:12px" onclick="diLockClear({iid})" '
         f'title="現在のパスワードで解除">🔓 鍵を外す</button>'
@@ -14541,26 +14544,26 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
         f'title="連絡先メールへリセットリンクを送る下書きを開く">🔑 パスワードを忘れた</button>'
         if _locked else
         f'<button type="button" class="btn sec" style="font-size:12px" onclick="diLockSet({iid})" '
-        f'title="論点メモにパスワードロックをかける">🔒 鍵をかける</button>')
+        f'title="社内PJメモにパスワードロックをかける">🔒 鍵をかける</button>')
     # ロック中はリンク一覧も内容が読めてしまうため出さない（サマリ・プレビューと同じ扱い）。
     _rn_links_html = "" if _locked else _rich_note_links_html(con, "issue", iid)
     intake_html = _intake_originals_html(con, "issue", iid, self_url)
     right = f"""
       <div class="card" style="flex:1;min-width:320px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-          <h2 style="margin:0">論点サマリ</h2>
+          <h2 style="margin:0">社内PJサマリ</h2>
           <form method="post" action="/deal-issue/{iid}/regenerate_summary" style="display:inline">
             <input type="hidden" name="return_to" value="{_esc(self_url)}">
-            <button type="submit" class="btn sec" style="font-size:12px" title="論点メモから再生成">🔄 サマリ再生成</button>
+            <button type="submit" class="btn sec" style="font-size:12px" title="社内PJメモから再生成">🔄 サマリ再生成</button>
           </form>
         </div>
         <div class="ai-summary-text" style="margin:8px 0 16px;display:block;-webkit-line-clamp:unset;max-height:none;overflow:visible">{summary_html}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;
           border-top:1px solid #eef1f5;padding-top:12px">
-          <h2 style="margin:0">論点メモ</h2>
+          <h2 style="margin:0">社内PJメモ</h2>
           <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
             <a class="btn sec" href="/deal-issue/{iid}/intake" style="font-size:12px"
-               title="議論の文字起こしを貼付→AIで整形して論点メモ化">🎙️ 議論を取り込む（AI整形）</a>
+               title="議論の文字起こしを貼付→AIで整形して社内PJメモ化">🎙️ 議論を取り込む（AI整形）</a>
             {"" if _locked else _rich_note_chip("issue", iid)}
             {_lock_ctl}
           </span>
@@ -14768,7 +14771,7 @@ def _structure_hearing_transcript(transcript: str, item_labels: list, *, want_em
 # 【共有コンポーネント】文字起こしの取り込み（貼付＋ファイルアップロード）
 # すべてのヒアリング/議論サマリ整形機能で共通利用する。取り込み仕様の変更（対応拡張子の追加・
 # パース方法・UI等）は必ずここ（_transcript_intake_form / _resolve_transcript_input /
-# _extract_uploaded_transcript）を更新すること。1箇所直せば全整形機能（商談ヒアリング・論点・
+# _extract_uploaded_transcript）を更新すること。1箇所直せば全整形機能（商談ヒアリング・社内PJ・
 # 今後追加分）へ一括反映される前提を維持する。関連: OneNoteメモの _RICH_NOTE_ASSETS と同方針。
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -14882,7 +14885,7 @@ def _intake_ai_warn_html(ai_ok: bool) -> str:
 
 
 def _intake_originals_html(con, kind: str, entity_id: int, back_url: str) -> str:
-    """取り込み原本（文字起こしローデータ＋アップロード原本ファイル）の一覧セクション。論点・商談で共通。
+    """取り込み原本（文字起こしローデータ＋アップロード原本ファイル）の一覧セクション。社内PJ・商談で共通。
     無ければ空文字。本文表示 /intake-transcript/{id}/view・原本DL /…/file・削除 /…/delete を提供する。"""
     intakes = sfa_db.list_intake_transcripts(con, kind, entity_id)
     if not intakes:
@@ -15105,7 +15108,7 @@ def _handle_jamie_webhook(handler, con, raw_bytes: bytes) -> None:
 
 
 def _inbox_target_options(deals: list, issues: list) -> str:
-    """割り当て先セレクトの<option>（商談＝deal:id / 論点＝issue:id）。
+    """割り当て先セレクトの<option>（商談＝deal:id / 社内PJ＝issue:id）。
     種別(data-type)と検索キー(data-s=小文字ラベル)を持たせ、クライアント側で種別＋語で絞り込む。"""
     def _o(value, label, typ):
         return (f'<option value="{value}" data-type="{typ}" data-s="{_esc(label.lower())}">'
@@ -15121,7 +15124,7 @@ def _inbox_target_options(deals: list, issues: list) -> str:
 
 
 _INBOX_ASSIGN_JS = """
-// 割り当て: 種別(商談/論点)＋検索語で target セレクトの選択肢を絞り込む
+// 割り当て: 種別(商談/社内PJ)＋検索語で target セレクトの選択肢を絞り込む
 function assignFilter(form){
   if(!form)return;
   var tt=(form.querySelector('[name=ttype]')||{}).value||'';
@@ -15218,13 +15221,13 @@ def _inbox_candidates(title: str, attendees: list, deals: list, issues: list) ->
         nm = it.get("issue") or ""
         score = _inbox_name_score(nm.lower(), None, t)
         if score > 0:
-            scored.append((score, f"issue:{it['id']}", f'論点: {nm}'))
+            scored.append((score, f"issue:{it['id']}", f'社内PJ: {nm}'))
     scored.sort(key=lambda x: -x[0])
     return [(v, lbl) for _, v, lbl in scored[:5]]
 
 
 def intake_inbox_page(con) -> str:
-    """自動連携（Jamie等）で受信した未割り当ての文字起こしインボックス。人が商談/論点へ割り当てる。"""
+    """自動連携（Jamie等）で受信した未割り当ての文字起こしインボックス。人が商談/社内PJへ割り当てる。"""
     items = sfa_db.list_inbox_transcripts(con)
     deals = sfa_db.list_deals(con, status="open")
     issues = sfa_db.list_deal_issues(con, status="議論中")
@@ -15272,8 +15275,8 @@ def intake_inbox_page(con) -> str:
                   f'style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px" '
                   f'onsubmit="var b=this.querySelector(\'button[type=submit]\');setTimeout(function(){{if(b){{b.disabled=true;b.textContent=\'処理中…\';}}}},0);">'
                   f'<select name="ttype" onchange="assignFilter(this.form)" style="width:auto">'
-                  f'<option value="">種別</option><option value="deal">商談</option><option value="issue">論点</option></select>'
-                  f'<input type="text" class="assign-q" placeholder="🔍 会社/案件/論点で絞り込み" '
+                  f'<option value="">種別</option><option value="deal">商談</option><option value="issue">社内PJ</option></select>'
+                  f'<input type="text" class="assign-q" placeholder="🔍 会社/案件/社内PJで絞り込み" '
                   f'oninput="assignFilter(this.form)" style="width:auto;max-width:220px">'
                   f'<select name="target" required style="max-width:360px">'
                   f'<option value="">割り当て先を選択…</option>{_tgt_opts}</select>'
@@ -15301,9 +15304,9 @@ def intake_inbox_page(con) -> str:
     <div class="card">
       <h2 style="margin-top:0">📥 取り込みインボックス（自動連携）</h2>
       <p class="muted" style="font-size:13px">Jamie/Zoom等から自動受信した会議の文字起こしです。内容を確認し、
-      <b>商談または論点へ割り当て</b>てください（割り当てないと確定されません）。
+      <b>商談または社内PJへ割り当て</b>てください（割り当てないと確定されません）。
       商談へ割り当てると、まず<b>記録方法（顧客面談/社内議論）や取込オプションを選ぶ画面</b>に進み、
-      そこでAI整形を実行します。論点へ割り当てるとAI整形の確認画面へ直接進みます。</p>
+      そこでAI整形を実行します。社内PJへ割り当てるとAI整形の確認画面へ直接進みます。</p>
       {_cfg_warn}
       {rows}
     </div>
@@ -15338,7 +15341,7 @@ def hearing_intake_page(con, deal: dict, inbox_id: int | None = None) -> str:
               <input type="radio" name="record_kind" value="memo" style="width:auto"
                 onchange="document.getElementById('meetingOpts').style.display='none'">
               <b>社内議論</b>として記録（商談メモ）</label>
-            <span class="muted" style="font-size:11px">※社内議論は活動履歴ではなく商談メモ（論点メモと同仕様）に整理保存します</span>
+            <span class="muted" style="font-size:11px">※社内議論は活動履歴ではなく商談メモ（社内PJメモと同仕様）に整理保存します</span>
           </div>
           <div id="meetingOpts">
             <div class="filter-row js-nofilter" style="gap:14px;flex-wrap:wrap;margin:2px 0">
@@ -15522,7 +15525,7 @@ def hearing_review_page(con, deal: dict, session: dict) -> str:
     <script>{_HEARING_COMMIT_JS}</script>""")
 
 
-# ── 論点(deal_issue)向け: 文字起こし → AI整形（#29のヒアリングAIを論点でトライ） ──
+# ── 社内PJ(deal_issue)向け: 文字起こし → AI整形（#29のヒアリングAIを社内PJでトライ） ──
 
 # AI整形プロンプト共通: 音声認識由来の誤変換を文脈で訂正させる指示（全整形機能で使う）。
 _TRANSCRIPT_CORRECTION_HINT = (
@@ -15582,8 +15585,8 @@ def _structure_issue_transcript(issue_title: str, transcript: str, *,
     """議論の文字起こしを「タイトル／日付／全体像／論点別整理／決定事項／NextStep」に整形（Claude）。
     失敗時も空の骨格を返す（人が手入力で確定できるようにする）。"""
     prompt = (
-        "あなたは社内論点の議論整理担当です。以下の議論（会議/面談）の文字起こしを読み、"
-        f"論点「{issue_title or '（表題なし）'}」に沿って内容を整理してください。"
+        "あなたは社内PJの議論整理担当です。以下の議論（会議/面談）の文字起こしを読み、"
+        f"社内PJ「{issue_title or '（表題なし）'}」に沿って内容を整理してください。"
         + _TRANSCRIPT_CORRECTION_HINT +
         "JSONのみを厳密に出力し、前後の説明文は書かないでください。\n"
         '出力形式: {"title":"内容から推定した簡潔なタイトル(10〜20文字程度・体言止め可)",'
@@ -15664,7 +15667,7 @@ def _md_points_to_html(md: str) -> str:
 
 
 def _issue_structured_to_note_html(overview: str, points_md: str, decisions: list, nextsteps: list) -> str:
-    """整形結果を論点メモ(rich_note)の本文HTMLに組み立てる。出力はサニタイズ前提の許可タグのみ。
+    """整形結果を社内PJメモ(rich_note)の本文HTMLに組み立てる。出力はサニタイズ前提の許可タグのみ。
     points_md は「- 見出し / インデント- 内容」形式のブレット＋インデントテキスト。"""
     parts = []
     if (overview or "").strip():
@@ -15681,7 +15684,7 @@ def _issue_structured_to_note_html(overview: str, points_md: str, decisions: lis
     return "".join(parts)
 
 
-# 論点整形結果を Markdown / Slack / プレーン のいずれかの書式で組み立ててコピーする（他ツールへ転記用）。
+# 社内PJ整形結果を Markdown / Slack / プレーン のいずれかの書式で組み立ててコピーする（他ツールへ転記用）。
 _ISSUE_COPY_JS = """
 function _icGather(){
   var form=document.getElementById('issueReviewForm');
@@ -15742,13 +15745,13 @@ document.addEventListener('DOMContentLoaded',function(){if(document.getElementBy
 
 
 def issue_intake_page(con, issue: dict) -> str:
-    """論点: 議論の文字起こしを貼付してAI整形の入口。"""
+    """社内PJ: 議論の文字起こしを貼付してAI整形の入口。"""
     iid = issue["id"]
     _label = (f'{_esc(issue.get("account_name"))} / {_esc(issue.get("deal_name"))}'
-              if issue.get("deal_id") else "商談共通（特定の商談に紐づかない論点）")
+              if issue.get("deal_id") else "商談共通（特定の商談に紐づかない社内PJ）")
     _inner = f"""
         <div class="filter-row" style="margin:6px 0">
-          <label style="font-size:13px">論点: <b>{_esc(issue.get("issue") or "—")}</b></label>
+          <label style="font-size:13px">社内PJ: <b>{_esc(issue.get("issue") or "—")}</b></label>
         </div>
         <div class="muted" style="font-size:12px;margin:2px 0 8px">{_label}</div>"""
     return render(f"""
@@ -15756,13 +15759,13 @@ def issue_intake_page(con, issue: dict) -> str:
       <h2>🎙️ 議論を取り込む（AI整形）</h2>
       <p class="muted" style="font-size:13px">会議・面談の文字起こし（貼付、またはテキスト/Wordファイル）を取り込んで「AIで整形」すると、
       <b>全体像・論点別の整理・決定事項・NextStep</b>に自動整理します。次の画面で確認・編集し、確定すると
-      <b>論点メモ</b>として保存し、論点サマリも再生成します。</p>
+      <b>社内PJメモ</b>として保存し、社内PJサマリも再生成します。</p>
       {_transcript_intake_form(action=f"/deal-issue/{iid}/intake/structure", cancel_href=f"/deal-issue/{iid}", inner_fields_html=_inner)}
     </div>""")
 
 
 def issue_review_page(con, issue: dict, structured: dict, intake_transcript_id: int | None = None) -> str:
-    """論点: AI整形結果を人が確認・編集し、論点メモとして確定する画面。"""
+    """社内PJ: AI整形結果を人が確認・編集し、社内PJメモとして確定する画面。"""
     iid = issue["id"]
     st = structured or {}
     _points_md = _points_md_from_list(st.get("points") or [])
@@ -15781,8 +15784,8 @@ def issue_review_page(con, issue: dict, structured: dict, intake_transcript_id: 
     </style>
     <div class="card">
       <h2>🎙️ 議論整形結果の確認</h2>
-      <p class="muted" style="font-size:13px">論点 <b>{_esc(issue.get("issue") or "—")}</b>。内容を確認・編集して「確定」すると、
-      論点メモとして保存し、論点サマリを再生成します。</p>
+      <p class="muted" style="font-size:13px">社内PJ <b>{_esc(issue.get("issue") or "—")}</b>。内容を確認・編集して「確定」すると、
+      社内PJメモとして保存し、社内PJサマリを再生成します。</p>
       {_ai_warn}
       <form method="post" action="/deal-issue/{iid}/intake/commit" id="issueReviewForm"
         onsubmit="if(this.dataset.sent){{return false;}}this.dataset.sent='1';var b=this.querySelector('button[type=submit]');setTimeout(function(){{if(b){{b.disabled=true;b.textContent='保存中…';}}}},0);return true;">
@@ -15799,7 +15802,7 @@ def issue_review_page(con, issue: dict, structured: dict, intake_transcript_id: 
         <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ NextStep（1行1件）</div>
         <textarea name="nextsteps" rows="3" {_ta_x} style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_ns_text)}</textarea>
         <div style="margin-top:12px;display:flex;gap:8px">
-          <button class="btn" type="submit">✓ 確定して論点メモに保存</button>
+          <button class="btn" type="submit">✓ 確定して社内PJメモに保存</button>
           <a class="btn sec" href="/deal-issue/{iid}/intake">やり直す</a>
           <a class="btn sec" href="/deal-issue/{iid}">キャンセル</a>
         </div>
@@ -15821,7 +15824,7 @@ def issue_review_page(con, issue: dict, structured: dict, intake_transcript_id: 
 
 def deal_memo_review_page(con, deal: dict, session: dict) -> str:
     """商談: 社内議論の文字起こしを整形→確認→商談メモ(rich_note kind='deal')として保存する画面。
-    論点メモと同仕様（全体像/論点別/決定事項/NextStep＋他ツールコピー）。確定は /hearing/intake/commit。"""
+    社内PJメモと同仕様（全体像/社内PJ別/決定事項/NextStep＋他ツールコピー）。確定は /hearing/intake/commit。"""
     did = deal["id"]
     st = session.get("structured") or {}
     _points_md = _points_md_from_list(st.get("points") or [])
@@ -15841,7 +15844,7 @@ def deal_memo_review_page(con, deal: dict, session: dict) -> str:
     <div class="card">
       <h2>🎙️ 社内議論の整形結果を確認（商談メモに保存）</h2>
       <p class="muted" style="font-size:13px">アカウント <b>{_esc(deal.get("account_name") or "—")}</b> ／ 案件 <b>{_esc(deal.get("deal_name") or "—")}</b>。
-      「確定」で <b>商談メモ</b>（論点メモと同じ場所）に保存します。活動履歴には記録しません。</p>
+      「確定」で <b>商談メモ</b>（社内PJメモと同じ場所）に保存します。活動履歴には記録しません。</p>
       {_ai_warn}
       <form method="post" action="/hearing/intake/commit" id="issueReviewForm"
         onsubmit="if(this.dataset.sent){{return false;}}this.dataset.sent='1';var b=this.querySelector('button[type=submit]');setTimeout(function(){{if(b){{b.disabled=true;b.textContent='保存中…';}}}},0);return true;">
@@ -18363,7 +18366,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(json.dumps([dict(r) for r in _rows], ensure_ascii=False, default=str).encode(),
                                    ctype="application/json")
                 elif path == "/api/deal_issues":
-                    # 論点リマインド(#47)用: 議論中の論点一覧（deal/account名JOIN込み）。トークン認証。
+                    # 社内PJリマインド(#47)用: 議論中の社内PJ一覧（deal/account名JOIN込み）。トークン認証。
                     qs = self._qs()
                     token = (qs.get("token", [None])[0] or "")
                     if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
@@ -19108,7 +19111,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         )
                     except (ValueError, IndexError):
                         self._send(render("<div class=card>ページが見つかりません</div>"), 404)
-                # ── 社内論点 ──
+                # ── 社内PJ ──
                 elif path == "/deal-issues":
                     qs = self._qs()
                     def qs1(k): return (qs.get(k, [None])[0] or None)
@@ -19140,7 +19143,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         iid = 0
                     iss = sfa_db.get_deal_issue(con, iid) if iid else None
                     self._send(issue_intake_page(con, iss) if iss
-                               else render("<div class=card>論点が見つかりません</div>", ), 200 if iss else 404)
+                               else render("<div class=card>社内PJが見つかりません</div>", ), 200 if iss else 404)
                 elif path == "/intake-inbox":
                     self._send(intake_inbox_page(con))  # intake_inbox_page は内部で render 済み(bytes)
                 elif path.startswith("/intake-transcript/") and path.endswith("/view"):
@@ -19197,9 +19200,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _ok = sfa_db.confirm_issue_note_lock_reset(con, iid, _token)
                     iss = sfa_db.get_deal_issue(con, iid)
                     if not iss:
-                        self._send(render("<div class=card>論点が見つかりません</div>"), 404)
+                        self._send(render("<div class=card>社内PJが見つかりません</div>"), 404)
                     else:
-                        _flash = "🔓 論点メモのパスワードロックを解除しました。" if _ok else \
+                        _flash = "🔓 社内PJメモのパスワードロックを解除しました。" if _ok else \
                             "⚠️ リセットリンクが無効、または期限切れです。"
                         self._send(render(deal_issue_detail_page(con, iss), flash=_flash))
                 elif path.startswith("/deal-issue/") and path.endswith("/edit"):
@@ -19209,7 +19212,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         return_to = self._qs().get("return_to", [None])[0]
                         self._send(
                             render(deal_issue_form(con, iss, return_to=return_to) if iss
-                                   else "<div class=card>論点が見つかりません</div>"),
+                                   else "<div class=card>社内PJが見つかりません</div>"),
                             200 if iss else 404,
                         )
                     except (ValueError, IndexError):
@@ -19220,7 +19223,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     return_to = self._qs().get("return_to", [None])[0]
                     self._send(
                         render(deal_issue_detail_page(con, iss, return_to=return_to) if iss
-                               else "<div class=card>論点が見つかりません</div>"),
+                               else "<div class=card>社内PJが見つかりません</div>"),
                         200 if iss else 404,
                     )
                 elif path == "/accounts":
@@ -19495,7 +19498,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     #  移動してしまう＝is_adminがNoneに上書きされていたのが原因）。
                     # 既存値を読み出して保持することで消失を防ぐ。
                     _old_task = sfa_db.get_task(con, _tid) if _tid else None
-                    # 関連（商談/論点/Delivery/開発案件、複数可, #146）。task_form由来の
+                    # 関連（商談/社内PJ/Delivery/開発案件、複数可, #146）。task_form由来の
                     # links_json=[{type,id}, ...]を優先し、無ければ従来の単一項目
                     # （link / link_type+link_id、後方互換）にフォールバックする。
                     _links: list[tuple[str, int]] = []
@@ -19522,7 +19525,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             except ValueError:
                                 pass
                         else:
-                            # 商談/論点/Deliveryへの紐づけ（_task_link_picker_html由来。
+                            # 商談/社内PJ/Deliveryへの紐づけ（_task_link_picker_html由来。
                             # ユーザー要望2026-08-24、Deliveryは2026-08-27追加）。
                             _flt = (f.get("link_type") or "").strip()
                             _fli = (f.get("link_id") or "").strip()
@@ -19886,7 +19889,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif (path.startswith("/task/") and path.endswith("/link")
                       and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
                     # カード上の関連付けポップアップ(2026-08-27。#146で複数関連付けに対応)。
-                    # 商談/論点/Delivery/開発案件への紐づけをまとめて置き換える（空配列で送ると
+                    # 商談/社内PJ/Delivery/開発案件への紐づけをまとめて置き換える（空配列で送ると
                     # 全クリア）。links_json=[{"type":...,"id":...}, ...]優先、無ければ従来の
                     # 単一link_type/link_id（後方互換、0件or1件として扱う）。
                     _tid = int(path.split("/")[2])
@@ -21039,7 +21042,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self._send(render(dev_projects_list_page(con),
                                           flash=f"Hishoへ再同期しました（成功{_ok}件 / 失敗{_ng}件）。"))
 
-                # ── 社内論点 ──
+                # ── 社内PJ ──
                 elif path == "/deal-issue/new":
                     try:
                         deal_id_val = int(f["deal_id"]) if f.get("deal_id") else None
@@ -21132,7 +21135,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     iss = sfa_db.get_deal_issue(con, iid) if iid else None
                     _transcript = _resolve_transcript_input(f)
                     if not iss or not _transcript:
-                        self._send(render("<div class=card>論点または文字起こしがありません。"
+                        self._send(render("<div class=card>社内PJまたは文字起こしがありません。"
                                           f"<a href='/deal-issue/{iid}/intake'>戻る</a></div>"), 400)
                     else:
                         _up = f.get("transcript_file")
@@ -21256,7 +21259,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                    else (f"/deal/{existing['deal_id']}" if existing else "/deal-issues"))
 
                 elif path.startswith("/deal-issue/") and path.endswith("/material/add"):
-                    # 論点の検討材料を追加（社内資料の体系化・層1、2026-08-28）。
+                    # 社内PJの検討材料を追加（社内資料の体系化・層1、2026-08-28）。
                     try:
                         iid = int(path.split("/")[2])
                     except (ValueError, IndexError):
@@ -21554,12 +21557,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)):
                             _err = "不正な責任者"
                         elif field == "company_function":
-                            # #147/#158: 会社機能は商談に紐づかない論点でのみ意味を持つ。
+                            # #147/#158: 会社機能は商談に紐づかない社内PJでのみ意味を持つ。
                             _existing_issue = sfa_db.get_deal_issue(con, iid)
                             if not _existing_issue:
-                                _err = "論点が見つかりません"
+                                _err = "社内PJが見つかりません"
                             elif _existing_issue.get("deal_id"):
-                                _err = "商談に紐づく論点には設定できません"
+                                _err = "商談に紐づく社内PJには設定できません"
                             elif value and value not in (
                                     sfa_db.get_master_list(con, "company_functions") or list(sfa_db.COMPANY_FUNCTIONS)):
                                 _err = "不正な会社機能"
@@ -21582,7 +21585,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
                     self._send(_resp, ctype="application/json")
 
-                # ── 論点プロジェクト管理（#163、2026-09-06） ──
+                # ── 社内PJ管理（#163、2026-09-06） ──
                 elif path == "/deal-issue-subitem/new":
                     try:
                         _issue_id = int(f.get("issue_id", ""))
@@ -21645,7 +21648,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 elif (path.startswith("/deal-issue/") and path.endswith("/note-lock/set")
                       and len(path.split("/")) == 5 and path.split("/")[2].isdigit()):
-                    # 論点メモのパスワードロック設定/変更（ユーザー要望2026-08-23）。
+                    # 社内PJメモのパスワードロック設定/変更（ユーザー要望2026-08-23）。
                     # 連絡先メール必須。既にロック済みの場合は現在のパスワード一致が変更条件。
                     iid = int(path.split("/")[2])
                     _new_pw = f.get("password", "") or ""
@@ -22170,7 +22173,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _itid_ref = _inbox_id or _new_itid
                         _src = "jamie" if _inbox_id else "paste"
                         if _record_kind == "memo":
-                            # 社内議論 → 商談メモ（rich_note kind='deal'。論点メモと同仕様で整形）
+                            # 社内議論 → 商談メモ（rich_note kind='deal'。社内PJメモと同仕様で整形）
                             _structured = _structure_issue_transcript(
                                 (_row["deal_name"] or ""), _transcript,
                                 filename=(_up[0] if _is_file else None), upload_date=_conducted)
@@ -22899,7 +22902,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _nm = _dl.get("deal_name") or f"#{_dlid}"
                     sfa_db.delete_deal(con, _dlid)
                     _parts = [f"{_lbl}{_imp[_k]}件" for _k, _lbl in (
-                        ("activities", "活動"), ("issues", "論点"), ("milestones", "次回MS"),
+                        ("activities", "活動"), ("issues", "社内PJ"), ("milestones", "次回MS"),
                         ("dev_projects", "開発案件"), ("deliveries", "Delivery"), ("attachments", "添付"))
                         if _imp[_k]]
                     _child = "・".join(_parts) if _parts else "子データなし"

@@ -314,7 +314,7 @@ def handle_interactive(con: sqlite3.Connection, payload: dict) -> None:
         except ValueError:
             return
         link = f"{SFA_TOOL_URL}/intake-inbox#inbox-{inbox_id}"
-        _jamie_update_message(channel, msg_ts, f"📋 Webの取り込みインボックスで商談/論点を選んでください → <{link}|開く>")
+        _jamie_update_message(channel, msg_ts, f"📋 Webの取り込みインボックスで商談/社内PJを選んでください → <{link}|開く>")
 
     elif action_id == "jamie_skip":
         try:

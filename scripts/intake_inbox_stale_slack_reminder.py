@@ -3,7 +3,7 @@
 毎朝 JST に、前日以前から残っている「未処理の取り込み」を検知して通知する。
 
 対象は2種類（/api/intake_inbox_stale が返す）:
-  1. status='inbox' のまま放置 — 誰も商談/論点へ割当てていない（#97のWeb `/intake-inbox`）。
+  1. status='inbox' のまま放置 — 誰も商談/社内PJへ割当てていない（#97のWeb `/intake-inbox`）。
   2. status='assigned' source='jamie' のまま放置 — Slackの候補ボタンで商談へは割当てたが、
      その面談についてSlackで一度も確定(`@NegoCollection`)しておらず、Jamie全文が
      どの活動履歴にも統合されないまま眠っている（#98 slack_bot.apply_to_dbで拾われるのを待ったまま）。
@@ -111,7 +111,7 @@ def fetch_stale() -> dict:
 def build_message(inbox: list, assigned: list) -> str:
     lines = ["🔔 取り込みインボックスに、前日以前から残っている未処理があります。"]
     if inbox:
-        lines.append(f"\n・未割当（商談/論点への割当待ち）: {len(inbox)}件")
+        lines.append(f"\n・未割当（商談/社内PJへの割当待ち）: {len(inbox)}件")
         for r in inbox[:5]:
             lines.append(f"   - {r.get('title') or '(無題)'}（{r.get('occurred_on') or '—'}）")
         if len(inbox) > 5:

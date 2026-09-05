@@ -1211,7 +1211,7 @@ def test_tasks_gantt_route_defaults_to_link_grouping_and_wide_main(server):
     body = resp.read().decode("utf-8")
     assert code == 200
     assert '<main class="main-wide">' in body
-    assert "紐づけ単位（紐づけ無し→Delivery→商談→論点" in body  # 既定=紐づけ単位の説明文（#153）
+    assert "紐づけ単位（紐づけ無し→Delivery→商談→社内PJ" in body  # 既定=紐づけ単位の説明文（#153）
 
     code2, resp2 = _get(server + "/tasks/gantt?group=type", headers=_auth_header())
     body2 = resp2.read().decode("utf-8")
@@ -1397,7 +1397,7 @@ def test_task_form_related_label_mentions_delivery(server, db_path):
     code, resp = _get(server + f"/tasks/{tid}/edit", headers=_auth_header())
     body = resp.read().decode("utf-8")
     assert code == 200
-    assert "関連（商談・論点・開発案件・Delivery、複数可）" in body
+    assert "関連（商談・社内PJ・開発案件・Delivery、複数可）" in body
 
 
 def test_viewport_meta_allows_pinch_zoom(server):
