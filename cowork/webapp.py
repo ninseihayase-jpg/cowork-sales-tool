@@ -1237,16 +1237,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
 .tab-btn.active{color:var(--navy);border-bottom-color:var(--blue)}
 .tab-btn:hover:not(.active){color:var(--navy)}
 
-/* ── スティッキー事業名バー ── */
-.sticky-tool{position:sticky;top:47px;z-index:90;
-  background:rgba(255,255,255,.95);backdrop-filter:blur(6px);
-  border-bottom:1px solid var(--border);padding:0 24px;
-  min-height:0;overflow:hidden;transition:max-height .2s;max-height:0}
-.sticky-tool.visible{max-height:40px}
-.sticky-tool-inner{display:flex;align-items:center;gap:10px;height:40px}
-.sticky-tool-name{font-weight:600;color:var(--navy);font-size:13px}
-.sticky-tool-biz{font-size:11px;padding:2px 8px;border-radius:20px;
-  background:var(--bg-blue);color:var(--text-blue);font-weight:500}
+/* ── 診断タブ: 上部固定エリア（ツール名〜診断結果ヘッダーまで） ── */
+.diag-sticky-top{position:sticky;top:47px;z-index:85;
+  background:var(--bg-page);padding-top:16px;margin-top:-16px}
 
 /* ── タブコンテンツ ── */
 .tab-content{display:none;width:100%}
@@ -1278,7 +1271,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
   border-radius:var(--radius);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
 .btn-save:hover{background:var(--blue-dark)}
 
-.biz-row{display:flex;align-items:center;gap:8px;
+.biz-row{display:flex;align-items:center;gap:8px;min-width:0;
   padding:6px 10px;background:var(--surface-soft);border:1px solid var(--border);border-radius:var(--radius)}
 .biz-row label{flex:1 1 auto;min-width:64px;font-size:12.5px;font-weight:500;color:#5A5548}
 .biz-select{flex:1 1 auto;min-width:0;padding:4px 10px;font-size:13px;border:1px solid var(--border);
@@ -1286,7 +1279,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 @media(max-width:600px){.grid2{grid-template-columns:1fr}}
-.row{display:flex;align-items:center;gap:8px;padding:6px 10px;
+.row{display:flex;align-items:center;gap:8px;padding:6px 10px;min-width:0;
   background:var(--surface-soft);border:1px solid var(--border);border-radius:var(--radius)}
 .row label{flex:1 1 auto;min-width:64px;font-size:12.5px;color:#5A5548;font-weight:500}
 .row select{flex:1 1 auto;min-width:0;padding:4px 10px;font-size:13px;border:1px solid var(--border);
@@ -1349,8 +1342,8 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 .mx-tbl td{padding:8px 6px;text-align:center;font-size:12px;font-weight:700;border:1px solid #E0E0E0}
 
 /* ── セーブサイドバー ── */
-.saves-sidebar{position:sticky;top:16px;background:var(--surface);border:1px solid var(--border);
-  border-radius:12px;max-height:calc(100vh - 32px);overflow-y:auto}
+.saves-sidebar{position:sticky;top:47px;background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;max-height:calc(100vh - 63px);overflow-y:auto}
 .saves-sidebar-hdr{padding:12px 14px 9px;border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--navy);
   position:sticky;top:0;background:var(--surface);z-index:1;border-radius:12px 12px 0 0}
@@ -1387,7 +1380,7 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 .hm-table .col-biz{position:sticky;left:0;z-index:3;background:var(--surface);
   width:200px;min-width:200px}
 .hm-table thead .col-biz{z-index:4;background:var(--surface-soft)}
-.hm-table td,.hm-table th{border:1px solid #EFEBE2}
+.hm-table td,.hm-table th{border:2px solid #FFFFFF}
 /* カテゴリグループヘッダー */
 .hm-cat-hdr{background:var(--blue);color:#fff;font-weight:600;font-size:11px;
   text-align:center;padding:6px 4px;position:sticky;top:0;z-index:2}
@@ -1444,19 +1437,12 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
   <a href="/" style="margin-left:auto;color:var(--ink-soft);font-size:12px;text-decoration:none;white-space:nowrap">SFA ↗</a>
 </header>
 
-<!-- スティッキー事業名バー -->
-<div class="sticky-tool" id="sticky-tool-bar">
-  <div class="sticky-tool-inner">
-    <span class="sticky-tool-name" id="sticky-tool-name-text"></span>
-    <span class="sticky-tool-biz" id="sticky-tool-biz-text"></span>
-  </div>
-</div>
-
 <!-- ── 診断タブ ── -->
 <div class="tab-content active" id="tab-diag">
   <div class="page-layout">
     <div class="main-col">
 
+      <div class="diag-sticky-top">
       <!-- ツール名入力 -->
       <div class="tool-row">
         <input type="text" id="tool-name" class="tool-input"
@@ -1504,12 +1490,15 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
       </div>
       </div><!-- /step-layout -->
 
-      <!-- 結果 -->
+      <!-- 結果ヘッダー（固定） -->
+      <div class="sec-hdr navy">
+        <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        診断結果 — 評価軸にすべて○の手法（優先度順）
+      </div>
+      </div><!-- /diag-sticky-top -->
+
+      <!-- 結果本体（スクロール） -->
       <div class="card">
-        <div class="sec-hdr navy">
-          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-          診断結果 — 評価軸にすべて○の手法（優先度順）
-        </div>
         <div class="count-bar" id="count-bar">ドロップダウンを設定してください</div>
         <div class="tbl-wrap">
           <table>
