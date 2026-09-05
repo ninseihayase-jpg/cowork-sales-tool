@@ -1688,6 +1688,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             _toks = [t.strip() for t in (_mem or "").split(",") if t.strip()]
             if _toks and all(t in _legacy_member_tokens for t in _toks):
                 con.execute("UPDATE deal_issues SET members=NULL WHERE id=?", (_rid,))
+        # ステップ(旧サブ社内PJ)に「概要」欄を後方互換で追加（#163、2026-09-05ユーザー要望:
+        # ステップ名・期間に加えて概要を持たせ、既定は非表示・クリックで表示/編集）。
+        _subitem_cols = {c[1] for c in con.execute("PRAGMA table_info(deal_issue_subitems)")}
+        if "overview" not in _subitem_cols:
+            con.execute("ALTER TABLE deal_issue_subitems ADD COLUMN overview TEXT")
         # 取り込み原本テーブルに自動連携(インボックス)用カラムを後方互換で追加。
         _it_cols = {c[1] for c in con.execute("PRAGMA table_info(intake_transcripts)")}
         for _col, _decl in (
@@ -3828,13 +3833,13 @@ def get_deal_issue(con, id: int) -> dict | None:
 # ── 社内PJ管理（#163、2026-09-06） ──
 
 def create_deal_issue_subitem(con, issue_id: int, title: str, start_date: str | None = None,
-                              end_date: str | None = None) -> int:
+                              end_date: str | None = None, overview: str | None = None) -> int:
     next_order = (con.execute(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM deal_issue_subitems WHERE issue_id=?",
         (int(issue_id),)).fetchone()[0])
     cur = con.execute(
-        "INSERT INTO deal_issue_subitems (issue_id, title, start_date, end_date, sort_order) "
-        "VALUES (?,?,?,?,?)", (int(issue_id), title, start_date, end_date, next_order))
+        "INSERT INTO deal_issue_subitems (issue_id, title, start_date, end_date, sort_order, overview) "
+        "VALUES (?,?,?,?,?,?)", (int(issue_id), title, start_date, end_date, next_order, overview))
     con.commit()
     return cur.lastrowid
 
@@ -3854,13 +3859,17 @@ def get_deal_issue_subitem(con, id: int) -> dict | None:
 
 def update_deal_issue_subitem(con, id: int, *, title: str | None = None,
                               start_date: str | None = None, end_date: str | None = None,
-                              clear_dates: bool = False) -> None:
+                              overview: str | None = None, clear_dates: bool = False) -> None:
     """部分更新（渡したフィールドだけ更新。upsert系のfootgunを避ける専用ヘルパー）。
     clear_dates=Trueの時だけ start_date/end_date を明示的にNULLへ戻せる
-    （通常はstart_date/end_dateにNoneを渡しても「変更しない」の意味で無視する）。"""
+    （通常はstart_date/end_dateにNoneを渡しても「変更しない」の意味で無視する）。
+    overview は空文字での「クリア」を許すため、Noneのみ「変更しない」として扱う
+    （空文字はフィールドを空にする明示的な更新）。"""
     sets, args = [], []
     if title is not None:
         sets.append("title=?"); args.append(title)
+    if overview is not None:
+        sets.append("overview=?"); args.append(overview)
     if clear_dates:
         sets.append("start_date=NULL"); sets.append("end_date=NULL")
     else:

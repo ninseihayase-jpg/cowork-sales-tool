@@ -150,6 +150,49 @@ def test_deleting_issue_cascades_subitems(con):
     assert sfa_db.get_deal_issue_subitem(con, sid) is None
 
 
+# ── 概要(overview)フィールド（2026-09-05要望: ステップ名・期間に加えて概要を追加） ──
+
+def test_create_subitem_with_overview(con):
+    iid = _issue(con)
+    sid = sfa_db.create_deal_issue_subitem(con, iid, "サブ1", "2026-09-10", "2026-09-20",
+                                           overview="概要テキスト")
+    row = sfa_db.get_deal_issue_subitem(con, sid)
+    assert row["overview"] == "概要テキスト"
+
+
+def test_create_subitem_without_overview_defaults_to_none(con):
+    iid = _issue(con)
+    sid = sfa_db.create_deal_issue_subitem(con, iid, "サブ1")
+    row = sfa_db.get_deal_issue_subitem(con, sid)
+    assert row["overview"] is None
+
+
+def test_update_subitem_overview_only_does_not_clobber_title(con):
+    iid = _issue(con)
+    sid = sfa_db.create_deal_issue_subitem(con, iid, "サブ1", "2026-09-10", "2026-09-20")
+    sfa_db.update_deal_issue_subitem(con, sid, overview="後から追記")
+    row = sfa_db.get_deal_issue_subitem(con, sid)
+    assert row["overview"] == "後から追記"
+    assert row["title"] == "サブ1"
+
+
+def test_update_subitem_overview_empty_string_clears_it(con):
+    """overviewは空文字での明示的クリアを許す（他フィールドと違い、Noneのみ「変更しない」の意味）。"""
+    iid = _issue(con)
+    sid = sfa_db.create_deal_issue_subitem(con, iid, "サブ1", overview="消される予定")
+    sfa_db.update_deal_issue_subitem(con, sid, overview="")
+    row = sfa_db.get_deal_issue_subitem(con, sid)
+    assert row["overview"] == ""
+
+
+def test_update_subitem_without_overview_kwarg_leaves_overview_unchanged(con):
+    iid = _issue(con)
+    sid = sfa_db.create_deal_issue_subitem(con, iid, "サブ1", overview="変わらないはず")
+    sfa_db.update_deal_issue_subitem(con, sid, title="サブ1改")
+    row = sfa_db.get_deal_issue_subitem(con, sid)
+    assert row["overview"] == "変わらないはず"
+
+
 # ── Haiku自由記述パーサ ──
 
 def test_parse_issue_period_text_returns_none_without_api_key(monkeypatch):
@@ -251,14 +294,49 @@ def test_gantt_page_categories_sorted_by_account_name(con):
     assert html.find("🗂 A社 / 甲") < html.find("🗂 B社 / 乙")
 
 
-def test_gantt_page_issue_without_subitems_still_listed_with_add_form(con):
-    """サブ論点が1件も無い論点も一覧に表示され、その場で追加できるフォームが付くこと
-    （2026-09-06要望: 「一覧画面内でサブ論点を追加していく運用」）。"""
-    iid = _issue(con, issue="サブ論点なしの論点")
+def test_gantt_page_issue_without_subitems_still_listed_with_add_button(con):
+    """ステップが1件も無い社内PJも一覧に表示され、行の「＋」ボタンからステップ追加
+    ポップアップを開けること（2026-09-05要望: 常時展開フォームはポップアップ化して行の
+    折り返し重なりを解消。ポップアップはJS側でissue_idを渡してfetch送信するため、
+    静的HTML上にはonclickハンドラとしてissue_idが載る）。"""
+    iid = _issue(con, issue="ステップなしの社内PJ")
     html = webapp.deal_issues_gantt_page(con)
-    assert "サブ論点なしの論点" in html
-    assert f'<input type="hidden" name="issue_id" value="{iid}">' in html
-    assert "/deal-issue-subitem/new" in html
+    assert "ステップなしの社内PJ" in html
+    assert f"igOpenAddStep({iid})" in html
+    assert "/deal-issue-subitem/new" in html  # JS側fetch先として埋め込まれている
+
+
+def test_gantt_page_bar_shows_only_title_and_period_not_overview(con):
+    """ガントバーの可視部分（<script>より前の静的HTML）にはステップ名+期間のみが出て、
+    概要は現れないこと（2026-09-05ユーザー確定: 「ガントチャートのバーに表示されるのは、
+    ステップ名と期間」）。ただしクリック時の編集ポップアップ用データ(IG_ITEMS)には
+    概要が必要なため、<script>内のJSONブロブには含まれてよい——そこまで検証すると
+    機能を壊す誤検知になるため、静的マークアップ部分だけを対象にする。"""
+    iid = _issue(con)
+    sfa_db.create_deal_issue_subitem(con, iid, "サブ1", "2026-09-10", "2026-09-20",
+                                     overview="これはバーに出てはいけない秘密の概要文")
+    html = webapp.deal_issues_gantt_page(con)
+    visible_html, _, _ = html.partition("<script>")
+    assert "gt-bar-label" in visible_html and "サブ1" in visible_html
+    assert "これはバーに出てはいけない秘密の概要文" not in visible_html
+    assert "これはバーに出てはいけない秘密の概要文" in html  # IG_ITEMS内(編集ポップアップ用)には残る
+
+
+def test_gantt_page_add_step_button_present_per_issue(con):
+    """各社内PJ行にステップ追加ポップアップを開く「＋」ボタンがあること
+    （2026-09-05要望: 「ステップの追加は、各社内PJに＋ボタンがついていて、それをクリックして行う」）。"""
+    iid = _issue(con, issue="論点A")
+    html = webapp.deal_issues_gantt_page(con)
+    assert f"igOpenAddStep({iid})" in html
+
+
+def test_gantt_page_no_toplevel_terminology_of_old_subitem_name(con):
+    """UI文言は「サブ社内PJ」から「ステップ」へ全面改名済みであること。"""
+    iid = _issue(con)
+    sfa_db.create_deal_issue_subitem(con, iid, "日程未定")  # 要確認枠も描画させる
+    html = webapp.deal_issues_gantt_page(con)
+    assert "サブ社内PJ" not in html
+    assert "期間を解釈できなかったステップ" in html
 
 
 def test_gantt_page_no_top_level_flat_form(con):
@@ -276,7 +354,7 @@ def test_gantt_page_company_common_issue_category_label(con):
     html = webapp.deal_issues_gantt_page(con)
     assert "🗂 🏢 経理" in html
     assert "共通論点" in html
-    assert f'value="{iid}"' in html
+    assert f'href="/deal-issue/{iid}"' in html
 
 
 # ── HTTPルート ──
@@ -304,6 +382,21 @@ def test_create_subitem_route_via_http(con, server, tmp_path):
     assert rows[0]["title"] == "新サブ論点"
     assert rows[0]["start_date"] == "2026-09-10"  # serverフィクスチャでモック済み
     assert rows[0]["end_date"] == "2026-09-20"
+
+
+def test_create_subitem_route_with_overview(con, server, tmp_path):
+    db_path = str(tmp_path / "srv.db")
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点X2")
+    con2.close()
+
+    _post(f"{server}/deal-issue-subitem/new",
+          {"issue_id": iid, "title": "新ステップ", "overview": "概要メモ", "period_text": "来週から3週間"})
+
+    con3 = sfa_db.connect(db_path)
+    rows = sfa_db.list_deal_issue_subitems(con3, iid)
+    assert len(rows) == 1
+    assert rows[0]["overview"] == "概要メモ"
 
 
 def test_create_subitem_route_rejects_missing_issue(server, tmp_path):
@@ -361,6 +454,51 @@ def test_field_route_updates_and_validates(tmp_path, monkeypatch):
     con3 = sfa_db.connect(db_path)
     row = sfa_db.get_deal_issue_subitem(con3, sid)
     assert row["end_date"] == "2026-09-25"
+
+
+def test_field_route_overview_empty_string_clears_not_ignored(tmp_path, monkeypatch):
+    """/fieldルートのoverviewは、他フィールドと違い空文字を「クリア」として処理すること
+    （他フィールドは空文字→None変換で「変更しない」扱いになる、既存の仕様との違い）。"""
+    import threading as _th
+    from http.server import ThreadingHTTPServer as _THS
+
+    db_path = str(tmp_path / "srv3.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点Y2")
+    sid = sfa_db.create_deal_issue_subitem(con2, iid, "サブ1", overview="消される予定")
+    con2.close()
+
+    user, pw = "u", "p"
+    monkeypatch.setattr(webapp, "SFA_BASIC_USER", user)
+    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", pw)
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = _THS(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    t = _th.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        tok = base64.b64encode(f"{user}:{pw}".encode()).decode()
+
+        def post(url, data):
+            body = urllib.parse.urlencode(data).encode()
+            req = urllib.request.Request(url, data=body, headers={"Authorization": f"Basic {tok}"}, method="POST")
+            resp = urllib.request.urlopen(req, timeout=10)
+            return resp.getcode(), resp.read()
+
+        code, body = post(f"{base}/deal-issue-subitem/{sid}/field", {"field": "overview", "value": ""})
+        assert code == 200
+        import json
+        assert json.loads(body)["ok"] is True
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+    con3 = sfa_db.connect(db_path)
+    row = sfa_db.get_deal_issue_subitem(con3, sid)
+    assert row["overview"] == ""
 
 
 def test_delete_route_via_http(con, server, tmp_path):

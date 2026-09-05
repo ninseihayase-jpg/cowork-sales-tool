@@ -7910,7 +7910,7 @@ _GANTT_CSS = """<style>
 
 
 def _parse_issue_period_text(text: str) -> tuple[str | None, str | None]:
-    """サブ社内PJの期間を自由記述から解釈する（#163、2026-09-06ユーザー確定:
+    """ステップ（旧サブ社内PJ）の期間を自由記述から解釈する（#163、2026-09-06ユーザー確定:
     「自由記述。精度をあげるための指示を精緻に設計して」）。
     「来週から3週間」「9/20〜10/10」「今月中」等、多様な言い回しに耐えられるよう、
     相対表現・年省略・単一日付・片側省略・曜日名の扱いをプロンプトで明示する。
@@ -7968,16 +7968,20 @@ def _parse_issue_period_text(text: str) -> tuple[str | None, str | None]:
 
 
 def deal_issues_gantt_page(con) -> str:
-    """社内PJ管理（#163、2026-09-06。同日追加要望で構成変更）。
-    社内PJを「商談/会社機能」の分類別に常時全件一覧表示し、各社内PJのブロック内に
-    サブ社内PJ追加フォームを常設する（画面最上部の独立した社内PJセレクタ式フォームは廃止し、
-    一覧画面内でサブ社内PJを追加していく運用に統一——ユーザー要望2026-09-06）。
+    """社内PJ管理（#163、2026-09-06。以後の追加要望で構成変更）。
+    社内PJを「商談/会社機能」の分類別に常時全件一覧表示する。各社内PJの行にはステップ
+    （旧サブ社内PJ。deal_issue_subitems）を追加する「＋」ボタンのみを常設し、クリックすると
+    ポップアップでステップ名/概要/期間を入力するフォームが開く（画面最上部の独立した
+    社内PJセレクタ式フォームは廃止済み、常時展開のインライン追加フォームも2026-09-05に
+    廃止——常時フォームは行の折り返しでガント行と重なって見える不具合の原因だった）。
     UI・ドラッグ移動/リサイズはコンサルタスクガント（#152, tasks_gantt_page）と
     同じ操作感（ユーザー確定）。コンサルタスクと異なり、開始日/終了日は
     deal_issue_subitemsの直接列であり、工数感からの逆算・容量スケジューリングは無い
-    単純な期間管理。サブ社内PJの追加は自由記述の期間テキスト→Haikuで解釈
+    単純な期間管理。ステップの追加は自由記述の期間テキスト→Haikuで解釈
     （_parse_issue_period_text）。解釈に失敗した行は「要確認」として別枠に出し、
-    人間が日付ピッカーで直す。"""
+    人間が日付ピッカーで直す。概要はガントバー上には出さず（バーはステップ名+期間のみ）、
+    ステップをクリックして開く編集ポップアップ内でのみ表示・編集する
+    （2026-09-05ユーザー確定: 「概要はデフォルトでは非表示、ステップをクリックすると表示」）。"""
     today = _today_jst()
     all_issues = [i for i in sfa_db.list_deal_issues(con) if (i.get("status") or "") != "取り消し"]
     by_issue: dict[int, list] = {}
@@ -8068,27 +8072,24 @@ def deal_issues_gantt_page(con) -> str:
                 (s for s in by_issue.get(issue["id"], []) if s.get("start_date") and s.get("end_date")),
                 key=lambda x: (x["start_date"], x["end_date"]))
             issue_label = _esc(sfa_db.task_link_label(con, "issue", issue["id"]) or issue.get("issue") or "")
-            # 社内PJ1件＝常設の「＋サブ社内PJ追加」フォーム付き行（一覧画面内で追加する運用。2026-09-06要望）。
+            # 社内PJ1件＝行に「＋」ボタンのみを常設し、クリックでステップ追加ポップアップを開く
+            # （2026-09-05要望: 常時展開の横長フォームは行の折り返しで下の行と重なって見えるため、
+            # 一覧のUI破綻を招いていた。ポップアップ化することで行の高さを最小化する）。
             cells.append(
                 f'<div style="grid-row:{row};grid-column:1 / -1;background:#fafbfc;'
-                f'border-top:1px solid #e2e8f0;padding:4px 8px;display:flex;gap:6px;align-items:center;'
-                f'flex-wrap:wrap">'
+                f'border-top:1px solid #e2e8f0;padding:4px 8px;display:flex;gap:8px;align-items:center">'
                 f'<a href="/deal-issue/{issue["id"]}" style="font-weight:600;font-size:12px;flex:none;'
                 f'white-space:nowrap">📌{issue_label}</a>'
-                f'<form method="post" action="/deal-issue-subitem/new" '
-                f'style="display:flex;gap:4px;flex:1;min-width:280px;align-items:center">'
-                f'<input type="hidden" name="issue_id" value="{issue["id"]}">'
-                f'<input type="text" name="title" placeholder="サブ社内PJ名" required '
-                f'style="flex:1;font-size:11px;min-width:0">'
-                f'<input type="text" name="period_text" required '
-                f'placeholder="期間（例: 来週から3週間、9/20〜10/10、今月中）" '
-                f'style="flex:2;font-size:11px;min-width:0">'
-                f'<button type="submit" class="btn sec" style="font-size:11px;flex:none">＋追加</button>'
-                f'</form></div>')
+                f'<span onclick="return igOpenAddStep({issue["id"]})" title="ステップを追加" '
+                f'style="cursor:pointer;flex:none;width:22px;height:22px;border-radius:50%;'
+                f'border:1px dashed #94a3b8;color:#64748b;font-size:14px;line-height:1;'
+                f'display:flex;align-items:center;justify-content:center">＋</span>'
+                f'</div>')
             row += 1
             for s in ready:
                 _item_data[s["id"]] = {"title": s["title"], "start_date": s["start_date"],
-                                       "end_date": s["end_date"], "issue_id": issue["id"]}
+                                       "end_date": s["end_date"], "issue_id": issue["id"],
+                                       "overview": s.get("overview") or ""}
                 cells.append(_day_bg_cells(row))
                 sd = date.fromisoformat(s["start_date"])
                 ed = date.fromisoformat(s["end_date"])
@@ -8130,7 +8131,7 @@ def deal_issues_gantt_page(con) -> str:
         )
         missing_html = f"""
         <div class="card">
-          <h3 style="margin:0 0 8px">⚠️ 期間を解釈できなかったサブ社内PJ（{len(missing_items)}件）</h3>
+          <h3 style="margin:0 0 8px">⚠️ 期間を解釈できなかったステップ（{len(missing_items)}件）</h3>
           <p class="muted" style="font-size:12px;margin:0 0 8px">自由記述の解釈に失敗しました。
             開始日を手入力すると、終了日はその2週間後の仮設定で自動補完されます（後でガント上で調整できます）。</p>
           {_miss_rows}
@@ -8143,8 +8144,8 @@ def deal_issues_gantt_page(con) -> str:
     <div class="card">
       {_subtab_strip([("一覧", "/deal-issues", False), ("ガント", "/deal-issues/gantt", True)])}
       <h2 style="margin:0 0 6px">📊 社内PJ管理（ガント）</h2>
-      <p class="muted" style="font-size:12px;margin:0">社内PJは分類（商談/会社機能）別に一覧表示されます。各社内PJの行にあるフォームから
-        その場でサブ社内PJを追加でき、期間が確定した社内PJはガントバーで表示されます。
+      <p class="muted" style="font-size:12px;margin:0">社内PJは分類（商談/会社機能）別に一覧表示されます。各社内PJの行にある「＋」ボタンから
+        その場でステップを追加でき、期間が確定したステップはガントバーで表示されます。
         バーをドラッグすると日程スライド、左右の端をドラッグすると期間の伸縮ができます（コンサルタスクガントと同じ操作）。</p>
     </div>
     <div class="card">{grid_html}</div>
@@ -8160,10 +8161,15 @@ def deal_issues_gantt_page(con) -> str:
     var IG_NUM_DAYS = {json.dumps(_ig_n_days)};
     function _igEsc(s){{ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }}
     function igPopHtml(id,it){{
+      // 概要はガント一覧・バー上には出さず、ステップをクリックして開くこのポップアップ内でのみ
+      // 表示・編集する（2026-09-05ユーザー確定: 「概要はデフォルトでは非表示、クリックで表示」）。
       return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:8px">'
         +'<input type="text" style="flex:1;font-size:13px;font-weight:700;border:none;border-bottom:1px solid #eef1f5;'
         +'padding:2px 0" value="'+_igEsc(it.title)+'" onchange="igField('+id+',\\'title\\',this.value)">'
         +'<span onclick="closeIgItem()" style="cursor:pointer;color:#94a3b8;flex:none">✕</span></div>'
+        +'<label style="font-size:11px;display:block;margin-bottom:8px">概要<br>'
+        +'<textarea rows="2" style="width:100%;box-sizing:border-box;font-size:12px;font-family:inherit" '
+        +'placeholder="（任意）" onchange="igField('+id+',\\'overview\\',this.value)">'+_igEsc(it.overview)+'</textarea></label>'
         +'<div style="display:flex;gap:8px">'
         +'<label style="font-size:11px;flex:1">開始日<br><input type="date" style="width:100%;box-sizing:border-box" '
         +'value="'+_igEsc(it.start_date)+'" onchange="igField('+id+',\\'start_date\\',this.value)"></label>'
@@ -8179,6 +8185,43 @@ def deal_issues_gantt_page(con) -> str:
       pop.innerHTML=igPopHtml(id,it);
       bd.style.display='block'; pop.style.display='block';
       return false;
+    }}
+    // ステップ追加ポップアップ（各社内PJ行の「＋」ボタンから起動。2026-09-05要望:
+    // 常時展開フォームだと行が折り返して下の行と重なるため、ポップアップ化した）。
+    function igAddStepHtml(issueId){{
+      return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:10px">'
+        +'<div style="font-size:13px;font-weight:700">＋ ステップを追加</div>'
+        +'<span onclick="closeIgAddStep()" style="cursor:pointer;color:#94a3b8;flex:none">✕</span></div>'
+        +'<label style="font-size:11px;display:block;margin-bottom:8px">ステップ名<br>'
+        +'<input type="text" id="igNewStepTitle" required style="width:100%;box-sizing:border-box;font-size:13px"></label>'
+        +'<label style="font-size:11px;display:block;margin-bottom:8px">概要（任意）<br>'
+        +'<textarea id="igNewStepOverview" rows="2" style="width:100%;box-sizing:border-box;font-size:12px;'
+        +'font-family:inherit"></textarea></label>'
+        +'<label style="font-size:11px;display:block;margin-bottom:10px">期間<br>'
+        +'<input type="text" id="igNewStepPeriod" required '
+        +'placeholder="例: 来週から3週間、9/20〜10/10、今月中" style="width:100%;box-sizing:border-box;font-size:12px"></label>'
+        +'<div style="text-align:right"><button type="button" class="btn" onclick="igSubmitAddStep('+issueId+')">追加</button></div>';
+    }}
+    function igOpenAddStep(issueId){{
+      var pop=document.getElementById('igPop'), bd=document.getElementById('igBackdrop');
+      pop.innerHTML=igAddStepHtml(issueId);
+      bd.style.display='block'; pop.style.display='block';
+      document.getElementById('igNewStepTitle').focus();
+      return false;
+    }}
+    function closeIgAddStep(){{
+      var pop=document.getElementById('igPop'), bd=document.getElementById('igBackdrop');
+      if(pop) pop.style.display='none'; if(bd) bd.style.display='none';
+    }}
+    function igSubmitAddStep(issueId){{
+      var title=(document.getElementById('igNewStepTitle').value||'').trim();
+      var overview=document.getElementById('igNewStepOverview').value||'';
+      var period=(document.getElementById('igNewStepPeriod').value||'').trim();
+      if(!title || !period){{ alert('ステップ名と期間は必須です'); return; }}
+      fetch('/deal-issue-subitem/new',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'issue_id='+encodeURIComponent(issueId)+'&title='+encodeURIComponent(title)
+          +'&overview='+encodeURIComponent(overview)+'&period_text='+encodeURIComponent(period)}}
+      ).then(function(){{ location.reload(); }});
     }}
     function igBarClick(ev,id){{
       if (window.IG_JUST_DRAGGED) {{ ev.preventDefault(); return false; }}
@@ -8199,7 +8242,7 @@ def deal_issues_gantt_page(con) -> str:
        }}).catch(function(){{ alert('通信エラー'); }});
     }}
     function igDeleteItem(id){{
-      if(!confirm('このサブ社内PJを削除しますか？')) return;
+      if(!confirm('このステップを削除しますか？')) return;
       fetch('/deal-issue-subitem/'+id+'/delete',{{method:'POST'}}).then(function(){{ location.reload(); }});
     }}
     document.addEventListener('keydown',function(ev){{
@@ -21691,13 +21734,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         return
                     _title = (f.get("title") or "").strip()
                     _period_text = (f.get("period_text") or "").strip()
+                    _overview = (f.get("overview") or "").strip()
                     if _title and sfa_db.get_deal_issue(con, _issue_id):
                         _s, _e = _parse_issue_period_text(_period_text)
-                        sfa_db.create_deal_issue_subitem(con, _issue_id, _title, _s, _e)
+                        sfa_db.create_deal_issue_subitem(con, _issue_id, _title, _s, _e,
+                                                         overview=_overview or None)
                     self._redirect("/deal-issues/gantt")
 
                 elif path.startswith("/deal-issue-subitem/") and path.endswith("/field"):
-                    _DEAL_ISSUE_SUBITEM_ALLOWED_FIELDS = {"title", "start_date", "end_date"}
+                    _DEAL_ISSUE_SUBITEM_ALLOWED_FIELDS = {"title", "start_date", "end_date", "overview"}
                     parts = path.split("/")
                     if len(parts) == 4 and parts[2].isdigit():
                         _sid = int(parts[2])
@@ -21707,7 +21752,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(),
                                       ctype="application/json")
                         else:
-                            sfa_db.update_deal_issue_subitem(con, _sid, **{_field: _value or None})
+                            # overviewは空文字を「クリア」として許す（他フィールドは空文字→NULL扱い）。
+                            _update_value = _value if _field == "overview" else (_value or None)
+                            sfa_db.update_deal_issue_subitem(con, _sid, **{_field: _update_value})
                             self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
                     else:
                         self._send(json.dumps({"ok": False, "error": "不正なリクエスト"}).encode(),
