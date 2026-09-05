@@ -1280,16 +1280,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
 
 .biz-row{display:flex;align-items:center;gap:8px;
   padding:6px 10px;background:var(--surface-soft);border:1px solid var(--border);border-radius:var(--radius)}
-.biz-row label{flex:1;font-size:12.5px;font-weight:500;color:#5A5548}
-.biz-select{padding:4px 10px;font-size:13px;border:1px solid var(--border);
-  border-radius:6px;background:#fff;color:var(--navy);cursor:pointer;font-weight:500;outline:none}
+.biz-row label{flex:1 1 auto;min-width:64px;font-size:12.5px;font-weight:500;color:#5A5548}
+.biz-select{flex:1 1 auto;min-width:0;padding:4px 10px;font-size:13px;border:1px solid var(--border);
+  border-radius:6px;background:#fff;color:var(--navy);cursor:pointer;font-weight:500;outline:none;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 @media(max-width:600px){.grid2{grid-template-columns:1fr}}
 .row{display:flex;align-items:center;gap:8px;padding:6px 10px;
   background:var(--surface-soft);border:1px solid var(--border);border-radius:var(--radius)}
-.row label{flex:1;font-size:12.5px;color:#5A5548;font-weight:500}
-.row select{padding:4px 10px;font-size:13px;border:1px solid var(--border);
-  border-radius:6px;background:#fff;color:#2B2723;cursor:pointer;min-width:120px;outline:none}
+.row label{flex:1 1 auto;min-width:64px;font-size:12.5px;color:#5A5548;font-weight:500}
+.row select{flex:1 1 auto;min-width:0;padding:4px 10px;font-size:13px;border:1px solid var(--border);
+  border-radius:6px;background:#fff;color:#2B2723;cursor:pointer;outline:none;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(217,119,87,.15)}
 .row.con select:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(107,143,90,.15)}
 .note{font-size:10.5px;color:var(--ink-soft);margin-top:4px}
@@ -1334,6 +1336,9 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 /* ── マトリクス（STEP1右） ── */
 .top-layout{display:grid;grid-template-columns:1fr 230px;gap:14px;align-items:start}
 @media(max-width:700px){.top-layout{grid-template-columns:1fr}}
+.step-layout{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.step-layout>.card{margin-bottom:0}
+@media(max-width:900px){.step-layout{grid-template-columns:1fr}}
 .matrix-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
 .matrix-title{font-weight:600;color:var(--navy);margin-bottom:10px;font-size:13px}
 .matrix-note{font-size:10px;color:var(--ink-soft);margin-top:8px;line-height:1.5}
@@ -1459,7 +1464,8 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
         <button class="btn-save" id="btn-save-main">💾 この診断を保存</button>
       </div>
 
-      <!-- STEP 1 -->
+      <!-- STEP 1 & 2（横並び） -->
+      <div class="step-layout">
       <div class="card">
         <div class="sec-hdr blue">
           <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
@@ -1488,7 +1494,6 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
         <div class="grid2" style="margin-top:6px" id="axis1"></div>
       </div>
 
-      <!-- STEP 2 -->
       <div class="card">
         <div class="sec-hdr green">
           <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -1497,6 +1502,7 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
         <div class="grid2" id="axis2"></div>
         <p class="note">制約条件は手法の絞り込みに使用しません。ボトルネック表示に影響します。</p>
       </div>
+      </div><!-- /step-layout -->
 
       <!-- 結果 -->
       <div class="card">
@@ -1715,13 +1721,17 @@ function buildAxis(id,axes,selObj,num){
         }).join('')}
       </select>
     </div>`).join('');
-  el.querySelectorAll('select').forEach(s=>s.addEventListener('change',e=>{
-    const k=e.target.dataset.k;
-    if(e.target.dataset.n==='1') sel1[k]=e.target.value;
-    else sel2[k]=e.target.value;
-    updateStickyBar();
-    render();
-  }));
+  el.querySelectorAll('select').forEach(s=>{
+    s.title=s.options[s.selectedIndex]?s.options[s.selectedIndex].text:'';
+    s.addEventListener('change',e=>{
+      const k=e.target.dataset.k;
+      if(e.target.dataset.n==='1') sel1[k]=e.target.value;
+      else sel2[k]=e.target.value;
+      e.target.title=e.target.options[e.target.selectedIndex].text;
+      updateStickyBar();
+      render();
+    });
+  });
 }
 
 // ── 診断render ───────────────────────────────────────────────
