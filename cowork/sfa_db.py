@@ -1240,6 +1240,22 @@ CREATE INDEX IF NOT EXISTS idx_business_flow_lanes_flow ON business_flow_lanes(f
 CREATE INDEX IF NOT EXISTS idx_business_flow_processes_flow ON business_flow_processes(flow_id);
 CREATE INDEX IF NOT EXISTS idx_business_flow_boxes_flow ON business_flow_boxes(flow_id);
 CREATE INDEX IF NOT EXISTS idx_business_flow_arrows_flow ON business_flow_arrows(flow_id);
+
+-- マーケ施策診断ツール（旧: 単体HTML+localStorage版から移行、2026-09-05）。
+-- 事業ごとの診断結果（STEP1/2の回答＋該当した手法トップ3件）を保存し、診断タブの保存済み
+-- 一覧・戦略マップ（事業横断ヒートマップ）で使う。sel1/sel2/top_methodsは、キー構成が
+-- クライアント側のAXIS定義に依存するためJSON文字列でそのまま保持する。
+CREATE TABLE IF NOT EXISTS mktg_diagnostics (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool_name         TEXT NOT NULL,
+    biz_type          TEXT NOT NULL DEFAULT 'その他',
+    priority          INTEGER NOT NULL DEFAULT 0,
+    sel1_json         TEXT NOT NULL,
+    sel2_json         TEXT NOT NULL,
+    top_methods_json  TEXT NOT NULL,
+    total_matched     INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -1680,9 +1696,125 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
                 con.execute(f"ALTER TABLE intake_transcripts ADD COLUMN {_col} {_decl}")
         con.execute("CREATE INDEX IF NOT EXISTS idx_intake_transcripts_ext "
                     "ON intake_transcripts(external_source, external_id)")
+        # マーケ施策診断ツールの旧HTML版に埋め込まれていたプリロードデータを一度だけ移植
+        # （テーブルが空のときのみ。ユーザーが1件でも保存した後は絶対に実行されない）。
+        if con.execute("SELECT COUNT(*) FROM mktg_diagnostics").fetchone()[0] == 0:
+            for _row in _SEED_MKTG_DIAGNOSTICS:
+                con.execute(
+                    "INSERT INTO mktg_diagnostics "
+                    "(tool_name, biz_type, priority, sel1_json, sel2_json, top_methods_json, total_matched) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (_row["tool_name"], _row["biz_type"], int(_row["priority"]),
+                     json.dumps(_row["sel1"], ensure_ascii=False),
+                     json.dumps(_row["sel2"], ensure_ascii=False),
+                     json.dumps(_row["top_methods"], ensure_ascii=False),
+                     _row["total_matched"]))
         con.commit()
     finally:
         con.close()
+
+
+_SEED_MKTG_DIAGNOSTICS = [
+    {
+        "tool_name": '成果報酬コスト削減',
+        "biz_type": 'コスト削減',
+        "priority": False,
+        "sel1": {'cat': 'あり', 'price': '高', 'size': 'MM', 'period': '短'},
+        "sel2": {'nps': '高い', 'sales': 'なし', 'demo': '可', 'partner': 'あり', 'sns': '難しい'},
+        "top_methods": ['App Marketplace掲載', 'G2 / Capterra（グローバル）'],
+        "total_matched": 2,
+    },
+    {
+        "tool_name": '中小企業向けCIO/AIパートナーサービス',
+        "biz_type": 'IT',
+        "priority": False,
+        "sel1": {'cat': 'なし', 'price': '中', 'size': 'SMB', 'period': '中'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['導入事例（Case Study）', '自社主催ウェビナー', '動画 / デモ動画'],
+        "total_matched": 4,
+    },
+    {
+        "tool_name": 'IT調達〜運用E2Eコスト最適化AI',
+        "biz_type": 'IT',
+        "priority": False,
+        "sel1": {'cat': 'なし', 'price': '高', 'size': 'ENP', 'period': '長'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['導入事例（Case Study）', '自社主催ウェビナー', 'LinkedIn SDR活動'],
+        "total_matched": 9,
+    },
+    {
+        "tool_name": '超簡単カスタマイズAIエージェント',
+        "biz_type": '他AX',
+        "priority": False,
+        "sel1": {'cat': 'なし', 'price': '小', 'size': 'SMB', 'period': '短'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['動画 / デモ動画'],
+        "total_matched": 1,
+    },
+    {
+        "tool_name": '営業サポートAI',
+        "biz_type": '他AX',
+        "priority": False,
+        "sel1": {'cat': 'あり', 'price': '中', 'size': 'MM', 'period': '中'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['導入事例（Case Study）', '自社主催ウェビナー', 'IT製品レビューサイト掲載'],
+        "total_matched": 12,
+    },
+    {
+        "tool_name": '消費者動向解析AI',
+        "biz_type": '他AX',
+        "priority": False,
+        "sel1": {'cat': 'あり', 'price': '中', 'size': 'ENP', 'period': '中'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['導入事例（Case Study）', '自社主催ウェビナー', 'ディスプレイ / リタゲ'],
+        "total_matched": 8,
+    },
+    {
+        "tool_name": '金型管理AI',
+        "biz_type": '調達SCM',
+        "priority": False,
+        "sel1": {'cat': 'なし', 'price': '中', 'size': 'MM', 'period': '中'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['導入事例（Case Study）', '自社主催ウェビナー', 'LinkedIn SDR活動'],
+        "total_matched": 7,
+    },
+    {
+        "tool_name": '生産管理最適化AI',
+        "biz_type": '調達SCM',
+        "priority": False,
+        "sel1": {'cat': 'あり', 'price': '高', 'size': 'ENP', 'period': '長'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['導入事例（Case Study）', '自社主催ウェビナー', 'ディスプレイ / リタゲ'],
+        "total_matched": 8,
+    },
+    {
+        "tool_name": '次世代型調達AI',
+        "biz_type": '調達SCM',
+        "priority": False,
+        "sel1": {'cat': 'なし', 'price': '高', 'size': 'ENP', 'period': '長'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['導入事例（Case Study）', '自社主催ウェビナー', 'LinkedIn SDR活動'],
+        "total_matched": 9,
+    },
+    {
+        "tool_name": '現場資材発注最適化AI',
+        "biz_type": '調達SCM',
+        "priority": False,
+        "sel1": {'cat': 'なし', 'price': '中', 'size': 'MM', 'period': '中'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['導入事例（Case Study）', '自社主催ウェビナー', 'LinkedIn SDR活動'],
+        "total_matched": 7,
+    },
+    {
+        "tool_name": 'サプライチェーンリスクミティゲーションAI',
+        "biz_type": '調達SCM',
+        "priority": False,
+        "sel1": {'cat': 'なし', 'price': '高', 'size': 'ENP', 'period': '長'},
+        "sel2": {'nps': '育成段階', 'sales': 'なし', 'demo': '不可', 'partner': 'なし', 'sns': '難しい'},
+        "top_methods": ['導入事例（Case Study）', '自社主催ウェビナー', 'LinkedIn SDR活動'],
+        "total_matched": 9,
+    },
+]
 
 
 # ---- マスタ ----
@@ -6229,4 +6361,46 @@ def list_business_flow_arrows(con, flow_id: int) -> list[dict]:
 
 def delete_business_flow_arrow(con, arrow_id: int) -> None:
     con.execute("DELETE FROM business_flow_arrows WHERE id=?", (arrow_id,))
+    con.commit()
+
+
+# ---- マーケ施策診断ツール（旧: 単体HTML+localStorage版から移行、2026-09-05） ----
+
+def _mktg_diagnostic_row_to_dict(row: dict) -> dict:
+    """DB行 → クライアントJS（旧localStorage版と同じ形）に合わせた辞書に変換。"""
+    return {
+        "id": row["id"],
+        "toolName": row["tool_name"],
+        "bizType": row["biz_type"],
+        "priority": bool(row["priority"]),
+        "sel1": json.loads(row["sel1_json"]),
+        "sel2": json.loads(row["sel2_json"]),
+        "topMethods": json.loads(row["top_methods_json"]),
+        "totalMatched": row["total_matched"],
+        "savedAt": (row["created_at"] or "")[:10].replace("-", "/"),
+    }
+
+
+def list_mktg_diagnostics(con) -> list[dict]:
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM mktg_diagnostics ORDER BY id DESC")]
+    return [_mktg_diagnostic_row_to_dict(r) for r in rows]
+
+
+def create_mktg_diagnostic(con, *, tool_name: str, biz_type: str, priority: bool,
+                           sel1: dict, sel2: dict, top_methods: list, total_matched: int) -> dict:
+    cur = con.execute(
+        "INSERT INTO mktg_diagnostics "
+        "(tool_name, biz_type, priority, sel1_json, sel2_json, top_methods_json, total_matched) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (tool_name, biz_type, int(bool(priority)),
+         json.dumps(sel1, ensure_ascii=False), json.dumps(sel2, ensure_ascii=False),
+         json.dumps(top_methods, ensure_ascii=False), total_matched))
+    con.commit()
+    row = dict(con.execute("SELECT * FROM mktg_diagnostics WHERE id=?", (cur.lastrowid,)).fetchone())
+    return _mktg_diagnostic_row_to_dict(row)
+
+
+def delete_mktg_diagnostic(con, diagnostic_id: int) -> None:
+    con.execute("DELETE FROM mktg_diagnostics WHERE id=?", (diagnostic_id,))
     con.commit()

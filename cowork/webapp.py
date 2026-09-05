@@ -764,6 +764,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <span class="nav-sep"></span>
   <!-- クライアント管理: リード・アカウント -->
   <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
+  <a href="/mktg-sim" style="opacity:.85;font-size:13px">🎯 マーケ診断</a>
   <a href="/accounts" style="opacity:.85;font-size:13px">アカウント</a>
   <span class="nav-sep"></span>
   <!-- タスク群（メールの左にセクションとして配置） -->
@@ -1197,6 +1198,838 @@ def reports_index_page(con) -> str:
         cards = "".join(_card(r) for r in rest)
         back = f'<h2 class="bn-h">バックナンバー</h2><div class="grid">{cards}</div>'
     return _reports_doc(featured + back, page_title="InProc 営業レポート")
+
+
+# ── マーケ施策診断ツール（旧: 単体HTML+localStorage版から移行、2026-09-05） ──
+# 元は独立した単体HTMLファイル（ブラウザのlocalStorageに保存）だったが、端末間で
+# 保存内容が共有できない・実データがクライアントJSにベタ書き、という問題があったため
+# SFA-CRMに統合。永続化はmktg_diagnosticsテーブル（sfa_db.py）に一本化し、
+# 保存・削除はfetch()でJSON API（本ファイル内 /mktg-diagnostic/create, /mktg-diagnostic/<id>/delete）
+# を叩く。ページ自体は/reportsと同じ「standalone HTML」方式（メインのPAGEガワは使わない）。
+_MKTG_SIM_PAGE_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>マーケ施策 診断ツール | InProc</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --navy:#2B2723;--blue:#D97757;--blue-dark:#B85C3E;--green:#6B8F5A;--green-dark:#44603A;
+  --bg-blue:#F5E6DD;--bg-green:#EAF1E3;--bg-orange:#F5E6DD;
+  --text-blue:#A8492C;--text-green:#44603A;--text-orange:#A8492C;
+  --border:#E8E3D9;--radius:8px;
+  --bg-page:#FAF9F6;--surface:#FFFFFF;--surface-soft:#F3F1EA;--ink-soft:#8A8578;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+  font-size:14px;color:#2B2723;background:var(--bg-page);min-height:100vh}
+
+/* ── ヘッダー ── */
+.app-header{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;
+  align-items:center;gap:16px;position:sticky;top:0;z-index:100}
+.app-logo{color:var(--navy);font-size:17px;font-weight:600;padding:14px 0;
+  display:flex;align-items:center;gap:10px;white-space:nowrap}
+.app-logo svg{opacity:1}
+.tab-nav{display:flex;gap:4px;margin-left:24px}
+.tab-btn{padding:14px 20px;color:var(--ink-soft);font-size:13px;
+  font-weight:500;border:none;background:none;cursor:pointer;
+  border-bottom:3px solid transparent;transition:all .15s}
+.tab-btn.active{color:var(--navy);border-bottom-color:var(--blue)}
+.tab-btn:hover:not(.active){color:var(--navy)}
+
+/* ── スティッキー事業名バー ── */
+.sticky-tool{position:sticky;top:47px;z-index:90;
+  background:rgba(255,255,255,.95);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--border);padding:0 24px;
+  min-height:0;overflow:hidden;transition:max-height .2s;max-height:0}
+.sticky-tool.visible{max-height:40px}
+.sticky-tool-inner{display:flex;align-items:center;gap:10px;height:40px}
+.sticky-tool-name{font-weight:600;color:var(--navy);font-size:13px}
+.sticky-tool-biz{font-size:11px;padding:2px 8px;border-radius:20px;
+  background:var(--bg-blue);color:var(--text-blue);font-weight:500}
+
+/* ── タブコンテンツ ── */
+.tab-content{display:none;width:100%}
+.tab-content.active{display:block}
+
+/* ── 診断タブ レイアウト ── */
+.page-layout{display:grid;grid-template-columns:1fr 260px;gap:14px;
+  padding:16px 24px;align-items:start;width:100%}
+@media(max-width:960px){.page-layout{grid-template-columns:1fr}}
+.main-col{min-width:0;width:100%}
+
+/* ── カード ── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:14px 16px;margin-bottom:10px;width:100%}
+.sec-hdr{display:flex;align-items:center;gap:7px;padding:6px 10px;
+  border-radius:var(--radius);margin-bottom:10px;font-size:12.5px;font-weight:600}
+.sec-hdr.blue{background:var(--bg-blue);color:var(--text-blue)}
+.sec-hdr.green{background:var(--bg-green);color:var(--text-green)}
+.sec-hdr.navy{background:var(--blue);color:#fff}
+
+/* ── 入力フォーム ── */
+.tool-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;width:100%}
+.tool-input{flex:1;padding:9px 14px;font-size:15px;font-weight:500;
+  border:1.5px solid var(--border);border-radius:var(--radius);
+  outline:none;font-family:inherit;color:var(--navy);width:100%}
+.tool-input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(217,119,87,.15)}
+.tool-input::placeholder{color:#aaa;font-weight:400}
+.btn-save{padding:9px 20px;background:var(--blue);color:#fff;border:none;
+  border-radius:var(--radius);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn-save:hover{background:var(--blue-dark)}
+
+.biz-row{display:flex;align-items:center;gap:8px;
+  padding:6px 10px;background:var(--surface-soft);border:1px solid var(--border);border-radius:var(--radius)}
+.biz-row label{flex:1;font-size:12.5px;font-weight:500;color:#5A5548}
+.biz-select{padding:4px 10px;font-size:13px;border:1px solid var(--border);
+  border-radius:6px;background:#fff;color:var(--navy);cursor:pointer;font-weight:500;outline:none}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+@media(max-width:600px){.grid2{grid-template-columns:1fr}}
+.row{display:flex;align-items:center;gap:8px;padding:6px 10px;
+  background:var(--surface-soft);border:1px solid var(--border);border-radius:var(--radius)}
+.row label{flex:1;font-size:12.5px;color:#5A5548;font-weight:500}
+.row select{padding:4px 10px;font-size:13px;border:1px solid var(--border);
+  border-radius:6px;background:#fff;color:#2B2723;cursor:pointer;min-width:120px;outline:none}
+.row select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(217,119,87,.15)}
+.row.con select:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(107,143,90,.15)}
+.note{font-size:10.5px;color:var(--ink-soft);margin-top:4px}
+
+/* ── 結果テーブル ── */
+.count-bar{padding:7px 12px;background:var(--surface-soft);border:1px solid var(--border);
+  border-radius:var(--radius);font-size:13px;color:#5A5548;margin-bottom:10px}
+.count-bar strong{color:var(--blue-dark)}
+.tbl-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border);width:100%}
+table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+thead th{padding:9px 8px;background:var(--surface-soft);border-bottom:2px solid var(--border);
+  font-weight:600;color:#5A5548;font-size:11px;text-align:left;white-space:nowrap}
+tbody tr{border-bottom:1px solid #F0EEE7;transition:background .1s}
+tbody tr:hover{background:#FBFAF7}
+td{padding:8px;vertical-align:middle;word-wrap:break-word}
+.cat-b{display:inline-block;font-size:10px;padding:2px 7px;border-radius:20px;
+  background:var(--bg-blue);color:var(--text-blue);white-space:nowrap;font-weight:500;margin-bottom:3px}
+.method-n{font-weight:600;font-size:13px;line-height:1.35}
+.cost-t{font-size:11px;color:#888;white-space:pre-line;line-height:1.4}
+.howto-t{font-size:11px;color:#4A4438;line-height:1.5}
+.example-t{font-size:11px;color:#5A5548;line-height:1.5}
+.effect-t{font-size:12px;color:#333;line-height:1.4}
+.level-badge{display:inline-block;font-size:12px;font-weight:700;padding:4px 12px;
+  border-radius:20px;white-space:nowrap}
+.lv-高{background:#F5E6DD;color:#A8492C;border:1px solid #E7BFA6}
+.lv-中{background:#EAF0F0;color:#3F5560;border:1px solid #C9D8D8}
+.lv-小{background:#F1EFE9;color:#7A7568;border:1px solid #E0DCD0}
+.bt-badge{display:inline-block;font-size:11px;padding:3px 8px;border-radius:20px;
+  background:#F5E6DD;color:#A8492C;border:1px solid #E7BFA6;margin:2px 2px 0 0;white-space:nowrap}
+.bt-wrap{margin-top:6px;display:flex;flex-wrap:wrap;gap:2px}
+.rank-badge{display:inline-flex;width:26px;height:26px;border-radius:50%;
+  font-size:11px;font-weight:700;align-items:center;justify-content:center;flex-shrink:0}
+.empty{padding:40px;text-align:center;color:#888;font-size:14px}
+
+/* ── バッジカラー（ランク） ── */
+.r1{background:#3F5733;color:#fff}.r2{background:#5C7F4B;color:#fff}
+.r3{background:#8AAE71;color:#2B2723}.r4{background:#BFD59E;color:#2B2723}
+.r5{background:#F4E4B0;color:#2B2723}.r6{background:#EFC98A;color:#2B2723}
+.r7{background:#E2A272;color:#2B2723}.r8{background:#CC7A4E;color:#fff}
+.r9{background:#A8432A;color:#fff}
+
+/* ── マトリクス（STEP1右） ── */
+.top-layout{display:grid;grid-template-columns:1fr 230px;gap:14px;align-items:start}
+@media(max-width:700px){.top-layout{grid-template-columns:1fr}}
+.matrix-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.matrix-title{font-weight:600;color:var(--navy);margin-bottom:10px;font-size:13px}
+.matrix-note{font-size:10px;color:var(--ink-soft);margin-top:8px;line-height:1.5}
+.mx-tbl{width:100%;border-collapse:collapse}
+.mx-tbl th{padding:5px 6px;font-size:11px;font-weight:500;color:#7A7568;
+  text-align:center;background:var(--surface-soft)}
+.mx-tbl th.row-hdr{text-align:right;white-space:nowrap}
+.mx-tbl td{padding:8px 6px;text-align:center;font-size:12px;font-weight:700;border:1px solid #E0E0E0}
+
+/* ── セーブサイドバー ── */
+.saves-sidebar{position:sticky;top:16px;background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;max-height:calc(100vh - 32px);overflow-y:auto}
+.saves-sidebar-hdr{padding:12px 14px 9px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--navy);
+  position:sticky;top:0;background:var(--surface);z-index:1;border-radius:12px 12px 0 0}
+.saves-count{font-size:11px;color:var(--ink-soft);font-weight:400;margin-left:auto}
+.saves-body{padding:4px 6px}
+.saves-empty{color:#c2bcac;font-size:13px;padding:4px 0;text-align:center;margin-top:20px}
+.save-item{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:8px 8px;border-radius:8px;cursor:default;border-bottom:1px solid #F2EFE8}
+.save-item:last-child{border-bottom:none}
+.save-item:hover{background:var(--surface-soft)}
+.save-item-main{display:flex;align-items:center;gap:7px;min-width:0;flex:1}
+.save-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.save-name{font-weight:500;font-size:12.5px;color:var(--navy);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.save-actions{display:flex;gap:2px;flex-shrink:0;opacity:0;transition:opacity .12s}
+.save-item:hover .save-actions{opacity:1}
+.icon-btn{width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;
+  background:none;border:none;border-radius:6px;font-size:13px;cursor:pointer;color:var(--ink-soft)}
+.icon-btn:hover{background:var(--bg-blue);color:var(--text-blue)}
+.icon-btn.del:hover{background:#F5E6DD;color:#A8432A}
+
+/* ── 戦略タブ ── */
+.strategy-wrap{padding:20px 24px;width:100%}
+.strategy-filter{display:flex;align-items:center;gap:12px;
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:12px 16px;margin-bottom:16px}
+.strategy-filter label{font-size:13px;font-weight:500;color:#5A5548}
+.filter-select{padding:5px 10px;font-size:13px;border:1px solid var(--border);
+  border-radius:6px;background:#fff;outline:none;cursor:pointer}
+.hm-wrap{overflow:auto;border:1px solid var(--border);border-radius:12px;
+  background:var(--surface);max-height:calc(100vh - 200px)}
+.hm-table{border-collapse:collapse;white-space:nowrap;font-size:12px;table-layout:fixed}
+/* 事業名列スティッキー */
+.hm-table .col-biz{position:sticky;left:0;z-index:3;background:var(--surface);
+  width:200px;min-width:200px}
+.hm-table thead .col-biz{z-index:4;background:var(--surface-soft)}
+.hm-table td,.hm-table th{border:1px solid #EFEBE2}
+/* カテゴリグループヘッダー */
+.hm-cat-hdr{background:var(--blue);color:#fff;font-weight:600;font-size:11px;
+  text-align:center;padding:6px 4px;position:sticky;top:0;z-index:2}
+/* メソッド短縮名 */
+.hm-method-hdr{background:var(--surface-soft);font-size:10px;font-weight:500;color:#5A5548;
+  text-align:center;padding:2px;writing-mode:vertical-lr;
+  height:72px;width:26px;min-width:26px;max-width:26px;
+  position:sticky;top:28px;z-index:2;overflow:hidden;
+  vertical-align:bottom}
+/* 事業名ヘッダー（左上コーナー） */
+.hm-corner{position:sticky;top:0;left:0;z-index:5;background:var(--surface-soft);
+  padding:10px 12px;font-size:11px;font-weight:600;color:#5A5548}
+/* 事業行 */
+.hm-biz-cell{padding:6px 10px;background:var(--surface);border-right:2px solid var(--border)}
+.hm-biz-name{font-weight:600;font-size:12px;color:var(--navy);line-height:1.4;word-break:keep-all}
+.hm-biz-tag{font-size:10px;padding:1px 6px;border-radius:10px;
+  font-weight:500;display:inline-block;margin-top:2px}
+.biz-tag-調達SCM{background:#EAF1E3;color:#44603A}
+.biz-tag-他AX{background:#EAF0F0;color:#3F5560}
+.biz-tag-IT{background:#F3E7EF;color:#7A3B5C}
+.biz-tag-コスト削減{background:#F5E6DD;color:#A8492C}
+.biz-tag-その他{background:var(--surface-soft);color:#8A8578}
+/* ヒートマップセル */
+.hm-cell{width:26px;height:28px;min-width:26px;max-width:26px}
+.hm-gray{background:#EDEAE2}
+.hm-r1{background:#3F5733}.hm-r2{background:#5C7F4B}
+.hm-r3{background:#8AAE71}.hm-r4{background:#BFD59E}
+.hm-r5{background:#F4E4B0}.hm-r6{background:#EFC98A}
+.hm-r7{background:#E2A272}.hm-r8{background:#CC7A4E}
+.hm-r9{background:#A8432A}
+/* 凡例 */
+.hm-legend{display:flex;align-items:center;gap:6px;padding:10px 16px;
+  border-top:1px solid var(--border);font-size:11px;color:#5A5548;
+  background:var(--surface-soft);border-radius:0 0 12px 12px}
+.leg-item{display:flex;align-items:center;gap:3px}
+.leg-box{width:14px;height:14px;border-radius:3px}
+</style>
+</head>
+<body>
+
+<!-- ヘッダー（固定） -->
+<header class="app-header">
+  <div class="app-logo">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+      <rect width="22" height="22" rx="5" fill="#F5E6DD"/>
+      <path d="M5 11h12M11 5v12" stroke="#B85C3E" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+    マーケ施策 診断ツール
+  </div>
+  <nav class="tab-nav">
+    <button class="tab-btn active" id="tab-btn-diag">📋 診断</button>
+    <button class="tab-btn" id="tab-btn-strategy">📊 戦略マップ</button>
+  </nav>
+  <a href="/" style="margin-left:auto;color:var(--ink-soft);font-size:12px;text-decoration:none;white-space:nowrap">SFA ↗</a>
+</header>
+
+<!-- スティッキー事業名バー -->
+<div class="sticky-tool" id="sticky-tool-bar">
+  <div class="sticky-tool-inner">
+    <span class="sticky-tool-name" id="sticky-tool-name-text"></span>
+    <span class="sticky-tool-biz" id="sticky-tool-biz-text"></span>
+  </div>
+</div>
+
+<!-- ── 診断タブ ── -->
+<div class="tab-content active" id="tab-diag">
+  <div class="page-layout">
+    <div class="main-col">
+
+      <!-- ツール名入力 -->
+      <div class="tool-row">
+        <input type="text" id="tool-name" class="tool-input"
+          placeholder="ツール名・商材名を入力（例: InProc 調達AI）">
+        <button class="btn-save" id="btn-save-main">💾 この診断を保存</button>
+      </div>
+
+      <!-- STEP 1 -->
+      <div class="card">
+        <div class="sec-hdr blue">
+          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+          STEP 1 — 評価軸を設定する（手法の絞り込みに使用）
+        </div>
+        <!-- 事業種別・優先度（横並び） -->
+        <div class="grid2">
+          <div class="biz-row">
+            <label>事業種別</label>
+            <select id="sel-biz" class="biz-select">
+              <option value="調達SCM">調達SCM事業</option>
+              <option value="他AX">他AX事業</option>
+              <option value="IT">IT事業</option>
+              <option value="コスト削減">コスト削減事業</option>
+              <option value="その他">その他</option>
+            </select>
+          </div>
+          <div class="biz-row">
+            <label>優先事業ですか？</label>
+            <select id="sel-priority" class="biz-select">
+              <option value="no" selected>いいえ</option>
+              <option value="yes">はい</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:6px" id="axis1"></div>
+      </div>
+
+      <!-- STEP 2 -->
+      <div class="card">
+        <div class="sec-hdr green">
+          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          STEP 2 — 自社リソースを設定する（制約条件の判定に使用）
+        </div>
+        <div class="grid2" id="axis2"></div>
+        <p class="note">制約条件は手法の絞り込みに使用しません。ボトルネック表示に影響します。</p>
+      </div>
+
+      <!-- 結果 -->
+      <div class="card">
+        <div class="sec-hdr navy">
+          <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          診断結果 — 評価軸にすべて○の手法（優先度順）
+        </div>
+        <div class="count-bar" id="count-bar">ドロップダウンを設定してください</div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr>
+              <th style="width:30px"></th>
+              <th style="width:16%">手法</th>
+              <th style="width:6%">コスト</th>
+              <th style="width:6%">効果</th>
+              <th style="width:20%">進め方・ポイント</th>
+              <th style="width:30%">相性の良い商材例と理由</th>
+              <th style="width:22%">期待できる効果</th>
+            </tr></thead>
+            <tbody id="results"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /main-col -->
+
+    <!-- サイドバー：マトリクス + 保存済み -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <!-- コスト×効果マトリクス -->
+      <div class="matrix-card">
+        <div class="matrix-title">コスト × 見込み効果 優先度</div>
+        <table class="mx-tbl">
+          <thead><tr>
+            <th class="row-hdr">コスト＼効果</th>
+            <th>小</th><th>中</th><th>高</th>
+          </tr></thead>
+          <tbody>
+            <tr><th class="row-hdr">小</th>
+              <td class="r4">4</td><td class="r2">2</td><td class="r1">1</td></tr>
+            <tr><th class="row-hdr">中</th>
+              <td class="r7">7</td><td class="r5">5</td><td class="r3">3</td></tr>
+            <tr><th class="row-hdr">高</th>
+              <td class="r9">9</td><td class="r8">8</td><td class="r6">6</td></tr>
+          </tbody>
+        </table>
+        <p class="matrix-note">結果はこの順位の高い値（1位から）<br>に並べ替えて表示されます</p>
+      </div>
+
+      <!-- 保存済み診断 -->
+      <div class="saves-sidebar">
+        <div class="saves-sidebar-hdr">
+          <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          保存済みの診断
+          <span class="saves-count" id="saves-count"></span>
+        </div>
+        <div class="saves-body">
+          <div id="saves-section"><p class="saves-empty">まだ保存がありません</p></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /tab-diag -->
+
+<!-- ── 戦略タブ ── -->
+<div class="tab-content" id="tab-strategy">
+  <div class="strategy-wrap">
+    <!-- フィルター -->
+    <div class="strategy-filter">
+      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+      <label>事業種別</label>
+      <select id="strategy-biz-filter" class="filter-select">
+        <option value="">すべて</option>
+        <option value="調達SCM">調達SCM事業</option>
+        <option value="他AX">他AX事業</option>
+        <option value="IT">IT事業</option>
+        <option value="コスト削減">コスト削減事業</option>
+        <option value="その他">その他</option>
+      </select>
+      <label style="margin-left:16px">優先度</label>
+      <select id="strategy-prio-filter" class="filter-select">
+        <option value="">すべて</option>
+        <option value="on">⭐ 優先のみ</option>
+      </select>
+      <label style="margin-left:16px">並び順</label>
+      <select id="strategy-sort" class="filter-select">
+        <option value="saved">保存順</option>
+        <option value="priority">優先度優先</option>
+        <option value="name">事業名順</option>
+        <option value="biz">事業種別順</option>
+      </select>
+      <span style="margin-left:auto;font-size:12px;color:#888" id="strategy-count"></span>
+    </div>
+
+    <!-- ヒートマップ -->
+    <div class="hm-wrap">
+      <div id="heatmap-container"></div>
+      <div class="hm-legend">
+        <span style="font-weight:500;margin-right:4px">優先度：</span>
+        <div class="leg-item"><div class="leg-box hm-r1"></div>1位</div>
+        <div class="leg-item"><div class="leg-box hm-r2"></div>2位</div>
+        <div class="leg-item"><div class="leg-box hm-r3"></div>3位</div>
+        <div class="leg-item"><div class="leg-box hm-r4"></div>4位</div>
+        <div class="leg-item"><div class="leg-box hm-r5"></div>5位</div>
+        <div class="leg-item"><div class="leg-box hm-r6"></div>6位</div>
+        <div class="leg-item"><div class="leg-box hm-r7"></div>7位</div>
+        <div class="leg-item"><div class="leg-box hm-r8"></div>8位</div>
+        <div class="leg-item"><div class="leg-box hm-r9"></div>9位</div>
+        <div class="leg-item"><div class="leg-box hm-gray"></div>対象外</div>
+      </div>
+    </div>
+  </div>
+</div><!-- /tab-strategy -->
+
+<script>
+// ── 保存データ（SFA-CRMのDBから注入） ──────────────────────
+let SAVES = __INITIAL_DIAGNOSTICS_JSON__;
+// ── データ ──────────────────────────────────────────────────
+const METHODS=[
+  {cat:"コンテンツ",method:"SEO / オウンドブログ",cost_l:"小",eff_l:"中",eff:"長期的な検索流入・インバウンドリードの継続獲得",crit:[],howto:"① KW調査でペインワード特定（例: '調達 DX'）\n② 検索意図別に記事設計（TOFU/MOFU/BOFU）\n③ 月4〜8本継続投稿でドメイン育成\n④ 社内専門家知識をSEO記事に変換",example:"継続投稿で検索上位を狙う手法のため、「調達 自動化」「間接材 コスト削減」など実務担当者が日常的に検索するKWが豊富な調達BPOツール・経費精算SaaS・文書管理SaaSとは相性がいい。競合広告費が少ないニッチカテゴリほど効果大。",s:[1,0,0,1,1,0,1,1,1,0,0,0,0,0,1,1,0,0,0,1,0]},
+  {cat:"コンテンツ",method:"ホワイトペーパー / eBook",cost_l:"中",eff_l:"中",eff:"メールリード獲得とMAナーチャリングへの流し込み",crit:[],howto:"① 業界課題・ROI試算などの有益コンテンツを設計\n② LPでゲーティング → リード獲得\n③ MA連携でナーチャリングフローに乗せる\n④ 事例とセットで検討期層にリーチ",example:"有益情報と引き換えにリードを獲得するゲーティング型の手法のため、購入前に徹底情報収集を行う意思決定者が多く検討期間が長いERP・調達SaaS・BPRコンサルとは相性がいい。ROI試算シートなど実務価値の高い資料を設計できる知識集約型ソリューションほど効果大。",s:[0,1,1,1,0,1,1,0,1,1,0,0,0,1,1,0,1,0,0,0,0]},
+  {cat:"コンテンツ",method:"導入事例（Case Study）",cost_l:"小",eff_l:"高",eff:"商談転換率・稟議通過率の向上（信頼シグナル）",crit:[0],howto:"① 成果が出た顧客3〜5社に掲載許諾取得\n② 課題→施策→定量成果のフォーマットで記事化\n③ PDF版も作りSDRの提案資料に流用\n④ 業種・規模別に揃えると汎用性UP",example:"社会的証明でリスク懸念を払拭する手法のため、稟議に上司への説得材料が必要なエンタープライズ全般と相性がいい。特に導入コストが高いほど事例の説得力が商談を左右する。",s:[1,1,1,1,1,1,1,1,1,1,0,1,0,1,1,1,1,0,0,0,0]},
+  {cat:"コンテンツ",method:"動画 / デモ動画",cost_l:"中",eff_l:"中",eff:"LP CVR向上・製品の価値理解を促進",crit:[],howto:"① 2〜3分のプロダクトデモ動画をYouTube + LP埋め込み\n② 顧客インタビュー動画で信頼構築\n③ ショート動画（60秒）でSNS配信",example:"操作の流れやUIの直感性を「見せる」手法のため、文章では伝わらない体験価値があるダッシュボード型BIツール・調達フローSaaS・RPAツールとは相性がいい。「触らずにイメージできるか」が検討開始の分岐点になる製品ほど費用対効果高。",s:[1,1,0,1,1,0,1,1,0,1,1,0,0,0,1,1,1,0,0,1,0]},
+  {cat:"コンテンツ",method:"ポッドキャスト",cost_l:"小",eff_l:"小",eff:"C-suite層への継続接触と業界権威性の構築",crit:[4],howto:"① 業界有識者・顧客との対談形式で権威性UP\n② Spotify / Apple Podcasts + YouTube同時配信\n③ 既存ウェビナーをクリップして再利用",example:"「ながら聴き」で経営課題を届けられる手法のため、CFO・CPO・CHROなど移動時間に情報収集する上位意思決定層が多いHRテック・リーガルテック・経理DX SaaSとは相性がいい。",s:[0,1,1,0,0,1,0,0,1,0,0,0,0,0,0,0,0,1,0,1,0]},
+  {cat:"デマンドジェネ",method:"リスティング広告",cost_l:"中",eff_l:"中",eff:"今すぐ買いたい層の即時刈り取り（即効性高）",crit:[],howto:"① ブランドKW + 競合KW + ペインKWの3軸で運用\n② LP A/Bテストでコンバージョン最適化\n③ BtoB特有の長期検討に合わせてリタゲと組み合わせ\n④ スモールバジェットで仮説検証後に拡張",example:"「解決策を探して検索している人」だけにアプローチできる手法のため、「電子契約 比較」「名刺管理 クラウド」のようにカテゴリ認知が確立し月間検索量がある名刺管理SaaS・電子契約・採用管理ツールとは相性がいい。",s:[1,0,0,1,1,0,1,1,0,1,1,0,0,0,1,1,0,0,0,0,0]},
+  {cat:"デマンドジェネ",method:"LinkedIn広告",cost_l:"中",eff_l:"中",eff:"意思決定者へのダイレクトリーチとMQL獲得",crit:[],howto:"① 職種・役職・会社規模で精緻にターゲティング\n② ホワイトペーパーのLead Gen Formが高ROI\n③ ABMリストと組み合わせてアカウント絞り込み配信\n④ CPC高いため質の高いクリエイティブが必須",example:"職種・役職・会社規模で精緻に設定できる唯一のBtoB広告手法のため、部長〜役員の意思決定層に直接リーチしたい調達DX・経営管理SaaS・エンタープライズ向けBPOとは相性がいい。ペルソナが曖昧な状態で走らせると費用が溶ける。",s:[1,1,1,1,0,1,1,0,1,1,0,0,0,1,1,0,1,0,0,0,0]},
+  {cat:"デマンドジェネ",method:"ディスプレイ / リタゲ",cost_l:"小",eff_l:"小",eff:"長期検討者のブランド想起維持・離脱防止",crit:[],howto:"① LP訪問者・ホワイトペーパーDL者にリタゲ\n② 検討期を離脱しないようにブランド想起を維持\n③ GDNより業界特化メディアへの出稿も検討",example:"一度接触した見込み客に繰り返しブランドを見せる手法のため、稟議が複数部門を通過し検討期間が半年〜1年に及ぶ高単価のERP・調達SaaS・HRクラウドとは相性がいい。",s:[1,0,1,1,0,1,1,0,1,1,0,0,0,0,0,0,0,0,0,0,0]},
+  {cat:"デマンドジェネ",method:"SNSオーガニック発信",cost_l:"小",eff_l:"中",eff:"認知拡大とインバウンドリードの継続的創出",crit:[4],howto:"① 代表/担当者個人アカウントでの発信が鍵\n② 業界インサイト・失敗談・数字ネタが伸びやすい\n③ 週3〜5投稿の継続が基本\n④ CTA（資料DL / ウェビナー案内）を適度に埋め込む",example:"発信者個人の専門性・人柄への共感を起点に興味を引く手法のため、「この人の考え方が信頼できるから使いたい」という判断が働きやすいコンサルサービス・高単価SaaS・スタートアップとは相性がいい。",s:[0,1,0,1,1,0,1,1,0,0,0,0,0,1,1,1,0,0,0,1,0]},
+  {cat:"ABM / アウトバウンド",method:"ABM",cost_l:"高",eff_l:"高",eff:"高単価ターゲット商談のパイプライン構築",crit:[1],howto:"① ICP（理想顧客プロフィール）を定義し優先100〜500社をリスト化\n② 広告・メール・SDR架電を一気通貫で集中投下\n③ 部門横断でセールスと連携するのが成功の鍵\n④ Intent signalで温度感を把握",example:"マーケとセールスが一体となって特定企業にリソースを集中投下する手法のため、受注単価が高く（年間数百万〜数千万円）ターゲット企業が絞れるエンタープライズ向けSaaS・調達BPO・コンサルとは相性がいい。",s:[0,0,1,1,0,1,1,0,1,1,0,0,0,1,0,0,1,0,0,0,0]},
+  {cat:"ABM / アウトバウンド",method:"コールドメール",cost_l:"小",eff_l:"高",eff:"商談アポの即時創出（低コスト・高ROI）",crit:[1],howto:"① LinkedIn・企業HPでメールアドレスを取得\n② パーソナライズされた3〜5ステップシーケンスを設計\n③ 件名・冒頭1文が開封率を左右（A/Bテスト必須）\n④ Apollo / HubSpot Sequencesで自動化",example:"担当者に1対1で直接メッセージを届けられる手法のため、特定役職（購買部長・情シス部長など）に刺さるペインメッセージが設計できるSMB〜MM向けSaaS全般とは相性がいい。コストほぼゼロで商談パイプラインを作れるSDR立ち上げ期の最高コスパ施策。",s:[0,0,0,1,1,0,1,1,0,1,1,0,0,1,0,0,0,0,0,0,0]},
+  {cat:"ABM / アウトバウンド",method:"LinkedIn SDR活動",cost_l:"小",eff_l:"中",eff:"役員クラスとの関係構築と高温度商談化",crit:[1,4],howto:"① 繋がりリクエスト → インサイト共有で関係構築\n② 投稿へのコメント → DM導線が自然な流れ\n③ Sales Navigator活用でターゲット絞り込み\n④ 担当者個人のプロフィール最適化が先決",example:"関係構築から商談化まで個人接点で進める手法のため、意思決定者本人がLinkedInで発信・情報収集しており関係の質が受注を左右するコンサル・高単価SaaS・BPOサービスとは相性がいい。",s:[0,1,1,1,0,1,1,0,1,1,0,0,0,1,0,0,1,0,0,1,0]},
+  {cat:"ABM / アウトバウンド",method:"ダイレクトメール",cost_l:"中",eff_l:"小",eff:"デジタル到達困難な役員クラスへのファーストタッチ",crit:[1],howto:"① デジタル接触が多い時代に物理接触で差別化\n② ターゲットを絞った高単価ギフト（書籍・グッズ）\n③ ABMと組み合わせて最重要アカウントに集中\n④ ランディング後のフォローアップを事前設計",example:"デジタル過多な時代に物理的接触で目立てる手法のため、メール・広告が届きにくい役員クラスへのファーストタッチが効く高単価ソリューション・コンサルサービスとは相性がいい。",s:[0,0,1,0,0,1,1,0,1,0,0,0,0,1,0,0,1,0,0,0,0]},
+  {cat:"イベント / コミュニティ",method:"自社主催ウェビナー",cost_l:"小",eff_l:"高",eff:"温度感の高いリードを継続的に集客・育成",crit:[],howto:"① テーマは「顧客のペイン×自社の強み」で設定\n② 月1〜2回の定期開催でブランド認知向上\n③ 登録→参加→事後フォローのシーケンスをMA化\n④ アーカイブをコンテンツ資産として再利用",example:"有益情報を無料提供しながら見込み客を自然に集められる手法のため、「調達DXの進め方」「ゼロからはじめる間接材管理」など実務課題が明確な調達/経理/HR系の業務SaaSとは相性がいい。",s:[1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,0,0,1,0]},
+  {cat:"イベント / コミュニティ",method:"共催ウェビナー / 登壇",cost_l:"中",eff_l:"中",eff:"パートナーリストから新規リードを大量獲得",crit:[3],howto:"① 補完関係にある企業と共催でリスト拡大\n② 業界メディアや協会のイベントでスポンサー登壇\n③ 共催相手のメールリストにアクセスできるメリット大\n④ テーマの一貫性と聴衆の重複確認が重要",example:"相手方の聴衆をまるごと借りられる手法のため、リスト規模がまだ小さい成長フェーズにあり補完製品とテーマを共同設計しやすい中堅〜大手向けBtoBサービスとは相性がいい。",s:[1,1,1,1,0,1,1,1,1,1,0,0,0,0,1,0,1,1,0,0,0]},
+  {cat:"イベント / コミュニティ",method:"展示会・カンファレンス",cost_l:"高",eff_l:"中",eff:"業界内認知の一気拡大と大量リード収集",crit:[1],howto:"① 出展前: 来場予定客へのメール/SNS告知で集客\n② 出展中: デモ体験 + スキャンでリード収集\n③ 出展後: 48時間以内にフォローメールとSDR架電\n④ 費用対効果が出るまで2〜3回出展が必要",example:"業界の見込み客が一堂に集まる場にリアル接点として存在できる手法のため、顧客の購買担当者が特定業界展示会に集中する調達SaaS・ERPソリューション・HR系クラウドとは相性がいい。",s:[1,0,1,1,0,1,1,0,1,1,0,0,0,1,0,0,1,1,0,0,0]},
+  {cat:"イベント / コミュニティ",method:"ユーザーコミュニティ構築",cost_l:"小",eff_l:"中",eff:"口コミ拡散・解約率低下・アップセル機会創出",crit:[0],howto:"① Slack / Discordで既存顧客コミュニティを立ち上げ\n② UGCと口コミ効果でオーガニック流入を生成\n③ ユーザー同士の情報交換が解約率低下にも貢献\n④ 顧客数50社以上になってから着手が目安",example:"ユーザー同士の学び合いと口コミがそのままマーケになる手法のため、機能が豊富で使いこなしに学習コストがかかりPLG型SaaS・デベロッパーツール・HR/組織系クラウドとは相性がいい。",s:[1,0,0,1,1,0,1,1,1,0,0,1,0,0,1,1,0,0,0,1,0]},
+  {cat:"パートナー",method:"代理店・リセラー",cost_l:"中",eff_l:"高",eff:"直販リソースなしで商圏・顧客数を拡大",crit:[3],howto:"① ターゲット顧客との接点を持つ代理店を選定\n② パートナーポータル + 教育コンテンツを整備\n③ 共同マーケ活動（共催ウェビナー等）でリード創出\n④ インセンティブ設計と定期的な関係維持が継続の鍵",example:"パートナーの既存顧客接点と信頼をレバレッジする手法のため、直販チームのリソースが不足しており特定業種や地域に強い代理店が存在するBPO・間接材調達・中小企業向けSaaSとは相性がいい。",s:[0,0,0,1,1,0,1,1,0,1,0,0,0,0,1,0,1,1,0,0,0]},
+  {cat:"パートナー",method:"テクノロジーパートナー",cost_l:"高",eff_l:"中",eff:"大手PFのエコシステムからインバウンド流入",crit:[3],howto:"① 主要プラットフォームとの連携でエコシステム化\n② App Marketplaceへの掲載でインバウンド獲得\n③ テックパートナーのニュースレター経由でリード流入\n④ 相互送客の仕組みを正式合意で明確化",example:"大手プラットフォームのエコシステムに入ることで信頼性と露出を同時獲得できる手法のため、「SAP Aribaと連携します」「Salesforceと繋がります」が購買判断を動かす調達SaaS・HR系・経費精算ツールとは相性がいい。",s:[1,0,1,1,0,1,1,0,1,0,0,0,0,0,0,1,0,1,0,0,0]},
+  {cat:"パートナー",method:"リファーラルプログラム",cost_l:"小",eff_l:"高",eff:"既存顧客経由の高品質リード低コスト獲得",crit:[0],howto:"① 既存顧客・パートナーに紹介インセンティブを設計\n② 紹介リンク発行・トラッキング仕組みをツール化\n③ CSが高い状態で展開することが前提",example:"満足した顧客の口コミを仕組み化する手法のため、NPSが高く利用者が同業の知人に紹介したくなる体験を提供できているサブスク型SaaS全般と相性がいい。CSが整っていない段階で走らせても紹介は生まれない。",s:[0,0,0,1,1,0,1,1,0,0,1,1,0,0,1,1,0,1,0,0,0]},
+  {cat:"PLG",method:"フリートライアル / Freemium",cost_l:"中",eff_l:"高",eff:"自己完結型の購買フローでユーザー数スケール",crit:[2],howto:"① 価値を感じるまでのTTV（Time to Value）を最短化\n② 試用期間中のメール/インアプリメッセージでアクティベーション促進\n③ 利用ログを基にした自動アップグレード促進が肝\n④ セルフサービス購入フローの整備が前提",example:"製品を試してもらうことで価値を体験的に伝える手法のため、UIが直感的でセットアップが短時間で完了しセルフサービスで始められるSlack型・Notion型のシンプルなSaaSとは相性がいい。",s:[1,1,0,1,1,0,1,1,0,1,1,0,0,0,1,1,0,0,0,0,0]},
+  {cat:"PLG",method:"App Marketplace掲載",cost_l:"中",eff_l:"中",eff:"大手PFユーザーからの継続的インバウンド流入",crit:[3],howto:"① 主要プラットフォームのMarketplaceに掲載申請\n② マーケットプレイス内でのSEO対策（レビュー獲得）\n③ 既存ユーザーのエコシステム内からリード創出\n④ Appexchange / SAP Storeなどを優先",example:"大手プラットフォームのユーザーが使っている環境の中から自然に発見してもらえる手法のため、SAP・Salesforceのユーザー企業がそのまま潜在顧客になる調達SaaS・セールスインテリジェンス・HR系ツールとは相性がいい。",s:[1,0,1,1,0,1,1,0,0,1,1,0,0,0,1,1,0,1,0,0,0]},
+  {cat:"PR / ソートリーダー",method:"プレスリリース / メディア",cost_l:"中",eff_l:"中",eff:"第三者報道でブランド認知と信頼性を同時獲得",crit:[],howto:"① 資金調達・大型契約・新機能リリースをフックにプレスリリース配信\n② 業界専門メディアへの寄稿で専門性訴求\n③ 記者・編集者との関係構築が中長期で効く",example:"第三者メディアの報道が「お墨付き」となり広告より高い信頼性で認知を広げられる手法のため、調達・HRなど業界専門メディアが存在しニュースバリューのある実績が作りやすいスタートアップSaaS・HRテックとは相性がいい。",s:[0,1,1,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,1,0]},
+  {cat:"PR / ソートリーダー",method:"アナリスト対応（Gartner等）",cost_l:"高",eff_l:"高",eff:"大企業RFP選定プロセスに正式に組み込まれる",crit:[],howto:"① Gartner Magic Quadrantへの掲載を目指す\n② まず国内のITRへの情報提供・関係構築から着手\n③ エンタープライズ商談でアナリスト評価が選定基準になる\n④ 製品成熟度と顧客実績が一定レベル達してから着手",example:"Gartner等の評価レポートに掲載されることで大企業のRFP選定プロセスに正式に組み込まれる手法のため、情報システム部門がアナリストレポートで製品比較するエンタープライズ向けSaaS・ERPソリューションとは相性がいい。",s:[1,0,1,0,0,1,0,0,1,0,0,1,0,0,0,0,0,0,0,0,0]},
+  {cat:"PR / ソートリーダー",method:"代表・社員のSNS発信",cost_l:"小",eff_l:"高",eff:"専門性への信頼からインバウンドリードを継続創出",crit:[4],howto:"① CEO/創業者のLinkedIn/X投稿が最も費用対効果高\n② 「業界はこう変わる」系のインサイト発信が拡散しやすい\n③ 社員アドボカシープログラムで発信者を増やす\n④ 発信 → DM問い合わせ → 商談のルートを確立",example:"発信者本人の専門性への信頼が製品への信頼に転換される手法のため、「誰が作り誰が届けるか」が購買判断に直結するコンサルサービス・高単価SaaS・スタートアップ全般とは相性がいい。コストゼロで最もROIが高い施策の一つ。",s:[0,1,0,1,1,0,1,1,0,0,0,0,0,1,1,0,0,0,0,1,0]},
+  {cat:"PR / ソートリーダー",method:"受賞・認定取得",cost_l:"小",eff_l:"小",eff:"提案資料・商談での信頼シグナル獲得",crit:[],howto:"① 応募可能な業界賞・行政認定を棚卸し年間カレンダー化\n② LP・提案資料・プレスリリースに実績として掲載\n③ 受賞プレスリリースを配信してメディア露出に活用",example:"権威ある第三者機関のお墨付きを信頼シグナルとして商談に活用できる手法のため、ブランド認知がまだ低く競合との差別化に実績提示が必要な新規参入SaaSおよび官公庁・公共系商材とは相性がいい。",s:[0,1,1,0,0,1,0,0,1,0,0,0,0,0,0,0,0,0,0,1,0]},
+  {cat:"レビュー / 比較サイト",method:"IT製品レビューサイト掲載",cost_l:"小",eff_l:"高",eff:"検討期の高CVRリードを比較検討フェーズで刈り取り",crit:[0],howto:"① 主要比較サイトに製品登録（無料枠から開始）\n② 顧客にレビュー投稿を依頼（CS活動の一環）\n③ 有料掲載でリスト上位表示 → 検討期リードを獲得\n④ レビューの質と量が他サイトへのSEOにも波及",example:"比較検討フェーズで能動的に情報収集するユーザーを刈り取れる手法のため、「〇〇 比較」と検索されるカテゴリ認知が確立し選定担当者がBoxil・ITトレンドを参照する中小〜中堅向けSaaS全般と相性がいい。",s:[1,0,0,1,1,0,1,1,0,1,1,1,0,0,1,1,1,0,0,0,0]},
+  {cat:"レビュー / 比較サイト",method:"G2 / Capterra（グローバル）",cost_l:"中",eff_l:"小",eff:"グローバル展開での信頼構築と海外リード獲得",crit:[0],howto:"① 英語圏での展開時は必須 → リスト登録は無料から\n② グローバル競合との比較表示でポジショニング確立\n③ Peer reviewsが商談時の信頼性担保になる",example:"英語圏の購買担当者がG2・Capterraで競合比較をすることが標準プロセスになっている手法のため、グローバル展開を見据えており海外競合製品と並べて比較評価される環境に入りたいグローバル向けSaaSと相性がいい。",s:[1,0,1,1,0,1,1,0,0,1,1,1,0,0,1,1,0,0,0,0,0]},
+  {cat:"MA / ナーチャリング",method:"MAナーチャリング（ドリップ）",cost_l:"小",eff_l:"高",eff:"長期検討リードを自動で温め・タイミングよく商談化",crit:[],howto:"① リード取得後のステージ別にコンテンツ設計\n（認知→興味→検討→商談）\n② 行動ベーストリガー（LP再訪・資料DL）でメール送信\n③ スコアリングで「今すぐ客」をSDRに引き渡すルール化\n④ 配信頻度は週1〜2通、価値提供を前提に設計",example:"長期間にわたって見込み客を温め続ける手法のため、稟議プロセスが長く購買意思決定に3〜12ヶ月かかる調達SaaS・ERP・HRクラウドとは相性がいい。「今すぐ買わないが将来買う可能性がある」層を資産として活用できる。",s:[0,0,1,1,0,1,1,1,1,1,0,0,0,1,1,0,1,0,0,0,0]},
+  {cat:"MA / ナーチャリング",method:"顧客向けメルマガ",cost_l:"小",eff_l:"中",eff:"解約防止・アップセル機会創出・エンゲージメント維持",crit:[0],howto:"① 既存顧客向けに製品アップデート・業界ニュース・活用Tips配信\n② 解約防止 + アップセル機会創出の両立\n③ 月1〜2回の適切な頻度と高い配信品質が肝",example:"既存顧客に継続的な価値を届けてエンゲージメントを保つ手法のため、機能数が多く顧客が使いこなしきれていないケースが多いサブスク型SaaS全般とは相性がいい。「使っていない機能を知らせる」だけでアクティベーションが上がる。",s:[0,0,1,1,1,1,1,1,1,1,0,0,1,1,1,1,0,0,0,0,0]},
+  {cat:"MA / ナーチャリング",method:"アカウント別インサイト（ハイタッチ）",cost_l:"小",eff_l:"中",eff:"購買タイミングを捉えた商談化率の大幅向上",crit:[1],howto:"① ターゲット企業の動向（決算・採用・ニュース）をモニタリング\n② タイムリーなパーソナライズメール or SDR架電で接触\n③ Sales IntelligenceツールやLinkedIn活用で効率化\n④ ABMと組み合わせることで効果最大化",example:"顧客企業の「今まさに動いているタイミング」を捉えてアプローチできる手法のため、人事異動・M&A・新拠点開設など外部イベントが購買トリガーになるエンタープライズ向けSaaS・コンサルサービスとは相性がいい。",s:[0,0,1,1,0,1,1,1,1,1,0,0,0,1,0,0,1,0,0,0,0]}
+];
+
+const AXIS1=[
+  {key:"cat",   label:"カテゴリ認知（検索需要はあるか）", opts:[["あり",0],["なし",1]]},
+  {key:"price", label:"契約単価",
+   opts:[["高",2,"高：利用料 100万円/月〜 ／ 開発・購入 2,000万円〜"],
+         ["中",3,"中：利用料 10万〜100万円/月 ／ 開発・購入 100〜2,000万円"],
+         ["小",4,"小：利用料 10万円/月以下 ／ 開発・購入 100万円以下"]]},
+  {key:"size",  label:"企業規模",
+   opts:[["ENP",5,"ENP：大企業・エンタープライズ"],
+         ["MM",6,"MM：中堅企業"],
+         ["SMB",7,"SMB：中小企業・その他"]]},
+  {key:"period",label:"顧客の意思決定までの期間",
+   opts:[["長",8,"長（3か月超）"],["中",9,"中（3か月以内）"],["短",10,"短（1か月以内）"]]},
+];
+const AXIS2=[
+  {key:"nps",    label:"既存顧客の満足度",              opts:[["高い",11],["育成段階",12]]},
+  {key:"sales",  label:"営業アウトリーチ人員（SDR）",   opts:[["あり",13],["なし",14]]},
+  {key:"demo",   label:"デモなしで自分で試せるか",       opts:[["可",15],["不可",16]]},
+  {key:"partner",label:"パートナー（代理店・技術連携）", opts:[["あり",17],["なし",18]]},
+  {key:"sns",    label:"SNS発信力",                    opts:[["できる",19],["難しい",20]]},
+];
+
+let sel1={cat:"あり",price:"高",size:"ENP",period:"長"};
+let sel2={nps:"高い",sales:"あり",demo:"可",partner:"あり",sns:"できる"};
+let selBiz="調達SCM";
+
+function getIdx(ax,label){
+  const opt=ax.opts.find(o=>o[0]===label);
+  return opt?opt[1]:ax.opts[0][1];
+}
+
+const RANK_MAP={"小高":1,"小中":2,"中高":3,"小小":4,"中中":5,"高高":6,"中小":7,"高中":8,"高小":9};
+const RANK_COLOR=["","r1","r2","r3","r4","r5","r6","r7","r8","r9"];
+
+const CONS_PAIRS=[
+  [11,12,"既存顧客の満足度（高い）","nps"],
+  [13,14,"営業アウトリーチ人員（SDR）","sales"],
+  [15,16,"デモなしで試せる製品設計","demo"],
+  [17,18,"代理店・パートナー","partner"],
+  [19,20,"SNS発信力","sns"],
+];
+
+function makeBadge(lvl){return `<span class="level-badge lv-${lvl}">${lvl}</span>`;}
+
+function getBottlenecks(m){
+  return (m.crit||[]).map(ci=>{
+    const [,,label,key]=CONS_PAIRS[ci];
+    const ax2=AXIS2.find(a=>a.key===key);
+    const userIdx=getIdx(ax2,sel2[key]);
+    return m.s[userIdx]===0?label:null;
+  }).filter(Boolean);
+}
+
+// ── axis UI構築 ─────────────────────────────────────────────
+function buildAxis(id,axes,selObj,num){
+  const el=document.getElementById(id);
+  if(!el) return;
+  el.innerHTML=axes.map(ax=>`
+    <div class="row ${num===2?'con':''}">
+      <label>${ax.label}</label>
+      <select data-n="${num}" data-k="${ax.key}">
+        ${ax.opts.map(o=>{
+          const key=o[0],display=o[2]||o[0];
+          return `<option value="${key}" ${selObj[ax.key]===key?'selected':''}>${display}</option>`;
+        }).join('')}
+      </select>
+    </div>`).join('');
+  el.querySelectorAll('select').forEach(s=>s.addEventListener('change',e=>{
+    const k=e.target.dataset.k;
+    if(e.target.dataset.n==='1') sel1[k]=e.target.value;
+    else sel2[k]=e.target.value;
+    updateStickyBar();
+    render();
+  }));
+}
+
+// ── 診断render ───────────────────────────────────────────────
+function getMatchedSorted(){
+  const matched=METHODS.filter(m=>
+    m.s[getIdx(AXIS1[0],sel1.cat)]===1&&m.s[getIdx(AXIS1[1],sel1.price)]===1&&
+    m.s[getIdx(AXIS1[2],sel1.size)]===1&&m.s[getIdx(AXIS1[3],sel1.period)]===1
+  );
+  return matched.sort((a,b)=>(RANK_MAP[a.cost_l+a.eff_l]||5)-(RANK_MAP[b.cost_l+b.eff_l]||5));
+}
+
+function render(){
+  const sorted=getMatchedSorted();
+  const cb=document.getElementById('count-bar');
+  if(cb) cb.innerHTML=sorted.length===0
+    ?'条件に合う手法がありません'
+    :`<strong>${sorted.length}手法</strong>が該当 ／ 優先度順に表示`;
+
+  const tbody=document.getElementById('results');
+  if(!tbody) return;
+  if(!sorted.length){
+    tbody.innerHTML='<tr><td colspan="7" class="empty">STEP 1の条件に合う手法がありません</td></tr>';
+    return;
+  }
+  tbody.innerHTML=sorted.map(m=>{
+    const bts=getBottlenecks(m);
+    const btCell=bts.length===0?''
+      :'<div class="bt-wrap">'+bts.map(b=>`<span class="bt-badge">⚠ ${b}</span>`).join('')+'</div>';
+    const rank=RANK_MAP[m.cost_l+m.eff_l]||5;
+    return `<tr>
+      <td style="text-align:center"><span class="rank-badge ${RANK_COLOR[rank]}">${rank}</span></td>
+      <td><span class="cat-b">${m.cat}</span><div class="method-n">${m.method}</div>${btCell}</td>
+      <td style="text-align:center">${makeBadge(m.cost_l)}</td>
+      <td style="text-align:center">${makeBadge(m.eff_l)}</td>
+      <td class="howto-t">${m.howto.replace(/\n/g,'<br>')}</td>
+      <td class="example-t">${m.example}</td>
+      <td class="effect-t">${m.eff}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── スティッキーバー ─────────────────────────────────────────
+function updateStickyBar(){
+  const name=document.getElementById('tool-name').value.trim();
+  const bar=document.getElementById('sticky-tool-bar');
+  const nameEl=document.getElementById('sticky-tool-name-text');
+  const bizEl=document.getElementById('sticky-tool-biz-text');
+  if(name&&bar){
+    nameEl.textContent=name;
+    bizEl.textContent=selBiz+'事業';
+    bar.classList.add('visible');
+  } else if(bar){
+    bar.classList.remove('visible');
+  }
+}
+
+// ── 保存 ────────────────────────────────────────────────────
+window.saveCurrentState=function(){
+  const nameEl=document.getElementById('tool-name');
+  const name=nameEl.value.trim();
+  if(!name){
+    nameEl.style.borderColor='#A8432A';
+    nameEl.style.boxShadow='0 0 0 3px rgba(168,67,42,.15)';
+    const ph=nameEl.placeholder;
+    nameEl.placeholder='← ツール名を入力してから保存してください';
+    nameEl.focus();
+    setTimeout(()=>{nameEl.style.borderColor='';nameEl.style.boxShadow='';nameEl.placeholder=ph;},2500);
+    return;
+  }
+  const sorted=getMatchedSorted();
+  const btn=document.getElementById('btn-save-main');
+  const origText=btn.textContent;
+  btn.disabled=true;btn.textContent='保存中…';
+  const body='tool_name='+encodeURIComponent(name)
+    +'&biz_type='+encodeURIComponent(selBiz)
+    +'&priority='+(document.getElementById('sel-priority').value==='yes'?'1':'0')
+    +'&sel1_json='+encodeURIComponent(JSON.stringify(sel1))
+    +'&sel2_json='+encodeURIComponent(JSON.stringify(sel2))
+    +'&top_methods_json='+encodeURIComponent(JSON.stringify(sorted.slice(0,3).map(m=>m.method)))
+    +'&total_matched='+sorted.length;
+  fetch('/mktg-diagnostic/create',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    .then(function(r){return r.json();})
+    .then(function(saved){
+      SAVES.unshift(saved);
+      renderSaves();
+      renderHeatmap();
+      btn.disabled=false;
+      btn.textContent='✅ 保存しました';
+      btn.style.background='#5C7F4B';
+      nameEl.value='';
+      const ps=document.getElementById('sel-priority');
+      if(ps) ps.value='no';
+      updateStickyBar();
+      setTimeout(()=>{btn.textContent=origText;btn.style.background='';},2000);
+    })
+    .catch(function(){
+      btn.disabled=false;btn.textContent=origText;
+      alert('保存に失敗しました。時間をおいて再度お試しください。');
+    });
+};
+
+window.deleteSave=function(id){
+  if(!confirm('この診断を削除しますか？'))return;
+  fetch('/mktg-diagnostic/'+id+'/delete',{method:'POST'})
+    .then(function(){
+      SAVES=SAVES.filter(function(s){return s.id!==id;});
+      renderSaves();
+      renderHeatmap();
+    })
+    .catch(function(){alert('削除に失敗しました。時間をおいて再度お試しください。');});
+};
+
+window.loadSave=function(id){
+  const save=SAVES.find(s=>s.id===id);
+  if(!save)return;
+  Object.assign(sel1,save.sel1);
+  Object.assign(sel2,save.sel2);
+  selBiz=save.bizType||'その他';
+  const bizSel=document.getElementById('sel-biz');
+  if(bizSel) bizSel.value=selBiz;
+  const prioSel=document.getElementById('sel-priority');
+  if(prioSel) prioSel.value=save.priority?'yes':'no';
+  document.getElementById('tool-name').value=save.toolName;
+  buildAxis('axis1',AXIS1,sel1,1);
+  buildAxis('axis2',AXIS2,sel2,2);
+  updateStickyBar();
+  render();
+  window.scrollTo({top:0,behavior:'smooth'});
+};
+
+const BIZ_DOT={'調達SCM':'#6B8F5A','他AX':'#5B6B74','IT':'#8B5A78','コスト削減':'#D97757','その他':'#B9B4A8'};
+
+function renderSaves(){
+  const saves=SAVES;
+  const el=document.getElementById('saves-section');
+  const cnt=document.getElementById('saves-count');
+  if(!el) return;
+  if(cnt) cnt.textContent=saves.length?saves.length+'件':'';
+  if(!saves.length){el.innerHTML='<p class="saves-empty">まだ保存がありません</p>';return;}
+  el.innerHTML=saves.map(s=>{
+    const tip=`${s.toolName} ／ ${s.bizType||'その他'} ／ ${s.sel1.size}・単価${s.sel1.price}・期間${s.sel1.period} ／ ${s.totalMatched}手法該当 ／ ${s.savedAt}`;
+    return `
+    <div class="save-item" title="${tip}">
+      <div class="save-item-main">
+        <span class="save-dot" style="background:${BIZ_DOT[s.bizType]||'#B9B4A8'}"></span>
+        <span class="save-name">${s.priority?'⭐ ':''}${s.toolName}</span>
+      </div>
+      <div class="save-actions">
+        <button class="icon-btn" data-load="${s.id}" title="読み込む">↻</button>
+        <button class="icon-btn del" data-del="${s.id}" title="削除">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+
+
+// ── 戦略ヒートマップ ─────────────────────────────────────────
+const METHOD_CATS=[
+  {name:'コンテンツマーケティング',      idxs:[0,1,2,3,4]},
+  {name:'デマンドジェネレーション',      idxs:[5,6,7,8]},
+  {name:'ABM / アウトバウンド',         idxs:[9,10,11,12]},
+  {name:'イベント / コミュニティ',       idxs:[13,14,15,16]},
+  {name:'パートナーマーケティング',      idxs:[17,18,19]},
+  {name:'PLG（プロダクトレッド）',       idxs:[20,21]},
+  {name:'PR / ソートリーダーシップ',    idxs:[22,23,24,25]},
+  {name:'レビュー / 比較サイト',         idxs:[26,27]},
+  {name:'MA / ナーチャリング',           idxs:[28,29,30]},
+];
+const METHOD_SHORT=[
+  'SEO','WP','事例','動画','Podcast',
+  'リスティング','LI広告','リタゲ','SNS',
+  'ABM','コールド','LI SDR','DM',
+  'ウェビナー','共催','展示会','コミュニティ',
+  '代理店','テックPTR','リファーラル',
+  'PLG','AppStore',
+  'PR','アナリスト','代表SNS','受賞',
+  '比較サイト','G2',
+  'MA','メルマガ','ハイタッチ',
+];
+const HEAT_CLASS=['','hm-r1','hm-r2','hm-r3','hm-r4','hm-r5','hm-r6','hm-r7','hm-r8','hm-r9'];
+
+function getMethodRank(method, save){
+  const s=method.s;
+  const idxs=[
+    getIdx(AXIS1[0],save.sel1.cat),
+    getIdx(AXIS1[1],save.sel1.price),
+    getIdx(AXIS1[2],save.sel1.size),
+    getIdx(AXIS1[3],save.sel1.period),
+  ];
+  if(idxs.some(idx=>s[idx]===0)) return null; // ×
+  return RANK_MAP[method.cost_l+method.eff_l]||5;
+}
+
+function renderHeatmap(){
+  const container=document.getElementById('heatmap-container');
+  if(!container) return;
+  const filterBiz=document.getElementById('strategy-biz-filter').value;
+  const filterPrio=document.getElementById('strategy-prio-filter')?document.getElementById('strategy-prio-filter').value:'';
+  const sortKey=document.getElementById('strategy-sort')?document.getElementById('strategy-sort').value:'saved';
+  let saves=SAVES;
+  if(filterBiz) saves=saves.filter(s=>(s.bizType||'その他')===filterBiz);
+  if(filterPrio==='on') saves=saves.filter(s=>s.priority);
+  // ソート
+  const BIZ_ORDER=['調達SCM','他AX','IT','コスト削減','その他'];
+  if(sortKey==='priority') saves=[...saves].sort((a,b)=>(b.priority?1:0)-(a.priority?1:0));
+  else if(sortKey==='name') saves=[...saves].sort((a,b)=>a.toolName.localeCompare(b.toolName,'ja'));
+  else if(sortKey==='biz') saves=[...saves].sort((a,b)=>{
+    const ai=BIZ_ORDER.indexOf(a.bizType||'その他');
+    const bi=BIZ_ORDER.indexOf(b.bizType||'その他');
+    return ai-bi;
+  });
+
+  const cnt=document.getElementById('strategy-count');
+  if(cnt) cnt.textContent=saves.length+'事業を表示';
+
+  if(!saves.length){
+    container.innerHTML='<div style="padding:40px;text-align:center;color:#aaa">保存済みの診断がありません</div>';
+    return;
+  }
+
+  let html='<table class="hm-table">';
+
+  // 行1: カテゴリグループヘッダー
+  html+='<thead><tr>';
+  html+=`<th class="hm-corner col-biz" rowspan="2">事業名</th>`;
+  METHOD_CATS.forEach((cat,ci)=>{
+    html+=`<th class="hm-cat-hdr" colspan="${cat.idxs.length}">${cat.name}</th>`;
+  });
+  html+='</tr>';
+
+  // 行2: メソッド短縮名
+  html+='<tr>';
+  METHOD_CATS.forEach(cat=>{
+    cat.idxs.forEach(idx=>{
+      html+=`<th class="hm-method-hdr" title="${METHODS[idx].method}">${METHOD_SHORT[idx]}</th>`;
+    });
+  });
+  html+='</tr></thead>';
+
+  // データ行
+  html+='<tbody>';
+  saves.forEach(save=>{
+    const prioMark=save.priority?'<span style="color:#D97757;font-size:12px;margin-right:3px">⭐</span>':'';
+    const rowBg=save.priority?'background:#FBF3E3':'';
+    html+=`<tr style="${rowBg}">`;
+    html+=`<td class="hm-biz-cell col-biz">
+      <div class="hm-biz-name" title="${save.toolName}">${prioMark}${save.toolName}</div>
+      <span class="hm-biz-tag biz-tag-${save.bizType||'その他'}">${save.bizType||'その他'}</span>
+    </td>`;
+    METHOD_CATS.forEach(cat=>{
+      cat.idxs.forEach(idx=>{
+        const rank=getMethodRank(METHODS[idx],save);
+        const cls=rank?HEAT_CLASS[rank]:'hm-gray';
+        html+=`<td class="hm-cell ${cls}" title="${METHODS[idx].method}: ${rank?rank+'位':'対象外'}"></td>`;
+      });
+    });
+    html+='</tr>';
+  });
+  html+='</tbody></table>';
+  container.innerHTML=html;
+}
+
+// ── タブ切り替え ─────────────────────────────────────────────
+function switchTab(tab){
+  document.querySelectorAll('.tab-content').forEach(el=>el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el=>el.classList.remove('active'));
+  document.getElementById('tab-'+tab).classList.add('active');
+  document.getElementById('tab-btn-'+tab).classList.add('active');
+  if(tab==='strategy') renderHeatmap();
+}
+
+// ── 初期化 ───────────────────────────────────────────────────
+buildAxis('axis1',AXIS1,sel1,1);
+buildAxis('axis2',AXIS2,sel2,2);
+renderSaves();
+renderHeatmap();
+render();
+
+// イベントリスナー
+document.getElementById('btn-save-main').addEventListener('click',()=>saveCurrentState());
+document.getElementById('saves-section').addEventListener('click',function(e){
+  var loadId=e.target.dataset.load, delId=e.target.dataset.del;
+  if(loadId) loadSave(parseInt(loadId));
+  if(delId)  deleteSave(parseInt(delId));
+});
+document.getElementById('sel-biz').addEventListener('change',function(e){
+  selBiz=e.target.value;
+  updateStickyBar();
+});
+document.getElementById('tool-name').addEventListener('input',updateStickyBar);
+document.getElementById('tab-btn-diag').addEventListener('click',()=>switchTab('diag'));
+document.getElementById('tab-btn-strategy').addEventListener('click',()=>switchTab('strategy'));
+document.getElementById('strategy-biz-filter').addEventListener('change',renderHeatmap);
+document.getElementById('strategy-prio-filter').addEventListener('change',renderHeatmap);
+document.getElementById('strategy-sort').addEventListener('change',renderHeatmap);
+
+console.log('[診断ツール v2] 初期化完了');
+</script>
+</body>
+</html>
+"""
+
+
+def mktg_sim_page(con) -> str:
+    diagnostics = sfa_db.list_mktg_diagnostics(con)
+    return _MKTG_SIM_PAGE_TEMPLATE.replace(
+        "__INITIAL_DIAGNOSTICS_JSON__", json.dumps(diagnostics, ensure_ascii=False))
 
 
 # 記事(号)の読み物デザイン。artifactの2カラム・マガジン設計をアプリ側が保持し、
@@ -18188,6 +19021,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path.startswith("/business-flow/") and path[len("/business-flow/"):].isdigit():
                     self._send(render(business_flow_detail_page(
                         con, int(path[len("/business-flow/"):]))))
+                elif path == "/mktg-sim":
+                    self._send(mktg_sim_page(con).encode("utf-8"))
                 elif path == "/reports":
                     self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":
@@ -18539,6 +19374,27 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     else:
                         self._send(login_page(_nxt, error="ユーザー名またはパスワードが違います。"),
                                    status=401, ctype="text/html; charset=utf-8")
+
+                # ── マーケ施策診断ツール（保存・削除） ──
+                elif path == "/mktg-diagnostic/create":
+                    try:
+                        _total_matched = int(f.get("total_matched", "0") or 0)
+                    except ValueError:
+                        _total_matched = 0
+                    _saved = sfa_db.create_mktg_diagnostic(
+                        con,
+                        tool_name=(f.get("tool_name", "") or "").strip() or "(無題)",
+                        biz_type=(f.get("biz_type", "") or "その他"),
+                        priority=(f.get("priority", "") == "1"),
+                        sel1=json.loads(f.get("sel1_json", "{}") or "{}"),
+                        sel2=json.loads(f.get("sel2_json", "{}") or "{}"),
+                        top_methods=json.loads(f.get("top_methods_json", "[]") or "[]"),
+                        total_matched=_total_matched)
+                    self._send(json.dumps(_saved, ensure_ascii=False).encode(), ctype="application/json")
+                elif (path.startswith("/mktg-diagnostic/") and path.endswith("/delete")
+                      and path.split("/")[2].isdigit()):
+                    sfa_db.delete_mktg_diagnostic(con, int(path.split("/")[2]))
+                    self._send(b'{"ok":true}', ctype="application/json")
 
                 # ── マスタ ──
                 elif path == "/masters/save":
