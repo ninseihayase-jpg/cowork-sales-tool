@@ -211,6 +211,22 @@ def _decode_uploaded_csv(file_item) -> str | None:
         return data.decode("cp932", errors="replace")
 
 
+def _subtab_strip(tabs: list[tuple[str, str, bool]]) -> str:
+    """2026-09-05メニュー再編: 上部ナビの項目数を絞るため、統合したページ間の切替を
+    タブ風のリンク列で表現する共通ヘルパー。tabs=[(label, href, is_active), ...]。
+    （例: 「開発」1項目の配下に「開発要件一覧／デモ開発」、「社内PJ」配下に「一覧／ガント」）"""
+    items = "".join(
+        f'<a href="{href}" style="padding:5px 14px;border-radius:6px 6px 0 0;text-decoration:none;'
+        f'font-size:12.5px;font-weight:600;'
+        + ('background:#fff;color:#1a202c;border:1px solid #e2e8f0;border-bottom:1px solid #fff;'
+           if active else
+           'background:#f1f5f9;color:#64748b;border:1px solid transparent;')
+        + f'">{label}</a>'
+        for label, href, active in tabs
+    )
+    return f'<div style="display:flex;gap:2px;margin:-4px 0 10px;border-bottom:1px solid #e2e8f0">{items}</div>'
+
+
 def _sticky_th(label: str, width: str | None = None) -> str:
     """縦スクロールしても項目名が見えるよう、テーブル見出しをposition:stickyにする共通ヘルパー。
     親のoverflow:auto付きコンテナ内で使うこと（テーブル単体ではスクロールしないため効果がない）。"""
@@ -749,36 +765,32 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
 </head><body>
 <header>
   <h1>Inproc Salesforce</h1>
-  <!-- 日常: 商談(ホーム)・開発案件・Delivery(受注後アサイン計画・#75) -->
+  <!-- 日常（2026-09-05メニュー再編: デモ開発(旧/dev-projects)は/dev-requirements内のタブへ統合） -->
   <a href="/deals">商談</a>
-  <a href="/dev-projects">開発</a>
-  <a href="/dev-requirements" style="opacity:.85;font-size:13px">🧩 開発要件一覧</a>
-  <a href="/deliveries" style="opacity:.85;font-size:13px">🚚 Delivery</a>
+  <a href="/deliveries" style="opacity:.85;font-size:13px">Delivery</a>
+  <a href="/dev-requirements">開発</a>
   <span class="nav-sep"></span>
-  <!-- 次: ヒアリング・社内PJ -->
-  <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
+  <!-- 社内（社内PJガントは/deal-issues内のタブへ統合） -->
   <a href="/deal-issues" style="opacity:.85;font-size:13px">社内PJ</a>
-  <a href="/deal-issues/gantt" style="opacity:.85;font-size:13px">📊 社内PJガント</a>
-  <a href="/docs" style="opacity:.85;font-size:13px">📄 資料庫</a>
-  <a href="/business-flows" style="opacity:.85;font-size:13px">🔀 業務フロー</a>
+  <a href="/business-flows" style="opacity:.85;font-size:13px">業務フロー</a>
   <span class="nav-sep"></span>
-  <!-- クライアント管理: リード・アカウント -->
-  <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
-  <a href="/mktg-sim" style="opacity:.85;font-size:13px">🎯 マーケ診断</a>
+  <!-- タスク -->
+  <a href="/tasks">コンサルタスク</a>
+  <a href="/desk-tasks" style="opacity:.85;font-size:13px">事務タスク</a>
+  <span class="nav-sep"></span>
+  <!-- クライアント -->
   <a href="/accounts" style="opacity:.85;font-size:13px">アカウント</a>
+  <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
+  <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
+  <a href="/mktg-sim" style="opacity:.85;font-size:13px">マーケ診断</a>
   <span class="nav-sep"></span>
-  <!-- タスク群（メールの左にセクションとして配置） -->
-  <a href="/tasks">✅ コンサルタスク</a>
-  <a href="/desk-tasks" style="opacity:.85;font-size:13px">🗂 事務タスク</a>
-  <span class="nav-sep"></span>
-  <!-- 発信 -->
+  <!-- 他 -->
   <a href="/email-draft" style="opacity:.85;font-size:13px">メール</a>
-  <span class="nav-sep"></span>
-  <!-- 取り込み（自動連携インボックス。独立セクションとして一番右に配置） -->
-  <a href="/intake-inbox" style="opacity:.85;font-size:13px" title="Jamie/Zoom等から自動受信した会議の取り込み">📥 取り込み</a>
+  <a href="/docs" style="opacity:.85;font-size:13px">資料庫</a>
+  <a href="/intake-inbox" style="opacity:.85;font-size:13px" title="Jamie/Zoom等から自動受信した会議の取り込み">取り込み</a>
   <!-- 管理（まとめ） -->
   <details class="nav-menu">
-    <summary>⚙ 管理 ▾</summary>
+    <summary>管理 ▾</summary>
     <div class="nav-menu-panel">
       <div class="grp">数字・品質チェック</div>
       <a href="/weekly-numbers/audit">🔍 数字パック集計監査</a>
@@ -3123,6 +3135,7 @@ def dev_requirements_page(con, *, dev_involved: str = "", owner: str = "", stage
 
     return f"""
     <div class="card">
+      {_subtab_strip([("開発要件一覧", "/dev-requirements", True), ("デモ開発", "/dev-projects", False)])}
       <h2 style="margin:0 0 6px">🧩 開発要件一覧</h2>
       <p class="muted" style="font-size:12px;margin:0 0 10px">商談が「提案」以降のステージに到達、
         またはDeliveryが作成されると自動で行が追加されます。開発チームが技術検証・リソース確保を
@@ -8047,6 +8060,7 @@ def deal_issues_gantt_page(con) -> str:
 
     return f"""
     <div class="card">
+      {_subtab_strip([("一覧", "/deal-issues", False), ("ガント", "/deal-issues/gantt", True)])}
       <h2 style="margin:0 0 6px">📊 社内PJ管理（ガント）</h2>
       <p class="muted" style="font-size:12px;margin:0">社内PJは分類（商談/会社機能）別に一覧表示されます。各社内PJの行にあるフォームから
         その場でサブ社内PJを追加でき、期間が確定した社内PJはガントバーで表示されます。
@@ -13541,8 +13555,9 @@ def dev_projects_list_page(con, theme_client=None, *, dev_owner: str | None = No
     _pts_total = sum(float(p.get("dev_points") or 0) for p in projects)
     return f"""
     <div class="card">
+      {_subtab_strip([("開発要件一覧", "/dev-requirements", False), ("デモ開発", "/dev-projects", True)])}
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <span>開発案件一覧（{len(projects)}件）<span class="muted" style="font-size:13px;font-weight:400;margin-left:10px">合計点数 <span id="dpPtsTotal">{_pts_total:g}</span>（≈ <span id="dpPtsFte">{_pts_total/20:.1f}</span> FTE・20点≒1人）</span></span>
+        <span>デモ開発案件一覧（{len(projects)}件）<span class="muted" style="font-size:13px;font-weight:400;margin-left:10px">合計点数 <span id="dpPtsTotal">{_pts_total:g}</span>（≈ <span id="dpPtsFte">{_pts_total/20:.1f}</span> FTE・20点≒1人）</span></span>
         <span style="display:flex;gap:8px">
           <form method="post" action="/dev-projects/resync-hisho" style="margin:0"
             onsubmit="return confirm('全開発案件の点数・分類をHishoダッシュボードへ再同期します。よろしいですか？')">
@@ -14252,6 +14267,7 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
     {DEAL_ISSUE_MEMBERS_POP_CSS}
     </style>
     <div class="card">
+      {_subtab_strip([("一覧", "/deal-issues", True), ("ガント", "/deal-issues/gantt", False)])}
       <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <span>社内PJ一覧（{len(issues)}件）</span>
         <a class="btn" href="/deal-issue/new">＋新規社内PJ</a>
