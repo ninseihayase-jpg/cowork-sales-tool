@@ -780,8 +780,8 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
   <span class="nav-sep"></span>
   <!-- クライアント -->
   <a href="/accounts" style="opacity:.85;font-size:13px">アカウント</a>
-  <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
   <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
+  <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
   <a href="/mktg-sim" style="opacity:.85;font-size:13px">マーケ診断</a>
   <span class="nav-sep"></span>
   <!-- 他 -->
@@ -1388,6 +1388,8 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 .hm-wrap{overflow:auto;border:1px solid var(--border);border-radius:12px;
   background:var(--surface);max-height:calc(100vh - 200px)}
 .hm-table{border-collapse:collapse;white-space:nowrap;font-size:12px;table-layout:fixed}
+/* 列幅は<colgroup>で確定させる（table-layout:fixedはcolspanを含む見出し行だけでは
+   列幅を安定して確定できず、実測で列ごとの幅がバラつく既知の問題があるため）。 */
 /* 事業名列スティッキー */
 .hm-table .col-biz{position:sticky;left:0;z-index:3;background:var(--surface);
   width:200px;min-width:200px}
@@ -1396,12 +1398,13 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 /* カテゴリグループヘッダー */
 .hm-cat-hdr{background:var(--blue);color:#fff;font-weight:600;font-size:11px;
   text-align:center;padding:6px 4px;position:sticky;top:0;z-index:2}
-/* メソッド短縮名 */
-.hm-method-hdr{background:var(--surface-soft);font-size:10px;font-weight:500;color:#5A5548;
-  text-align:center;padding:2px;writing-mode:vertical-lr;
-  height:72px;width:26px;min-width:26px;max-width:26px;
+/* メソッド短縮名（クリックで解説モーダルを開ける） */
+.hm-method-hdr{background:var(--surface-soft);font-size:10.5px;font-weight:500;color:#5A5548;
+  text-align:center;padding:4px 2px;writing-mode:vertical-rl;text-orientation:upright;
+  letter-spacing:1px;height:82px;width:30px;min-width:30px;max-width:30px;
   position:sticky;top:28px;z-index:2;overflow:hidden;
-  vertical-align:bottom}
+  vertical-align:middle;cursor:pointer;transition:background .12s}
+.hm-method-hdr:hover{background:var(--bg-blue);color:var(--text-blue)}
 /* 事業名ヘッダー（左上コーナー） */
 .hm-corner{position:sticky;top:0;left:0;z-index:5;background:var(--surface-soft);
   padding:10px 12px;font-size:11px;font-weight:600;color:#5A5548}
@@ -1416,7 +1419,7 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 .biz-tag-コスト削減{background:#F5E6DD;color:#A8492C}
 .biz-tag-その他{background:var(--surface-soft);color:#8A8578}
 /* ヒートマップセル */
-.hm-cell{width:26px;height:28px;min-width:26px;max-width:26px}
+.hm-cell{width:30px;height:30px;min-width:30px;max-width:30px}
 .hm-gray{background:#EDEAE2}
 .hm-r1{background:#3F5733}.hm-r2{background:#5C7F4B}
 .hm-r3{background:#8AAE71}.hm-r4{background:#BFD59E}
@@ -1429,6 +1432,27 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
   background:var(--surface-soft);border-radius:0 0 12px 12px}
 .leg-item{display:flex;align-items:center;gap:3px}
 .leg-box{width:14px;height:14px;border-radius:3px}
+
+/* ── 手法の解説モーダル（戦略マップの見出しクリックで開く） ── */
+.mi-overlay{position:fixed;inset:0;background:rgba(43,39,35,.35);z-index:200;display:none}
+.mi-overlay.open{display:block}
+.mi-modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:201;
+  display:none;width:min(520px,92vw);max-height:80vh;overflow-y:auto;
+  background:var(--surface);border-radius:14px;box-shadow:0 20px 50px rgba(43,39,35,.25);
+  padding:22px 24px}
+.mi-modal.open{display:block}
+.mi-modal-hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:4px}
+.mi-modal-cat{display:inline-block;font-size:10px;padding:2px 8px;border-radius:20px;
+  background:var(--bg-blue);color:var(--text-blue);font-weight:500;margin-bottom:6px}
+.mi-modal-title{font-size:17px;font-weight:700;color:var(--navy);line-height:1.4}
+.mi-modal-close{flex-shrink:0;width:28px;height:28px;border:none;background:none;
+  font-size:18px;color:var(--ink-soft);cursor:pointer;border-radius:8px}
+.mi-modal-close:hover{background:var(--surface-soft)}
+.mi-modal-badges{display:flex;gap:8px;margin:10px 0 14px}
+.mi-modal-eff{font-size:13px;color:#333;line-height:1.6;margin-bottom:14px;
+  padding:10px 12px;background:var(--surface-soft);border-radius:8px}
+.mi-modal-howto-hdr{font-size:11px;font-weight:600;color:var(--ink-soft);letter-spacing:.05em;margin-bottom:6px}
+.mi-modal-howto{font-size:13px;color:#2B2723;line-height:1.8;white-space:pre-line}
 </style>
 </head>
 <body>
@@ -1613,10 +1637,27 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
         <div class="leg-item"><div class="leg-box hm-r8"></div>8位</div>
         <div class="leg-item"><div class="leg-box hm-r9"></div>9位</div>
         <div class="leg-item"><div class="leg-box hm-gray"></div>対象外</div>
+        <span style="margin-left:16px;color:var(--ink-soft)">💡 手法名（見出し）をクリックすると解説を読めます</span>
       </div>
     </div>
   </div>
 </div><!-- /tab-strategy -->
+
+<!-- 手法解説モーダル -->
+<div class="mi-overlay" id="mi-overlay" onclick="closeMethodInfo()"></div>
+<div class="mi-modal" id="mi-modal">
+  <div class="mi-modal-hdr">
+    <div>
+      <div class="mi-modal-cat" id="mi-cat"></div>
+      <div class="mi-modal-title" id="mi-title"></div>
+    </div>
+    <button class="mi-modal-close" onclick="closeMethodInfo()">✕</button>
+  </div>
+  <div class="mi-modal-badges" id="mi-badges"></div>
+  <div class="mi-modal-eff" id="mi-eff"></div>
+  <div class="mi-modal-howto-hdr">進め方</div>
+  <div class="mi-modal-howto" id="mi-howto"></div>
+</div>
 
 <script>
 // ── 保存データ（SFA-CRMのDBから注入） ──────────────────────
@@ -1956,6 +1997,12 @@ function renderHeatmap(){
 
   let html='<table class="hm-table">';
 
+  // 列幅をcolgroupで明示（見出し行のcolspanだけに頼るとブラウザによって列幅が
+  // バラつく既知の問題があるため、事業名列+全メソッド列を1本ずつ固定幅で宣言する）。
+  html+='<colgroup><col style="width:200px">';
+  METHOD_CATS.forEach(cat=>{ cat.idxs.forEach(()=>{ html+='<col style="width:30px">'; }); });
+  html+='</colgroup>';
+
   // 行1: カテゴリグループヘッダー
   html+='<thead><tr>';
   html+=`<th class="hm-corner col-biz" rowspan="2">事業名</th>`;
@@ -1968,7 +2015,7 @@ function renderHeatmap(){
   html+='<tr>';
   METHOD_CATS.forEach(cat=>{
     cat.idxs.forEach(idx=>{
-      html+=`<th class="hm-method-hdr" title="${METHODS[idx].method}">${METHOD_SHORT[idx]}</th>`;
+      html+=`<th class="hm-method-hdr" title="${METHODS[idx].method}（クリックで解説）" onclick="showMethodInfo(${idx})">${METHOD_SHORT[idx]}</th>`;
     });
   });
   html+='</tr></thead>';
@@ -1995,6 +2042,26 @@ function renderHeatmap(){
   html+='</tbody></table>';
   container.innerHTML=html;
 }
+
+// ── 手法解説モーダル（戦略マップの見出しクリック） ──
+function showMethodInfo(idx){
+  const m=METHODS[idx];
+  if(!m) return;
+  document.getElementById('mi-cat').textContent=m.cat;
+  document.getElementById('mi-title').textContent=m.method;
+  document.getElementById('mi-badges').innerHTML=
+    `${makeBadge(m.cost_l)}<span style="font-size:11px;color:var(--ink-soft);align-self:center">コスト</span>`+
+    `${makeBadge(m.eff_l)}<span style="font-size:11px;color:var(--ink-soft);align-self:center">効果</span>`;
+  document.getElementById('mi-eff').textContent=m.eff;
+  document.getElementById('mi-howto').textContent=(m.howto||'').replace(/\\n/g,'\n');
+  document.getElementById('mi-overlay').classList.add('open');
+  document.getElementById('mi-modal').classList.add('open');
+}
+function closeMethodInfo(){
+  document.getElementById('mi-overlay').classList.remove('open');
+  document.getElementById('mi-modal').classList.remove('open');
+}
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeMethodInfo(); });
 
 // ── タブ切り替え ─────────────────────────────────────────────
 function switchTab(tab){
@@ -3542,41 +3609,52 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
         box_by_cell.setdefault((b["lane_id"], b["process_id"]), []).append(b)
     box_labels = {b["id"]: b["label"] for b in boxes}
 
+    _BOX_W = 132  # タスクボックスの固定幅（px）。セル幅いっぱいに伸ばすと間延びして見えるため固定する
+    # （2026-09-05:「タスクの幅が広すぎて違和感あり」への対応。Power Automate等の
+    # フローツールに倣い、ノードは小さめの固定幅カードとして横に並べる）。
+
     def _box_html(b):
-        # ⠿=セル間のドラッグ移動ハンドル（#164フェーズ2）、🔗=矢印接続ハンドル（フェーズ3、
-        # ドラッグして別のボックスにドロップすると矢印が作成される）。
-        # 一般的な業務フロー図の「箱」らしい見た目にするため、十分な余白・角丸・枠線・影を持たせる
-        # （2026-09-06: 「業務フローの形を成していない」というユーザー指摘への対応で刷新）。
+        # ボックス全体をdraggable=trueにし、どこを掴んでもセル間移動できるようにする
+        # （2026-09-05:「タスクのどこを掴んでもドラッグドロップできるように」への対応。
+        # 従来は⠿ハンドルのみが対象だったが、掴める範囲が狭すぎるとの指摘）。
+        # 🔗=矢印接続ハンドルは従来通り個別にdraggable。HTML5のドラッグはmousedown位置に最も
+        # 近いdraggable要素が起点になるが、dragstartはDOM上を bubble するため、🔗側のハンドラで
+        # stopPropagation()しないとボックス本体のdragstartにも二重発火し、データが上書きされる
+        # （JS側 initBusinessFlowDrag 参照）。
         return (
-            f'<div class="bf-box" data-box-id="{b["id"]}" style="background:#fffaf0;'
-            f'border:2px solid #d4a94b;border-radius:8px;padding:10px 12px;margin-bottom:8px;'
-            f'min-height:20px;box-shadow:0 2px 4px rgba(0,0,0,.08);'
-            f'font-size:13px;display:flex;align-items:center;gap:6px">'
-            f'<span class="drag-handle no-print" draggable="true" title="ドラッグして別セルへ移動" '
-            f'style="cursor:grab;color:#a68a3d;font-size:12px">⠿</span>'
-            f'<span style="flex:1;font-weight:700;color:#3a3220;text-align:center;line-height:1.3">{_esc(b["label"])}</span>'
+            f'<div class="bf-box" data-box-id="{b["id"]}" draggable="true" title="ドラッグして別セルへ移動" '
+            f'style="background:#fffaf0;flex:0 0 {_BOX_W}px;width:{_BOX_W}px;box-sizing:border-box;'
+            f'border:2px solid #d4a94b;border-radius:8px;padding:8px 8px 6px;'
+            f'min-height:20px;box-shadow:0 2px 4px rgba(0,0,0,.08);cursor:grab;'
+            f'font-size:12.5px;display:flex;flex-direction:column;align-items:center;gap:4px">'
+            f'<span style="font-weight:700;color:#3a3220;text-align:center;line-height:1.3;'
+            f'word-break:break-word">{_esc(b["label"])}</span>'
+            f'<div style="display:flex;align-items:center;gap:8px">'
             f'<span class="bf-connect-handle no-print" draggable="true" title="ドラッグして別のボックスに矢印を接続" '
-            f'style="cursor:crosshair;font-size:13px">🔗</span>'
+            f'style="cursor:crosshair;font-size:12px">🔗</span>'
             f'<form method="post" action="/business-flow-box/{b["id"]}/delete" style="margin:0" '
             f'onsubmit="return confirm(\'このボックスを削除しますか？\')">'
-            f'<button type="submit" class="btn sec no-print" style="font-size:10px;padding:1px 5px">×</button></form></div>'
+            f'<button type="submit" class="btn sec no-print" style="font-size:10px;padding:1px 5px">×</button></form>'
+            f'</div></div>'
         )
 
     def _add_box_form(lane_id, process_id):
-        # 空セルを「＋タスク」フォームで埋め尽くすとスプレッドシートのように見えてしまうため
-        # （同上のユーザー指摘）、既定は控えめな「＋」トリガーのみを表示し、クリックで初めて
-        # 入力欄を展開する（ボックス自体を主役に見せる狙い）。
+        # 「＋」は他のタスクボックスと同じ横並び(flex row)の中に置く1要素として配置し、
+        # クリックすると同じ列にフォームへ差し替わる（＝新規タスクは常に既存タスクの
+        # 横に追加される。2026-09-05:「タスクを追加した際、縦に並ぶのはおかしいから、
+        # 横に追加される」への対応。以前は各タスクの下に積み上げるレイアウトだった）。
         return (
             f'<div class="bf-add-trigger no-print" onclick="this.style.display=\'none\';'
             f'this.nextElementSibling.style.display=\'flex\'"'
-            f' style="font-size:11px;color:#94a3b8;cursor:pointer;padding:3px 2px;text-align:center;'
-            f'border:1px dashed #cbd5e1;border-radius:6px">＋ タスク追加</div>'
+            f' style="flex:0 0 auto;width:36px;height:36px;font-size:16px;color:#94a3b8;cursor:pointer;'
+            f'border:1px dashed #cbd5e1;border-radius:50%;display:flex;align-items:center;'
+            f'justify-content:center" title="タスク追加">＋</div>'
             f'<form method="post" action="/business-flow/{flow_id}/box" class="no-print" '
-            f'style="display:none;gap:3px;margin-top:2px">'
+            f'style="display:none;flex:0 0 {_BOX_W}px;flex-direction:column;gap:3px">'
             f'<input type="hidden" name="lane_id" value="{lane_id}">'
             f'<input type="hidden" name="process_id" value="{process_id}">'
             f'<input type="text" name="label" placeholder="タスク名" required autofocus '
-            f'style="font-size:11px;padding:2px 4px;width:100%">'
+            f'style="font-size:11px;padding:2px 4px;width:100%;box-sizing:border-box">'
             f'<button type="submit" class="btn sec" style="font-size:11px;padding:1px 6px">追加</button></form>'
         )
 
@@ -3586,7 +3664,7 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
     _LANE_HDR_BG = "#eef2ff"; _PROC_HDR_BG = "#f1f5f9"; _HDR_BORDER = "1px solid #94a3b8"
     _CELL_BORDER = "1px solid #cbd5e1"
     head_cells = "".join(
-        f'<th data-process-id="{p["id"]}" style="min-width:160px;background:{_PROC_HDR_BG};'
+        f'<th data-process-id="{p["id"]}" style="min-width:290px;background:{_PROC_HDR_BG};'
         f'border:{_HDR_BORDER};padding:8px">'
         f'<div style="display:flex;align-items:center;justify-content:space-between;gap:4px">'
         f'<span class="drag-handle" draggable="true" title="ドラッグで並び替え" '
@@ -3602,8 +3680,9 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
         cells = "".join(
             f'<td class="bf-cell" data-lane-id="{lane["id"]}" data-process-id="{p["id"]}" '
             f'style="vertical-align:top;background:#fafbfc;border:{_CELL_BORDER};padding:10px;min-height:64px">'
+            f'<div class="bf-cell-flow" style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px">'
             f'{"".join(_box_html(b) for b in box_by_cell.get((lane["id"], p["id"]), []))}'
-            f'{_add_box_form(lane["id"], p["id"])}</td>'
+            f'{_add_box_form(lane["id"], p["id"])}</div></td>'
             for p in processes
         )
         body_rows += (
@@ -3801,16 +3880,18 @@ def business_flow_detail_page(con, flow_id: int, *, ai_questions: list[str] | No
       // （移動先セルの中身をライブ再構築するより単純で確実なため）。
       var dropTargetCell = null;
       document.querySelectorAll('.bf-box').forEach(function(box) {{
-        var moveHandle = box.querySelector(':scope > .drag-handle');
-        if (moveHandle) {{
-          moveHandle.addEventListener('dragstart', function(e) {{
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', 'move:' + box.dataset.boxId);
-          }});
-        }}
+        // ボックスのどこを掴んでも移動できるよう、本体自体にdragstartを付ける
+        // （2026-09-05:「タスクのどこを掴んでもドラッグドロップできるように」）。
+        box.addEventListener('dragstart', function(e) {{
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', 'move:' + box.dataset.boxId);
+        }});
         var connectHandle = box.querySelector('.bf-connect-handle');
         if (connectHandle) {{
           connectHandle.addEventListener('dragstart', function(e) {{
+            // stopPropagationしないと、この直後にdragstartがボックス本体まで
+            // バブリングし、本体側ハンドラが'connect:...'を'move:...'で上書きしてしまう。
+            e.stopPropagation();
             e.dataTransfer.effectAllowed = 'link';
             e.dataTransfer.setData('text/plain', 'connect:' + box.dataset.boxId);
           }});

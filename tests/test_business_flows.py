@@ -632,15 +632,16 @@ def test_box_has_flowchart_style_box_appearance(con):
 
 def test_empty_cell_add_form_is_hidden_behind_trigger(con):
     """空セルの「＋タスク」フォームが常時全面表示されずスプレッドシート状に見えないよう、
-    クリックで展開する控えめなトリガーの後ろに隠れていること。"""
+    クリックで展開する控えめな丸い「＋」トリガーの後ろに隠れていること
+    （2026-09-05: 横並びレイアウトへの刷新でトリガーは丸ボタン化）。"""
     fid = sfa_db.create_business_flow(con, "フローA")
     lid = sfa_db.add_business_flow_lane(con, fid, "経理/磯部")
     sfa_db.add_business_flow_process(con, fid, "受領")
 
     html = webapp.business_flow_detail_page(con, fid)
     assert "bf-add-trigger" in html
-    assert "display:none;gap:3px" in html  # フォーム本体は既定非表示
-    assert "＋ タスク追加" in html
+    assert "display:none;flex:0 0" in html and "gap:3px" in html  # フォーム本体は既定非表示
+    assert 'title="タスク追加">＋<' in html
 
 
 def test_arrow_lines_route_to_box_edges_not_centers(con):
