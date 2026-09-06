@@ -1400,7 +1400,7 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
   text-align:center;padding:6px 4px;position:sticky;top:0;z-index:2}
 /* メソッド短縮名（クリックで解説モーダルを開ける） */
 .hm-method-hdr{background:var(--surface-soft);font-size:10.5px;font-weight:500;color:#5A5548;
-  text-align:center;padding:4px 2px;writing-mode:vertical-rl;text-orientation:upright;
+  text-align:center;padding:4px 2px;writing-mode:vertical-rl;text-orientation:mixed;
   letter-spacing:1px;height:82px;width:30px;min-width:30px;max-width:30px;
   position:sticky;top:28px;z-index:2;overflow:hidden;
   vertical-align:middle;cursor:pointer;transition:background .12s}
