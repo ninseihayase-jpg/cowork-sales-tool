@@ -6378,12 +6378,31 @@ def delete_business_flow_arrow(con, arrow_id: int) -> None:
 
 # ---- マーケ施策診断ツール（旧: 単体HTML+localStorage版から移行、2026-09-05） ----
 
+_FULLWIDTH_ALNUM_TABLE = str.maketrans(
+    "０１２３４５６７８９"
+    "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ"
+    "ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ",
+    "0123456789"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz",
+)
+
+
+def _to_halfwidth_alnum(s: str | None) -> str | None:
+    """全角英数字だけを半角に変換する（全角記号・日本語はそのまま維持）。
+    事業名等の手入力（IMEの全角固定モード等）で「ＡＩ」のように紛れ込みやすいため、
+    保存時・表示時の両方で正規化し、既存データも表示時に自動で揃う（DB直接更新は不要）。"""
+    if not s:
+        return s
+    return s.translate(_FULLWIDTH_ALNUM_TABLE)
+
+
 def _mktg_diagnostic_row_to_dict(row: dict) -> dict:
     """DB行 → クライアントJS（旧localStorage版と同じ形）に合わせた辞書に変換。"""
     return {
         "id": row["id"],
-        "toolName": row["tool_name"],
-        "bizType": row["biz_type"],
+        "toolName": _to_halfwidth_alnum(row["tool_name"]),
+        "bizType": _to_halfwidth_alnum(row["biz_type"]),
         "priority": bool(row["priority"]),
         "sel1": json.loads(row["sel1_json"]),
         "sel2": json.loads(row["sel2_json"]),
@@ -6405,7 +6424,7 @@ def create_mktg_diagnostic(con, *, tool_name: str, biz_type: str, priority: bool
         "INSERT INTO mktg_diagnostics "
         "(tool_name, biz_type, priority, sel1_json, sel2_json, top_methods_json, total_matched) "
         "VALUES (?,?,?,?,?,?,?)",
-        (tool_name, biz_type, int(bool(priority)),
+        (_to_halfwidth_alnum(tool_name), _to_halfwidth_alnum(biz_type), int(bool(priority)),
          json.dumps(sel1, ensure_ascii=False), json.dumps(sel2, ensure_ascii=False),
          json.dumps(top_methods, ensure_ascii=False), total_matched))
     con.commit()
