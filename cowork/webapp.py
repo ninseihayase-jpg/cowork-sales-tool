@@ -1395,14 +1395,22 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
   width:200px;min-width:200px}
 .hm-table thead .col-biz{z-index:4;background:var(--surface-soft)}
 .hm-table td,.hm-table th{border:2px solid #FFFFFF}
-/* カテゴリグループヘッダー */
-.hm-cat-hdr{background:var(--blue);color:#fff;font-weight:600;font-size:11px;
-  text-align:center;padding:6px 4px;position:sticky;top:0;z-index:2}
+/* カテゴリグループヘッダー（クリックで解説モーダルを開ける）。
+   長いカテゴリ名（例:「パートナーマーケティング」「レビュー / 比較サイト」）が列幅
+   （30px×手法数）に対して見切れないよう、white-space:normalで2行折り返しを許可し、
+   その分の高さ(34px)を確保する。折り返しても手法列自体の幅(30px統一)は変えない
+   （2026-09-07:「見切れないように、可視性や表としての美しさを保ちつつ」対応）。
+   PLGだけは2行でも収まらないため表示は短縮名(short)にし、正式名はtitle/モーダルに残す。 */
+.hm-cat-hdr{background:var(--blue);color:#fff;font-weight:600;font-size:10px;
+  text-align:center;padding:3px 3px;position:sticky;top:0;z-index:2;
+  white-space:normal;line-height:1.25;height:34px;box-sizing:border-box;
+  vertical-align:middle;cursor:pointer;transition:opacity .12s}
+.hm-cat-hdr:hover{opacity:.85}
 /* メソッド短縮名（クリックで解説モーダルを開ける） */
 .hm-method-hdr{background:var(--surface-soft);font-size:10.5px;font-weight:500;color:#5A5548;
   text-align:center;padding:4px 2px;writing-mode:vertical-rl;text-orientation:mixed;
   letter-spacing:1px;height:82px;width:30px;min-width:30px;max-width:30px;
-  position:sticky;top:28px;z-index:2;overflow:hidden;
+  position:sticky;top:34px;z-index:2;overflow:hidden;
   vertical-align:middle;cursor:pointer;transition:background .12s}
 .hm-method-hdr:hover{background:var(--bg-blue);color:var(--text-blue)}
 /* 事業名ヘッダー（左上コーナー） */
@@ -1645,6 +1653,14 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 
 <!-- 手法解説モーダル -->
 <div class="mi-overlay" id="mi-overlay" onclick="closeMethodInfo()"></div>
+<!-- カテゴリ(手法分類)解説モーダル（2026-09-07追加。手法解説と同じオーバーレイを共用） -->
+<div class="mi-modal" id="cat-modal">
+  <div class="mi-modal-hdr">
+    <div class="mi-modal-title" id="cat-title"></div>
+    <button class="mi-modal-close" onclick="closeMethodInfo()">✕</button>
+  </div>
+  <div class="mi-modal-eff" id="cat-desc"></div>
+</div>
 <div class="mi-modal" id="mi-modal">
   <div class="mi-modal-hdr">
     <div>
@@ -1942,10 +1958,58 @@ const METHOD_CATS=[
   {name:'ABM / アウトバウンド',         idxs:[9,10,11,12]},
   {name:'イベント / コミュニティ',       idxs:[13,14,15,16]},
   {name:'パートナーマーケティング',      idxs:[17,18,19]},
-  {name:'PLG（プロダクトレッド）',       idxs:[20,21]},
+  {name:'PLG（プロダクトレッド）',       short:'PLG', idxs:[20,21]},
   {name:'PR / ソートリーダーシップ',    idxs:[22,23,24,25]},
   {name:'レビュー / 比較サイト',         idxs:[26,27]},
   {name:'MA / ナーチャリング',           idxs:[28,29,30]},
+];
+// 分類（カテゴリ）自体の解説（2026-09-07追加要望: 「手法分類にもクリック解説をつけて」）。
+// METHOD_CATSと同じ順番・件数で対応させる。各手法の解説(METHODS[].desc)とは別に、
+// カテゴリ全体としての位置づけ・向いている場面をまとめた概説。
+const CATEGORY_INFO=[
+  {desc:"記事・ホワイトペーパー・動画・音声など有益な情報を無償で提供し、検索エンジンや"
+    +"口コミ経由で見込み客に自然に見つけてもらう「プル型」の施策群。成果が出るまで"
+    +"半年〜1年単位の時間がかかる一方、一度育った記事・動画は資産として残り続け、"
+    +"広告のように出稿を止めた瞬間に流入がゼロになることがないのが最大の強み。"
+    +"検討期間が長く、情報収集を自分で行う理性的な購買層が多いBtoB商材と特に相性がいい。"},
+  {desc:"リスティング広告・SNS広告・オーガニックSNS発信など、まだ接点のない見込み客に"
+    +"能動的にアプローチし、認知〜比較検討段階の需要を喚起する施策群。予算を投下した分だけ"
+    +"即座に流入・リードが増える即効性が特徴だが、出稿を止めれば効果もすぐ止まるため、"
+    +"コンテンツマーケティングのような資産化はしにくい。市場にすでに検索需要・興味関心が"
+    +"存在するカテゴリで特に効果を発揮する。"},
+  {desc:"個別の企業・担当者を名指しでターゲットに定め、メール・電話・DM・SNSでの"
+    +"1対1の接触を通じて直接アプローチする「プッシュ型」の施策群。広く浅く網をかける"
+    +"デマンドジェネレーションとは対照的に、少数の重要アカウントへリソースを集中投下する"
+    +"考え方が根底にある。ターゲットが絞り込みやすく、受注単価が高いエンタープライズ商材"
+    +"ほど1件あたりの投下コストを吸収しやすく費用対効果が出やすい。"},
+  {desc:"ウェビナー・展示会・ユーザーコミュニティなど、見込み客や既存顧客が実際に"
+    +"「集まる場」を通じて関係を深める施策群。単発の刈り取りというより、定期開催・"
+    +"継続運営によって信頼を積み重ね、検討期間の長い商談を温め続けたり、既存顧客の"
+    +"解約率を下げたりする中長期的な位置づけの施策が多い。企画・運営・当日対応にかかる"
+    +"人的リソースが他の分類より重めな点は留意が必要。"},
+  {desc:"代理店・リセラー・技術連携先・既存顧客の紹介など、自社以外の第三者が持つ"
+    +"販路・顧客接点・信頼をレバレッジし、直販チームだけでは届かない商圏や顧客層を"
+    +"開拓する施策群。立ち上げに時間がかかり関係構築への継続投資が前提になる代わりに、"
+    +"軌道に乗れば自社の営業リソースを増やさずに販売網を拡張できるレバレッジの効きやすさが"
+    +"特徴。"},
+  {desc:"営業担当者を介さず、製品そのものを無料/低コストで試用・利用してもらうことで"
+    +"価値を体験的に伝え、ユーザー自身の判断でセルフサーブに契約・アップグレードして"
+    +"もらう施策群（Product-Led Growth）。直感的なUI・短時間で価値を実感できる設計・"
+    +"クレジットカード登録不要のセルフサーブ課金基盤が事実上の前提条件になり、導入に"
+    +"時間のかかる複雑な基幹系ソリューションには不向き。"},
+  {desc:"プレスリリースやメディア露出、業界アナリストからの評価、経営層・社員個人の"
+    +"発信などを通じて、第三者からの評価・専門性への信頼を積み上げる施策群。自社が"
+    +"「自分で言う」のではなく第三者が語る/評価することで得られる信頼性が強みで、"
+    +"直接的なリード獲得というより、他の施策の効果を底上げするブランディング的な"
+    +"位置づけが多い。"},
+  {desc:"Boxil・ITreview・G2・Capterraのような第三者比較サイトに製品情報や顧客レビューを"
+    +"掲載し、すでに能動的に比較検討を行っているユーザーを検討フェーズで刈り取る施策群。"
+    +"掲載自体は無料枠から始められるが、レビューの母数・更新頻度が競合との比較表示順位を"
+    +"左右するため、既存顧客からレビューを継続的に集める運用体制があってはじめて機能する。"},
+  {desc:"獲得済みのリードや既存顧客に対し、行動データ（資料DL・サイト再訪・利用状況等）に"
+    +"応じてMAツールが自動的にコンテンツやメールを届け続け、購買・アップセルのタイミングまで"
+    +"関係を維持・育成する施策群。新規の認知・獲得を狙う他の分類と異なり、すでに接点のある"
+    +"相手を「今すぐ客」に変えるまで温め続ける役割を担う。"},
 ];
 const METHOD_SHORT=[
   'SEO','WP','事例','動画','Podcast',
@@ -2011,7 +2075,13 @@ function renderHeatmap(){
   html+='<thead><tr>';
   html+=`<th class="hm-corner col-biz" rowspan="2">事業名</th>`;
   METHOD_CATS.forEach((cat,ci)=>{
-    html+=`<th class="hm-cat-hdr" colspan="${cat.idxs.length}">${cat.name}</th>`;
+    // カテゴリ名クリックでも解説を開けるようにする（2026-09-07要望）。列幅(30px×手法数)に対し
+    // フルネームが長すぎるPLGだけは短縮表示(short)にして見切れを防ぐ（正式名はtitle属性と
+    // クリック時のモーダルタイトルに残す）。他のカテゴリは.hm-cat-hdr側でwhite-space:normalに
+    // したことで2行折り返しにより収まるようにした（列幅自体はすべて30px/手法で統一のまま）。
+    const catLabel = cat.short || cat.name;
+    html+=`<th class="hm-cat-hdr" colspan="${cat.idxs.length}" title="${cat.name}（クリックで解説）" `
+      + `onclick="showCategoryInfo(${ci})">${catLabel}</th>`;
   });
   html+='</tr>';
 
@@ -2063,9 +2133,20 @@ function showMethodInfo(idx){
   document.getElementById('mi-overlay').classList.add('open');
   document.getElementById('mi-modal').classList.add('open');
 }
+// カテゴリ(手法分類)見出しクリックの解説（2026-09-07追加。手法解説と同じオーバーレイ・
+// 閉じる導線(✕/Escape/オーバーレイクリック)を共用する）。
+function showCategoryInfo(ci){
+  const cat=METHOD_CATS[ci], info=CATEGORY_INFO[ci];
+  if(!cat||!info) return;
+  document.getElementById('cat-title').textContent=cat.name;
+  document.getElementById('cat-desc').textContent=info.desc;
+  document.getElementById('mi-overlay').classList.add('open');
+  document.getElementById('cat-modal').classList.add('open');
+}
 function closeMethodInfo(){
   document.getElementById('mi-overlay').classList.remove('open');
   document.getElementById('mi-modal').classList.remove('open');
+  document.getElementById('cat-modal').classList.remove('open');
 }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeMethodInfo(); });
 
