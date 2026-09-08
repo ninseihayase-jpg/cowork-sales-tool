@@ -45,6 +45,21 @@ def test_inbox_assign_has_type_search_list_ui():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_pick_candidate_js_targets_assign_form_not_discard_form():
+    """実バグ回帰(2026-09-09発見): カード内には「破棄」用のform(/intake-transcript/.../delete)が
+    「割り当て」用のform(/intake-inbox/.../assign)より先にDOM上へ現れるため、
+    pickCandidate()が素の querySelector('form') を使うと破棄formを誤って掴み、
+    候補チップのクリックが（エラーも出さずに）無反応になっていた。
+    action属性で割り当てformを明示的に指定していることを確認する。"""
+    d, con = _fresh()
+    try:
+        html = _s(webapp.intake_inbox_page(con))
+        assert "querySelector('form[action*=\"/assign\"]')" in html
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_inbox_candidate_matches_common_company_name_abbreviation():
     """実事故の回帰確認: 会議タイトル「川崎重工向け...」が、正式社名「川崎重工業株式会社」に
     対して候補として出せなかった不具合の修正。法人格接尾辞の除去＋末尾1文字の省略許容で

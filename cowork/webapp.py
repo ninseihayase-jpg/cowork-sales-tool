@@ -4451,7 +4451,31 @@ def delivery_form(con, delivery_id: int) -> str:
     import json as _json
     role_targets_json = _json.dumps(role_targets, ensure_ascii=False)  # noqa: F841 (旧ハイライト用・保持)
 
+    # 議論メモ（取り込みインボックスからDeliveryへ割り当てた会議のAI整形メモ。2026-09-09追加）。
+    # 社内PJメモと同じrich_notes(kind='delivery')・OneNote風エディタ(rnOpen)を流用するが、
+    # Deliveryにはパスワードロック・AIサマリ再生成の仕組みは無い（必要になれば個別に追加）。
+    _dv_notes = sfa_db.list_rich_notes(con, "delivery", delivery_id)
+    if _dv_notes:
+        _note_cards = "".join(
+            f'<div class="dv-note-card" onclick="rnOpen(&#39;delivery&#39;,{delivery_id},{n["id"]})" '
+            f'title="クリックで大きく編集">'
+            f'<div class="dv-note-ttl">{_esc((n.get("title") or "無題"))}</div>'
+            f'<div class="dv-note-pv">{_rich_note_preview(n.get("body") or "", 120) or "（空）"}</div></div>'
+            for n in _dv_notes
+        )
+    else:
+        _note_cards = '<div class="muted">議論メモはまだありません。「🎙️ 議論を取り込む」から追加してください。</div>'
+    _dv_rn_links_html = _rich_note_links_html(con, "delivery", delivery_id)
+    _dv_intake_html = _intake_originals_html(con, "delivery", delivery_id, f"/delivery/{delivery_id}")
+
     return f"""
+    <style>
+    .dv-note-card{{border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;cursor:pointer;background:#fff;
+      transition:background .12s,border-color .12s}}
+    .dv-note-card:hover{{background:#f8fafc;border-color:#bfdbfe}}
+    .dv-note-ttl{{font-weight:600;font-size:13px;color:#334155;margin-bottom:2px}}
+    .dv-note-pv{{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+    </style>
     <div class="card">
       <p style="margin:0 0 8px"><a href="/deliveries">← Delivery一覧</a></p>
       <h2 style="margin:0 0 2px">{_esc(dv.get("title") or "(無題)")}
@@ -4600,6 +4624,19 @@ def delivery_form(con, delivery_id: int) -> str:
               onsubmit="return confirm('このDelivery案件を削除します。アサインも消えます。よろしいですか？')">
           <button class="btn sec" style="font-size:12px;color:#c53030">このDeliveryを削除</button></form>
       </div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <h2 style="margin:0">🎙️ 議論メモ</h2>
+        <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <a class="btn sec" href="/delivery/{delivery_id}/intake" style="font-size:12px"
+             title="議論の文字起こしを貼付→AIで整形してメモ化">🎙️ 議論を取り込む（AI整形）</a>
+          {_rich_note_chip("delivery", delivery_id)}
+        </span>
+      </div>
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">{_note_cards}</div>
+      {_dv_rn_links_html}
+      {_dv_intake_html}
     </div>
     <script>
     function _mondayOf(s){{ if(!s) return ''; var p=String(s).split('-'); if(p.length!==3) return s;
@@ -12354,7 +12391,7 @@ def _rich_note_preview(content: str, limit: int = 70) -> str:
 
 
 # kind → 起動ボタンのラベル
-_RICH_NOTE_LABELS = {"deal": "商談ノート", "issue": "社内PJメモ", "htmpl": "テンプレメモ"}
+_RICH_NOTE_LABELS = {"deal": "商談ノート", "issue": "社内PJメモ", "htmpl": "テンプレメモ", "delivery": "Delivery議論メモ"}
 
 
 def _rich_note_entity_title(con, kind: str, entity_id: int) -> str:
@@ -12371,6 +12408,11 @@ def _rich_note_entity_title(con, kind: str, entity_id: int) -> str:
     if kind == "htmpl":
         r = con.execute("SELECT name FROM hearing_templates WHERE id=?", (entity_id,)).fetchone()
         return f"ヒアリングテンプレ: {r[0]}" if r and r[0] else f"テンプレ #{entity_id}"
+    if kind == "delivery":
+        dv = sfa_db.get_delivery(con, entity_id)
+        if not dv:
+            return f"Delivery #{entity_id}"
+        return f"Delivery: {dv.get('account_name') or ''}／{dv.get('title') or dv.get('deal_name') or ''}".strip("／ ")
     return "メモ"
 
 
@@ -15334,8 +15376,8 @@ def _handle_jamie_webhook(handler, con, raw_bytes: bytes) -> None:
         _reply(500, {"ok": False, "error": "save failed"})
 
 
-def _inbox_target_options(deals: list, issues: list) -> str:
-    """割り当て先セレクトの<option>（商談＝deal:id / 社内PJ＝issue:id）。
+def _inbox_target_options(deals: list, issues: list, deliveries: list | None = None) -> str:
+    """割り当て先セレクトの<option>（商談＝deal:id / 社内PJ＝issue:id / Delivery＝delivery:id）。
     種別(data-type)と検索キー(data-s=小文字ラベル)を持たせ、クライアント側で種別＋語で絞り込む。"""
     def _o(value, label, typ):
         return (f'<option value="{value}" data-type="{typ}" data-s="{_esc(label.lower())}">'
@@ -15347,7 +15389,11 @@ def _inbox_target_options(deals: list, issues: list) -> str:
                       (it.get("issue") or "—") + (f'（{it.get("account_name")}）'
                                                   if it.get("account_name") else "（商談共通）"), "issue")
                    for it in issues)
-    return dopt + iopt
+    vopt = "".join(_o(f'delivery:{dv["id"]}',
+                      f'{dv.get("account_name") or "—"} / {dv.get("title") or dv.get("deal_name") or "—"}',
+                      "delivery")
+                   for dv in (deliveries or []))
+    return dopt + iopt + vopt
 
 
 _INBOX_ASSIGN_JS = """
@@ -15365,10 +15411,13 @@ function assignFilter(form){
     if(!show&&o.selected){sel.value='';}
   }
 }
-// 候補チップのクリック: 同じカード内のフォームの割り当て先を即セット（候補はフォーム外にあるためカード起点で辿る）
+// 候補チップのクリック: 同じカード内のフォームの割り当て先を即セット（候補はフォーム外にあるためカード起点で辿る）。
+// カード内には「破棄」用のform（/intake-transcript/.../delete）も先に存在するため、
+// 素の querySelector('form') だと破棄formを誤って掴んでしまう（実バグ・2026-09-09発見）。
+// 割り当てform（/intake-inbox/.../assign）をaction属性で明示的に指定する。
 function pickCandidate(btn,val){
   var card=btn.closest('.inbox-card'); if(!card)return;
-  var form=card.querySelector('form'); if(!form)return;
+  var form=card.querySelector('form[action*="/assign"]'); if(!form)return;
   var tt=form.querySelector('[name=ttype]'); if(tt){tt.value=(val.split(':')[0]||'');}
   var qi=form.querySelector('.assign-q'); if(qi){qi.value='';}
   assignFilter(form);
@@ -15430,7 +15479,8 @@ def _inbox_name_score(name: str, aliases: str | None, text: str) -> int:
     return min(90, round(coverage * 90))
 
 
-def _inbox_candidates(title: str, attendees: list, deals: list, issues: list) -> list:
+def _inbox_candidates(title: str, attendees: list, deals: list, issues: list,
+                      deliveries: list | None = None) -> list:
     """会議タイトル/参加者から割り当て候補を推定し、一致度が高いものから最大5件を返す
     （0点=無関係は除外。#実事故: 完全一致以外を一切候補に出せず「川崎重工業」に対し
     会議名「川崎重工」がヒットしなかった不具合、および「住友重工業→住重」のような
@@ -15449,16 +15499,24 @@ def _inbox_candidates(title: str, attendees: list, deals: list, issues: list) ->
         score = _inbox_name_score(nm.lower(), None, t)
         if score > 0:
             scored.append((score, f"issue:{it['id']}", f'社内PJ: {nm}'))
+    for dv in (deliveries or []):
+        an, dt = (dv.get("account_name") or ""), (dv.get("title") or dv.get("deal_name") or "")
+        aliases = dv.get("account_aliases")
+        score = max(_inbox_name_score(an.lower(), aliases, t),
+                    _inbox_name_score(dt.lower(), None, t))
+        if score > 0:
+            scored.append((score, f"delivery:{dv['id']}", f'Delivery: {an} / {dt}'))
     scored.sort(key=lambda x: -x[0])
     return [(v, lbl) for _, v, lbl in scored[:5]]
 
 
 def intake_inbox_page(con) -> str:
-    """自動連携（Jamie等）で受信した未割り当ての文字起こしインボックス。人が商談/社内PJへ割り当てる。"""
+    """自動連携（Jamie等）で受信した未割り当ての文字起こしインボックス。人が商談/社内PJ/Deliveryへ割り当てる。"""
     items = sfa_db.list_inbox_transcripts(con)
     deals = sfa_db.list_deals(con, status="open")
     issues = sfa_db.list_deal_issues(con, status="議論中")
-    _tgt_opts = _inbox_target_options(deals, issues)
+    deliveries = [dv for dv in sfa_db.list_deliveries(con) if (dv.get("status") or "") == "進行中"]
+    _tgt_opts = _inbox_target_options(deals, issues, deliveries)
     if not items:
         rows = ('<p class="muted" style="margin:0">未割り当ての取り込みはありません。'
                 'Jamie/Zoomの会議が処理完了するとここに届きます。</p>')
@@ -15470,7 +15528,7 @@ def intake_inbox_page(con) -> str:
             except Exception:
                 _att = []
             _att_txt = "、".join(a.get("email") or a.get("name") or "" for a in _att if (a.get("email") or a.get("name")))[:200]
-            _cands = _inbox_candidates(t.get("title"), _att, deals, issues)
+            _cands = _inbox_candidates(t.get("title"), _att, deals, issues, deliveries)
             _cand_html = ""
             if _cands:
                 _cand_btns = "".join(
@@ -15502,8 +15560,9 @@ def intake_inbox_page(con) -> str:
                   f'style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px" '
                   f'onsubmit="var b=this.querySelector(\'button[type=submit]\');setTimeout(function(){{if(b){{b.disabled=true;b.textContent=\'処理中…\';}}}},0);">'
                   f'<select name="ttype" onchange="assignFilter(this.form)" style="width:auto">'
-                  f'<option value="">種別</option><option value="deal">商談</option><option value="issue">社内PJ</option></select>'
-                  f'<input type="text" class="assign-q" placeholder="🔍 会社/案件/社内PJで絞り込み" '
+                  f'<option value="">種別</option><option value="deal">商談</option><option value="issue">社内PJ</option>'
+                  f'<option value="delivery">Delivery</option></select>'
+                  f'<input type="text" class="assign-q" placeholder="🔍 会社/案件/社内PJ/Deliveryで絞り込み" '
                   f'oninput="assignFilter(this.form)" style="width:auto;max-width:220px">'
                   f'<select name="target" required style="max-width:360px">'
                   f'<option value="">割り当て先を選択…</option>{_tgt_opts}</select>'
@@ -15531,9 +15590,9 @@ def intake_inbox_page(con) -> str:
     <div class="card">
       <h2 style="margin-top:0">📥 取り込みインボックス（自動連携）</h2>
       <p class="muted" style="font-size:13px">Jamie/Zoom等から自動受信した会議の文字起こしです。内容を確認し、
-      <b>商談または社内PJへ割り当て</b>てください（割り当てないと確定されません）。
+      <b>商談・社内PJ・Deliveryのいずれかへ割り当て</b>てください（割り当てないと確定されません）。
       商談へ割り当てると、まず<b>記録方法（顧客面談/社内議論）や取込オプションを選ぶ画面</b>に進み、
-      そこでAI整形を実行します。社内PJへ割り当てるとAI整形の確認画面へ直接進みます。</p>
+      そこでAI整形を実行します。社内PJ・Deliveryへ割り当てるとAI整形の確認画面へ直接進みます。</p>
       {_cfg_warn}
       {rows}
     </div>
@@ -15991,6 +16050,25 @@ def issue_intake_page(con, issue: dict) -> str:
     </div>""")
 
 
+def delivery_intake_page(con, dv: dict) -> str:
+    """Delivery: 議論の文字起こしを貼付してAI整形の入口（社内PJと同仕様、2026-09-09追加）。"""
+    did = dv["id"]
+    _label = f'{_esc(dv.get("account_name"))} / {_esc(dv.get("deal_name"))}'
+    _inner = f"""
+        <div class="filter-row" style="margin:6px 0">
+          <label style="font-size:13px">Delivery: <b>{_esc(dv.get("title") or "—")}</b></label>
+        </div>
+        <div class="muted" style="font-size:12px;margin:2px 0 8px">{_label}</div>"""
+    return render(f"""
+    <div class="card">
+      <h2>🎙️ 議論を取り込む（AI整形）</h2>
+      <p class="muted" style="font-size:13px">会議・面談の文字起こし（貼付、またはテキスト/Wordファイル）を取り込んで「AIで整形」すると、
+      <b>全体像・論点別の整理・決定事項・NextStep</b>に自動整理します。次の画面で確認・編集し、確定すると
+      <b>Delivery議論メモ</b>として保存します。</p>
+      {_transcript_intake_form(action=f"/delivery/{did}/intake/structure", cancel_href=f"/delivery/{did}", inner_fields_html=_inner)}
+    </div>""")
+
+
 def issue_review_page(con, issue: dict, structured: dict, intake_transcript_id: int | None = None) -> str:
     """社内PJ: AI整形結果を人が確認・編集し、社内PJメモとして確定する画面。"""
     iid = issue["id"]
@@ -16032,6 +16110,64 @@ def issue_review_page(con, issue: dict, structured: dict, intake_transcript_id: 
           <button class="btn" type="submit">✓ 確定して社内PJメモに保存</button>
           <a class="btn sec" href="/deal-issue/{iid}/intake">やり直す</a>
           <a class="btn sec" href="/deal-issue/{iid}">キャンセル</a>
+        </div>
+      </form>
+      <div style="margin-top:16px;border-top:1px solid #eef1f5;padding-top:12px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-weight:700;font-size:13px">📋 他ツールへコピー</span>
+          <button type="button" class="icopy-btn on" data-fmt="markdown" onclick="icSetFormat('markdown')">Markdown</button>
+          <button type="button" class="icopy-btn" data-fmt="slack" onclick="icSetFormat('slack')">Slack</button>
+          <button type="button" class="icopy-btn" data-fmt="plain" onclick="icSetFormat('plain')">プレーン</button>
+          <button type="button" class="btn sec" id="issueCopyBtn" style="font-size:12px" onclick="icCopy()">コピー</button>
+          <span class="muted" style="font-size:11px">OneNote/Slack等へ貼り付け（編集内容が即反映）</span>
+        </div>
+        <textarea id="issueCopyOut" rows="8" readonly style="{_ta};margin-top:8px;background:#f8fafc;font-family:ui-monospace,Menlo,Consolas,monospace"></textarea>
+      </div>
+    </div>
+    <script>{_ISSUE_COPY_JS}</script>""")
+
+
+def delivery_review_page(con, dv: dict, structured: dict, intake_transcript_id: int | None = None) -> str:
+    """Delivery: AI整形結果を人が確認・編集し、Delivery議論メモとして確定する画面
+    （社内PJと同仕様。2026-09-09追加。AIサマリ再生成は無い＝deliveriesにはai_summary列が無いため）。"""
+    did = dv["id"]
+    st = structured or {}
+    _points_md = _points_md_from_list(st.get("points") or [])
+    _dec_text = "\n".join(st.get("decisions") or [])
+    _ns_text = "\n".join(st.get("nextsteps") or [])
+    _ttl = (st.get("title") or "").strip() or (dv.get("title") or "議論メモ")
+    _title = f"{_yymmdd(st.get('date'))}_{_ttl}"
+    _ai_warn = _intake_ai_warn_html(bool(st.get("_ai_ok")))
+    _ta = "width:100%;box-sizing:border-box;font-size:13px;padding:6px"
+    _ta_x = 'class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)"'
+    return render(f"""
+    <style>
+    .icopy-btn{{font-size:12px;padding:3px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;cursor:pointer}}
+    .icopy-btn.on{{background:#eff6ff;border-color:#60a5fa;color:#1d4ed8;font-weight:600}}
+    </style>
+    <div class="card">
+      <h2>🎙️ 議論整形結果の確認</h2>
+      <p class="muted" style="font-size:13px">Delivery <b>{_esc(dv.get("title") or "—")}</b>。内容を確認・編集して「確定」すると、
+      Delivery議論メモとして保存します。</p>
+      {_ai_warn}
+      <form method="post" action="/delivery/{did}/intake/commit" id="issueReviewForm"
+        onsubmit="if(this.dataset.sent){{return false;}}this.dataset.sent='1';var b=this.querySelector('button[type=submit]');setTimeout(function(){{if(b){{b.disabled=true;b.textContent='保存中…';}}}},0);return true;">
+        <input type="hidden" name="intake_transcript_id" value="{intake_transcript_id or ''}">
+        <label style="font-size:12px">メモの見出し（日付_タイトル）
+          <input name="note_title" value="{_esc(_title)}" style="{_ta}"></label>
+        <div style="font-weight:700;font-size:13px;margin:12px 0 2px">■ 全体像</div>
+        <textarea name="overview" rows="4" {_ta_x} style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(st.get("overview") or "")}</textarea>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 論点別の整理
+          <span class="muted" style="font-weight:normal;font-size:11px">（「- 見出し」＋インデント「- 内容」のブレット。行頭スペースでインデント）</span></div>
+        <textarea name="points_md" rows="10" placeholder="- 見出し&#10;    - 内容" style="{_ta};font-family:ui-monospace,Menlo,Consolas,monospace" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_points_md)}</textarea>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ 決定事項（1行1件）</div>
+        <textarea name="decisions" rows="3" {_ta_x} style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_dec_text)}</textarea>
+        <div style="font-weight:700;font-size:13px;margin:14px 0 2px">■ NextStep（1行1件）</div>
+        <textarea name="nextsteps" rows="3" {_ta_x} style="{_ta}" oninput="icSetFormat(document.querySelector('.icopy-btn.on')?document.querySelector('.icopy-btn.on').dataset.fmt:'markdown')">{_esc(_ns_text)}</textarea>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="btn" type="submit">✓ 確定してDelivery議論メモに保存</button>
+          <a class="btn sec" href="/delivery/{did}/intake">やり直す</a>
+          <a class="btn sec" href="/delivery/{did}">キャンセル</a>
         </div>
       </form>
       <div style="margin-top:16px;border-top:1px solid #eef1f5;padding-top:12px">
@@ -19236,6 +19372,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             '<div class="card"><h2>Delivery表示エラー</h2>'
                             f'<p class="muted">この案件の表示中にエラーが発生しました: {_esc(str(_dfe))}</p>'
                             '<p><a class="btn sec" href="/deliveries">← Delivery一覧へ戻る</a></p></div>'), 500)
+                elif path.startswith("/delivery/") and path.endswith("/intake"):
+                    try:
+                        _dvid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        _dvid = 0
+                    _dv = sfa_db.get_delivery(con, _dvid) if _dvid else None
+                    self._send(delivery_intake_page(con, _dv) if _dv
+                               else render("<div class=card>Deliveryが見つかりません</div>"), 200 if _dv else 404)
                 elif path == "/docs":
                     _di = self._qs().get("issue_id", [""])[0]
                     self._send(render(docs_list_page(con, issue_id=int(_di) if _di.isdigit() else None)))
@@ -19382,8 +19526,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if not _t:
                         self._send(render("<div class=card>取り込み原本が見つかりません</div>"), 404)
                     else:
-                        _back = (f"/deal-issue/{_t['entity_id']}" if _t.get("kind") == "issue"
-                                 else f"/deal/{_t['entity_id']}")
+                        _back = ({"issue": f"/deal-issue/{_t['entity_id']}",
+                                  "delivery": f"/delivery/{_t['entity_id']}"}
+                                 .get(_t.get("kind"), f"/deal/{_t['entity_id']}"))
                         _meta = (f"{_esc(_t.get('filename') or '貼り付けテキスト')} ／ "
                                  f"{_esc((_t.get('created_at') or '')[:16])}")
                         self._send(render(
@@ -21411,6 +21556,61 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             sfa_db.set_deal_issue_ai_summary(con, iid, _summary)
                     self._redirect("/deal-issue/%d" % iid)
 
+                elif path.startswith("/delivery/") and path.endswith("/intake/structure"):
+                    # Delivery: 議論の文字起こしをAI整形（社内PJと同仕様。2026-09-09追加）。
+                    try:
+                        _dvid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        _dvid = 0
+                    _dv = sfa_db.get_delivery(con, _dvid) if _dvid else None
+                    _transcript = _resolve_transcript_input(f)
+                    if not _dv or not _transcript:
+                        self._send(render("<div class=card>Deliveryまたは文字起こしがありません。"
+                                          f"<a href='/delivery/{_dvid}/intake'>戻る</a></div>"), 400)
+                    else:
+                        _up = f.get("transcript_file")
+                        _is_file = isinstance(_up, tuple) and len(_up) == 2 and _up[1]
+                        _fname = _up[0] if _is_file else None
+                        _blob = _up[1] if _is_file else None
+                        _new_itid = None
+                        try:
+                            _new_itid = sfa_db.add_intake_transcript(
+                                con, kind="delivery", entity_id=_dvid,
+                                source=("file" if _is_file else "paste"),
+                                filename=_fname, transcript=_transcript, file_blob=_blob)
+                        except Exception as _e:  # noqa: BLE001
+                            print(f"[intake_transcript] save failed: {_e}", flush=True)
+                        _structured = _structure_issue_transcript(
+                            _dv.get("title") or "", _transcript,
+                            filename=_fname, upload_date=_today_jst().isoformat())
+                        self._send(delivery_review_page(con, _dv, _structured, intake_transcript_id=_new_itid))
+
+                elif path.startswith("/delivery/") and path.endswith("/intake/commit"):
+                    # Delivery議論メモとして確定・保存（社内PJと違いai_summary列が無いため再生成は無し）。
+                    try:
+                        _dvid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        _dvid = 0
+                    _dv = sfa_db.get_delivery(con, _dvid) if _dvid else None
+                    if not _dv:
+                        self._redirect("/deliveries")
+                        return
+                    _points_md = (f.get("points_md") or "").strip()
+                    _overview = (f.get("overview") or "").strip()
+                    _decisions = [ln.strip() for ln in (f.get("decisions") or "").splitlines() if ln.strip()]
+                    _nextsteps = [ln.strip() for ln in (f.get("nextsteps") or "").splitlines() if ln.strip()]
+                    _body = _sanitize_rich_html(
+                        _issue_structured_to_note_html(_overview, _points_md, _decisions, _nextsteps))
+                    _title = (f.get("note_title") or "").strip() or ("議論整形メモ " + _today_jst().isoformat())
+                    try:
+                        _itid_ref = int(f.get("intake_transcript_id") or 0) or None
+                    except ValueError:
+                        _itid_ref = None
+                    if _body:
+                        sfa_db.create_rich_note(con, kind="delivery", entity_id=_dvid, title=_title, body=_body,
+                                                intake_transcript_id=_itid_ref)
+                    self._redirect("/delivery/%d" % _dvid)
+
                 elif path.startswith("/intake-inbox/") and path.endswith("/assign"):
                     try:
                         _tid = int(path.split("/")[2])
@@ -21448,6 +21648,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         # 割り当て（取り込み原本を商談に紐付け）→ 取り込みオプション画面へ（inbox由来の文字起こしを使用）
                         sfa_db.assign_inbox_transcript(con, _tid, kind="deal", entity_id=_teid)
                         self._send(hearing_intake_page(con, dict(_row), inbox_id=_tid))
+                    elif _tk == "delivery":
+                        _dv = sfa_db.get_delivery(con, _teid)
+                        if not _dv:
+                            self._redirect("/intake-inbox")
+                            return
+                        sfa_db.assign_inbox_transcript(con, _tid, kind="delivery", entity_id=_teid)
+                        _structured = _structure_issue_transcript(
+                            _dv.get("title") or "", _transcript,
+                            filename=_t.get("title"), upload_date=_occ)
+                        self._send(delivery_review_page(con, _dv, _structured, intake_transcript_id=_tid))
                     else:
                         self._redirect("/intake-inbox")
 
