@@ -187,6 +187,19 @@ def find_deal(con: sqlite3.Connection, text: str) -> dict | None:
     return None
 
 
+def _get_open_deal_by_id(con: sqlite3.Connection, deal_id: int) -> dict | None:
+    """openな商談をid指定で1件取得（account_name付き）。
+    completed→再メンション時に、同一スレッドで直前に確定済みの商談を引き継ぐために使う
+    （2026-09-09追加: 従来はfind_deal()が新規メッセージの文面だけで再マッチングしており、
+    技術メモ等（社名を含まない追記）だと不一致→毎回SFA番号の再入力を強いる不具合があった）。"""
+    row = con.execute("""
+        SELECT d.*, a.name as account_name FROM deals d
+        LEFT JOIN accounts a ON d.account_id = a.id
+        WHERE d.id = ? AND (d.status = 'open' OR d.status IS NULL)
+    """, (int(deal_id),)).fetchone()
+    return dict(row) if row else None
+
+
 # ── #98: Jamie文字起こし×Slack識別 ─────────────────────────────────────────
 # Jamie webhook到着時点では商談との紐付けが無い（識別ステップが#97のWeb inboxでしか
 # 発生せず、Slack先攻の運用実態と噛み合わず放置されるバグを設計で特定）。この識別を
@@ -389,15 +402,20 @@ def _call_claude(prompt: str) -> str:
     return result[0] or "{}"
 
 
-def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
-    """Claude でスレッド内容からSFA更新ドラフトを作成する。"""
+def draft_template(thread_text: str, deal: dict | None, con=None) -> tuple[str, list[str]]:
+    """Claude でスレッド内容からSFA更新ドラフトを作成する。
+    戻り値: (テンプレート本文, 会話から読み取れず未入力のまま残った必須項目名のリスト)。
+    後者が空でなければ、呼び出し側は投稿者への確認メッセージを別途出す想定（2026-09-09追加）。"""
     if deal:
+        # dict.get(key, default)はキーが無い時しかdefaultを使わず、値がNone(SQL NULL)の
+        # ときはNoneをそのまま返してしまう（f-stringに埋めると文字通り"None"が出る実バグの
+        # 温床だったため、必ず `or` でNone/空文字の両方をデフォルトへフォールバックさせる）。
         deal_info = (
-            f"商談名: {deal.get('deal_name','')}\n"
-            f"ステージ: {deal.get('stage','')}\n"
-            f"次回MS日: {deal.get('next_milestone_date','')}\n"
-            f"次回MSラベル: {deal.get('next_milestone_label','')}\n"
-            f"現状メモ: {deal.get('note','') or '（なし）'}"
+            f"商談名: {deal.get('deal_name') or ''}\n"
+            f"ステージ: {deal.get('stage') or ''}\n"
+            f"次回MS日: {deal.get('next_milestone_date') or ''}\n"
+            f"次回MSラベル: {deal.get('next_milestone_label') or ''}\n"
+            f"現状メモ: {deal.get('note') or '（なし）'}"
         )
     else:
         deal_info = "（商談を特定できませんでした）"
@@ -443,18 +461,27 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
     def v(val):
         return val if val else "【記載なし】"
 
-    deal_name = deal.get("deal_name", "❓ 特定できません") if deal else "❓ 特定できません"
-    cur_stage = deal.get("stage", "") if deal else ""
-    cur_ms_date = deal.get("next_milestone_date", "") if deal else ""
-    cur_ms_label = deal.get("next_milestone_label", "") if deal else ""
-    cur_ms_type = deal.get("next_milestone_type", "") if deal else ""
-    cur_memo = deal.get("note", "") or "（なし）" if deal else "（なし）"
+    # 実バグ修正(2026-09-09): dict.get(key, default)はキーが存在すれば値がNone(SQL NULL)でも
+    # そのままNoneを返す（defaultはキー自体が無い時しか効かない）ため、次回MS未設定の商談を
+    # 確認すると本文に文字通り"None"が出ていた（「次回MS: None / None」）。
+    # 必ず`or`でNone/空文字の両方をデフォルトへフォールバックさせる。
+    deal_name = (deal.get("deal_name") or "❓ 特定できません") if deal else "❓ 特定できません"
+    cur_stage = (deal.get("stage") or "") if deal else ""
+    cur_ms_date = (deal.get("next_milestone_date") or "") if deal else ""
+    cur_ms_label = (deal.get("next_milestone_label") or "") if deal else ""
+    cur_ms_type = (deal.get("next_milestone_type") or "") if deal else ""
+    cur_memo = (deal.get("note") or "（なし）") if deal else "（なし）"
 
-    stage_upd = parsed.get("stage_update") or "-"
-    ms_date = parsed.get("next_milestone_date") or "-"
-    ms_label = parsed.get("next_milestone_label") or "-"
-    ms_type = parsed.get("next_milestone_type") or "-"
-    memo_add = parsed.get("memo_addition") or "-"
+    # プロンプト上、次回MS3項目は「変更不要ならnull、不明なら【記載なし】」の2種類の
+    # "空"表現をClaudeに許容しているため、どちらも同じ"-"（未入力）へ正規化する
+    # （でないと、Claudeが【記載なし】を返した場合にmissing_required判定が漏れる）。
+    def _norm_upd(v):
+        return "-" if (not v or v == "【記載なし】") else v
+    stage_upd = _norm_upd(parsed.get("stage_update"))
+    ms_date = _norm_upd(parsed.get("next_milestone_date"))
+    ms_label = _norm_upd(parsed.get("next_milestone_label"))
+    ms_type = _norm_upd(parsed.get("next_milestone_type"))
+    memo_add = _norm_upd(parsed.get("memo_addition"))
 
     lines = [
         "【SFA更新テンプレート】",
@@ -488,7 +515,22 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> str:
     if not deal:
         lines.insert(2, "⚠️ 商談を自動特定できませんでした。商談名を明示して再メンションしてください。")
 
-    return "\n".join(lines)
+    # 会話から読み取れず"-"のまま残った必須項目（2026-09-09追加）。呼び出し側はこれが
+    # 1件でもあれば、投稿者を@メンションした別メッセージで個別に確認を促す
+    # （テンプレート内の注記だけでは見落とされ、次回MSが空欄のままDB更新される事故が
+    # 起きたため。ステージは「変更なし」の明示回答も有効な回答として受け付ける一方、
+    # 次回MS3項目は実値が入力されるまで「確定」をブロックする——別途pending確定処理側で実施）。
+    missing_required = []
+    if ms_date == "-":
+        missing_required.append("次回MS日")
+    if ms_label == "-":
+        missing_required.append("次回MSラベル")
+    if ms_type == "-":
+        missing_required.append("次回MS種別")
+    if stage_upd == "-":
+        missing_required.append("ステージ")
+
+    return "\n".join(lines), missing_required
 
 
 def draft_new_deal_template(thread_text: str, create_mode: str, con=None) -> str:
@@ -802,6 +844,8 @@ def handle_mention(event: dict, con: sqlite3.Connection):
 
     # 前回完了以降のメッセージのみ使う場合にセット（同一スレッド追記対応）
     since_ts = ""
+    # 同一スレッドで直前に確定済みの商談id（completed→再メンション時のフォールバック用）
+    prior_deal_id: int | None = None
 
     # 二重処理防止
     existing = get_pending_thread(con, thread_ts)
@@ -826,11 +870,15 @@ def handle_mention(event: dict, con: sqlite3.Connection):
                 "やり直す場合は「キャンセル」と返信してください。")
             return
         elif state == "completed":
-            # 完了済みスレッドへの再メンション → 前回完了以降の新規メッセージで新サイクル開始
+            # 完了済みスレッドへの再メンション → 前回完了以降の新規メッセージで新サイクル開始。
+            # ただし直前に確定済みの商談idは覚えておき、新規メッセージだけでは商談を
+            # 再マッチングできなかった場合のフォールバックに使う（下記参照）。
             since_ts = existing.get("bot_message_ts") or ""
+            prior_deal_id = existing.get("deal_id")
             con.execute("DELETE FROM slack_threads WHERE thread_ts=?", (thread_ts,))
             con.commit()
-            print(f"[SlackBot] completed→re-trigger: thread={thread_ts} since_ts={since_ts}", flush=True)
+            print(f"[SlackBot] completed→re-trigger: thread={thread_ts} since_ts={since_ts} "
+                  f"prior_deal_id={prior_deal_id}", flush=True)
             # 以降は通常フローで再処理（since_ts 以降のメッセージのみ使用）
         elif state == "cancelled":
             # キャンセル済みは再処理を許可
@@ -856,8 +904,14 @@ def handle_mention(event: dict, con: sqlite3.Connection):
             parts.append(text)
     thread_text = "\n".join(parts)
 
-    # 商談マッチ
+    # 商談マッチ（新規メッセージの文面から）。見つからず、かつ同一スレッドで直前に
+    # 確定済みの商談があれば、それを引き継ぐ（会社名を含まない追記メモ等でも
+    # 毎回SFA番号を聞き直さずに済む。2026-09-09追加）。
     deal = find_deal(con, thread_text)
+    if not deal and prior_deal_id:
+        deal = _get_open_deal_by_id(con, prior_deal_id)
+        if deal:
+            print(f"[SlackBot] completed→re-trigger: prior_deal_id={prior_deal_id} を継続使用", flush=True)
 
     if not deal:
         msg = (
@@ -1252,8 +1306,26 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 if row:
                     deal = dict(row)
 
-            template = draft_template(thread_text, deal, con)
+            template, missing_required = draft_template(thread_text, deal, con)
             new_bot_ts = post_message(channel, thread_ts, template)
+
+            # 会話から読み取れず未入力のまま残った必須項目（次回MS3点・ステージ）があれば、
+            # テンプレート本文の注記だけに頼らず、投稿者を@メンションした別メッセージで
+            # 個別に確認を促す（2026-09-09追加。本文中の小さな注記が見落とされ、次回MSが
+            # 空欄のままDB更新される事故が繰り返し起きたための対策）。
+            if missing_required:
+                _poster = event.get("user")
+                _mention = f"<@{_poster}> " if _poster else ""
+                _examples = {
+                    "次回MS日": "次回MS日: 2026-07-31",
+                    "次回MSラベル": "次回MSラベル: (調整中)2次面談/デモあり",
+                    "次回MS種別": "次回MS種別: アポ",
+                    "ステージ": "ステージ: 要件詰め（変更が無ければ「ステージ: -」でOK）",
+                }
+                _need_lines = "\n".join(f"・{_examples[f]}" for f in missing_required)
+                post_message(channel, thread_ts,
+                    f"{_mention}⚠️ 会話からは読み取れなかったため、以下を返信で埋めてください"
+                    "（この返信のあと「確定」または「ok」でお願いします）。\n" + _need_lines)
 
             if new_bot_ts:
                 con.execute(
@@ -1354,6 +1426,23 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
     if not fields.get("内容"):
         post_message(channel, thread_ts,
             "❌ 活動内容（内容:）が読み取れませんでした。テンプレートの「内容:」を記入して「確定」と再送してください。")
+        return
+
+    # 実事故対策(2026-09-09): 次回MS（日付・ラベル・種別）は実値必須。テンプレート内の
+    # 注記だけでは見落とされ、この3項目が空のまま「確定」されて次回MSがDB上で完全に
+    # 空欄になる事故が繰り返し起きたため、「内容」と同様に確定自体をブロックする
+    # （ステージは「変更なし」の明示回答＝-も有効な回答として扱うため、ここではブロックしない）。
+    _ms_missing = [lb for lb in ("次回MS日", "次回MSラベル", "次回MS種別") if not fields.get(lb)]
+    if _ms_missing:
+        _examples = {
+            "次回MS日": "次回MS日: 2026-07-31",
+            "次回MSラベル": "次回MSラベル: (調整中)2次面談/デモあり",
+            "次回MS種別": "次回MS種別: アポ",
+        }
+        _need_lines = "\n".join(f"・{_examples[f]}" for f in _ms_missing)
+        post_message(channel, thread_ts,
+            "❌ 次回MSが未入力のため確定できません。以下を返信してから、改めて「確定」または「ok」と"
+            "送ってください。\n" + _need_lines)
         return
 
     try:
