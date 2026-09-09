@@ -15189,6 +15189,8 @@ def _intake_originals_html(con, kind: str, entity_id: int, back_url: str) -> str
         f'{(" ・ " + _fkb(t.get("file_size"))) if t.get("file_size") else ""}</span></span>'
         f'<a class="btn sec" style="font-size:11px;padding:2px 8px" href="/intake-transcript/{t["id"]}/view" '
         f'target="_blank" title="文字起こし本文を表示">本文</a>'
+        f'<a class="btn sec" style="font-size:11px;padding:2px 8px" href="/intake-transcript/{t["id"]}/docx" '
+        f'title="文字起こしをWord(docx)でダウンロード">📥 docx</a>'
         + (f'<a class="btn sec" style="font-size:11px;padding:2px 8px" href="/intake-transcript/{t["id"]}/file" '
            f'title="原本ファイルをダウンロード">原本DL</a>' if t.get("file_size") else "")
         + f'<form method="post" action="/intake-transcript/{t["id"]}/delete" style="margin:0" '
@@ -17938,6 +17940,24 @@ def _xlsx_add_answer(ws, row: int, a: dict) -> int:
     return row + 1  # 空行を挟む
 
 
+def build_intake_transcript_docx(t: dict) -> bytes:
+    """取り込み原本（文字起こしテキスト）をdocx化する（2026-09-09追加、貼付テキストにも
+    ダウンロード手段を提供する目的。原本ファイルが無い＝貼付テキストの場合に特に有用）。
+    改行は段落区切りとしてそのまま反映する（Markdown解釈等はしない、生テキストの保存が目的）。"""
+    from docx import Document
+    from io import BytesIO
+    doc = Document()
+    doc.add_heading(t.get("filename") or "文字起こし原本", level=1)
+    _meta = (t.get("created_at") or "")[:16]
+    if _meta:
+        doc.add_paragraph().add_run(_meta).italic = True
+    for line in (t.get("transcript") or "").split("\n"):
+        doc.add_paragraph(line)
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def build_hearing_result_docx_for_deal(results: list[dict]) -> bytes:
     """1商談分のヒアリング結果（複数可）をdocxにまとめる。"""
     from docx import Document
@@ -19538,6 +19558,27 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             f'<p class="muted" style="font-size:12px">{_meta}</p>'
                             f'<pre style="white-space:pre-wrap;font-size:13px;line-height:1.7;background:#f8fafc;'
                             f'padding:12px;border-radius:8px">{_esc(_t.get("transcript") or "")}</pre></div>'))
+                elif path.startswith("/intake-transcript/") and path.endswith("/docx"):
+                    # 文字起こし本文のdocxダウンロード（貼付テキストにも原本ファイルが無くても
+                    # 出力手段を提供する目的。2026-09-09追加）。
+                    try:
+                        _tid = int(path.split("/")[2])
+                    except (ValueError, IndexError):
+                        _tid = 0
+                    _t = sfa_db.get_intake_transcript(con, _tid) if _tid else None
+                    if not _t or not (_t.get("transcript") or "").strip():
+                        self._send(render("<div class=card>文字起こし本文がありません</div>"), 404)
+                    else:
+                        _data = build_intake_transcript_docx(_t)
+                        _base = re.sub(r'\.[A-Za-z0-9]+$', '', _t.get("filename") or "文字起こし原本")
+                        _fn = f"{_base}.docx"
+                        self.send_response(200)
+                        self.send_header("Content-Type",
+                                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                        self.send_header("Content-Disposition", _content_disposition(_fn))
+                        self.send_header("Content-Length", str(len(_data)))
+                        self.end_headers()
+                        self.wfile.write(_data)
                 elif path.startswith("/intake-transcript/") and path.endswith("/file"):
                     try:
                         _tid = int(path.split("/")[2])
