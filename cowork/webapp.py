@@ -656,6 +656,18 @@ function filterSelectOptions(selectId, inputId) {{
     o.style.display = (!q || o.text.toLowerCase().indexOf(q) >= 0) ? '' : 'none';
   }}
 }}
+/* filterSelectOptionsの姉妹関数: 選択肢（option）をクリックした瞬間、選ばれた項目の
+   正式名称（表示テキスト）を隣の検索inputへ反映する。検索inputが入力途中の文字列
+   （例:「ア」）のまま残り、実際に選択できているか分かりづらいというユーザー指摘
+   (2026-09-10)への対応。selectのonchangeに他の処理が既にある場合はそちらの後ろへ
+   追加で呼び出す（既存処理を上書きしない）。*/
+function syncSelectLabelToFilter(selectId, inputId) {{
+  var sel = document.getElementById(selectId);
+  var input = document.getElementById(inputId);
+  if (!sel || !input) return;
+  var opt = sel.options[sel.selectedIndex];
+  if (opt && opt.value) input.value = opt.text;
+}}
 /* 全SFA共通: タスクの「関連（商談/社内PJ/開発案件）」ピッカー（ユーザー要望2026-08-24）。
    種別select→検索input（<datalist>で候補が自動表示、ドロップダウンを開く操作は不要）→
    完全一致した候補のdata-idを隠しinput({{prefix}}Type/{{prefix}}Id)へ書き込む。
@@ -4229,7 +4241,8 @@ def deliveries_page(con) -> str:
         <span class="muted" style="font-size:12px">手動で追加:</span>
         <input type="text" id="dvNewDealFilter" placeholder="🔍 会社名・案件名で絞り込み" autocomplete="off"
           oninput="_deb('dvNewDealFilterFn')" style="font-size:12px;max-width:220px">
-        <select name="deal_id" id="dvNewDealSelect" required style="font-size:12px;max-width:420px"><option value="">商談を選択（提案以降）</option>{_cand_opts}</select>
+        <select name="deal_id" id="dvNewDealSelect" required style="font-size:12px;max-width:420px"
+          onchange="syncSelectLabelToFilter('dvNewDealSelect','dvNewDealFilter')"><option value="">商談を選択（提案以降）</option>{_cand_opts}</select>
         <select name="confidence_override" style="font-size:12px">{_delivery_new_confidence_opts()}</select>
         <button class="btn sec" style="font-size:12px">＋Delivery追加</button>
       </form>
@@ -11306,11 +11319,15 @@ def _ms_panel_json(con, deal_id: int) -> dict:
 
 
 def _save_bar(form_id: str, title: str = "", cancel_url: str | None = None, label: str = "💾 保存",
-              extra: str = "") -> str:
+              extra: str = "", title_html: str = "") -> str:
     """個別編集/入力フォーム上部の固定・保存バー。ボタンは form="<id>" で対象フォームを送信する
     （HTML5のform属性。バー自体は<form>の外にあってよい）。
-    extra: タイトルとボタンの間に差し込む任意HTML（ステータス表示などの固定表示用・rawで挿入）。"""
-    t = f'<span class="sb-title">{_esc(title)}</span>' if title else ""
+    extra: タイトルとボタンの間に差し込む任意HTML（ステータス表示などの固定表示用・rawで挿入）。
+    title_html: titleの代わりに使う、任意の生HTML（未エスケープ）。呼び出し側で組み立てた
+    インライン編集用input等を差し込みたい場合に使う（2026-09-10追加: 商談編集の案件名を
+    固定エリアで直接編集できるようにする要望への対応）。titleとtitle_htmlを両方渡した場合は
+    title_htmlを優先する。"""
+    t = title_html or (f'<span class="sb-title">{_esc(title)}</span>' if title else "")
     # flex-wrap:wrap＝中身（サブグループ）が入りきらない時は"グループ単位"で次行へ折り返す。
     # 各サブグループ側でwhite-space:nowrapにしておくことで、折り返し時も個々の文字が
     # 変な位置で割れて崩れない（ユーザー報告2026-08-28: ボタンの高さ/折返しがバラバラで崩れる）。
@@ -13083,7 +13100,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           <label style="color:#2f6fed;font-weight:600;font-size:13px">リードから引用</label>
           <input type="text" id="lead_ref_q" placeholder="🔍 会社名・氏名で絞り込み" autocomplete="off"
             oninput="_deb('leadRefFilter')" style="margin-top:6px">
-          <select id="lead_ref" onchange="applyLead()" size="6" style="margin-top:6px;height:auto">{lead_opts}</select>
+          <select id="lead_ref" onchange="applyLead();syncSelectLabelToFilter('lead_ref','lead_ref_q')" size="6" style="margin-top:6px;height:auto">{lead_opts}</select>
           <p class="muted" style="margin-top:4px">選ぶとアカウント・担当・経路・メモが自動入力されます</p>
         </div>
         <script>
@@ -13431,12 +13448,31 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     acc_req = "required" if deal.get("id") else ""
     new_acc_html = ""
     new_acc_js = ""
-    # 固定保存バーに表示する「SFA#・アカウント・案件名」（編集時のみ）
-    _sb_title = ""
+    # 固定保存バーに表示する「SFA#・アカウント・案件名」（編集時のみ）。
+    # 案件名部分は編集用inputにする（2026-09-10要望:「案件名を上部固定エリアで編集できる
+    # ような仕様に」）。form="dealForm"でフォーム外からでも同じdealFormへ送信できる
+    # （HTML5仕様）。本体側の「案件名」フィールドは名前重複を避けるため編集時は非表示にし、
+    # 上部で編集する旨の案内に差し替える（下記grid内を参照）。
+    _sb_title_html = ""
     _sb_extra = ""
     if deal.get("id"):
         _acc_nm = next((a["name"] for a in accounts if a["id"] == deal.get("account_id")), "")
-        _sb_title = f"SFA#{deal['id']}　{_acc_nm}／{deal.get('deal_name') or ''}"
+        _sb_title_html = (
+            # .sb-title規定のmargin-right:autoは残しつつ、flex:1 1 autoで固定保存バー内の
+            # 余白いっぱいまで伸ばす（min-width:0を両階層に付けないと、flex子のinputが
+            # 内容量ぶん最小幅を主張してしまい、親スパンごと縮まなくなる＝入力欄が広がらず
+            # 長い案件名が見切れる不具合があった。Playwright検証2026-09-10で発見・修正）。
+            '<span class="sb-title" style="display:inline-flex;align-items:center;gap:2px;'
+            'min-width:0;flex:1 1 auto;margin-right:16px">'
+            f'<span style="white-space:nowrap;flex:0 0 auto">SFA#{deal["id"]}　{_esc(_acc_nm)}／</span>'
+            f'<input name="deal_name" form="dealForm" required value="{_esc(deal.get("deal_name"))}" '
+            'title="案件名（ここで編集できます）" '
+            'style="font-weight:700;font-size:15px;font-family:inherit;color:inherit;'
+            'border:1px solid transparent;border-radius:6px;padding:2px 6px;background:transparent;'
+            'min-width:0;width:100%;flex:1 1 auto" '
+            'onfocus="this.style.borderColor=\'#cbd5e1\';this.style.background=\'#fff\'" '
+            'onblur="this.style.borderColor=\'transparent\';this.style.background=\'transparent\'">'
+            '</span>')
         _st_label = "クローズ済" if deal.get("status") == "closed" else "進行中"
         _did_js = deal["id"]
         # 保存バーの各操作は「グループ単位」でnowrap(sb-group)にまとめる。ボタン/セレクトの
@@ -13543,7 +13579,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
       <span>{'商談編集' if deal.get('id') else '新規商談'}</span>
       {attachments_widget}
     </h2>
-    {_save_bar('dealForm', title=_sb_title, extra=_sb_extra, cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
+    {_save_bar('dealForm', title_html=_sb_title_html, extra=_sb_extra, cancel_url=(return_to or ('/deal/' + str(deal['id']) if deal.get('id') else '/deals')))}
     {top_action_buttons}
     {_rn_links_html}
     {lead_picker_html}
@@ -13557,11 +13593,13 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         <div><label>アカウント{"" if not deal.get("id") else " *"}</label>
           <input type="text" id="acc_id_sel_q" placeholder="🔍 会社名で絞り込み" autocomplete="off"
             oninput="_deb('accIdFilter')">
-          <select name="account_id" id="acc_id_sel" size="6" style="height:auto;margin-top:4px" {acc_req}>{''.join(acc_opts)}</select>
+          <select name="account_id" id="acc_id_sel" size="6" style="height:auto;margin-top:4px" {acc_req}
+            onchange="syncSelectLabelToFilter('acc_id_sel','acc_id_sel_q')">{''.join(acc_opts)}</select>
           <script>function accIdFilter() {{ filterSelectOptions('acc_id_sel', 'acc_id_sel_q'); }}</script>
           {new_acc_html}</div>
         <div><label>案件名 *</label>
-          <input name="deal_name" required value="{_esc(deal.get('deal_name'))}"></div>
+          {'<input name="deal_name" required value="' + _esc(deal.get("deal_name")) + '">' if not deal.get("id")
+            else '<p class="muted" style="margin:4px 0 0;font-size:13px">画面上部で編集できます</p>'}</div>
         <div><label>ステージ</label>
           <select name="stage">{_opt(sfa_db.get_master_list(con,'deal_stages'), deal.get('stage'))}</select></div>
         <div><label>主担当</label>
@@ -14047,7 +14085,8 @@ def dev_project_form(con, project: dict | None = None, deal_id: int | None = Non
         )
         deal_field_html = f"""
           <input type="text" id="dpDealFilter" placeholder="会社名・商談名で絞り込み" oninput="_deb('dpFilterDeals')">
-          <select name="deal_id" id="dpDealSelect" required size="8" style="height:170px" onchange="dpShowSalesOwner()">
+          <select name="deal_id" id="dpDealSelect" required size="8" style="height:170px"
+            onchange="dpShowSalesOwner();syncSelectLabelToFilter('dpDealSelect','dpDealFilter')">
             <option value=""></option>
             {opts}
           </select>
@@ -14602,7 +14641,8 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
         )
         deal_field_html = f"""
           <input type="text" id="diDealFilter" placeholder="会社名・商談名で絞り込み" oninput="_deb('diFilterDeals')">
-          <select name="deal_id" id="diDealSelect" size="8" style="height:170px" onchange="diToggleCompanyFunc()">
+          <select name="deal_id" id="diDealSelect" size="8" style="height:170px"
+            onchange="diToggleCompanyFunc();syncSelectLabelToFilter('diDealSelect','diDealFilter')">
             <option value="">（商談に紐づけない・商談共通）</option>
             {opts}
           </select>"""
@@ -16718,7 +16758,8 @@ def hearing_new_page(con, preselect: str | None = None) -> str:
         <label>対象（商談 / リード）</label>
         <input type="text" id="hnTargetFilter" placeholder="🔍 会社名・案件名・氏名で絞り込み" autocomplete="off"
           oninput="_deb('hnTargetFilterFn')">
-        <select name="target" id="hnTargetSelect" required size="8" style="height:auto">
+        <select name="target" id="hnTargetSelect" required size="8" style="height:auto"
+          onchange="syncSelectLabelToFilter('hnTargetSelect','hnTargetFilter')">
           <option value="">— 選択 —</option>
           <optgroup label="商談">{deal_opts or '<option disabled>なし</option>'}</optgroup>
           <optgroup label="リード（未商談化）">{lead_opts or '<option disabled>なし</option>'}</optgroup>
