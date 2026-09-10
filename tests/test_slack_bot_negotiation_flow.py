@@ -75,32 +75,46 @@ def test_draft_template_does_not_leak_none_for_unset_next_ms(monkeypatch, con):
     assert "None" not in text
 
 
-# ── draft_template: 必須項目の未読取検知(missing_required) ──
+# ── draft_template: confirm_items（2026-09-10改訂: 次回MS3項目は読み取れていても
+#    必ず確認対象に含む。ステージは読み取れなかった時だけ含む） ──
 
-def test_draft_template_reports_missing_when_ai_returns_null(monkeypatch, con):
+def test_draft_template_reports_blank_next_ms_and_stage_as_confirm_items(monkeypatch, con):
     parsed = {**AI_FILLED, "stage_update": None, "next_milestone_date": None,
               "next_milestone_label": None, "next_milestone_type": None}
     monkeypatch.setattr(slack_bot, "_call_claude", lambda prompt: json.dumps(parsed))
     deal = {"id": 1, "deal_name": "X", "stage": "要件詰め"}
-    _, missing = slack_bot.draft_template("会話内容", deal, con)
-    assert missing == ["次回MS日", "次回MSラベル", "次回MS種別", "ステージ"]
+    _, confirm_items = slack_bot.draft_template("会話内容", deal, con)
+    assert confirm_items == [
+        ("次回MS日", None), ("次回MSラベル", None), ("次回MS種別", None), ("ステージ", None),
+    ]
 
 
-def test_draft_template_treats_literal_kisai_nashi_as_missing_too(monkeypatch):
+def test_draft_template_treats_literal_kisai_nashi_as_blank_too(monkeypatch):
     """Claudeのプロンプト仕様上、不明時は文字列「【記載なし】」も許容されている
-    （null限定ではない）ため、これも未入力(missing_required)として検知できること。"""
+    （null限定ではない）ため、これも未読み取り(値=None)として検知できること。"""
     parsed = {**AI_FILLED, "next_milestone_date": "【記載なし】",
               "next_milestone_label": "【記載なし】", "next_milestone_type": "【記載なし】"}
     monkeypatch.setattr(slack_bot, "_call_claude", lambda prompt: json.dumps(parsed))
-    _, missing = slack_bot.draft_template("会話内容", {"id": 1, "deal_name": "X"}, None)
-    assert set(missing) == {"次回MS日", "次回MSラベル", "次回MS種別"}
+    _, confirm_items = slack_bot.draft_template("会話内容", {"id": 1, "deal_name": "X"}, None)
+    values = dict(confirm_items)
+    assert values["次回MS日"] is None
+    assert values["次回MSラベル"] is None
+    assert values["次回MS種別"] is None
 
 
-def test_draft_template_no_missing_when_ai_fills_everything(monkeypatch, con):
+def test_draft_template_always_confirms_next_ms_even_when_ai_filled_them(monkeypatch, con):
+    """2026-09-10要望: 「次回MS系情報は、読み取れたとしても必ずメンションで正しいか
+    確認する」。AIが正しく読み取れていても、次回MS3項目は常にconfirm_itemsに含まれ、
+    その際は読み取れた値が渡されること（未読み取りのNoneとは区別する）。
+    ステージはAIが読み取れているため、この場合はconfirm_itemsに含まれない。"""
     monkeypatch.setattr(slack_bot, "_call_claude", lambda prompt: json.dumps(AI_FILLED))
     deal = {"id": 1, "deal_name": "X", "stage": "要件詰め"}
-    _, missing = slack_bot.draft_template("会話内容", deal, con)
-    assert missing == []
+    _, confirm_items = slack_bot.draft_template("会話内容", deal, con)
+    assert confirm_items == [
+        ("次回MS日", "2026-10-01"),
+        ("次回MSラベル", "次回打合せ"),
+        ("次回MS種別", "アポ"),
+    ]  # ステージは読み取れているので含まれない
 
 
 # ── handle_message(pending確定): 次回MS未入力での確定ブロック ──
@@ -178,6 +192,123 @@ def test_confirm_allows_explicit_stage_no_change(monkeypatch, con):
     assert len(sfa_db.list_activities(con, did)) == 1
     deal_after = sfa_db.get_deal(con, did)
     assert deal_after["stage"] == "要件詰め"  # 変更されていない
+
+
+# ── handle_message(pending確定): 上書き→確定は必ず別メッセージの2段階(ユーザー確定要件) ──
+
+def test_override_and_confirm_in_same_message_does_not_auto_commit(monkeypatch, con):
+    """ユーザー確定要件(2026-09-10):「上書きを受け付けました」⇒「OK」⇒起票、の
+    2段階フローは変えない（連続で複数回上書きしたいケースがあるため）。確定キーワードが
+    上書きと同じメッセージに含まれていても、自動では起票（確定処理）まで進めず、
+    受付の案内だけ出して待つこと。"""
+    did = _deal(con, stage="要件詰め")
+    slack_bot.save_pending_thread(con, "t5", "C1", did, "bot1", state="pending")
+    sent = _sent_messages(monkeypatch)
+    monkeypatch.setattr(slack_bot, "_bot_user_id", "BUID")
+
+    template_text = (
+        "【SFA更新テンプレート】\n内容: 打合せを実施。\n"
+        "ステージ: -\n次回MS日: 2026-09-14\n次回MSラベル: 見積提出\n次回MS種別: タスク\n"
+    )
+    combined_text = "ステージ: クロージング\nok"
+    monkeypatch.setattr(slack_bot, "get_thread_messages", lambda channel, ts: [
+        {"ts": "bot1", "bot_id": "B1", "text": template_text},
+        {"ts": "confirm5", "user": "U1", "text": combined_text},
+    ])
+
+    event = {"channel": "C1", "text": combined_text, "ts": "confirm5", "thread_ts": "t5", "user": "U1"}
+    slack_bot.handle_message(event, con)
+
+    assert sfa_db.list_activities(con, did) == []
+    assert len(sent) == 1
+    assert "上書きを受け付けました" in sent[0]["text"]
+    assert "反映するには「確定」または「ok」と返信してください" in sent[0]["text"]
+    row = slack_bot.get_pending_thread(con, "t5")
+    assert row["state"] == "pending"
+
+
+def test_override_without_confirm_word_still_just_acknowledges(monkeypatch, con):
+    """上書きのみ（確定キーワードを含まない）の場合も、従来通り受付案内だけ出して
+    確定処理には進まないこと（回帰防止）。"""
+    did = _deal(con)
+    slack_bot.save_pending_thread(con, "t6", "C1", did, "bot1", state="pending")
+    sent = _sent_messages(monkeypatch)
+    monkeypatch.setattr(slack_bot, "_bot_user_id", "BUID")
+
+    template_text = "【SFA更新テンプレート】\n内容: 打合せを実施。\nステージ: -\n"
+    monkeypatch.setattr(slack_bot, "get_thread_messages", lambda channel, ts: [
+        {"ts": "bot1", "bot_id": "B1", "text": template_text},
+        {"ts": "ov1", "user": "U1", "text": "ステージ: クロージング"},
+    ])
+    event = {"channel": "C1", "text": "ステージ: クロージング", "ts": "ov1", "thread_ts": "t6", "user": "U1"}
+    slack_bot.handle_message(event, con)
+
+    assert sfa_db.list_activities(con, did) == []
+    assert len(sent) == 1
+    assert "上書きを受け付けました" in sent[0]["text"]
+    row = slack_bot.get_pending_thread(con, "t6")
+    assert row["state"] == "pending"
+
+
+def test_override_then_separate_ok_message_commits(monkeypatch, con):
+    """上書き（例:「ステージ: クロージング」）を送った後、別メッセージで改めて「ok」を
+    送ると、その時点で正しく起票（確定処理）まで進むこと（2段階フローの正常系）。"""
+    did = _deal(con, stage="要件詰め")
+    slack_bot.save_pending_thread(con, "t8", "C1", did, "bot1", state="pending")
+    sent = _sent_messages(monkeypatch)
+    monkeypatch.setattr(slack_bot, "_bot_user_id", "BUID")
+
+    template_text = (
+        "【SFA更新テンプレート】\n内容: 打合せを実施。\n"
+        "ステージ: -\n次回MS日: 2026-09-14\n次回MSラベル: 見積提出\n次回MS種別: タスク\n"
+    )
+    monkeypatch.setattr(slack_bot, "get_thread_messages", lambda channel, ts: [
+        {"ts": "bot1", "bot_id": "B1", "text": template_text},
+        {"ts": "ov1", "user": "U1", "text": "ステージ: クロージング"},
+        {"ts": "confirm8", "user": "U1", "text": "ok"},
+    ])
+
+    event = {"channel": "C1", "text": "ok", "ts": "confirm8", "thread_ts": "t8", "user": "U1"}
+    slack_bot.handle_message(event, con)
+
+    assert len(sfa_db.list_activities(con, did)) == 1
+    deal_after = sfa_db.get_deal(con, did)
+    assert deal_after["stage"] == "クロージング"
+    row = slack_bot.get_pending_thread(con, "t8")
+    assert row["state"] == "completed"
+
+
+def test_free_text_field_does_not_absorb_trailing_confirm_keyword(con):
+    """「内容: ...」等のフリーテキスト欄の直後に確定キーワード単独行が来た場合、
+    それが本文に取り込まれない（2026-09-10のフリーテキスト収集ロジック修正）。"""
+    text = "内容: 追加の説明です。\nok"
+    val = slack_bot._extract_field(text, "内容")
+    assert val == "追加の説明です。"
+
+
+# ── identifying→pending遷移: 次回MS確認メッセージ(2026-09-10、常時確認) ──
+
+def test_identifying_confirm_posts_next_ms_verification_even_when_ai_filled(monkeypatch, con):
+    did = _deal(con)
+    slack_bot.save_pending_thread(con, "t7", "C1", did, "bot_id_ask", state="identifying")
+    sent = _sent_messages(monkeypatch)
+    monkeypatch.setattr(slack_bot, "_bot_user_id", "BUID")
+    monkeypatch.setattr(slack_bot, "get_thread_messages", lambda channel, ts: [
+        {"ts": "u1", "user": "U1", "text": "会話メモ"},
+    ])
+    monkeypatch.setattr(slack_bot, "_call_claude", lambda prompt: json.dumps(AI_FILLED))
+
+    event = {"channel": "C1", "text": "はい", "ts": "confirm_id1", "thread_ts": "t7", "user": "U1"}
+    slack_bot.handle_message(event, con)
+
+    verify_msgs = [m for m in sent if "次回MSの内容を確認してください" in m.get("text", "")]
+    assert len(verify_msgs) == 1
+    body = verify_msgs[0]["text"]
+    assert "<@U1>" in body
+    assert "次回MS日: 2026-10-01" in body
+    assert "次回MSラベル: 次回打合せ" in body
+    assert "次回MS種別: アポ" in body
+    assert "ステージ" not in body  # AIがステージも読み取れているので確認対象に含まれない
 
 
 # ── handle_mention: completed→再メンションで商談を引き継ぐ ──

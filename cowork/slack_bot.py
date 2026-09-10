@@ -402,10 +402,12 @@ def _call_claude(prompt: str) -> str:
     return result[0] or "{}"
 
 
-def draft_template(thread_text: str, deal: dict | None, con=None) -> tuple[str, list[str]]:
+def draft_template(thread_text: str, deal: dict | None, con=None) -> tuple[str, list[tuple[str, str | None]]]:
     """Claude でスレッド内容からSFA更新ドラフトを作成する。
-    戻り値: (テンプレート本文, 会話から読み取れず未入力のまま残った必須項目名のリスト)。
-    後者が空でなければ、呼び出し側は投稿者への確認メッセージを別途出す想定（2026-09-09追加）。"""
+    戻り値: (テンプレート本文, 確認が必要な項目のリスト[(フィールド名, 読み取れた値 or None)])。
+    次回MS3項目は読み取れていても必ず含む（値の正誤を人間に確認させる）。ステージは
+    読み取れなかった時だけ含む（値はNone、「変更なしでOK」と案内する）。
+    呼び出し側はこのリストを使って投稿者への確認メッセージを別途出す（2026-09-09/10）。"""
     if deal:
         # dict.get(key, default)はキーが無い時しかdefaultを使わず、値がNone(SQL NULL)の
         # ときはNoneをそのまま返してしまう（f-stringに埋めると文字通り"None"が出る実バグの
@@ -515,22 +517,22 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> tuple[str, 
     if not deal:
         lines.insert(2, "⚠️ 商談を自動特定できませんでした。商談名を明示して再メンションしてください。")
 
-    # 会話から読み取れず"-"のまま残った必須項目（2026-09-09追加）。呼び出し側はこれが
-    # 1件でもあれば、投稿者を@メンションした別メッセージで個別に確認を促す
-    # （テンプレート内の注記だけでは見落とされ、次回MSが空欄のままDB更新される事故が
-    # 起きたため。ステージは「変更なし」の明示回答も有効な回答として受け付ける一方、
-    # 次回MS3項目は実値が入力されるまで「確定」をブロックする——別途pending確定処理側で実施）。
-    missing_required = []
-    if ms_date == "-":
-        missing_required.append("次回MS日")
-    if ms_label == "-":
-        missing_required.append("次回MSラベル")
-    if ms_type == "-":
-        missing_required.append("次回MS種別")
+    # 次回MS（日付・ラベル・種別）は会話から読み取れていても必ず投稿者への別メッセージで
+    # 確認を促す（2026-09-10ユーザー要望: 「次回MS系情報は、読み取れたとしても必ず
+    # メンションで正しいか確認する」）。テンプレート本文の注記だけでは見落とされ、
+    # 次回MSが空欄/誤りのままDB更新される事故が繰り返し起きたため、AIの読み取り精度に
+    # 関わらず常に人間の目で確認させる。ステージは変更頻度が低く「変更なし」も正当な
+    # 回答のため、AIが読み取れなかった時だけ確認を促す（次回MS3項目とは異なる扱い）。
+    # 各要素は (フィールド名, 会話から読み取れた値 or None)。Noneは「読み取れず入力が必要」。
+    confirm_items = [
+        ("次回MS日", None if ms_date == "-" else ms_date),
+        ("次回MSラベル", None if ms_label == "-" else ms_label),
+        ("次回MS種別", None if ms_type == "-" else ms_type),
+    ]
     if stage_upd == "-":
-        missing_required.append("ステージ")
+        confirm_items.append(("ステージ", None))
 
-    return "\n".join(lines), missing_required
+    return "\n".join(lines), confirm_items
 
 
 def draft_new_deal_template(thread_text: str, create_mode: str, con=None) -> str:
@@ -639,6 +641,11 @@ def _extract_field(text: str, label: str) -> str | None:
                     break
                 if s[:1] in ("─", "—", "―", "✅", "✏️", "🏢", "🔄") or s.startswith(("※", "例)")):
                     break
+                # 2026-09-10対応: 上書きと確定キーワードを同一メッセージで送るケースを
+                # サポートするため、確定キーワード単独の行が来たらそこで打ち切る
+                # （でないと「内容: ...\nok」のように末尾の"ok"が本文に取り込まれてしまう）。
+                if s.lower() in ("確定", "ok", "yes", "はい"):
+                    break
                 collected.append(nxt)
             val = "\n".join(collected).strip()
             val = val.rstrip("*").strip()
@@ -684,7 +691,8 @@ def _normalize_date_str(s: str) -> str | None:
 def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
     """
     bot_ts のテンプレートを基準に、その後の人間の返信で上書きした最終値を返す。
-    confirm_ts より前のメッセージのみ対象。
+    confirm_ts より前のメッセージのみ対象（confirm_ts自身は除く。上書きと確定は
+    必ず別メッセージの2段階——ユーザー確定要件2026-09-10）。
     日付欄（次回MS日・活動日）は表記揺れ（区切り文字）を吸収してISOへ正規化する。
     """
     bot_uid = get_bot_user_id()
@@ -1306,14 +1314,16 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 if row:
                     deal = dict(row)
 
-            template, missing_required = draft_template(thread_text, deal, con)
+            template, confirm_items = draft_template(thread_text, deal, con)
             new_bot_ts = post_message(channel, thread_ts, template)
 
-            # 会話から読み取れず未入力のまま残った必須項目（次回MS3点・ステージ）があれば、
-            # テンプレート本文の注記だけに頼らず、投稿者を@メンションした別メッセージで
-            # 個別に確認を促す（2026-09-09追加。本文中の小さな注記が見落とされ、次回MSが
-            # 空欄のままDB更新される事故が繰り返し起きたための対策）。
-            if missing_required:
+            # 次回MS（日付・ラベル・種別）は会話から読み取れていても必ず、投稿者を
+            # @メンションした別メッセージで内容の正誤確認を促す（2026-09-10要望:
+            # 「次回MS系情報は、読み取れたとしても必ずメンションで正しいか確認する」）。
+            # ステージは読み取れなかった時のみ同じメッセージに含める（confirm_items参照、
+            # draft_template側で組み立て済み）。テンプレート本文の注記だけに頼ると
+            # 見落とされ、次回MSが空欄/誤りのままDB更新される事故が起きたための対策。
+            if confirm_items:
                 _poster = event.get("user")
                 _mention = f"<@{_poster}> " if _poster else ""
                 _examples = {
@@ -1322,10 +1332,19 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                     "次回MS種別": "次回MS種別: アポ",
                     "ステージ": "ステージ: 要件詰め（変更が無ければ「ステージ: -」でOK）",
                 }
-                _need_lines = "\n".join(f"・{_examples[f]}" for f in missing_required)
+
+                def _confirm_line(field, value):
+                    if value is not None:
+                        return f"・{field}: {value}"
+                    return f"・{_examples[field]}（会話からは読み取れませんでした）"
+
+                _lines = "\n".join(_confirm_line(f, v) for f, v in confirm_items)
+                _has_blank = any(v is None for _, v in confirm_items)
                 post_message(channel, thread_ts,
-                    f"{_mention}⚠️ 会話からは読み取れなかったため、以下を返信で埋めてください"
-                    "（この返信のあと「確定」または「ok」でお願いします）。\n" + _need_lines)
+                    f"{_mention}⚠️ 次回MSの内容を確認してください（正しければそのまま「確定」、"
+                    "修正があれば該当行だけ返信してください）"
+                    + ("。未読み取り項目は返信で埋めてください" if _has_blank else "")
+                    + "。\n" + _lines)
 
             if new_bot_ts:
                 con.execute(
@@ -1412,7 +1431,10 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
         return
 
     if text_l not in ("確定", "ok", "yes", "はい"):
-        # 上書き返信（「フィールド: 値」）を検知したら短く応答して"無言"を防ぐ
+        # 上書き返信（「フィールド: 値」）を検知したら短く応答して"無言"を防ぐ。
+        # ユーザー確定要件(2026-09-10): 上書き→「確定/ok」は必ず別メッセージの2段階を
+        # 維持する（連続で複数回上書きしたいケースがあるため、確定キーワードが同じ
+        # メッセージに含まれていても自動では起票まで進めない）。
         if any(_extract_field(text, lb) for lb in
                ("種別", "相手", "内容", "活動日", "ステージ", "次回MS日", "次回MSラベル", "次回MS種別", "追記メモ")):
             post_message(channel, thread_ts,
