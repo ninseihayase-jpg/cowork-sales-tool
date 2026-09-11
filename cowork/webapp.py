@@ -14307,6 +14307,27 @@ def _deal_issues_url(*, status=None, member=None, responsible=None, q=None, sort
     return "/deal-issues" + (f"?{qs}" if qs else "")
 
 
+def _issue_name_inline_html(issue_id: int, current: str | None, rn_issue_ids: set) -> str:
+    """社内PJ名のインライン改名（2026-09-11ユーザー要望:「PJ名を一覧画面でも修正できるように」）。
+    社内PJ名クリックは詳細ページへの遷移という既存機能と競合するため、改名は別トリガー
+    （✎アイコン）から行う：クリックで表示用リンクを隠し、テキスト入力欄に差し替える。
+    Enter/フォーカスアウトで保存（空文字は拒否して元の値に戻す。Escapeで編集キャンセル）。"""
+    esc_val = _esc(current)
+    return (
+        f'<div class="di-name-cell" data-id="{issue_id}">'
+        f'<span class="di-name-view" style="display:flex;align-items:center;gap:5px">'
+        f'{_rich_note_btn("issue", issue_id, issue_id in rn_issue_ids)}'
+        f'<a href="/deal-issue/{issue_id}" style="font-weight:600">{esc_val}</a>'
+        f'<span class="di-name-edit-trigger" onclick="diEditName(event,{issue_id})" '
+        f'title="PJ名を編集" style="cursor:pointer;color:#94a3b8;font-size:12px;flex:none">✎</span>'
+        f'</span>'
+        f'<input class="di-name-input" data-orig="{esc_val}" value="{esc_val}" style="display:none;'
+        f'font-size:12px;font-weight:600;width:100%;box-sizing:border-box" '
+        f'onblur="diSaveName({issue_id}, this)" onkeydown="diNameKeydown(event, this)">'
+        f'</div>'
+    )
+
+
 def _issue_status_select_html(issue_id: int, current: str | None) -> str:
     opts = "".join(
         f'<option value="{html.escape(s)}"{" selected" if s == current else ""}>{html.escape(s)}</option>'
@@ -14345,6 +14366,25 @@ def _issue_responsible_select_html(issue_id: int, current: str | None, owners: l
     )
     return (f'<select onchange="updateDealIssueField({issue_id}, \'responsible\', this.value, true)" '
             f'style="font-size:11px;padding:2px 4px">{opts}</select>')
+
+
+def _issue_members_and_responsible_html(issue_id: int, current_members: str | None,
+                                        current_responsible: str | None, owners: list) -> str:
+    """議論メンバー・責任者を1列にまとめたインライン編集（2026-09-11ユーザー要望:
+    「議論メンバーと責任者は1列で」）。編集方法自体は既存の2部品
+    （責任者=単一選択セレクト・議論メンバー=複数選択ポップオーバー）をそのまま流用し、
+    縦に積んで1セルに収める（新しい編集UIを増やすとバグ/学習コストの元になるため、
+    見た目の統合に留める）。ラベルを小さく添えて、列を分けなくても何の値か分かるようにする。"""
+    resp_html = _issue_responsible_select_html(issue_id, current_responsible, owners)
+    mem_html = _issue_members_inline_html(issue_id, current_members, owners)
+    return (
+        '<div style="display:flex;flex-direction:column;gap:4px">'
+        f'<div style="display:flex;align-items:center;gap:4px">'
+        f'<span class="muted" style="font-size:10px;flex:none">責任</span>{resp_html}</div>'
+        f'<div style="display:flex;align-items:center;gap:4px">'
+        f'<span class="muted" style="font-size:10px;flex:none">議論</span>{mem_html}</div>'
+        '</div>'
+    )
 
 
 def _issue_company_function_select_html(issue_id: int, current: str | None, company_functions: list) -> str:
@@ -14394,6 +14434,30 @@ document.addEventListener('click', function(e) {
     if (!d.contains(e.target)) d.removeAttribute('open');
   });
 });
+// 社内PJ名のインライン改名（2026-09-11）。✎クリックで表示リンクを隠しinputへ切替。
+function diEditName(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  var cell = ev.currentTarget.closest('.di-name-cell'); if (!cell) return;
+  cell.querySelector('.di-name-view').style.display = 'none';
+  var input = cell.querySelector('.di-name-input');
+  input.style.display = ''; input.focus(); input.select();
+}
+function diNameKeydown(ev, inputEl) {
+  if (ev.key === 'Enter') { ev.preventDefault(); inputEl.blur(); }
+  else if (ev.key === 'Escape') { inputEl.value = inputEl.dataset.orig; inputEl.blur(); }
+}
+function diSaveName(id, inputEl) {
+  var cell = inputEl.closest('.di-name-cell');
+  var newVal = inputEl.value.trim();
+  // 空欄での保存は拒否（社内PJ名は必須）。元の値に戻して編集モードを抜ける。
+  if (!newVal) newVal = inputEl.dataset.orig;
+  inputEl.value = newVal;
+  inputEl.style.display = 'none';
+  cell.querySelector('.di-name-view').style.display = '';
+  if (newVal !== inputEl.dataset.orig) {
+    updateDealIssueField(id, 'issue', newVal, true);
+  }
+}
 """
 
 # 議論メンバー（社員名）ポップオーバーの見た目。一覧のインライン編集で使用。
@@ -14539,18 +14603,16 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
             deal_cell = (f'<div class="muted" style="margin-bottom:2px">{_cf_label}</div>'
                         f'{_issue_company_function_select_html(it["id"], it.get("company_function"), _company_functions)}')
         # 社内PJ名クリックで詳細ページ（左:編集項目／右:サマリ＋社内PJメモ）を開く。
+        # ✎アイコンでインライン改名（クリックと機能重複するため専用の「開く」列は廃止。
+        # 2026-09-11ユーザー要望）。
         rows += f"""
         <tr>
           <td>{deal_cell}</td>
-          <td><div style="display:flex;align-items:flex-start;gap:5px">
-            {_rich_note_btn("issue", it['id'], it['id'] in rn_issue_ids)}
-            <a href="/deal-issue/{it['id']}" style="font-weight:600">{_esc(it.get('issue'))}</a></div></td>
+          <td>{_issue_name_inline_html(it['id'], it.get('issue'), rn_issue_ids)}</td>
           <td>{_issue_status_select_html(it['id'], it.get('status'))}</td>
-          <td>{_issue_members_inline_html(it['id'], it.get('members'), _owners)}</td>
-          <td>{_issue_responsible_select_html(it['id'], it.get('responsible'), _owners)}</td>
+          <td>{_issue_members_and_responsible_html(it['id'], it.get('members'), it.get('responsible'), _owners)}</td>
           <td>{_issue_due_date_input_html(it['id'], it.get('due_date'))}</td>
           <td>{summary_box}</td>
-          <td><a href="/deal-issue/{it['id']}">開く</a></td>
         </tr>"""
 
     return f"""
@@ -14567,10 +14629,10 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
       {filter_row}
       <div style="overflow:auto;max-height:70vh">
       <table style="table-layout:fixed;width:100%">
-        <tr>{_sticky_th('商談/機能', width='15%')}{_sticky_th('社内PJ', width='13%')}{_sticky_th('ステータス', width='8%')}
-            {_sticky_th('議論メンバー', width='13%')}{_sticky_th('責任者', width='8%')}{_sticky_th('解消期限', width='9%')}
-            {_sticky_th('AIサマリー（社内PJメモから生成）', width='29%')}{_sticky_th('', width='5%')}</tr>
-        {rows or '<tr><td colspan=8 class=muted>社内PJがまだありません</td></tr>'}
+        <tr>{_sticky_th('商談/機能', width='9%')}{_sticky_th('社内PJ', width='14%')}{_sticky_th('ステータス', width='8%')}
+            {_sticky_th('議論メンバー・責任者', width='17%')}{_sticky_th('解消期限', width='8%')}
+            {_sticky_th('AIサマリー（社内PJメモから生成）', width='44%')}</tr>
+        {rows or '<tr><td colspan=6 class=muted>社内PJがまだありません</td></tr>'}
       </table>
       </div>
     </div>
@@ -22060,7 +22122,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 elif path.startswith("/deal-issue/") and path.endswith("/field"):
                     _DEAL_ISSUE_ALLOWED_FIELDS = {"status", "members", "responsible", "due_date",
-                                                   "company_function"}
+                                                   "company_function", "issue"}
                     parts = path.split("/")
                     _ok = False
                     _err = ""
@@ -22075,6 +22137,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         elif field == "responsible" and value and value not in (
                                 sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)):
                             _err = "不正な責任者"
+                        elif field == "issue" and not value.strip():
+                            # 社内PJ名(issue)はNOT NULL制約があるため、空文字での更新は拒否する
+                            # （一覧のインライン改名機能。2026-09-11追加）。
+                            _err = "社内PJ名は空にできません"
                         elif field == "company_function":
                             # #147/#158: 会社機能は商談に紐づかない社内PJでのみ意味を持つ。
                             _existing_issue = sfa_db.get_deal_issue(con, iid)
