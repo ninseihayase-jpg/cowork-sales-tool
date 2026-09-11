@@ -753,10 +753,14 @@ CREATE TABLE IF NOT EXISTS deal_issue_subitems (
     start_date  TEXT,             -- YYYY-MM-DD。未設定=まだガント化できない(要確認リストへ)
     end_date    TEXT,
     sort_order  INTEGER NOT NULL DEFAULT 0,
+    parent_id   INTEGER REFERENCES deal_issue_subitems(id) ON DELETE CASCADE,
+                -- タスクの2階層化（2026-09-11）。NULL=メインタスク、値あり=そのidのメインタスクに
+                -- 紐づくサブタスク。3階層以上は想定しない（サブタスクはさらに子を持たない）。
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_deal_issue_subitems_issue ON deal_issue_subitems(issue_id);
+CREATE INDEX IF NOT EXISTS idx_deal_issue_subitems_parent ON deal_issue_subitems(parent_id);
 
 -- 社内PJの検討材料（社内資料の体系化・層1、2026-08-28）。社内PJメモ(人が書く)とは別の、
 -- 調査結果・AIレポート等を雑に投げ込むだけの置き場。層2(検討資料)生成時にAIがまとめて読む。
@@ -1693,6 +1697,13 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         _subitem_cols = {c[1] for c in con.execute("PRAGMA table_info(deal_issue_subitems)")}
         if "overview" not in _subitem_cols:
             con.execute("ALTER TABLE deal_issue_subitems ADD COLUMN overview TEXT")
+        # タスクの2階層化（メインタスク/サブタスク、2026-09-11ユーザー要望）。既存行は全て
+        # parent_id=NULL＝メインタスク扱いになる（後方互換）。
+        if "parent_id" not in _subitem_cols:
+            con.execute("ALTER TABLE deal_issue_subitems ADD COLUMN parent_id INTEGER "
+                        "REFERENCES deal_issue_subitems(id) ON DELETE CASCADE")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_deal_issue_subitems_parent "
+                        "ON deal_issue_subitems(parent_id)")
         # 取り込み原本テーブルに自動連携(インボックス)用カラムを後方互換で追加。
         _it_cols = {c[1] for c in con.execute("PRAGMA table_info(intake_transcripts)")}
         for _col, _decl in (
@@ -3833,15 +3844,24 @@ def get_deal_issue(con, id: int) -> dict | None:
 # ── 社内PJ管理（#163、2026-09-06） ──
 
 def create_deal_issue_subitem(con, issue_id: int, title: str, start_date: str | None = None,
-                              end_date: str | None = None, overview: str | None = None) -> int:
+                              end_date: str | None = None, overview: str | None = None,
+                              parent_id: int | None = None) -> int:
+    """parent_id指定時はサブタスクとして作成する（2026-09-11、タスクの2階層化）。
+    作成後、日程が親(メインタスク)の範囲を超えていれば親を自動延伸する
+    （sync_subitem_parent_range参照。メインの手動延伸とは独立で、縮めることはしない）。"""
     next_order = (con.execute(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM deal_issue_subitems WHERE issue_id=?",
         (int(issue_id),)).fetchone()[0])
     cur = con.execute(
-        "INSERT INTO deal_issue_subitems (issue_id, title, start_date, end_date, sort_order, overview) "
-        "VALUES (?,?,?,?,?,?)", (int(issue_id), title, start_date, end_date, next_order, overview))
+        "INSERT INTO deal_issue_subitems (issue_id, title, start_date, end_date, sort_order, overview, parent_id) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (int(issue_id), title, start_date, end_date, next_order, overview,
+         int(parent_id) if parent_id else None))
     con.commit()
-    return cur.lastrowid
+    new_id = cur.lastrowid
+    if parent_id:
+        sync_subitem_parent_range(con, new_id)
+    return new_id
 
 
 def list_deal_issue_subitems(con, issue_id: int | None = None) -> list[dict]:
@@ -3864,24 +3884,56 @@ def update_deal_issue_subitem(con, id: int, *, title: str | None = None,
     clear_dates=Trueの時だけ start_date/end_date を明示的にNULLへ戻せる
     （通常はstart_date/end_dateにNoneを渡しても「変更しない」の意味で無視する）。
     overview は空文字での「クリア」を許すため、Noneのみ「変更しない」として扱う
-    （空文字はフィールドを空にする明示的な更新）。"""
+    （空文字はフィールドを空にする明示的な更新）。
+    start_date/end_dateを変更した場合、このサブタスクに親(parent_id)があれば
+    sync_subitem_parent_range()で親の日程を自動延伸する（2026-09-11）。"""
     sets, args = [], []
     if title is not None:
         sets.append("title=?"); args.append(title)
     if overview is not None:
         sets.append("overview=?"); args.append(overview)
+    _dates_changed = False
     if clear_dates:
         sets.append("start_date=NULL"); sets.append("end_date=NULL")
     else:
         if start_date is not None:
-            sets.append("start_date=?"); args.append(start_date)
+            sets.append("start_date=?"); args.append(start_date); _dates_changed = True
         if end_date is not None:
-            sets.append("end_date=?"); args.append(end_date)
+            sets.append("end_date=?"); args.append(end_date); _dates_changed = True
     if not sets:
         return
     args.append(int(id))
     con.execute(f"UPDATE deal_issue_subitems SET {', '.join(sets)}, updated_at=datetime('now') WHERE id=?", args)
     con.commit()
+    if _dates_changed:
+        sync_subitem_parent_range(con, id)
+
+
+def sync_subitem_parent_range(con, subitem_id: int) -> None:
+    """サブタスク(parent_idあり)の日程が親(メインタスク)の範囲からはみ出していれば、
+    親の日程を自動延伸する（2026-09-11ユーザー要望:「サブタスクの方がメインより長い
+    ことはなく、サブの方が長い場合は、メインが自動で長期化される」）。
+    縮める方向へは一切動かさない（メイン自身の手動延伸は別途ユーザーが行える。
+    ここでの自動延伸がその手動延伸を上書きして縮めることはない＝maxを取るだけ）。
+    親自体がサブタスクの場合や親が存在しない場合は何もしない（2階層までのため）。"""
+    child = get_deal_issue_subitem(con, subitem_id)
+    if not child or not child.get("parent_id"):
+        return
+    parent = get_deal_issue_subitem(con, child["parent_id"])
+    if not parent:
+        return
+    updates = {}
+    if child.get("start_date") and (not parent.get("start_date") or child["start_date"] < parent["start_date"]):
+        updates["start_date"] = child["start_date"]
+    if child.get("end_date") and (not parent.get("end_date") or child["end_date"] > parent["end_date"]):
+        updates["end_date"] = child["end_date"]
+    if updates:
+        con.execute(
+            "UPDATE deal_issue_subitems SET " + ", ".join(f"{k}=?" for k in updates) +
+            ", updated_at=datetime('now') WHERE id=?",
+            list(updates.values()) + [parent["id"]],
+        )
+        con.commit()
 
 
 def delete_deal_issue_subitem(con, id: int) -> None:

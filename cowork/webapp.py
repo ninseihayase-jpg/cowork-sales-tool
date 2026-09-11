@@ -8106,19 +8106,29 @@ def _parse_issue_period_text(text: str) -> tuple[str | None, str | None]:
 
 def deal_issues_gantt_page(con) -> str:
     """社内PJ管理（#163、2026-09-06。以後の追加要望で構成変更）。
-    社内PJを「商談/会社機能」の分類別に常時全件一覧表示する。各社内PJの行にはステップ
-    （旧サブ社内PJ。deal_issue_subitems）を追加する「＋」ボタンのみを常設し、クリックすると
-    ポップアップでステップ名/概要/期間を入力するフォームが開く（画面最上部の独立した
-    社内PJセレクタ式フォームは廃止済み、常時展開のインライン追加フォームも2026-09-05に
-    廃止——常時フォームは行の折り返しでガント行と重なって見える不具合の原因だった）。
+    社内PJを「商談/会社機能」の分類別に常時全件一覧表示する。タスク（旧ステップ／サブ社内PJ。
+    deal_issue_subitems）は2階層（メインタスク／サブタスク、parent_idで自己参照）。
+    「＋」ボタンは分散配置——社内PJ行の「＋」はメインタスク追加、各メインタスクのラベル右側の
+    「＋」はそのサブタスク追加（2026-09-11ユーザー確定: 「メインタスクの追加は左側or上、
+    サブタスクの追加はメインタスクの右側にくっつける」）。子を持つメインタスクには折りたたみ
+    ▼/▶トグルが付き、サブタスク一式をまとめて隠せる。タスク追加はフローティングの
+    ポップアップではなく、「＋」クリックで直下の予約行（.ig-add-wrap、既定display:none）に
+    タスク名/概要/期間の3項目が現れ、Enterで次項目へ、最後の項目のEnterで送信する
+    （2026-09-11ユーザー確定: 「フローティングされた画面で入力するUIはやめたい」。
+    行を動的に増減させず常にこの専用行を予約しておくのは、.gantt-gridがgrid-auto-rows固定高
+    のため、フォームの伸縮でガント行と重なって見えた2026-09-05の旧不具合を避けるため）。
+    サブタスクの日程が親（メインタスク）の範囲を超えたら親を自動延伸する（縮める方向へは動かず、
+    親の手動延伸も維持される。sfa_db.sync_subitem_parent_range）。
+    既存タスクの編集（igOpenItem/igPopHtml）は従来通りポップアップのまま
+    （ユーザーの指摘は追加フローに限定されるため）。
     UI・ドラッグ移動/リサイズはコンサルタスクガント（#152, tasks_gantt_page）と
     同じ操作感（ユーザー確定）。コンサルタスクと異なり、開始日/終了日は
     deal_issue_subitemsの直接列であり、工数感からの逆算・容量スケジューリングは無い
-    単純な期間管理。ステップの追加は自由記述の期間テキスト→Haikuで解釈
+    単純な期間管理。タスクの追加は自由記述の期間テキスト→Haikuで解釈
     （_parse_issue_period_text）。解釈に失敗した行は「要確認」として別枠に出し、
-    人間が日付ピッカーで直す。概要はガントバー上には出さず（バーはステップ名+期間のみ）、
-    ステップをクリックして開く編集ポップアップ内でのみ表示・編集する
-    （2026-09-05ユーザー確定: 「概要はデフォルトでは非表示、ステップをクリックすると表示」）。"""
+    人間が日付ピッカーで直す。概要はガントバー上には出さず（バーはタスク名+期間のみ）、
+    タスクをクリックして開く編集ポップアップ内でのみ表示・編集する
+    （2026-09-05ユーザー確定: 「概要はデフォルトでは非表示、クリックすると表示」）。"""
     today = _today_jst()
     all_issues = [i for i in sfa_db.list_deal_issues(con) if (i.get("status") or "") != "取り消し"]
     by_issue: dict[int, list] = {}
@@ -8165,7 +8175,13 @@ def deal_issues_gantt_page(con) -> str:
     def _col_of(d: date) -> int:
         return (d - min_d).days + 2
 
-    def _day_bg_cells(row: int) -> str:
+    def _day_bg_cells(row: int, parent_task_id: int | None = None) -> str:
+        # parent_task_id指定時は、その行がサブタスク行であることを示すdata属性を付ける
+        # （2026-09-11: メインタスクの折りたたみでサブタスク行一式を丸ごと隠すために使う。
+        # 行内の全要素——日付背景セル・ラベル・バー——に同じdata-parent-taskを付ける必要がある。
+        # .gantt-gridはgrid-auto-rows固定高のため、非表示にした行はdisplay:noneで高さごと
+        # 消える一方、表示されている行の高さには影響しない）。
+        _pt = f' data-parent-task="{parent_task_id}"' if parent_task_id else ""
         out = []
         for i in range(n_days):
             dd = min_d + timedelta(days=i)
@@ -8174,7 +8190,7 @@ def deal_issues_gantt_page(con) -> str:
                 cls += " weekend"
             if dd == today:
                 cls += " today"
-            out.append(f'<div class="{cls}" style="grid-row:{row};grid-column:{i + 2}"></div>')
+            out.append(f'<div class="{cls}"{_pt} style="grid-row:{row};grid-column:{i + 2}"></div>')
         return "".join(out)
 
     d3 = sfa_db.add_business_days(today, 3).isoformat()
@@ -8199,31 +8215,69 @@ def deal_issues_gantt_page(con) -> str:
             f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
             f'社内PJがまだありません。<a href="/deal-issue/new">＋新規社内PJ</a>から作成してください。</div>')
         row += 1
+
+    def _ig_add_row_html(row_no: int, wrap_id: str, issue_id: int, parent_id: int | None) -> str:
+        """タスク追加のインライン入力欄（1行分、既定は非表示）。2026-09-11追加:
+        以前のポップアップ／常時展開フォームをやめ、「＋」クリックで直下に3項目
+        （タスク名/概要/期間）が現れ、Enterで次項目→最後の項目のEnterで送信という
+        操作感に変更（ユーザー要望「フローティング画面はやめたい」）。
+        .gantt-gridはgrid-auto-rowsで行高が固定（26px）のため、行が伸び縮みして
+        隣接行と重なる旧不具合を避けるべく、常にこの専用の1行を予約しておき
+        （非表示時は高さ0）、動的に行を増減させない設計にしている。"""
+        _pid_attr = str(parent_id) if parent_id else ""
+        return (
+            f'<div id="{wrap_id}" class="ig-add-wrap" data-issue-id="{issue_id}" data-parent-id="{_pid_attr}" '
+            f'style="grid-row:{row_no};grid-column:1 / -1;display:none;background:#f8fafc;'
+            f'border-top:1px dashed #cbd5e1;padding:2px 8px;align-items:center;gap:6px;'
+            f'white-space:nowrap;overflow:hidden">'
+            f'<input class="ig-add-title" placeholder="{"サブ" if parent_id else "メイン"}タスク名" '
+            f'style="font-size:11px;padding:2px 4px;width:160px;flex:none">'
+            f'<input class="ig-add-overview" placeholder="概要（任意）" '
+            f'style="font-size:11px;padding:2px 4px;width:200px;flex:none">'
+            f'<input class="ig-add-period" placeholder="期間（例: 来週から3週間）" '
+            f'style="font-size:11px;padding:2px 4px;width:220px;flex:none">'
+            f'<span onclick="igHideInlineAdd(\'{wrap_id}\')" title="キャンセル" '
+            f'style="cursor:pointer;color:#94a3b8;flex:none">✕</span>'
+            f'</div>'
+        )
+
     for cat in cat_list:
         cells.append(
             f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
             f'🗂 {_esc(cat["label"])}（{len(cat["issues"])}件）</div>')
         row += 1
         for issue in cat["issues"]:
-            ready = sorted(
-                (s for s in by_issue.get(issue["id"], []) if s.get("start_date") and s.get("end_date")),
-                key=lambda x: (x["start_date"], x["end_date"]))
+            ready_all = [s for s in by_issue.get(issue["id"], []) if s.get("start_date") and s.get("end_date")]
+            ready_by_id = {s["id"]: s for s in ready_all}
+            main_tasks = sorted((s for s in ready_all if not s.get("parent_id")),
+                                key=lambda x: (x["start_date"], x["end_date"]))
+            children_by_parent: dict[int, list] = {}
+            for s in ready_all:
+                _pid = s.get("parent_id")
+                if _pid and _pid in ready_by_id:
+                    children_by_parent.setdefault(_pid, []).append(s)
+            for _pid in children_by_parent:
+                children_by_parent[_pid].sort(key=lambda x: (x["start_date"], x["end_date"]))
+
             issue_label = _esc(sfa_db.task_link_label(con, "issue", issue["id"]) or issue.get("issue") or "")
-            # 社内PJ1件＝行に「＋」ボタンのみを常設し、クリックでステップ追加ポップアップを開く
-            # （2026-09-05要望: 常時展開の横長フォームは行の折り返しで下の行と重なって見えるため、
-            # 一覧のUI破綻を招いていた。ポップアップ化することで行の高さを最小化する）。
+            main_add_wrap_id = f"ig-mainadd-{issue['id']}"
+            # 社内PJ1件＝行に「＋」ボタンのみを常設。クリックでメインタスク追加の
+            # インライン入力欄（下の予約行）を開く（2026-09-11: フローティング画面は廃止）。
             cells.append(
                 f'<div style="grid-row:{row};grid-column:1 / -1;background:#fafbfc;'
                 f'border-top:1px solid #e2e8f0;padding:4px 8px;display:flex;gap:8px;align-items:center">'
                 f'<a href="/deal-issue/{issue["id"]}" style="font-weight:600;font-size:12px;flex:none;'
                 f'white-space:nowrap">📌{issue_label}</a>'
-                f'<span onclick="return igOpenAddStep({issue["id"]})" title="ステップを追加" '
+                f'<span onclick="return igShowInlineAdd(\'{main_add_wrap_id}\')" title="メインタスクを追加" '
                 f'style="cursor:pointer;flex:none;width:22px;height:22px;border-radius:50%;'
                 f'border:1px dashed #94a3b8;color:#64748b;font-size:14px;line-height:1;'
                 f'display:flex;align-items:center;justify-content:center">＋</span>'
                 f'</div>')
             row += 1
-            for s in ready:
+            cells.append(_ig_add_row_html(row, main_add_wrap_id, issue["id"], None))
+            row += 1
+
+            for s in main_tasks:
                 _item_data[s["id"]] = {"title": s["title"], "start_date": s["start_date"],
                                        "end_date": s["end_date"], "issue_id": issue["id"],
                                        "overview": s.get("overview") or ""}
@@ -8231,11 +8285,27 @@ def deal_issues_gantt_page(con) -> str:
                 sd = date.fromisoformat(s["start_date"])
                 ed = date.fromisoformat(s["end_date"])
                 ucolor, _ = _task_urgency(s["end_date"], today_iso, d3, weekend_end)
+                _children = children_by_parent.get(s["id"], [])
+                sub_add_wrap_id = f"ig-subadd-{s['id']}"
+                # メインタスクの右側に「＋」（サブタスク追加）。子を持つ場合は折りたたみ▼/▶も表示
+                # （2026-09-11要望: 「サブタスクの追加はメインタスクの右側にくっつける」
+                # 「サブタスクとして追加したら、メインタスクに紐づいて、折りたたんだりできる」）。
+                _toggle_html = (
+                    f'<span class="ig-collapse-toggle" data-collapsed="0" '
+                    f'onclick="igToggleChildren({s["id"]},this)" '
+                    f'title="サブタスクの表示/折りたたみ" style="cursor:pointer;color:#64748b;'
+                    f'font-size:9px;flex:none">▼</span>' if _children else ""
+                )
                 cells.append(
-                    f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1">'
+                    f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1;display:flex;'
+                    f'align-items:center;gap:3px">'
+                    f'{_toggle_html}'
                     f'<a href="#" onclick="return igOpenItem({s["id"]})" style="color:inherit;'
-                    f'text-decoration:none;overflow:hidden;text-overflow:ellipsis" title="{_esc(s["title"])}">'
-                    f'{_esc(s["title"])}</a></div>')
+                    f'text-decoration:none;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0" '
+                    f'title="{_esc(s["title"])}">{_esc(s["title"])}</a>'
+                    f'<span onclick="return igShowInlineAdd(\'{sub_add_wrap_id}\')" title="サブタスクを追加" '
+                    f'style="cursor:pointer;flex:none;color:#94a3b8;font-size:12px">＋</span>'
+                    f'</div>')
                 c1, c2 = _col_of(sd), _col_of(ed) + 1
                 cells.append(
                     f'<div class="gantt-bar" draggable="true" data-iid="{s["id"]}" '
@@ -8247,6 +8317,35 @@ def deal_issues_gantt_page(con) -> str:
                     f'<span class="gt-bar-label">{_esc(s["title"])}</span>'
                     f'<span class="gt-grip gt-grip-r"></span></div>')
                 row += 1
+                cells.append(_ig_add_row_html(row, sub_add_wrap_id, issue["id"], s["id"]))
+                row += 1
+
+                for child in _children:
+                    _item_data[child["id"]] = {"title": child["title"], "start_date": child["start_date"],
+                                               "end_date": child["end_date"], "issue_id": issue["id"],
+                                               "overview": child.get("overview") or ""}
+                    cells.append(_day_bg_cells(row, parent_task_id=s["id"]))
+                    csd = date.fromisoformat(child["start_date"])
+                    ced = date.fromisoformat(child["end_date"])
+                    cucolor, _ = _task_urgency(child["end_date"], today_iso, d3, weekend_end)
+                    cells.append(
+                        f'<div class="gantt-lbl" data-parent-task="{s["id"]}" '
+                        f'style="grid-row:{row};grid-column:1;padding-left:16px">'
+                        f'<a href="#" onclick="return igOpenItem({child["id"]})" style="color:inherit;'
+                        f'text-decoration:none;overflow:hidden;text-overflow:ellipsis" '
+                        f'title="{_esc(child["title"])}">└ {_esc(child["title"])}</a></div>')
+                    cc1, cc2 = _col_of(csd), _col_of(ced) + 1
+                    cells.append(
+                        f'<div class="gantt-bar" draggable="true" data-iid="{child["id"]}" '
+                        f'data-parent-task="{s["id"]}" '
+                        f'data-start="{child["start_date"]}" data-end="{child["end_date"]}" '
+                        f'style="grid-row:{row};grid-column:{cc1} / {cc2};background:{cucolor};opacity:.8" '
+                        f'onclick="return igBarClick(event,{child["id"]})" '
+                        f'title="{_esc(child["title"])}｜{_esc(child["start_date"])}〜{_esc(child["end_date"])}">'
+                        f'<span class="gt-grip gt-grip-l"></span>'
+                        f'<span class="gt-bar-label">{_esc(child["title"])}</span>'
+                        f'<span class="gt-grip gt-grip-r"></span></div>')
+                    row += 1
     grid_html = (f'<div class="gantt-wrap"><div class="gantt-grid" '
                 f'style="grid-template-columns:{col_tpl}">{"".join(cells)}</div></div>')
 
@@ -8281,8 +8380,9 @@ def deal_issues_gantt_page(con) -> str:
     <div class="card">
       {_subtab_strip([("一覧", "/deal-issues", False), ("ガント", "/deal-issues/gantt", True)])}
       <h2 style="margin:0 0 6px">📊 社内PJ管理（ガント）</h2>
-      <p class="muted" style="font-size:12px;margin:0">社内PJは分類（商談/会社機能）別に一覧表示されます。各社内PJの行にある「＋」ボタンから
-        その場でステップを追加でき、期間が確定したステップはガントバーで表示されます。
+      <p class="muted" style="font-size:12px;margin:0">社内PJは分類（商談/会社機能）別に一覧表示されます。社内PJ行の「＋」からメインタスクを、
+        各メインタスク行右側の「＋」からサブタスクを追加できます（クリックした直下に入力欄が開き、Enterで次項目→送信）。
+        子を持つメインタスクは▼で折りたたみ可能です。期間が確定したタスクはガントバーで表示され、
         バーをドラッグすると日程スライド、左右の端をドラッグすると期間の伸縮ができます（コンサルタスクガントと同じ操作）。</p>
     </div>
     <div class="card">{grid_html}</div>
@@ -8323,42 +8423,54 @@ def deal_issues_gantt_page(con) -> str:
       bd.style.display='block'; pop.style.display='block';
       return false;
     }}
-    // ステップ追加ポップアップ（各社内PJ行の「＋」ボタンから起動。2026-09-05要望:
-    // 常時展開フォームだと行が折り返して下の行と重なるため、ポップアップ化した）。
-    function igAddStepHtml(issueId){{
-      return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:10px">'
-        +'<div style="font-size:13px;font-weight:700">＋ ステップを追加</div>'
-        +'<span onclick="closeIgAddStep()" style="cursor:pointer;color:#94a3b8;flex:none">✕</span></div>'
-        +'<label style="font-size:11px;display:block;margin-bottom:8px">ステップ名<br>'
-        +'<input type="text" id="igNewStepTitle" required style="width:100%;box-sizing:border-box;font-size:13px"></label>'
-        +'<label style="font-size:11px;display:block;margin-bottom:8px">概要（任意）<br>'
-        +'<textarea id="igNewStepOverview" rows="2" style="width:100%;box-sizing:border-box;font-size:12px;'
-        +'font-family:inherit"></textarea></label>'
-        +'<label style="font-size:11px;display:block;margin-bottom:10px">期間<br>'
-        +'<input type="text" id="igNewStepPeriod" required '
-        +'placeholder="例: 来週から3週間、9/20〜10/10、今月中" style="width:100%;box-sizing:border-box;font-size:12px"></label>'
-        +'<div style="text-align:right"><button type="button" class="btn" onclick="igSubmitAddStep('+issueId+')">追加</button></div>';
-    }}
-    function igOpenAddStep(issueId){{
-      var pop=document.getElementById('igPop'), bd=document.getElementById('igBackdrop');
-      pop.innerHTML=igAddStepHtml(issueId);
-      bd.style.display='block'; pop.style.display='block';
-      document.getElementById('igNewStepTitle').focus();
+    // タスク追加（メイン/サブ共通）: 「＋」クリックで直下の予約行を表示し、タスク名/概要/期間を
+    // その場で入力してEnterで送信する（2026-09-11要望: フローティングのポップアップ入力は
+    // やめてほしい、という指示により旧ポップアップ方式から置き換え）。
+    function igShowInlineAdd(wrapId){{
+      var wrap=document.getElementById(wrapId); if(!wrap) return false;
+      wrap.style.display='flex';
+      var t=wrap.querySelector('.ig-add-title'); if(t) t.focus();
       return false;
     }}
-    function closeIgAddStep(){{
-      var pop=document.getElementById('igPop'), bd=document.getElementById('igBackdrop');
-      if(pop) pop.style.display='none'; if(bd) bd.style.display='none';
+    function igHideInlineAdd(wrapId){{
+      var wrap=document.getElementById(wrapId); if(!wrap) return;
+      wrap.style.display='none';
+      wrap.querySelectorAll('input').forEach(function(el){{ el.value=''; }});
     }}
-    function igSubmitAddStep(issueId){{
-      var title=(document.getElementById('igNewStepTitle').value||'').trim();
-      var overview=document.getElementById('igNewStepOverview').value||'';
-      var period=(document.getElementById('igNewStepPeriod').value||'').trim();
-      if(!title || !period){{ alert('ステップ名と期間は必須です'); return; }}
+    function igSubmitInlineAdd(wrapId){{
+      var wrap=document.getElementById(wrapId); if(!wrap) return;
+      var issueId=wrap.getAttribute('data-issue-id');
+      var parentId=wrap.getAttribute('data-parent-id')||'';
+      var title=(wrap.querySelector('.ig-add-title').value||'').trim();
+      var overview=wrap.querySelector('.ig-add-overview').value||'';
+      var period=(wrap.querySelector('.ig-add-period').value||'').trim();
+      if(!title || !period){{ alert('タスク名と期間は必須です'); return; }}
       fetch('/deal-issue-subitem/new',{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
-        body:'issue_id='+encodeURIComponent(issueId)+'&title='+encodeURIComponent(title)
+        body:'issue_id='+encodeURIComponent(issueId)+'&parent_id='+encodeURIComponent(parentId)
+          +'&title='+encodeURIComponent(title)
           +'&overview='+encodeURIComponent(overview)+'&period_text='+encodeURIComponent(period)}}
       ).then(function(){{ location.reload(); }});
+    }}
+    document.addEventListener('keydown', function(ev){{
+      if(ev.key!=='Enter') return;
+      var el=ev.target; if(!el || !el.classList) return;
+      var wrap=el.closest && el.closest('.ig-add-wrap'); if(!wrap) return;
+      ev.preventDefault();
+      if(el.classList.contains('ig-add-title')){{ wrap.querySelector('.ig-add-overview').focus(); }}
+      else if(el.classList.contains('ig-add-overview')){{ wrap.querySelector('.ig-add-period').focus(); }}
+      else if(el.classList.contains('ig-add-period')){{ igSubmitInlineAdd(wrap.id); }}
+    }});
+    // メインタスクの折りたたみ（子=サブタスクを持つ場合のみ表示される▼/▶トグル）。
+    // サブタスクの各行要素（日付背景セル・ラベル・バー）は全て data-parent-task で
+    // 紐付けてあるので、まとめて表示/非表示を切り替えられる。
+    function igToggleChildren(mainId, btnEl){{
+      var collapsed = btnEl.getAttribute('data-collapsed')==='1';
+      var next = !collapsed;
+      document.querySelectorAll('[data-parent-task="'+mainId+'"]').forEach(function(el){{
+        el.style.display = next ? 'none' : '';
+      }});
+      btnEl.setAttribute('data-collapsed', next ? '1' : '0');
+      btnEl.textContent = next ? '▶' : '▼';
     }}
     function igBarClick(ev,id){{
       if (window.IG_JUST_DRAGGED) {{ ev.preventDefault(); return false; }}
@@ -22180,10 +22292,21 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _title = (f.get("title") or "").strip()
                     _period_text = (f.get("period_text") or "").strip()
                     _overview = (f.get("overview") or "").strip()
+                    # parent_id指定時はサブタスクとして作成する（タスクの2階層化。2026-09-11）。
+                    # 親は同一issue_id配下のメインタスク（parent_id IS NULL）でなければならない
+                    # （3階層化やissueをまたいだ親子付けを防ぐ防御的チェック）。
+                    _parent_id = None
+                    _parent_raw = (f.get("parent_id") or "").strip()
+                    if _parent_raw.isdigit():
+                        _parent = sfa_db.get_deal_issue_subitem(con, int(_parent_raw))
+                        if (_parent and _parent.get("issue_id") == _issue_id
+                                and not _parent.get("parent_id")):
+                            _parent_id = int(_parent_raw)
                     if _title and sfa_db.get_deal_issue(con, _issue_id):
                         _s, _e = _parse_issue_period_text(_period_text)
                         sfa_db.create_deal_issue_subitem(con, _issue_id, _title, _s, _e,
-                                                         overview=_overview or None)
+                                                         overview=_overview or None,
+                                                         parent_id=_parent_id)
                     self._redirect("/deal-issues/gantt")
 
                 elif path.startswith("/deal-issue-subitem/") and path.endswith("/field"):

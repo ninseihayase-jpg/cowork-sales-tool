@@ -295,14 +295,14 @@ def test_gantt_page_categories_sorted_by_account_name(con):
 
 
 def test_gantt_page_issue_without_subitems_still_listed_with_add_button(con):
-    """ステップが1件も無い社内PJも一覧に表示され、行の「＋」ボタンからステップ追加
-    ポップアップを開けること（2026-09-05要望: 常時展開フォームはポップアップ化して行の
-    折り返し重なりを解消。ポップアップはJS側でissue_idを渡してfetch送信するため、
-    静的HTML上にはonclickハンドラとしてissue_idが載る）。"""
+    """タスクが1件も無い社内PJも一覧に表示され、行の「＋」からメインタスク追加の
+    インライン入力欄（予約行）を開けること（2026-09-11: フローティングポップアップは廃止し、
+    「＋」クリックで直下の行にタスク名/概要/期間の入力欄が現れる方式に変更）。"""
     iid = _issue(con, issue="ステップなしの社内PJ")
     html = webapp.deal_issues_gantt_page(con)
     assert "ステップなしの社内PJ" in html
-    assert f"igOpenAddStep({iid})" in html
+    assert f"igShowInlineAdd('ig-mainadd-{iid}')" in html
+    assert f'id="ig-mainadd-{iid}"' in html
     assert "/deal-issue-subitem/new" in html  # JS側fetch先として埋め込まれている
 
 
@@ -323,11 +323,12 @@ def test_gantt_page_bar_shows_only_title_and_period_not_overview(con):
 
 
 def test_gantt_page_add_step_button_present_per_issue(con):
-    """各社内PJ行にステップ追加ポップアップを開く「＋」ボタンがあること
-    （2026-09-05要望: 「ステップの追加は、各社内PJに＋ボタンがついていて、それをクリックして行う」）。"""
+    """各社内PJ行にメインタスク追加のインライン入力欄を開く「＋」ボタンがあること
+    （2026-09-05要望: 「ステップの追加は、各社内PJに＋ボタンがついていて、それをクリックして行う」。
+    2026-09-11: 開き方をポップアップからインライン入力欄に変更）。"""
     iid = _issue(con, issue="論点A")
     html = webapp.deal_issues_gantt_page(con)
-    assert f"igOpenAddStep({iid})" in html
+    assert f"igShowInlineAdd('ig-mainadd-{iid}')" in html
 
 
 def test_gantt_page_no_toplevel_terminology_of_old_subitem_name(con):
