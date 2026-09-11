@@ -84,6 +84,51 @@ def _issue(con, acc_name="A社", deal_name="X", issue="論点A"):
     return sfa_db.upsert_deal_issue(con, deal_id=did, issue=issue)
 
 
+# ── init_db()マイグレーション: 本番再現 ──
+
+def test_init_db_migrates_legacy_deal_issue_subitems_without_parent_id():
+    """本番再現(2026-09-11): parent_id列の無い旧deal_issue_subitemsに対しinit_dbが失敗せず
+    列＋索引を追加すること。SCHEMA側のCREATE TABLE IF NOT EXISTSは既存テーブルがあるとno-opに
+    なる一方、直後のCREATE INDEX ... ON deal_issue_subitems(parent_id)は無条件実行されるため、
+    ALTER TABLEでparent_idを追加する後方互換マイグレーションより前に走ると
+    `sqlite3.OperationalError: no such column: parent_id` で本番のinit_db自体が落ちる
+    （実際に本番デプロイで発生した回帰）。"""
+    import sqlite3
+    d = tempfile.mkdtemp(prefix="sfa_ig_legacy_")
+    try:
+        path = str(Path(d) / "t.db")
+        con = sqlite3.connect(path)
+        con.execute(
+            "CREATE TABLE deal_issues(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "deal_id INTEGER, issue TEXT NOT NULL, members TEXT)")
+        con.execute(
+            "CREATE TABLE deal_issue_subitems(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "issue_id INTEGER NOT NULL, title TEXT NOT NULL, start_date TEXT, end_date TEXT, "
+            "sort_order INTEGER NOT NULL DEFAULT 0, "
+            "created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))")
+        con.execute("INSERT INTO deal_issues(id, deal_id, issue) VALUES (1, NULL, '旧PJ')")
+        con.execute(
+            "INSERT INTO deal_issue_subitems(issue_id, title, start_date, end_date) "
+            "VALUES (1, '旧タスク', '2026-09-01', '2026-09-05')")
+        con.commit()
+        con.close()
+
+        sfa_db.init_db(path)   # 例外なく完了すること
+        sfa_db.init_db(path)   # 冪等
+
+        con2 = sfa_db.connect(path)
+        cols = {r[1] for r in con2.execute("PRAGMA table_info(deal_issue_subitems)")}
+        assert "parent_id" in cols
+        idx = {r[0] for r in con2.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        assert "idx_deal_issue_subitems_parent" in idx
+        row = con2.execute("SELECT title, parent_id FROM deal_issue_subitems WHERE issue_id=1").fetchone()
+        assert row[0] == "旧タスク"
+        assert row[1] is None
+        con2.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ── sfa_db層: parent_id CRUD ──
 
 def test_create_subitem_with_parent_id(con):

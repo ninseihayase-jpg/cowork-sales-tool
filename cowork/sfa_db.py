@@ -760,7 +760,11 @@ CREATE TABLE IF NOT EXISTS deal_issue_subitems (
     updated_at  TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_deal_issue_subitems_issue ON deal_issue_subitems(issue_id);
-CREATE INDEX IF NOT EXISTS idx_deal_issue_subitems_parent ON deal_issue_subitems(parent_id);
+-- idx_deal_issue_subitems_parentはここに置かない: 既存本番DBはparent_id列が無い状態で
+-- このCREATE TABLE IF NOT EXISTSが（テーブル存在のため）no-opになる一方、このCREATE INDEXは
+-- 無条件実行されてしまい、ALTER TABLEでparent_idを追加するinit_db()内の後方互換マイグレーション
+-- （下記）より前に走って `no such column: parent_id` で落ちる（2026-09-11 実際に本番で発生）。
+-- 該当インデックスはマイグレーション側でALTER TABLE成功後にのみ作成する。
 
 -- 社内PJの検討材料（社内資料の体系化・層1、2026-08-28）。社内PJメモ(人が書く)とは別の、
 -- 調査結果・AIレポート等を雑に投げ込むだけの置き場。層2(検討資料)生成時にAIがまとめて読む。
