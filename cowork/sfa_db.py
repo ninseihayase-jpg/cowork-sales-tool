@@ -1267,6 +1267,18 @@ CREATE TABLE IF NOT EXISTS mktg_diagnostics (
     total_matched     INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- マーケ施策 実行対象プラン（2026-09-13）。戦略マップ（事業×打ち手のヒートマップ）上で
+-- クリックして選んだ「実行する事業×打ち手」の組み合わせ一式を、名前を付けて丸ごと保存する。
+-- 各セルは診断(mktg_diagnostics.id)と手法名(METHODS配列上のmethod文字列。配列インデックスは
+-- 将来手法が増減すると意味がズレるため使わない)のペアで表す。selections_jsonは
+-- [{"diagnosticId": 1, "method": "SEO / オウンドブログ"}, ...] 形式のJSON文字列。
+CREATE TABLE IF NOT EXISTS mktg_strategy_plans (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT NOT NULL,
+    selections_json   TEXT NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -6490,4 +6502,33 @@ def create_mktg_diagnostic(con, *, tool_name: str, biz_type: str, priority: bool
 
 def delete_mktg_diagnostic(con, diagnostic_id: int) -> None:
     con.execute("DELETE FROM mktg_diagnostics WHERE id=?", (diagnostic_id,))
+    con.commit()
+
+
+def _mktg_strategy_plan_row_to_dict(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "selections": json.loads(row["selections_json"]),
+        "savedAt": (row["created_at"] or "")[:10].replace("-", "/"),
+    }
+
+
+def list_mktg_strategy_plans(con) -> list[dict]:
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM mktg_strategy_plans ORDER BY id DESC")]
+    return [_mktg_strategy_plan_row_to_dict(r) for r in rows]
+
+
+def create_mktg_strategy_plan(con, *, name: str, selections: list) -> dict:
+    cur = con.execute(
+        "INSERT INTO mktg_strategy_plans (name, selections_json) VALUES (?,?)",
+        (name, json.dumps(selections, ensure_ascii=False)))
+    con.commit()
+    row = dict(con.execute("SELECT * FROM mktg_strategy_plans WHERE id=?", (cur.lastrowid,)).fetchone())
+    return _mktg_strategy_plan_row_to_dict(row)
+
+
+def delete_mktg_strategy_plan(con, plan_id: int) -> None:
+    con.execute("DELETE FROM mktg_strategy_plans WHERE id=?", (plan_id,))
     con.commit()

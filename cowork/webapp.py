@@ -1395,6 +1395,9 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
   background:var(--surface);border:1px solid var(--border);border-radius:12px;
   padding:12px 16px;margin-bottom:16px}
 .strategy-filter label{font-size:13px;font-weight:500;color:#5A5548}
+.strategy-plan-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:10px 16px;margin-bottom:4px}
 .filter-select{padding:5px 10px;font-size:13px;border:1px solid var(--border);
   border-radius:6px;background:#fff;outline:none;cursor:pointer}
 .hm-wrap{overflow:auto;border:1px solid var(--border);border-radius:12px;
@@ -1446,6 +1449,12 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 .hm-r5{background:#F4E4B0}.hm-r6{background:#EFC98A}
 .hm-r7{background:#E2A272}.hm-r8{background:#CC7A4E}
 .hm-r9{background:#A8432A}
+/* 実行対象プラン: マスクリックで選択（2026-09-13）。黒枠+チェックで既存のヒート色の上に重ねて示す */
+.hm-cell{cursor:pointer;position:relative}
+.hm-cell.hm-selected{outline:2px solid #2A2622;outline-offset:-2px}
+.hm-cell.hm-selected::after{content:"✓";position:absolute;inset:0;display:flex;
+  align-items:center;justify-content:center;font-size:13px;font-weight:700;
+  color:#2A2622;text-shadow:0 0 2px #fff,0 0 2px #fff}
 /* 凡例 */
 .hm-legend{display:flex;align-items:center;gap:6px;padding:10px 16px;
   border-top:1px solid var(--border);font-size:11px;color:#5A5548;
@@ -1642,6 +1651,23 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
       <span style="margin-left:auto;font-size:12px;color:#888" id="strategy-count"></span>
     </div>
 
+    <!-- 実行対象プラン（2026-09-13追加: 各マスをクリックして「どの事業でどの打ち手を実施するか」を
+         選び、全体設計を1つの名前で保存できる。マスの選択状態はSELECTED_CELLSに保持し、
+         renderHeatmap()の再描画のたびにhm-selectedクラスとして反映する） -->
+    <div class="strategy-plan-bar">
+      <span style="font-size:12px;color:#666;flex:none">実行対象プラン：</span>
+      <input type="text" id="plan-name-input" class="filter-select" style="flex:1;min-width:160px;max-width:260px"
+             placeholder="例: 260913_マーケ施策実行対象">
+      <button type="button" class="btn" id="btn-save-plan">💾 選択を保存</button>
+      <button type="button" class="btn sec" id="btn-clear-plan">選択をクリア</button>
+      <span style="font-size:12px;color:#888" id="plan-selected-count"></span>
+      <select id="plan-list-select" class="filter-select" style="margin-left:auto;min-width:220px">
+        <option value="">－ 保存済みプランを読み込む －</option>
+      </select>
+      <button type="button" class="btn sec" id="btn-delete-plan" disabled>削除</button>
+    </div>
+    <p class="muted" style="font-size:11px;margin:4px 0 0">マス（事業×打ち手）をクリックすると実行対象として選択（黒枠＋チェック表示）されます。選択後、名前を付けて保存すると次回以降に読み込めます。</p>
+
     <!-- ヒートマップ -->
     <div class="hm-wrap">
       <div id="heatmap-container"></div>
@@ -1694,6 +1720,10 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 <script>
 // ── 保存データ（SFA-CRMのDBから注入） ──────────────────────
 let SAVES = __INITIAL_DIAGNOSTICS_JSON__;
+let STRATEGY_PLANS = __INITIAL_STRATEGY_PLANS_JSON__;
+// マス（事業×打ち手）の選択状態。key="診断id::手法名"。renderHeatmap()の再描画のたびに
+// このSetの内容をhm-selectedクラスとして反映する（2026-09-13追加）。
+let SELECTED_CELLS = new Set();
 // ── データ ──────────────────────────────────────────────────
 const METHODS=[
   {cat:"コンテンツ",method:"SEO / オウンドブログ",cost_l:"小",eff_l:"中",eff:"長期的な検索流入・インバウンドリードの継続獲得",desc:"KW調査でペインワードを特定し、検索意図（情報収集/比較検討/導入直前）別に記事を設計して、月4〜8本を継続投稿しながら被リンク・内部リンクを強化してドメイン評価を育てる手法である。実行には最低でも編集者1名（企画・進行管理）＋ライター（内製専門家または外注）の体制と、Ahrefs等のSEO分析ツール・GA4・Search Console・CMS（WordPress等）が必要で、月20〜30万円程度が継続投資の目安になる。成果が検索順位・流入として表れるまで半年〜1年はかかるため経営層の忍耐が前提となり、更新が数ヶ月途切れる、専門家の一次情報が入らずE-E-A-Tを満たせない、成果測定をせずPDCAが回らない、といった理由で失敗するケースが多い。",crit:[],howto:"① KW調査でペインワード特定（例: '調達 DX'）\n② 検索意図別に記事設計（TOFU/MOFU/BOFU）\n③ 月4〜8本継続投稿でドメイン育成\n④ 社内専門家知識をSEO記事に変換",example:"検索意図が明確なペインワードを継続投稿で狙う手法のため、「調達 自動化」「間接材 コスト削減」など実務担当者が日常的に検索するニッチな業務課題を持つ調達BPOツール・経費精算SaaS・文書管理SaaSとは相性がいい。競合の広告出稿が少なく検索ボリュームが安定しているニッチカテゴリほど、少ない記事数でも上位表示を取りやすく効果が大きい。",s:[1,0,0,1,1,0,1,1,1,0,0,0,0,0,1,1,0,0,0,1,0]},
@@ -2048,6 +2078,8 @@ function getMethodRank(method, save){
   return RANK_MAP[method.cost_l+method.eff_l]||5;
 }
 
+function _hmEsc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
 function renderHeatmap(){
   const container=document.getElementById('heatmap-container');
   if(!container) return;
@@ -2120,13 +2152,17 @@ function renderHeatmap(){
       cat.idxs.forEach(idx=>{
         const rank=getMethodRank(METHODS[idx],save);
         const cls=rank?HEAT_CLASS[rank]:'hm-gray';
-        html+=`<td class="hm-cell ${cls}" title="${METHODS[idx].method}: ${rank?rank+'位':'対象外'}"></td>`;
+        const cellKey=save.id+'::'+METHODS[idx].method;
+        const selCls=SELECTED_CELLS.has(cellKey)?' hm-selected':'';
+        html+=`<td class="hm-cell ${cls}${selCls}" data-diag="${save.id}" data-method="${_hmEsc(METHODS[idx].method)}" `
+          + `title="${METHODS[idx].method}: ${rank?rank+'位':'対象外'}（クリックで実行対象に選択）"></td>`;
       });
     });
     html+='</tr>';
   });
   html+='</tbody></table>';
   container.innerHTML=html;
+  updatePlanSelectedCount();
 }
 
 // ── 手法解説モーダル（戦略マップの見出しクリック） ──
@@ -2162,6 +2198,72 @@ function closeMethodInfo(){
 }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeMethodInfo(); });
 
+// ── 実行対象プラン（2026-09-13）: マスクリックで選択→名前を付けて保存 ──────
+function _planDefaultName(){
+  const d=new Date();
+  const yy=String(d.getFullYear()).slice(-2), mm=String(d.getMonth()+1).padStart(2,'0'),
+        dd=String(d.getDate()).padStart(2,'0');
+  return yy+mm+dd+'_マーケ施策実行対象';
+}
+function updatePlanSelectedCount(){
+  const el=document.getElementById('plan-selected-count');
+  if(el) el.textContent=SELECTED_CELLS.size+'マス選択中';
+}
+function renderPlanListSelect(){
+  const sel=document.getElementById('plan-list-select');
+  if(!sel) return;
+  const cur=sel.value;
+  sel.innerHTML='<option value="">－ 保存済みプランを読み込む －</option>'
+    + STRATEGY_PLANS.map(p=>`<option value="${p.id}">${_hmEsc(p.name)}（${p.savedAt}・${p.selections.length}件）</option>`).join('');
+  if(STRATEGY_PLANS.some(p=>String(p.id)===cur)) sel.value=cur;
+}
+window.saveStrategyPlan=function(){
+  const nameEl=document.getElementById('plan-name-input');
+  let name=nameEl.value.trim();
+  if(!name){ name=_planDefaultName(); nameEl.value=name; }
+  if(!SELECTED_CELLS.size){
+    alert('マスを1つ以上クリックして実行対象を選択してから保存してください。');
+    return;
+  }
+  const selections=[...SELECTED_CELLS].map(key=>{
+    const i=key.indexOf('::');
+    return {diagnosticId:parseInt(key.slice(0,i),10), method:key.slice(i+2)};
+  });
+  const btn=document.getElementById('btn-save-plan');
+  const orig=btn.textContent;
+  btn.disabled=true; btn.textContent='保存中…';
+  fetch('/mktg-strategy-plan/create',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'name='+encodeURIComponent(name)+'&selections_json='+encodeURIComponent(JSON.stringify(selections))})
+    .then(r=>r.json())
+    .then(saved=>{
+      STRATEGY_PLANS.unshift(saved);
+      renderPlanListSelect();
+      document.getElementById('plan-list-select').value=saved.id;
+      document.getElementById('btn-delete-plan').disabled=false;
+      btn.disabled=false; btn.textContent='✅ 保存しました';
+      setTimeout(()=>{btn.textContent=orig;},2000);
+    })
+    .catch(()=>{ btn.disabled=false; btn.textContent=orig; alert('保存に失敗しました。時間をおいて再度お試しください。'); });
+};
+window.loadStrategyPlan=function(id){
+  const plan=STRATEGY_PLANS.find(p=>String(p.id)===String(id));
+  if(!plan) return;
+  SELECTED_CELLS=new Set(plan.selections.map(s=>s.diagnosticId+'::'+s.method));
+  document.getElementById('plan-name-input').value=plan.name;
+  document.getElementById('btn-delete-plan').disabled=false;
+  renderHeatmap();
+};
+window.deleteStrategyPlan=function(id){
+  if(!confirm('このプランを削除しますか？')) return;
+  fetch('/mktg-strategy-plan/'+id+'/delete',{method:'POST'})
+    .then(()=>{
+      STRATEGY_PLANS=STRATEGY_PLANS.filter(p=>String(p.id)!==String(id));
+      renderPlanListSelect();
+      document.getElementById('btn-delete-plan').disabled=true;
+    })
+    .catch(()=>alert('削除に失敗しました。時間をおいて再度お試しください。'));
+};
+
 // ── タブ切り替え ─────────────────────────────────────────────
 function switchTab(tab){
   document.querySelectorAll('.tab-content').forEach(el=>el.classList.remove('active'));
@@ -2175,6 +2277,8 @@ function switchTab(tab){
 buildAxis('axis1',AXIS1,sel1,1);
 buildAxis('axis2',AXIS2,sel2,2);
 renderSaves();
+document.getElementById('plan-name-input').value=_planDefaultName();
+renderPlanListSelect();
 renderHeatmap();
 render();
 
@@ -2195,6 +2299,30 @@ document.getElementById('tab-btn-strategy').addEventListener('click',()=>switchT
 document.getElementById('strategy-biz-filter').addEventListener('change',renderHeatmap);
 document.getElementById('strategy-prio-filter').addEventListener('change',renderHeatmap);
 document.getElementById('strategy-sort').addEventListener('change',renderHeatmap);
+document.getElementById('heatmap-container').addEventListener('click',function(e){
+  const td=e.target.closest('.hm-cell');
+  if(!td) return;
+  const key=td.dataset.diag+'::'+td.dataset.method;
+  if(SELECTED_CELLS.has(key)) SELECTED_CELLS.delete(key); else SELECTED_CELLS.add(key);
+  td.classList.toggle('hm-selected');
+  updatePlanSelectedCount();
+});
+document.getElementById('btn-save-plan').addEventListener('click',saveStrategyPlan);
+document.getElementById('btn-clear-plan').addEventListener('click',function(){
+  if(SELECTED_CELLS.size && !confirm('選択中の'+SELECTED_CELLS.size+'マスをすべてクリアしますか？')) return;
+  SELECTED_CELLS=new Set();
+  document.getElementById('plan-list-select').value='';
+  document.getElementById('btn-delete-plan').disabled=true;
+  renderHeatmap();
+});
+document.getElementById('plan-list-select').addEventListener('change',function(e){
+  if(e.target.value) loadStrategyPlan(e.target.value);
+  else { document.getElementById('btn-delete-plan').disabled=true; }
+});
+document.getElementById('btn-delete-plan').addEventListener('click',function(){
+  const id=document.getElementById('plan-list-select').value;
+  if(id) deleteStrategyPlan(id);
+});
 
 console.log('[診断ツール v2] 初期化完了');
 </script>
@@ -2205,8 +2333,11 @@ console.log('[診断ツール v2] 初期化完了');
 
 def mktg_sim_page(con) -> str:
     diagnostics = sfa_db.list_mktg_diagnostics(con)
-    return _MKTG_SIM_PAGE_TEMPLATE.replace(
+    strategy_plans = sfa_db.list_mktg_strategy_plans(con)
+    html = _MKTG_SIM_PAGE_TEMPLATE.replace(
         "__INITIAL_DIAGNOSTICS_JSON__", json.dumps(diagnostics, ensure_ascii=False))
+    return html.replace(
+        "__INITIAL_STRATEGY_PLANS_JSON__", json.dumps(strategy_plans, ensure_ascii=False))
 
 
 # 記事(号)の読み物デザイン。artifactの2カラム・マガジン設計をアプリ側が保持し、
@@ -20082,6 +20213,22 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif (path.startswith("/mktg-diagnostic/") and path.endswith("/delete")
                       and path.split("/")[2].isdigit()):
                     sfa_db.delete_mktg_diagnostic(con, int(path.split("/")[2]))
+                    self._send(b'{"ok":true}', ctype="application/json")
+
+                # ── マーケ施策 実行対象プラン（戦略マップのマス選択の保存・削除。2026-09-13） ──
+                elif path == "/mktg-strategy-plan/create":
+                    try:
+                        _selections = json.loads(f.get("selections_json", "[]") or "[]")
+                    except (ValueError, TypeError):
+                        _selections = []
+                    _saved_plan = sfa_db.create_mktg_strategy_plan(
+                        con,
+                        name=(f.get("name", "") or "").strip() or "(無題プラン)",
+                        selections=_selections)
+                    self._send(json.dumps(_saved_plan, ensure_ascii=False).encode(), ctype="application/json")
+                elif (path.startswith("/mktg-strategy-plan/") and path.endswith("/delete")
+                      and path.split("/")[2].isdigit()):
+                    sfa_db.delete_mktg_strategy_plan(con, int(path.split("/")[2]))
                     self._send(b'{"ok":true}', ctype="application/json")
 
                 # ── マスタ ──
