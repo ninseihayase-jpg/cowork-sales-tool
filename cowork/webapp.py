@@ -15291,6 +15291,7 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
     <div class="card"><p style="margin:0;display:flex;gap:8px;align-items:center">
       <a class="btn sec" href="{_esc(back_href)}">← 戻る</a>
       <a class="btn sec" href="/deal-issue/{iid}/progress-report" style="margin-left:auto">📋 進捗報告</a>
+      <a class="btn sec" href="/deal-issue/{iid}/report-session">🗣 社内報告</a>
     </p></div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
       {left}
@@ -15346,6 +15347,14 @@ _PR_ROW_LABELS = [
     ("risk_other", "⑤ リスク・懸念：その他"),
     ("next_steps", "⑥ 次回までの予定"),
 ]
+
+
+def _pr_ordered_rows(purpose_tag: str) -> list[tuple[str, str]]:
+    """②③④⑤(リスク6区分)⑥の(セクションキー, ラベル)を表示順で返す。④のみ目的タグで
+    ラベル文言が変わる（ページ描画・docxエクスポート両方でこの並びを共有する）。"""
+    decision_label = _PR_DECISION_LABELS.get(purpose_tag, _PR_DECISION_LABELS["share"])
+    return [_PR_ROW_LABELS[0], _PR_ROW_LABELS[1], ("decision", decision_label)] + _PR_ROW_LABELS[2:]
+
 
 _PR_CSS = """<style>
 .pr-table{width:100%;border-collapse:collapse;margin-top:6px}
@@ -15431,14 +15440,23 @@ def progress_report_page(con, issue: dict, view_report_id: int | None = None) ->
       <button class="btn" type="submit" style="font-size:12px">✏️ 編集する</button>
     </form>""" if not is_latest else ""
 
-    decision_label = _esc(_PR_DECISION_LABELS.get(cur["purpose_tag"], _PR_DECISION_LABELS["share"]))
-    rows = [f"""<tr><td class="pr-label"><span id="prDecisionLabel">{decision_label}</span></td>
-      <td>{_pr_cell_html(cur['id'], 'decision', cur['decision_html'], editable)}</td></tr>"""]
-    for key, label in _PR_ROW_LABELS:
-        rows.append(f"""<tr><td class="pr-label">{_esc(label)}</td>
+    # docxテンプレのダウンロード/アップロード（2026-09-13）。ダウンロードはどのverでも可、
+    # アップロード（取り込み）は最新verのみ（過去verは/field同様サーバ側でも拒否する）。
+    docx_download_btn = (
+        f'<a class="btn sec" href="/deal-issue-progress-report/{cur["id"]}/export.docx" '
+        f'style="font-size:12px">📥 docxダウンロード</a>')
+    docx_upload_form = f"""
+    <form method="post" action="/deal-issue-progress-report/{cur['id']}/import-docx"
+      enctype="multipart/form-data" style="display:inline-flex;align-items:center;gap:4px">
+      <input type="file" name="docx_file" accept=".docx" required style="font-size:12px;max-width:180px">
+      <button class="btn sec" type="submit" style="font-size:12px">📤 docxを取り込む</button>
+    </form>""" if editable else ""
+
+    rows = []
+    for key, label in _pr_ordered_rows(cur["purpose_tag"]):
+        label_html = f'<span id="prDecisionLabel">{_esc(label)}</span>' if key == "decision" else _esc(label)
+        rows.append(f"""<tr><td class="pr-label">{label_html}</td>
       <td>{_pr_cell_html(cur['id'], key, cur[f'{key}_html'], editable)}</td></tr>""")
-    # ④は目的タグの直後に置きたいので②③の後に挿入し直す（③=index1の直後）
-    rows = rows[1:3] + [rows[0]] + rows[3:]
 
     _pr_decision_labels_json = json.dumps(_PR_DECISION_LABELS, ensure_ascii=False)
 
@@ -15450,6 +15468,9 @@ def progress_report_page(con, issue: dict, view_report_id: int | None = None) ->
         <span><span class="lbl">目的タグ</span>{purpose_html}</span>
         <span class="muted" style="font-size:12px">報告日: {_esc(cur['report_date'])}</span>
         {open_edit_btn}
+        <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          {docx_download_btn}{docx_upload_form}
+        </span>
       </div>
     </div>
     {readonly_notice}
@@ -15486,6 +15507,197 @@ def progress_report_page(con, issue: dict, view_report_id: int | None = None) ->
       prSaveMeta(reportId,'purpose_tag',value);
     }}
     </script>"""
+
+
+class _PrHtmlToLinesParser(html.parser.HTMLParser):
+    """進捗報告の各セクションHTML→箇条書きプレーンテキスト行のリストに変換する
+    （docxエクスポート用）。liは行頭に「・」を付け、p/div/h3/brは改行区切りとして扱う。
+    セクション本文はサニタイザ(_RN_ALLOWED_TAGS)の範囲に収まるため、単純な変換で十分。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.lines: list[str] = []
+        self._buf: list[str] = []
+        self._in_li = 0
+
+    def _flush(self):
+        text = "".join(self._buf).strip()
+        self._buf = []
+        if not text:
+            return
+        self.lines.append(("・" + text) if self._in_li else text)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "li":
+            self._flush(); self._in_li += 1
+        elif tag in ("p", "div", "h3", "tr"):
+            self._flush()
+        elif tag == "br":
+            self._flush()
+
+    def handle_endtag(self, tag):
+        if tag == "li":
+            self._flush(); self._in_li = max(0, self._in_li - 1)
+        elif tag in ("p", "div", "h3", "tr"):
+            self._flush()
+
+    def handle_data(self, data):
+        self._buf.append(data)
+
+
+def _pr_html_to_lines(html_val: str) -> list[str]:
+    p = _PrHtmlToLinesParser()
+    try:
+        p.feed(html_val or "")
+        p.close()
+    except Exception:
+        pass
+    p._flush()
+    return p.lines
+
+
+def _pr_lines_to_html(lines: list[str]) -> str:
+    """docxインポート用: プレーンテキスト行→セクションHTML。「・」「-」「•」始まりの行は
+    連続する限り1つの<ul>にまとめ、それ以外は<div>1行としてそのまま入れる。"""
+    out: list[str] = []
+    in_list = False
+    for raw in lines:
+        line = (raw or "").strip()
+        if not line:
+            continue
+        is_bullet = line[:1] in ("・", "-", "•")
+        text = _esc(line[1:].strip() if is_bullet else line)
+        if is_bullet:
+            if not in_list:
+                out.append("<ul>"); in_list = True
+            out.append(f"<li>{text}</li>")
+        else:
+            if in_list:
+                out.append("</ul>"); in_list = False
+            out.append(f"<div>{text}</div>")
+    if in_list:
+        out.append("</ul>")
+    return "".join(out)
+
+
+def build_progress_report_docx(issue_name: str, report: dict) -> bytes:
+    """進捗報告1verをdocx化する（テンプレとして配布→手元で編集→アップロードで戻せるよう、
+    セクション行の並びはページ描画(_pr_ordered_rows)と完全に一致させている。行を並べ替えたり
+    増減させたりすると、アップロード時の取り込みがズレる点に注意——インポート側は行の
+    ラベル文言ではなく「上から数えた行位置」で対応セクションを判定するため）。"""
+    from docx import Document
+    from io import BytesIO
+    doc = Document()
+    doc.add_heading(f"{issue_name} 進捗報告", level=1)
+    meta = doc.add_paragraph()
+    meta.add_run(
+        f"報告日: {report['report_date']}　"
+        f"ステータス: {_PR_STATUS_LABELS.get(report['status_signal'], report['status_signal'])}　"
+        f"目的タグ: {_PR_PURPOSE_LABELS.get(report['purpose_tag'], report['purpose_tag'])}"
+    ).italic = True
+
+    table = doc.add_table(rows=0, cols=2)
+    table.style = "Table Grid"
+    for key, label in _pr_ordered_rows(report["purpose_tag"]):
+        row = table.add_row()
+        row.cells[0].text = label
+        cell = row.cells[1]
+        lines = _pr_html_to_lines(report.get(f"{key}_html") or "")
+        if not lines:
+            cell.paragraphs[0].text = ""
+        else:
+            cell.paragraphs[0].text = lines[0]
+            for extra in lines[1:]:
+                cell.add_paragraph(extra)
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def parse_progress_report_docx(data: bytes) -> dict[str, str] | None:
+    """アップロードされたdocxの1つ目のテーブルを、build_progress_report_docx()と同じ行順で
+    読み取り、{セクションキー: HTML}を返す。テーブルが無い・行が想定と大きく違う場合はNone
+    （呼び出し側は取り込み失敗として扱う）。"""
+    from docx import Document
+    from io import BytesIO
+    try:
+        doc = Document(BytesIO(data))
+    except Exception:
+        return None
+    if not doc.tables:
+        return None
+    table = doc.tables[0]
+    keys = [key for key, _ in _pr_ordered_rows("share")]  # ラベル文言に依存しない位置対応
+    sections: dict[str, str] = {}
+    for i, key in enumerate(keys):
+        if i >= len(table.rows):
+            break
+        cell = table.rows[i].cells[1]
+        lines = [p.text for p in cell.paragraphs]
+        sections[key] = _pr_lines_to_html(lines)
+    return sections or None
+
+
+def report_session_page(con, issue: dict) -> str:
+    """社内報告（見せながら報告）ページ（2026-09-13）。左にガント、右に進捗報告＋
+    「その場でメモ」導線を並べ、社内報告の場でそのまま使えるようにする。
+    ガントは自身のJSグローバル(IG_ITEMS等)・モーダル(#igPop等)を持つ独立した1ページで
+    あり、このページ側にもrnOpen()等の共有ノートJSが（render()経由で）常に存在するため、
+    同じDOMに両方を展開するとid/グローバル変数の衝突が起きる。よってガントは<iframe>で
+    別ブラウジングコンテキストとして埋め込む（進捗報告の編集用JS(pr*)についても同様の
+    理由で新規実装したのと同じ設計判断）。
+    「フリーフォーマットメモ」は新規に編集面を作らず、既存の社内PJメモ(rnOpen('issue',id))
+    をそのまま起動するボタンだけを置く（2026-09-13ユーザー要望:「それは通常の『社内PJメモ』
+    として記録される」——既存の仕組みそのものを使うのが最も確実）。"""
+    iid = issue["id"]
+    latest = sfa_db.get_latest_progress_report(con, iid)
+
+    if not latest:
+        report_pane = f"""
+        <div class="card">
+          <h3 style="margin-top:0">📋 進捗報告</h3>
+          <p class="muted">進捗報告はまだありません。</p>
+          <a class="btn" href="/deal-issue/{iid}/progress-report">進捗報告を作成する</a>
+        </div>"""
+    else:
+        rows_html = "".join(
+            f'<tr><td class="pr-label">{_esc(label if key != "decision" else _PR_DECISION_LABELS.get(latest["purpose_tag"], _PR_DECISION_LABELS["share"]))}</td>'
+            f'<td>{_pr_cell_html(latest["id"], key, latest[f"{key}_html"], False)}</td></tr>'
+            for key, label in _pr_ordered_rows(latest["purpose_tag"])
+        )
+        report_pane = f"""
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+            <h3 style="margin:0">📋 進捗報告（{_esc(latest['report_date'])}）</h3>
+            <span style="display:flex;gap:6px">
+              <span>{_PR_STATUS_LABELS.get(latest['status_signal'], latest['status_signal'])}</span>
+              <span>{_PR_PURPOSE_LABELS.get(latest['purpose_tag'], latest['purpose_tag'])}</span>
+              <a class="btn sec" href="/deal-issue/{iid}/progress-report" style="font-size:12px">編集/履歴</a>
+            </span>
+          </div>
+          <table class="pr-table" style="margin-top:10px">{rows_html}</table>
+        </div>"""
+
+    return f"""
+    <div class="card"><p style="margin:0"><a class="btn sec" href="/deal-issue/{iid}">← 社内PJへ戻る</a>
+      <span style="font-weight:700;font-size:15px;margin-left:12px">🗣 社内報告：{_esc(issue.get('issue'))}</span></p></div>
+    <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      <div style="flex:1 1 45%;min-width:360px">
+        <div class="card" style="padding:6px">
+          <iframe src="/deal-issues/gantt" style="width:100%;height:78vh;border:none;border-radius:6px"></iframe>
+        </div>
+      </div>
+      <div style="flex:1 1 50%;min-width:360px;display:flex;flex-direction:column;gap:12px">
+        {report_pane}
+        <div class="card">
+          <h3 style="margin-top:0">📝 その場でメモ</h3>
+          <p class="muted" style="font-size:12px;margin:0 0 8px">指摘事項・議事メモ等は、通常の
+            「社内PJメモ」として保存されます（進捗報告とは別建て）。</p>
+          <button type="button" class="btn" onclick="rnOpen('issue',{iid})">📝 社内PJメモを開いて記入</button>
+        </div>
+      </div>
+    </div>
+    {_PR_CSS}"""
 
 
 # ── リード / ピッチテーマ ページ（CRM吸収）─────────────────────────────────────
@@ -20260,6 +20472,37 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                else "<div class=card>社内PJが見つかりません</div>"),
                         200 if iss else 404,
                     )
+                elif (path.startswith("/deal-issue/") and path.endswith("/report-session")
+                      and path.split("/")[2].isdigit()):
+                    iid = int(path.split("/")[2])
+                    iss = sfa_db.get_deal_issue(con, iid)
+                    self._send(
+                        render(report_session_page(con, iss) if iss
+                               else "<div class=card>社内PJが見つかりません</div>", wide=True),
+                        200 if iss else 404,
+                    )
+                elif (path.startswith("/deal-issue-progress-report/") and path.endswith("/export.docx")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    _rid = int(path.split("/")[2])
+                    _report = sfa_db.get_progress_report(con, _rid)
+                    _rep_issue = sfa_db.get_deal_issue(con, _report["issue_id"]) if _report else None
+                    if not _report or not _rep_issue:
+                        self._send(render("<div class=card>進捗報告が見つかりません</div>"), 404)
+                    else:
+                        try:
+                            _data = build_progress_report_docx(_rep_issue.get("issue") or "", _report)
+                            _name = f"progress_report_{_rep_issue['id']}_{_report['report_date']}.docx"
+                            self.send_response(200)
+                            self.send_header(
+                                "Content-Type",
+                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                            self.send_header("Content-Disposition", _content_disposition(_name))
+                            self.send_header("Content-Length", str(len(_data)))
+                            self.end_headers()
+                            self.wfile.write(_data)
+                        except Exception as _e:  # noqa: BLE001
+                            import traceback as _tb; _tb.print_exc()
+                            self._send(render(f"<div class=card>docx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
                 elif path == "/accounts":
                     self._send(render(accounts_page(con)))
                 elif path == "/accounts/duplicates":
@@ -22755,6 +22998,33 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _err = "不正なリクエスト"
                     _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}, ensure_ascii=False)
                     self._send(_resp.encode("utf-8"), ctype="application/json")
+
+                elif (path.startswith("/deal-issue-progress-report/") and path.endswith("/import-docx")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # docxテンプレをダウンロード→手元で編集→アップロードで戻す経路（2026-09-13）。
+                    # 過去verへのインポートは/fieldと同様に拒否する（最新verのみ取り込み可）。
+                    _rid = int(path.split("/")[2])
+                    _report = sfa_db.get_progress_report(con, _rid)
+                    _iid = _report["issue_id"] if _report else None
+                    _latest = sfa_db.get_latest_progress_report(con, _iid) if _iid else None
+                    _flash = ""
+                    if not _report:
+                        _flash = "進捗報告が見つかりません"
+                    elif not _latest or _latest["id"] != _rid:
+                        _flash = "過去verには取り込めません（最新verを開いてください）"
+                    else:
+                        _sections = parse_progress_report_docx(f.get("docx_file")[1]) \
+                            if isinstance(f.get("docx_file"), tuple) else None
+                        if not _sections:
+                            _flash = "docxの取り込みに失敗しました（テンプレの表構成が崩れていないか確認してください）"
+                        else:
+                            _clean = {k: _sanitize_rich_html(v) for k, v in _sections.items()}
+                            sfa_db.update_progress_report(con, _rid, sections=_clean)
+                            _flash = "docxを取り込みました"
+                    _iss_for_render = sfa_db.get_deal_issue(con, _iid) if _iid else None
+                    self._send(
+                        render(progress_report_page(con, _iss_for_render) if _iss_for_render
+                               else "<div class=card>社内PJが見つかりません</div>", flash=_flash))
 
                 # ── 社内PJ管理（#163、2026-09-06） ──
                 elif path == "/deal-issue-subitem/new":
