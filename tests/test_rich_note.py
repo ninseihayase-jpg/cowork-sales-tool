@@ -73,6 +73,41 @@ def test_rich_note_assets_include_link_click_popup_js():
     assert "function rnLinkPopSave" in webapp._RICH_NOTE_ASSETS
 
 
+# ── 表挿入機能（2026-09-13）: OneNote風メモに「基本は縦横の単純な表だけ作れる機能」を追加。
+# 社内PJ進捗報告テンプレ(#後続)がこの機能を土台に構築されるため、まずこの共有コンポーネント
+# 側での土台を検証する。 ──
+
+def test_sanitizer_keeps_simple_table_structure():
+    raw = "<table><tr><td>見出し</td><td>内容</td></tr></table>"
+    assert webapp._sanitize_rich_html(raw) == raw
+
+
+def test_sanitizer_keeps_bullet_list_inside_table_cell():
+    """表のセル内でも通常の箇条書き(ul/li)がそのまま使えること。"""
+    raw = "<table><tr><td><ul><li>項目A</li><li>項目B</li></ul></td></tr></table>"
+    assert webapp._sanitize_rich_html(raw) == raw
+
+
+def test_sanitizer_strips_attributes_on_table_tags():
+    """table/tr/tdには許可された属性が無いため、onclick等の危険な属性は全て落ちること。"""
+    raw = '<table style="width:9999px"><tr onclick="evil()"><td class="x">a</td></tr></table>'
+    out = webapp._sanitize_rich_html(raw)
+    assert "style=" not in out and "onclick=" not in out and 'class="x"' not in out
+    assert out == "<table><tr><td>a</td></tr></table>"
+
+
+def test_rich_note_assets_include_table_insert_js():
+    """全メモ機能共有のコンポーネントに表挿入ボタン/関数が1回だけ定義されていること
+    （論点メモ・商談ノート等すべてに自動的に反映される）。"""
+    assert "function rnInsertTable" in webapp._RICH_NOTE_ASSETS
+    assert 'onmousedown="return rnInsertTable(event)"' in webapp._RICH_NOTE_ASSETS
+
+
+def test_rn_edit_css_styles_tables():
+    assert ".rn-edit table{" in webapp._RICH_NOTE_ASSETS
+    assert ".rn-edit td{" in webapp._RICH_NOTE_ASSETS
+
+
 def test_extract_rich_note_links_from_body():
     body = ('<p>text</p>'
             '<a href="https://ok.com/x" rel="noopener" target="_blank" class="rn-linkchip" '

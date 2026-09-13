@@ -1279,7 +1279,47 @@ CREATE TABLE IF NOT EXISTS mktg_strategy_plans (
     selections_json   TEXT NOT NULL,
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 社内PJ 進捗報告（2026-09-13）。既存の「社内PJメモ」(rich_notes, kind='issue')とは別建てで、
+-- 編集した日付でver管理される「A4 1枚」構成の定型レポート。①ヘッダー相当(ステータス信号/
+-- 目的タグ)は構造化列として持つ。②〜⑥の本文はセクションごとに個別の列（*_html）として
+-- 保持する（1本のtable HTMLとして持たない設計。理由: 表の行ラベル・プレースホルダー例文は
+-- サーバ側で毎回フレッシュに描画する固定テンプレであり、ユーザーが自由編集するcontenteditable
+-- 領域はセクションごとの小さなdivに限定する。1本の<table>をまるごとcontenteditableにすると、
+-- 行ラベルやdata-ph等の構造用属性がリッチノートのサニタイザ通過時に失われ、保存のたびに
+-- テンプレ構造が壊れるおそれがあったため、この設計に変更した）。
+-- バージョニング規則（2026-09-13ユーザー確定）: 過去ver(report_date<今日)は読み取り専用。
+-- 「編集」操作は常に最新verに対して行われ、最新verのreport_dateが今日でなければ、その内容を
+-- 引き継いだ新verが今日日付で自動生成される（open_progress_report_for_edit()参照）。同日内の
+-- 再編集はupdate_progress_report()でその場上書き（新verは作らない）。
+CREATE TABLE IF NOT EXISTS deal_issue_progress_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id      INTEGER NOT NULL REFERENCES deal_issues(id) ON DELETE CASCADE,
+    report_date   TEXT NOT NULL,                  -- YYYY-MM-DD。このverが表す日付（＝編集日）
+    status_signal TEXT NOT NULL DEFAULT 'green',   -- green/yellow/red
+    purpose_tag   TEXT NOT NULL DEFAULT 'share',   -- share/discuss/decide
+    summary_html          TEXT NOT NULL DEFAULT '',  -- ②サマリー
+    progress_html         TEXT NOT NULL DEFAULT '',  -- ③今回の進捗
+    decision_html         TEXT NOT NULL DEFAULT '',  -- ④論点・意思決定事項（目的タグでラベルが変わる）
+    risk_schedule_html    TEXT NOT NULL DEFAULT '',  -- ⑤スケジュール遅延
+    risk_budget_html      TEXT NOT NULL DEFAULT '',  -- ⑤予算超過
+    risk_quality_html     TEXT NOT NULL DEFAULT '',  -- ⑤品質
+    risk_external_html    TEXT NOT NULL DEFAULT '',  -- ⑤対外関係
+    risk_compliance_html  TEXT NOT NULL DEFAULT '',  -- ⑤法務・コンプライアンス
+    risk_other_html       TEXT NOT NULL DEFAULT '',  -- ⑤その他
+    next_steps_html       TEXT NOT NULL DEFAULT '',  -- ⑥次回までの予定
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(issue_id, report_date)
+);
+CREATE INDEX IF NOT EXISTS idx_issue_progress_reports_issue ON deal_issue_progress_reports(issue_id);
 """
+
+# 進捗報告の本文セクションキー（DB列は<key>_html）。表示順・docxエクスポート順もこの並びに従う。
+PROGRESS_REPORT_SECTION_KEYS = [
+    "summary", "progress", "decision", "risk_schedule", "risk_budget",
+    "risk_quality", "risk_external", "risk_compliance", "risk_other", "next_steps",
+]
 
 
 def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -6531,4 +6571,95 @@ def create_mktg_strategy_plan(con, *, name: str, selections: list) -> dict:
 
 def delete_mktg_strategy_plan(con, plan_id: int) -> None:
     con.execute("DELETE FROM mktg_strategy_plans WHERE id=?", (plan_id,))
+    con.commit()
+
+
+# ── 社内PJ 進捗報告（2026-09-13）。バージョニング規則はSCHEMA内のコメント参照。 ──
+
+def list_progress_reports(con, issue_id: int) -> list[dict]:
+    """新しいver順（report_date降順、同日はid降順）。"""
+    rows = con.execute(
+        "SELECT * FROM deal_issue_progress_reports WHERE issue_id=? "
+        "ORDER BY report_date DESC, id DESC",
+        (int(issue_id),)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_progress_report(con, report_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM deal_issue_progress_reports WHERE id=?", (int(report_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def get_latest_progress_report(con, issue_id: int) -> dict | None:
+    r = con.execute(
+        "SELECT * FROM deal_issue_progress_reports WHERE issue_id=? "
+        "ORDER BY report_date DESC, id DESC LIMIT 1",
+        (int(issue_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def create_progress_report(con, issue_id: int, *, report_date: str, status_signal: str = "green",
+                           purpose_tag: str = "share", sections: dict | None = None) -> dict:
+    """sections={key: html, ...}。PROGRESS_REPORT_SECTION_KEYS以外のキーは無視する
+    （渡し忘れたキーは空文字のまま＝新規作成時の欠損は問題にならない）。"""
+    sections = sections or {}
+    cols = ["issue_id", "report_date", "status_signal", "purpose_tag"]
+    vals: list = [int(issue_id), report_date, status_signal, purpose_tag]
+    for key in PROGRESS_REPORT_SECTION_KEYS:
+        cols.append(f"{key}_html")
+        vals.append(sections.get(key, ""))
+    placeholders = ",".join("?" * len(vals))
+    cur = con.execute(
+        f"INSERT INTO deal_issue_progress_reports ({','.join(cols)}) VALUES ({placeholders})", vals)
+    con.commit()
+    return get_progress_report(con, cur.lastrowid)
+
+
+def update_progress_report(con, report_id: int, *, status_signal: str | None = None,
+                           purpose_tag: str | None = None, sections: dict | None = None) -> None:
+    """部分更新（渡したフィールドだけ更新。upsert系のfootgunを避ける専用ヘルパー）。
+    sectionsは{key: html}の形で、渡されたキーの列だけを更新する（他のセクションは無変更）。"""
+    sets, args = [], []
+    if status_signal is not None:
+        sets.append("status_signal=?"); args.append(status_signal)
+    if purpose_tag is not None:
+        sets.append("purpose_tag=?"); args.append(purpose_tag)
+    for key, html_val in (sections or {}).items():
+        if key not in PROGRESS_REPORT_SECTION_KEYS:
+            continue
+        sets.append(f"{key}_html=?"); args.append(html_val)
+    if not sets:
+        return
+    args.append(int(report_id))
+    con.execute(
+        f"UPDATE deal_issue_progress_reports SET {', '.join(sets)}, updated_at=datetime('now') WHERE id=?",
+        args)
+    con.commit()
+
+
+def open_progress_report_for_edit(con, issue_id: int, *, today: str,
+                                  default_sections: dict | None = None) -> dict:
+    """「編集」操作の起点。最新verのreport_dateが今日ならそれをそのまま返す（同日内の再編集は
+    update_progress_report()でその場上書き＝新verを作らない）。今日でなければ、最新verの内容
+    （status_signal/purpose_tag/各セクション）を引き継いだ新verを今日日付で作って返す
+    （2026-09-13ユーザー確定: 「過去タブは読み取り専用。常に最新タブだけが編集可能で、
+    『編集』を押すと、最新verの日付が今日でなければ自動で今日日付の新verが前verの内容を
+    引き継いで生まれ、その新verを編集する」）。最新verが1件も無ければ、渡された
+    default_sections（呼び出し側=webapp.pyが持つ初期プレースホルダー等）で今日日付の
+    新規verを作る。"""
+    latest = get_latest_progress_report(con, issue_id)
+    if latest and latest["report_date"] == today:
+        return latest
+    if latest:
+        sections = {key: latest[f"{key}_html"] for key in PROGRESS_REPORT_SECTION_KEYS}
+        status_signal, purpose_tag = latest["status_signal"], latest["purpose_tag"]
+    else:
+        sections = default_sections or {}
+        status_signal, purpose_tag = "green", "share"
+    return create_progress_report(con, issue_id, report_date=today, status_signal=status_signal,
+                                  purpose_tag=purpose_tag, sections=sections)
+
+
+def delete_progress_report(con, report_id: int) -> None:
+    con.execute("DELETE FROM deal_issue_progress_reports WHERE id=?", (int(report_id),))
     con.commit()

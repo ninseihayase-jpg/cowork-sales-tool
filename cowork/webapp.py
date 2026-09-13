@@ -12604,7 +12604,8 @@ def account_detail(con, acc: dict) -> str:
 # contenteditableで書いたHTMLをそのまま保存すると任意スクリプトが混入しうるため、
 # 保存時に必ずホワイトリストでサニタイズする（public repo・本番相当データ・XSS対策）。
 _RN_ALLOWED_TAGS = {"p", "div", "br", "b", "strong", "i", "em", "u", "s", "strike",
-                    "del", "h3", "ul", "ol", "li", "span", "a", "img"}
+                    "del", "h3", "ul", "ol", "li", "span", "a", "img",
+                    "table", "tbody", "tr", "td"}  # 表挿入機能(2026-09-13)。単純な行×列の表のみ許可
 _RN_VOID_TAGS = {"br", "img"}
 _RN_DROP_CONTENT_TAGS = {"script", "style", "head", "title", "meta", "link",
                          "iframe", "object", "embed", "noscript"}
@@ -12901,6 +12902,11 @@ _RICH_NOTE_ASSETS = """
 .rn-edit li[data-collapsed="1"]:has(> ul)::before,.rn-edit li[data-collapsed="1"]:has(> ol)::before{content:"\\25B8";color:#2563eb}
 .rn-edit li[data-collapsed="1"] > ul,.rn-edit li[data-collapsed="1"] > ol{display:none}
 /* 画像: 既定は可視性を保つ幅（width属性）＋はみ出さない。クリックで選択→右下グリップでドラッグリサイズ。 */
+/* 表（2026-09-13追加）: 単純な行×列の表。セル内は通常の段落/箇条書きと同じ編集操作が使える
+   （contenteditableのtdは既存の段落/リストと同様にブラウザネイティブで編集可能なため、
+   特別なキー処理は追加していない）。 */
+.rn-edit table{border-collapse:collapse;margin:6px 0;width:100%}
+.rn-edit td{border:1px solid #e2e8f0;padding:5px 8px;vertical-align:top;min-width:60px}
 .rn-edit img{max-width:100%;height:auto;border-radius:4px;cursor:pointer;vertical-align:top;margin:2px 0}
 .rn-edit img.rn-sel{outline:2px solid #2563eb;outline-offset:1px}
 #rnImgGrip{position:fixed;width:14px;height:14px;background:#2563eb;border:2px solid #fff;border-radius:3px;box-shadow:0 1px 4px rgba(0,0,0,.4);cursor:nwse-resize;display:none;z-index:2147483000;touch-action:none}
@@ -12920,6 +12926,7 @@ _RICH_NOTE_ASSETS = """
       <button type="button" class="rn-b" title="取り消し線 (Ctrl+Shift+X)" onmousedown="return rnCmd(event,'strikeThrough')"><s>S</s></button>
       <button type="button" class="rn-b" title="リンク (Ctrl+K)" onmousedown="return rnLink(event)">🔗</button>
       <button type="button" class="rn-b" title="画像を挿入（貼付・ドラッグでリサイズ）" onmousedown="return rnPickImage(event)">🖼</button>
+      <button type="button" class="rn-b" title="表を挿入（行数×列数を指定）" onmousedown="return rnInsertTable(event)">⊞</button>
     </span>
     <input type="file" id="rnImgFile" accept="image/*" style="display:none" onchange="rnImgFileChosen(this)">
     <a id="rnSrcLink" href="#" target="_blank" title="このメモの元になった文字起こしを表示"
@@ -13035,6 +13042,29 @@ function rnToggleChecklist(){ var e=_rnEl(); e.focus();
 function rnChecklist(ev){ ev.preventDefault(); rnToggleChecklist(); return false; }
 function rnIndent(ev,out){ ev.preventDefault(); var e=_rnEl(); e.focus();
   if(out){ rnDoOutdent(); } else { rnDoIndent(); } rnDirty(); return false; }
+// 表挿入（2026-09-13）: 「基本は縦横の単純な表だけ作れる機能」というユーザー要望通り、
+// 行数×列数を聞くだけのシンプルな挿入。セル内は通常の段落/箇条書きと同じ操作で編集できる
+// （contenteditableのtdはブラウザネイティブに編集可能なため、tdに対する特別なキー処理は
+// 追加していない＝Tabでのセル移動等は無い簡易版）。
+function rnInsertTable(ev){
+  ev.preventDefault();
+  var rows = parseInt(prompt('表の行数を入力してください', '3'), 10);
+  if (!rows || rows < 1) return false;
+  var cols = parseInt(prompt('表の列数を入力してください', '2'), 10);
+  if (!cols || cols < 1) return false;
+  rows = Math.min(rows, 30); cols = Math.min(cols, 12);
+  var h = '<table>';
+  for (var r = 0; r < rows; r++) {
+    h += '<tr>';
+    for (var c = 0; c < cols; c++) { h += '<td><br></td>'; }
+    h += '</tr>';
+  }
+  h += '</table><p><br></p>';
+  _rnEl().focus();
+  document.execCommand('insertHTML', false, h);
+  rnDirty();
+  return false;
+}
 // リンクは通常の下線テキストではなく、大きめのボタン(チップ)として挿入する
 // （ユーザー要望2026-08-27: 貼るとボタンができ、カーソルを合わせるとURL表示、押すと飛ぶ）。
 var RN_URL_RE = /^https?:\/\/[^\s<>"]+$/i;
@@ -15258,7 +15288,10 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
     .im-content{{white-space:pre-wrap;font-size:12px;background:#f8fafc;padding:8px;border-radius:6px;
       max-height:280px;overflow:auto;margin:6px 0 0}}
     </style>
-    <div class="card"><p style="margin:0"><a class="btn sec" href="{_esc(back_href)}">← 戻る</a></p></div>
+    <div class="card"><p style="margin:0;display:flex;gap:8px;align-items:center">
+      <a class="btn sec" href="{_esc(back_href)}">← 戻る</a>
+      <a class="btn sec" href="/deal-issue/{iid}/progress-report" style="margin-left:auto">📋 進捗報告</a>
+    </p></div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
       {left}
       {right}
@@ -15278,6 +15311,179 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
         if(ti&&!ti.value) ti.value=f.name.replace(/\\.[^.]+$/,'');
       }};
       reader.readAsText(f);
+    }}
+    </script>"""
+
+
+# ── 社内PJ 進捗報告（2026-09-13） ────────────────────────────────────────────
+# 既存の「社内PJメモ」(rich_notes)とは別建て。編集した日付でverが増えていく定型レポート
+# （過去verは読み取り専用）。バージョニング規則の一次情報はsfa_db.py SCHEMAコメント参照。
+# 本文9セクションは個別のcontenteditable div（1つの<table>をまるごと編集可にはしない。
+# 理由はsfa_db.py側コメント参照）。見た目は共有リッチノート(.rn-edit)のCSSクラスを流用しつつ、
+# rnOpen()のモーダル(#rnEdit)とはid空間が衝突するため、編集ロジック(pr*関数)は本ページ専用に
+# 新規実装している（2026-09-13ユーザー確認済み: 「進捗報告専用の編集面を新規実装」）。
+_PR_STATUS_LABELS = {"green": "🟢 順調", "yellow": "🟡 要注意", "red": "🔴 遅延"}
+_PR_PURPOSE_LABELS = {"share": "📢 共有", "discuss": "💬 議論", "decide": "✅ 意思決定"}
+
+# ④論点・意思決定事項は、目的タグによって「ラベル文言（ガイド）」だけが変わる。入力欄自体は
+# 常に1つで、共有/議論/意思決定で必須項目を分岐させない（2026-09-13ユーザー確定:
+# 「基本的にPJ進捗報告ではあって、その中でうまく濃淡で使い分ける」）。
+_PR_DECISION_LABELS = {
+    "share": "④ 共有事項（あれば）",
+    "discuss": "④ 論点・自分の意見",
+    "decide": "④ 決めてほしいこと・選択肢／推奨案・回答期限",
+}
+
+# ②③⑤(リスク6区分)⑥ の固定ラベル（④は上のdictで別扱い）。表示順もこの並び。
+_PR_ROW_LABELS = [
+    ("summary", "② サマリー（3行以内）"),
+    ("progress", "③ 今回の進捗（前回からの差分）"),
+    ("risk_schedule", "⑤ リスク・懸念：スケジュール遅延"),
+    ("risk_budget", "⑤ リスク・懸念：予算超過"),
+    ("risk_quality", "⑤ リスク・懸念：品質"),
+    ("risk_external", "⑤ リスク・懸念：対外関係"),
+    ("risk_compliance", "⑤ リスク・懸念：法務・コンプライアンス"),
+    ("risk_other", "⑤ リスク・懸念：その他"),
+    ("next_steps", "⑥ 次回までの予定"),
+]
+
+_PR_CSS = """<style>
+.pr-table{width:100%;border-collapse:collapse;margin-top:6px}
+.pr-table td{border:1px solid #e2e8f0;padding:8px;vertical-align:top}
+.pr-label{width:220px;background:#f8fafc;font-weight:600;font-size:12.5px;color:#334155}
+.pr-cell{min-height:36px;font-size:13px;outline:none}
+.pr-cell.pr-readonly{background:#fafafa;cursor:default}
+.pr-meta-row{display:flex;gap:20px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.pr-meta-row .lbl{font-size:12px;color:#64748b;font-weight:600;margin-right:4px}
+</style>"""
+
+
+def _pr_cell_html(report_id: int, key: str, html_val: str, editable: bool) -> str:
+    val = html_val or ""
+    if editable:
+        return (
+            f'<div class="rn-edit pr-cell" id="prCell-{key}" contenteditable="true" '
+            f'data-ph="（空欄でも構いません）" onkeydown="prKey(event)" '
+            f'onblur="prSaveField({report_id},\'{key}\')">{val}</div>'
+        )
+    inner = val or '<span class="muted">（空欄）</span>'
+    return f'<div class="rn-edit pr-cell pr-readonly">{inner}</div>'
+
+
+def progress_report_page(con, issue: dict, view_report_id: int | None = None) -> str:
+    """社内PJ進捗報告（A4 1枚構成）。過去verはタブで切替でき読み取り専用、最新verのみ編集可。"""
+    iid = issue["id"]
+    all_versions = sfa_db.list_progress_reports(con, iid)
+    latest = all_versions[0] if all_versions else None
+    cur = None
+    if view_report_id:
+        cur = next((r for r in all_versions if r["id"] == view_report_id), None)
+    if cur is None:
+        cur = latest
+
+    header = f"""
+    <div class="card"><p style="margin:0;display:flex;gap:8px;align-items:center">
+      <a class="btn sec" href="/deal-issue/{iid}">← 社内PJへ戻る</a>
+      <span style="font-weight:700;font-size:15px;margin-left:8px">📋 進捗報告：{_esc(issue.get('issue'))}</span>
+    </p></div>"""
+
+    if not cur:
+        return header + f"""
+    <div class="card">
+      <p class="muted">進捗報告はまだありません。</p>
+      <form method="post" action="/deal-issue/{iid}/progress-report/open">
+        <button class="btn" type="submit">＋ 進捗報告を作成</button>
+      </form>
+    </div>
+    {_PR_CSS}"""
+
+    is_latest = cur["id"] == latest["id"]
+    tabs = [
+        (("最新：" if r["id"] == latest["id"] else "") + r["report_date"] + "報告",
+         f"/deal-issue/{iid}/progress-report?v={r['id']}", r["id"] == cur["id"])
+        for r in all_versions
+    ]
+    tabs_html = _subtab_strip(tabs)
+
+    editable = is_latest
+    status_html = (
+        '<select onchange="prSaveMeta(' + str(cur["id"]) + ",'status_signal',this.value)\">"
+        + "".join(f'<option value="{k}"{" selected" if k == cur["status_signal"] else ""}>{v}</option>'
+                  for k, v in _PR_STATUS_LABELS.items())
+        + "</select>"
+    ) if editable else f'<span>{_esc(_PR_STATUS_LABELS.get(cur["status_signal"], cur["status_signal"]))}</span>'
+
+    purpose_html = (
+        '<select id="prPurposeSelect" onchange="prPurposeChanged(' + str(cur["id"]) + ",this.value)\">"
+        + "".join(f'<option value="{k}"{" selected" if k == cur["purpose_tag"] else ""}>{v}</option>'
+                  for k, v in _PR_PURPOSE_LABELS.items())
+        + "</select>"
+    ) if editable else f'<span>{_esc(_PR_PURPOSE_LABELS.get(cur["purpose_tag"], cur["purpose_tag"]))}</span>'
+
+    readonly_notice = "" if is_latest else f"""
+    <div class="card" style="background:#fffbeb;border-color:#fde68a">
+      <p style="margin:0;font-size:13px">📖 これは過去の報告（{_esc(cur['report_date'])}）です。読み取り専用。
+        編集するには最新（{_esc(latest['report_date'])}）を開いてください。</p>
+    </div>"""
+
+    open_edit_btn = f"""
+    <form method="post" action="/deal-issue/{iid}/progress-report/open" style="display:inline">
+      <button class="btn" type="submit" style="font-size:12px">✏️ 編集する</button>
+    </form>""" if not is_latest else ""
+
+    decision_label = _esc(_PR_DECISION_LABELS.get(cur["purpose_tag"], _PR_DECISION_LABELS["share"]))
+    rows = [f"""<tr><td class="pr-label"><span id="prDecisionLabel">{decision_label}</span></td>
+      <td>{_pr_cell_html(cur['id'], 'decision', cur['decision_html'], editable)}</td></tr>"""]
+    for key, label in _PR_ROW_LABELS:
+        rows.append(f"""<tr><td class="pr-label">{_esc(label)}</td>
+      <td>{_pr_cell_html(cur['id'], key, cur[f'{key}_html'], editable)}</td></tr>""")
+    # ④は目的タグの直後に置きたいので②③の後に挿入し直す（③=index1の直後）
+    rows = rows[1:3] + [rows[0]] + rows[3:]
+
+    _pr_decision_labels_json = json.dumps(_PR_DECISION_LABELS, ensure_ascii=False)
+
+    return header + f"""
+    <div class="card">
+      {tabs_html}
+      <div class="pr-meta-row">
+        <span><span class="lbl">ステータス</span>{status_html}</span>
+        <span><span class="lbl">目的タグ</span>{purpose_html}</span>
+        <span class="muted" style="font-size:12px">報告日: {_esc(cur['report_date'])}</span>
+        {open_edit_btn}
+      </div>
+    </div>
+    {readonly_notice}
+    <div class="card">
+      <table class="pr-table">{"".join(rows)}</table>
+    </div>
+    {_PR_CSS}
+    <script>
+    var PR_DECISION_LABELS = {_pr_decision_labels_json};
+    function prKey(ev){{
+      if(ev.key==='Tab'){{ ev.preventDefault();
+        if(ev.shiftKey) document.execCommand('outdent'); else document.execCommand('indent'); }}
+    }}
+    function prSaveField(reportId,key){{
+      var el=document.getElementById('prCell-'+key); if(!el) return;
+      fetch('/deal-issue-progress-report/'+reportId+'/field',{{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field='+encodeURIComponent(key)+'&value='+encodeURIComponent(el.innerHTML)}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok) alert('保存エラー: '+(d.error||''));
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function prSaveMeta(reportId,field,value){{
+      fetch('/deal-issue-progress-report/'+reportId+'/field',{{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok) alert('保存エラー: '+(d.error||''));
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function prPurposeChanged(reportId,value){{
+      var lbl=document.getElementById('prDecisionLabel');
+      if(lbl) lbl.textContent = PR_DECISION_LABELS[value] || PR_DECISION_LABELS.share;
+      prSaveMeta(reportId,'purpose_tag',value);
     }}
     </script>"""
 
@@ -20043,6 +20249,17 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                else "<div class=card>社内PJが見つかりません</div>"),
                         200 if iss else 404,
                     )
+                elif (path.startswith("/deal-issue/") and path.endswith("/progress-report")
+                      and path.split("/")[2].isdigit()):
+                    iid = int(path.split("/")[2])
+                    iss = sfa_db.get_deal_issue(con, iid)
+                    _view_raw = self._qs().get("v", [""])[0]
+                    _view_id = int(_view_raw) if _view_raw.isdigit() else None
+                    self._send(
+                        render(progress_report_page(con, iss, view_report_id=_view_id) if iss
+                               else "<div class=card>社内PJが見つかりません</div>"),
+                        200 if iss else 404,
+                    )
                 elif path == "/accounts":
                     self._send(render(accounts_page(con)))
                 elif path == "/accounts/duplicates":
@@ -22486,6 +22703,58 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _err = "不正なリクエスト"
                     _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}).encode("utf-8")
                     self._send(_resp, ctype="application/json")
+
+                # ── 社内PJ 進捗報告（2026-09-13）。バージョニング規則はsfa_db.pyのSCHEMA
+                #    コメント参照。編集は常に最新verに対してのみ許可する（過去verは読み取り専用
+                #    ＝サーバ側でも/field側でlatest一致チェックを行い、UIを迂回した直POSTでも
+                #    過去verが書き換わらないようにする）。 ──
+                elif (path.startswith("/deal-issue/") and path.endswith("/progress-report/open")
+                      and len(path.split("/")) == 5 and path.split("/")[2].isdigit()):
+                    # 注意: パスを"/progress-report/edit"にすると、既存の
+                    # `path.startswith("/deal-issue/") and path.endswith("/edit")`（社内PJ編集
+                    # フォーム）に先にマッチしてしまうため、"/progress-report/open"にしている。
+                    _iid = int(path.split("/")[2])
+                    if sfa_db.get_deal_issue(con, _iid):
+                        sfa_db.open_progress_report_for_edit(
+                            con, _iid, today=_today_jst().isoformat())
+                    self._redirect(f"/deal-issue/{_iid}/progress-report")
+                elif path.startswith("/deal-issue-progress-report/") and path.endswith("/field"):
+                    parts = path.split("/")
+                    _ok = False
+                    _err = ""
+                    if len(parts) == 4 and parts[3] == "field" and parts[2].isdigit():
+                        _rid = int(parts[2])
+                        field = f.get("field", "")
+                        value = f.get("value", "")
+                        _report = sfa_db.get_progress_report(con, _rid)
+                        _latest = sfa_db.get_latest_progress_report(con, _report["issue_id"]) if _report else None
+                        if not _report:
+                            _err = "進捗報告が見つかりません"
+                        elif not _latest or _latest["id"] != _rid:
+                            # 過去verは読み取り専用（ユーザー確定仕様。UIを迂回した直POSTでも拒否する）。
+                            _err = "過去verは編集できません"
+                        elif field == "status_signal":
+                            if value not in ("green", "yellow", "red"):
+                                _err = "不正なステータス信号"
+                            else:
+                                sfa_db.update_progress_report(con, _rid, status_signal=value)
+                                _ok = True
+                        elif field == "purpose_tag":
+                            if value not in ("share", "discuss", "decide"):
+                                _err = "不正な目的タグ"
+                            else:
+                                sfa_db.update_progress_report(con, _rid, purpose_tag=value)
+                                _ok = True
+                        elif field in sfa_db.PROGRESS_REPORT_SECTION_KEYS:
+                            sfa_db.update_progress_report(
+                                con, _rid, sections={field: _sanitize_rich_html(value)})
+                            _ok = True
+                        else:
+                            _err = "不正なフィールド"
+                    else:
+                        _err = "不正なリクエスト"
+                    _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}, ensure_ascii=False)
+                    self._send(_resp.encode("utf-8"), ctype="application/json")
 
                 # ── 社内PJ管理（#163、2026-09-06） ──
                 elif path == "/deal-issue-subitem/new":
