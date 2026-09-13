@@ -126,6 +126,22 @@ def test_gantt_shows_at_least_three_weeks_and_fills_width(con):
     assert "width:100%" in html or "width: 100%" in html
 
 
+def test_gantt_grid_has_explicit_min_width_to_prevent_sticky_label_bug(con):
+    """.gantt-gridはdeal_issues_gantt_page(社内PJガント)と同じCSSクラスを共有しており、
+    2026-09-13に同所で発見されたposition:sticky不具合（minmax floor×日数がラップ幅を
+    超えると宣言ボックスより描画内容が広くなり、行ラベルがスクロール終盤で追従しない）を
+    こちらにも予防的に修正済みであること。"""
+    import re
+    today = webapp._today_jst().isoformat()
+    sfa_db.upsert_task(con, title="短期タスク", due_date=today, effort_level="軽")
+    html = webapp.tasks_gantt_page(con)
+    m = re.search(r'class="gantt-grid" style="grid-template-columns:([^"]*?);min-width:(\d+)px"', html)
+    assert m, "gantt-gridにmin-widthが見つからない"
+    n_days_match = re.search(r'repeat\((\d+),', m.group(1))
+    n_days = int(n_days_match.group(1))
+    assert int(m.group(2)) == 220 + n_days * 28
+
+
 def test_gantt_group_tabs_render_with_active_state(con):
     """#124: 「作業種別ごと」「紐づけ単位」タブが両方出て、現在のgroup_byが強調表示される。"""
     html_type = webapp.tasks_gantt_page(con, group_by="type")

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import shutil
 import tempfile
 import threading
@@ -265,6 +266,27 @@ def test_gantt_page_renders_ready_group_and_bar(con):
     assert f'data-iid="{sid}"' in html
     assert "igOpenItem(" in html
     assert "gantt-bar" in html
+
+
+def test_gantt_grid_has_explicit_min_width_to_prevent_sticky_label_bug(con):
+    """.gantt-gridはwidth:100%のままだと、minmax(var(--ig-daycol-min,28px),...)floor×日数が
+    ラップ幅を超えた際に宣言ボックスより描画内容が広くなり、position:stickyな行ラベル
+    (.gantt-lbl)がスクロール終盤で追従せず流れてしまう不具合があった
+    （2026-09-13、サブタスク行で顕在化・修正）。宣言ボックス自体を実コンテンツ幅
+    (260px+var(--ig-daycol-min,28px)×日数)以上に保証するmin-widthが常に明示されていること
+    （日次/週次ズーム切替(2026-09-13)でも列幅と連動して縮むよう、固定pxではなくCSS変数を
+    参照するcalc()にしている）。"""
+    iid = _issue(con, issue="論点MinWidth")
+    sfa_db.create_deal_issue_subitem(con, iid, "サブ1", "2026-09-10", "2026-11-20")  # 幅広い期間
+    html = webapp.deal_issues_gantt_page(con)
+    m = re.search(
+        r'class="gantt-grid" style="grid-template-columns:([^"]*?);'
+        r'min-width:calc\(260px \+ (\d+) \* var\(--ig-daycol-min, 28px\)\)"', html)
+    assert m, "gantt-gridにCSS変数連動のmin-widthが見つからない"
+    n_days_match = re.search(r'repeat\((\d+),', m.group(1))
+    n_days = int(n_days_match.group(1))
+    assert int(m.group(2)) == n_days
+    assert "var(--ig-daycol-min, 28px)" in m.group(1)  # 列幅自体もCSS変数を参照していること
 
 
 def test_gantt_page_lists_missing_items_separately(con):

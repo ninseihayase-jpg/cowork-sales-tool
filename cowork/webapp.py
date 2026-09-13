@@ -8043,6 +8043,17 @@ _GANTT_CSS = """<style>
 .gt-drag-preview{position:fixed;z-index:10000;background:#1e293b;color:#fff;font-size:11px;
   padding:3px 8px;border-radius:4px;pointer-events:none;white-space:nowrap;display:none;
   box-shadow:0 4px 10px rgba(0,0,0,.25)}
+/* 日次/週次ズーム切替（2026-09-13、社内PJガントのみ）。--ig-daycol-minはgrid-template-columns
+   （minmax(var(--ig-daycol-min,28px),1fr)）とmin-widthの両方から参照されるCSS変数で、
+   JS(setIgGanttZoom)が.gantt-wrap上でこの値を書き換えるだけで列の実描画幅を伸縮できる。
+   グリッドの列数・_col_of()のオフセット・ドラッグ判定(dayColWidth()は実測clientWidthベース)は
+   変えないため、週表示に切り替えても手修正（ドラッグ/リサイズ）はそのまま使える。 */
+.ig-zoom-btn{border:none;background:#f8fafc;color:#475569;font-size:12px;padding:6px 14px;cursor:pointer}
+.ig-zoom-btn+.ig-zoom-btn{border-left:1px solid #cbd5e1}
+.ig-zoom-btn.active{background:#334155;color:#fff}
+.gantt-wrap[data-zoom="week"] .gantt-daylabel:not([data-dow="0"]){color:transparent}
+.gantt-wrap[data-zoom="week"] .gantt-daylabel[data-dow="0"],
+.gantt-wrap[data-zoom="week"] .gantt-daycell[data-dow="0"]{border-left:2px solid #94a3b8}
 </style>"""
 
 
@@ -8169,7 +8180,11 @@ def deal_issues_gantt_page(con) -> str:
     else:
         min_d = max_d = today
     n_days = max((max_d - min_d).days + 1, 21)
-    col_tpl = f"260px repeat({n_days}, minmax(28px, 1fr))"
+    # 日次/週次ズーム切替（2026-09-13）: 日列の最小幅をCSS変数化し、JS側で
+    # --ig-daycol-min を書き換えるだけで表示密度を切り替えられるようにする（グリッドの
+    # 列数・_col_of()のオフセット計算・ドラッグ判定(dayColWidth()は実測clientWidthベース)
+    # は一切変えないため、週表示に切り替えても手修正（ドラッグ/リサイズ）はそのまま使える）。
+    col_tpl = f"260px repeat({n_days}, minmax(var(--ig-daycol-min, 28px), 1fr))"
     _ig_min_date_iso, _ig_n_days = min_d.isoformat(), n_days
 
     def _col_of(d: date) -> int:
@@ -8190,7 +8205,8 @@ def deal_issues_gantt_page(con) -> str:
                 cls += " weekend"
             if dd == today:
                 cls += " today"
-            out.append(f'<div class="{cls}"{_pt} style="grid-row:{row};grid-column:{i + 2}"></div>')
+            out.append(f'<div class="{cls}"{_pt} data-dow="{dd.weekday()}" '
+                       f'style="grid-row:{row};grid-column:{i + 2}"></div>')
         return "".join(out)
 
     d3 = sfa_db.add_business_days(today, 3).isoformat()
@@ -8206,7 +8222,8 @@ def deal_issues_gantt_page(con) -> str:
         if dd == today:
             cls += " today"
         label = f"{dd.month}/{dd.day}" if dd.day == 1 else str(dd.day)
-        cells.append(f'<div class="{cls}" style="grid-row:1;grid-column:{i + 2}">{label}</div>')
+        cells.append(f'<div class="{cls}" data-dow="{dd.weekday()}" '
+                    f'style="grid-row:1;grid-column:{i + 2}">{label}</div>')
 
     row = 2
     _item_data: dict = {}
@@ -8346,8 +8363,17 @@ def deal_issues_gantt_page(con) -> str:
                         f'<span class="gt-bar-label">{_esc(child["title"])}</span>'
                         f'<span class="gt-grip gt-grip-r"></span></div>')
                     row += 1
+    # min-widthを明示（2026-09-13修正）: .gantt-gridはwidth:100%だが、minmax(28px,...)の下限×日数が
+    # .gantt-wrapの実幅を超えると、グリッドの「宣言上のボックス」(100%)より実際の描画内容が
+    # 広くなる。position:stickyの可動範囲は自身の宣言ボックスに制限されるため、この差分が
+    # 生じるとサブタスク等の行ラベルがスクロール終盤で追従せず流れてしまう不具合が起きていた
+    # （メインタスクは自動延伸で描画範囲の先頭付近に来ることが多く、後方の行だけ症状が出て
+    # 見えた）。宣言ボックス自体を実コンテンツ幅以上に保証することで解消する。
+    # min-widthも同じCSS変数を参照させる（週表示でdaycol-minを縮めた時に、この値が固定pxの
+    # ままだと1frが余白を埋めてしまい列が実際には縮まらず「見た目上の圧縮」が効かなくなるため）。
+    _min_w_calc = f"calc(260px + {n_days} * var(--ig-daycol-min, 28px))"
     grid_html = (f'<div class="gantt-wrap"><div class="gantt-grid" '
-                f'style="grid-template-columns:{col_tpl}">{"".join(cells)}</div></div>')
+                f'style="grid-template-columns:{col_tpl};min-width:{_min_w_calc}">{"".join(cells)}</div></div>')
 
     missing_html = ""
     if missing_items:
@@ -8379,11 +8405,19 @@ def deal_issues_gantt_page(con) -> str:
     return f"""
     <div class="card">
       {_subtab_strip([("一覧", "/deal-issues", False), ("ガント", "/deal-issues/gantt", True)])}
-      <h2 style="margin:0 0 6px">📊 社内PJ管理（ガント）</h2>
-      <p class="muted" style="font-size:12px;margin:0">社内PJは分類（商談/会社機能）別に一覧表示されます。社内PJ行の「＋」からメインタスクを、
-        各メインタスク行右側の「＋」からサブタスクを追加できます（クリックした直下に入力欄が開き、Enterで次項目→送信）。
-        子を持つメインタスクは▼で折りたたみ可能です。期間が確定したタスクはガントバーで表示され、
-        バーをドラッグすると日程スライド、左右の端をドラッグすると期間の伸縮ができます（コンサルタスクガントと同じ操作）。</p>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <h2 style="margin:0 0 6px">📊 社内PJ管理（ガント）</h2>
+          <p class="muted" style="font-size:12px;margin:0">社内PJは分類（商談/会社機能）別に一覧表示されます。社内PJ行の「＋」からメインタスクを、
+            各メインタスク行右側の「＋」からサブタスクを追加できます（クリックした直下に入力欄が開き、Enterで次項目→送信）。
+            子を持つメインタスクは▼で折りたたみ可能です。期間が確定したタスクはガントバーで表示され、
+            バーをドラッグすると日程スライド、左右の端をドラッグすると期間の伸縮ができます（コンサルタスクガントと同じ操作）。</p>
+        </div>
+        <div class="ig-zoom-toggle" style="flex:none;display:flex;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden">
+          <button type="button" class="ig-zoom-btn active" data-zoom="day" onclick="setIgGanttZoom('day')">日次</button>
+          <button type="button" class="ig-zoom-btn" data-zoom="week" onclick="setIgGanttZoom('week')">週次</button>
+        </div>
+      </div>
     </div>
     <div class="card">{grid_html}</div>
     {missing_html}
@@ -8472,6 +8506,23 @@ def deal_issues_gantt_page(con) -> str:
       btnEl.setAttribute('data-collapsed', next ? '1' : '0');
       btnEl.textContent = next ? '▶' : '▼';
     }}
+    // 日次/週次ズーム切替（2026-09-13）。--ig-daycol-minを書き換えるだけなので、
+    // グリッドの列数・ドラッグ判定(dayColWidth()は実測clientWidthベース)は変わらず、
+    // 週表示のままでも手修正（ドラッグ/リサイズ）はそのまま使える。
+    function setIgGanttZoom(mode){{
+      var wrap = document.querySelector('.gantt-wrap');
+      if (!wrap) return;
+      wrap.dataset.zoom = mode;
+      wrap.style.setProperty('--ig-daycol-min', mode === 'week' ? '8px' : '28px');
+      document.querySelectorAll('.ig-zoom-btn').forEach(function(b){{
+        b.classList.toggle('active', b.dataset.zoom === mode);
+      }});
+      try {{ localStorage.setItem('igGanttZoom', mode); }} catch(e){{}}
+    }}
+    (function(){{
+      var saved; try {{ saved = localStorage.getItem('igGanttZoom'); }} catch(e){{}}
+      if (saved === 'week') setIgGanttZoom('week');
+    }})();
     function igBarClick(ev,id){{
       if (window.IG_JUST_DRAGGED) {{ ev.preventDefault(); return false; }}
       return igOpenItem(id);
@@ -8502,7 +8553,10 @@ def deal_issues_gantt_page(con) -> str:
     // 直接列のため、リサイズ時の「開始日ピン留め」ワークアラウンドは不要）。
     (function(){{
       if (!IG_MIN_DATE || !IG_NUM_DAYS) return;
-      var LABEL_W = 220;
+      // ラベル列幅はcol_tpl側(260px)と一致させる必要がある（2026-09-13修正: 従来220pxのままで
+      // タスクガントからの流用時に直し忘れており、ドラッグ/リサイズの日付判定が常に
+      // 約40px＝1日強ずれていた不具合）。
+      var LABEL_W = 260;
       window.IG_JUST_DRAGGED = false;
       var resizing = false;
       function parseISO(s){{ var p=s.split('-'); return new Date(Date.UTC(+p[0],+p[1]-1,+p[2])); }}
@@ -8769,8 +8823,12 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
                     f'<span class="gt-bar-label">{_esc(t.get("title"))}</span>'
                     f'<span class="gt-grip gt-grip-r"></span></div>')
                 row += 1
+        # min-width明示の理由は社内PJガント(deal_issues_gantt_page)側の同修正コメント参照
+        # （2026-09-13。.gantt-gridは同じCSSクラスを共有しており、同じ理由で潜在していた
+        # position:stickyの不具合をこちらにも予防的に適用する）。
+        _min_w = 220 + n_days * 28
         body = (f'<div class="gantt-wrap"><div class="gantt-grid" '
-                f'style="grid-template-columns:{col_tpl}">{"".join(cells)}</div></div>')
+                f'style="grid-template-columns:{col_tpl};min-width:{_min_w}px">{"".join(cells)}</div></div>')
 
     missing_html = ""
     if missing:
