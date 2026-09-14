@@ -24867,6 +24867,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 _uid = _inner.get("user", "")
                                 if _text and _ch and _ts:
                                     _st.handle_mention_task(_con, _ch, _ts, _text, _uid, token=_tok)
+                            elif (_etype == "message" and not _inner.get("subtype")
+                                  and not _inner.get("bot_id")):
+                                # 通常タスクの期限確認プロセス（2026-09-14、OpeBotと同じ仕組みを
+                                # TaskBotにも追加）: 起票スレッドへの人間の返信を拾い、「OK」/期限の
+                                # 自由文を確定処理する。要Slackアプリ設定: Event SubscriptionsにTaskBot
+                                # のBot Events message.channels（プライベートチャンネルなら
+                                # message.groups も）の購読が必要（channels:history/groups:history
+                                # スコープ込み。desk-events設定時と同じ罠があるため要注意）。
+                                _st.handle_admin_due_reply(_con, _inner, token=_tok)
                         except Exception as _e:  # noqa: BLE001
                             print(f"[slack_task_events] error: {_e}", flush=True)
                         finally:

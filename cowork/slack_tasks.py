@@ -444,11 +444,16 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
                             project=None, category=None, slack_channel=None, slack_ts=None,
                             slack_permalink=None, created_by=None, ai_category=True,
                             is_admin=0, requester=None, return_created=False, effort_level=None,
-                            source_text=None):
+                            source_text=None, confirm_due=False):
     """モーダル/AI抽出の値からタスク作成。種類が空かつai_category=Trueならその場でAI判定
     （モーダル送信＝3秒制約のある文脈では ai_category=False にして背景で後追い判定）。
     is_admin=1 で事務タスク（requester=依頼者）。事務タスクは分類体系が異なるためAI後追い判定はしない。
-    事務タスクは期限未指定なら既定で3営業日後にし、受信箱に留める（受付=受信箱の運用のため自動整理しない）。
+    事務タスク、および confirm_due=True で作成した通常タスクは、期限未指定なら既定で3営業日後にし、
+    起票者本人がスレッドで確定するまで due_date_confirmed=0（未確定）のまま作成する（期限確認プロセス。
+    元は事務タスク専用だったが、2026-09-14にTaskBot（通常タスク）へも同じ仕組みを拡張した——
+    handle_reaction/handle_mention_task/_finalize_normal_tasksがconfirm_due=Trueを渡す）。
+    confirm_due=Falseで作成される通常タスク（/taskモーダル送信等、ユーザーが自分で期限欄に
+    入力する経路）はこのフローの対象外＝常に確定扱いのまま（従来通り）。
     同一Slackメッセージ(slack_channel+slack_ts+is_admin)から既にタスクがあれば新規作成せず既存idを返す
     （Slackの再送・別event_id二重配信・再操作による重複起票を防ぐ）。同一メッセージの
     重複判定(SELECT)→INSERT は _CREATE_LOCK で直列化する（AI呼び出しはロック外）。
@@ -462,8 +467,8 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
             category = _ai_guess_task_category(title or "", next_action or "")
         except Exception:
             category = None
-    if is_admin and not (due_date or "").strip():
-        due_date = _admin_default_due()   # 事務タスクの既定期限＝3営業日後
+    if (is_admin or confirm_due) and not (due_date or "").strip():
+        due_date = _admin_default_due()   # 既定期限＝3営業日後（事務・通常タスクとも共通）
     # 請求関連は経路（AI抽出/モーダル手選択）に関わらず確実に「経費・請求」へ強制する（分類漏れ対策）
     if is_admin and sfa_db.is_billing_task(title or "", next_action or ""):
         category = "経費・請求"
@@ -485,9 +490,10 @@ def create_task_from_fields(con, *, title, next_action=None, assignee=None, due_
             requester=requester or None,
             slack_channel=slack_channel, slack_ts=slack_ts, slack_permalink=slack_permalink,
             created_by=created_by, effort_level=(effort_level if not is_admin else None))
-        # 事務タスク×Slack起票は、期限がAI抽出/既定値のどちらであっても「提案」に過ぎず、
-        # 依頼者本人がスレッドで確定するまでは未確定扱い（期限確認プロセス、2026-08-27）。
-        if is_admin and slack_channel and slack_ts:
+        # 事務タスク×Slack起票、およびconfirm_due=Trueの通常タスクは、期限がAI抽出/既定値の
+        # どちらであっても「提案」に過ぎず、起票者本人がスレッドで確定するまでは未確定扱い
+        # （期限確認プロセス、2026-08-27。2026-09-14にTaskBot=通常タスクへも拡張）。
+        if (is_admin or confirm_due) and slack_channel and slack_ts:
             con.execute("UPDATE tasks SET due_date_confirmed=0 WHERE id=?", (tid,))
         con.commit()
         # #157: 起票元の本文にURLがあれば、タスクの「リンク」に自動セットする。
@@ -538,20 +544,23 @@ def handle_slash(con, form: dict) -> None:
 # ── リアクション🎯 ────────────────────────────────────────────────────────
 
 def _admin_default_due() -> str:
-    """事務タスクの既定期限＝今日(JST)から3営業日後（YYYY-MM-DD）。"""
+    """既定期限＝今日(JST)から3営業日後（YYYY-MM-DD）。名前は「事務タスク専用」の名残だが、
+    2026-09-14からTaskBot（通常タスク、confirm_due=True時）でも共通で使う。"""
     from datetime import datetime, timezone, timedelta
     today = datetime.now(timezone(timedelta(hours=9))).date()
     return sfa_db.add_business_days(today, 3).isoformat()
 
 
 def _admin_due_context(con, tid: int, mention_uid: str | None = None) -> dict:
-    """事務タスク起票コメントに添える期限確認ブロック（2026-08-27・期限確認プロセス）。
+    """タスク起票コメントに添える期限確認ブロック（2026-08-27・期限確認プロセス）。
+    元は事務タスク専用だったが、2026-09-14にTaskBot（通常タスク）へも同じ仕組みを拡張した
+    （関数名の"admin"は名残。テキスト自体は元々「事務」に限定した文言ではないため無改修で流用）。
     2026-09-02(#150): 見落とされやすいという報告を受け、目立たせるため通常サイズ・太字の
     sectionブロックに変更（従来はcontextブロックで小さく表示していた）。依頼者への
     メンション（実SlackID）もここに付けられるようにした——「事務タスク化しました」の
     見出し行ではなく、実際に返信してほしいこの確認文の方にメンションを付けてほしい、
     というユーザー要望（2026-09-02）に対応。
-    AI抽出/既定値(起票から3営業日後)はあくまで提案であり、依頼者本人の返信で確定するまで
+    AI抽出/既定値(起票から3営業日後)はあくまで提案であり、起票者本人の返信で確定するまで
     タスクは due_date_confirmed=0（未確定）のまま。このスレッドへの返信「OK」で提案どおり確定、
     別の日付を書けばその日付で確定（下のクイックボタンでも確定扱いになる）。"""
     t = sfa_db.get_task(con, tid)
@@ -606,9 +615,12 @@ def _parse_due_date_reply(text: str, today: str | None = None) -> str:
 
 
 def handle_admin_due_reply(con, event: dict, token: str | None = None) -> None:
-    """事務タスクの期限確認スレッドへの人間の返信を処理（message イベント）。
-    channel+thread_ts が一致し、is_admin=1 かつ due_date_confirmed=0 のタスクが対象
-    （無ければ何もしない＝無関係なスレッド返信では反応しない）。
+    """タスクの期限確認スレッドへの人間の返信を処理（message イベント）。
+    channel+thread_ts が一致し、due_date_confirmed=0 のタスクが対象（is_admin問わず。
+    無ければ何もしない＝無関係なスレッド返信では反応しない）。関数名の"admin"は元が
+    事務タスク専用だった名残——2026-09-14にTaskBot（通常タスク、confirm_due=True経路）
+    へも同じ確認プロセスを拡張したため、is_adminによる絞り込みは行わない
+    （呼び出し元はdesk-events/task-eventsの両方から、それぞれ自ボットのtokenで呼ぶ）。
     「OK」等の肯定語なら提案中の期限をそのまま確定。それ以外は自由文の期限として
     _parse_due_date_reply（日付抽出専用プロンプト、#149）で抽出する。抽出できなければ
     確定せず再度尋ね返す（無言で諦めない）。"""
@@ -621,7 +633,7 @@ def handle_admin_due_reply(con, event: dict, token: str | None = None) -> None:
         return
     row = con.execute(
         "SELECT id, due_date FROM tasks WHERE slack_channel=? AND slack_ts=? "
-        "AND COALESCE(is_admin,0)=1 AND COALESCE(due_date_confirmed,1)=0 "
+        "AND COALESCE(due_date_confirmed,1)=0 "
         "AND (deleted_at IS NULL OR deleted_at='') ORDER BY id DESC LIMIT 1",
         (channel, thread_ts)).fetchone()
     if not row:
@@ -756,15 +768,17 @@ def handle_reaction(con, event: dict, token: str | None = None) -> None:
         con, title=prefills[0]["title"], next_action=prefills[0]["next_action"] or None,
         assignee=owner, due_date=prefills[0]["due_date"] or None, category=prefills[0]["category"] or None,
         slack_channel=channel, slack_ts=ts, slack_permalink=permalink, created_by=owner or user_id,
-        source_text=text)
+        source_text=text, confirm_due=True)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
     # 起票したらスレッド投稿（@メンション起票・事務タスクのリアクション起票と同仕様）。
+    # 2026-09-14: OpeBotと同じ期限確認プロセスをTaskBotにも追加（_admin_due_context）。
     _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=ts,
                      text=f"🎯 コンサルタスク化しました: {prefills[0]['title']}",
                      blocks=[
                          {"type": "section", "text": {"type": "mrkdwn",
                           "text": f"🎯 コンサルタスク化しました\n*<{link}|{prefills[0]['title']}>*"
                                   + (f"\n▶ {prefills[0]['next_action']}" if prefills[0]['next_action'] else "")}},
+                         _admin_due_context(con, tid, mention_uid=user_id),
                          _task_action_block(tid),
                          _task_effort_block(tid),
                      ])
@@ -794,12 +808,15 @@ def handle_mention_task(con, channel: str, thread_ts: str, text: str, user_id: s
     tid = create_task_from_fields(
         con, title=prefills[0]["title"], next_action=prefills[0]["next_action"] or None,
         assignee=owner, due_date=prefills[0]["due_date"] or None, category=prefills[0]["category"] or None,
-        slack_channel=channel, slack_ts=thread_ts, created_by=owner or user_id, source_text=text)
+        slack_channel=channel, slack_ts=thread_ts, created_by=owner or user_id, source_text=text,
+        confirm_due=True)
     link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
+    # 2026-09-14: OpeBotと同じ期限確認プロセスをTaskBotにも追加（_admin_due_context）。
     _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
                      text=f"コンサルタスク化しました: {prefills[0]['title']}",
                      blocks=[{"type": "section", "text": {"type": "mrkdwn",
                              "text": f"✅ コンサルタスク化しました *<{link}|{prefills[0]['title']}>*"}},
+                             _admin_due_context(con, tid, mention_uid=user_id),
                              _task_action_block(tid),
                              _task_effort_block(tid)])
     if not _r.get("ok"):
@@ -896,26 +913,31 @@ def _finalize_normal_tasks(con, *, channel: str, thread_ts: str, prefills: list[
     コンサルタスクを実際に作成し、まとめて1回のスレッド返信で通知する。
     source_text（起票元の本文全体）を渡すと、含まれるURLを全タスクのリンクに自動セットする
     （#157。分割された各タスクのどれに属するURLかまでは判定せず、元の依頼に含まれていた
-    リンクは分割後の全タスクに付ける、という単純な仕様にしている）。"""
+    リンクは分割後の全タスクに付ける、という単純な仕様にしている）。
+    2026-09-14: OpeBotと同じ期限確認プロセス(confirm_due=True)をここにも追加。複数件の場合、
+    このスレッドへの「OK」返信は元tsをそのまま保つ1件目にしかヒットしないため
+    （_mention_ts参照）、メンションも1件目にのみ付ける（_finalize_admin_tasksと同じ扱い）。"""
     tids = [create_task_from_fields(
         con, title=p["title"], next_action=p["next_action"] or None,
         assignee=assignee, due_date=p["due_date"] or None, category=p["category"] or None,
         slack_channel=channel, slack_ts=_mention_ts(thread_ts, i), created_by=assignee or user_id,
-        source_text=source_text)
+        source_text=source_text, confirm_due=True)
         for i, p in enumerate(prefills)]
     if len(tids) == 1:
         link = f"{SFA_TOOL_URL}/tasks#tc-{tids[0]}"
         summary_text = f"コンサルタスク化しました: {prefills[0]['title']}"
         blocks = [{"type": "section", "text": {"type": "mrkdwn",
                    "text": f"✅ コンサルタスク化しました *<{link}|{prefills[0]['title']}>*"}},
+                  _admin_due_context(con, tids[0], mention_uid=user_id),
                   _task_action_block(tids[0]), _task_effort_block(tids[0])]
     else:
         summary_text = f"コンサルタスク化しました（{len(tids)}件）"
         blocks = [{"type": "section", "text": {"type": "mrkdwn",
                    "text": f"✅ コンサルタスク化しました（{len(tids)}件）"}}]
-        for tid, p in zip(tids, prefills):
+        for idx, (tid, p) in enumerate(zip(tids, prefills)):
             link = f"{SFA_TOOL_URL}/tasks#tc-{tid}"
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*<{link}|{p['title']}>*"}})
+            blocks.append(_admin_due_context(con, tid, mention_uid=(user_id if idx == 0 else None)))
             blocks.append(_task_action_block(tid))
             blocks.append(_task_effort_block(tid))
     _r = _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
