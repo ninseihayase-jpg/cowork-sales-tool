@@ -1312,6 +1312,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
 .row select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(217,119,87,.15)}
 .row.con select:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(107,143,90,.15)}
 .note{font-size:10.5px;color:var(--ink-soft);margin-top:4px}
+/* 企業規模の複数選択（2026-09-16要望）。他の軸は単一選択の<select>のままだが、
+   企業規模だけは複数の会社規模を同時に狙う商材があるためチェックボックス群にした。 */
+.multi-chk-group{flex:1 1 auto;min-width:0;display:flex;gap:10px;flex-wrap:wrap}
+.multi-chk-opt{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;
+  color:#2B2723;cursor:pointer;white-space:nowrap}
+.multi-chk-opt input{width:auto;margin:0;cursor:pointer}
 
 /* ── 結果テーブル ── */
 .count-bar{padding:7px 12px;background:var(--surface-soft);border:1px solid var(--border);
@@ -1434,13 +1440,11 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 /* 事業行 */
 .hm-biz-cell{padding:6px 10px;background:var(--surface);border-right:2px solid var(--border)}
 .hm-biz-name{font-weight:600;font-size:12px;color:var(--navy);line-height:1.4;word-break:keep-all}
+/* 2026-09-16: 事業種別L1をSFA本体のマスタと連動させたことで値が可変になったため、
+   従来の値名ごとの固定CSSクラス(.biz-tag-調達SCM等)をやめ、色はJS側(bizStyle())で
+   L1リスト内の並び順インデックスから計算してinline styleで当てる方式に変更した。 */
 .hm-biz-tag{font-size:10px;padding:1px 6px;border-radius:10px;
   font-weight:500;display:inline-block;margin-top:2px}
-.biz-tag-調達SCM{background:#EAF1E3;color:#44603A}
-.biz-tag-他AX{background:#EAF0F0;color:#3F5560}
-.biz-tag-IT{background:#F3E7EF;color:#7A3B5C}
-.biz-tag-コスト削減{background:#F5E6DD;color:#A8492C}
-.biz-tag-その他{background:var(--surface-soft);color:#8A8578}
 /* ヒートマップセル */
 .hm-cell{width:30px;height:30px;min-width:30px;max-width:30px}
 .hm-gray{background:#EDEAE2}
@@ -1522,18 +1526,18 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
           <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
           STEP 1 — 評価軸を設定する（手法の絞り込みに使用）
         </div>
-        <!-- 事業種別・優先度（横並び） -->
+        <!-- 事業種別L1・L2・優先度 -->
         <div class="grid2">
           <div class="biz-row">
-            <label>事業種別</label>
-            <select id="sel-biz" class="biz-select">
-              <option value="調達SCM">調達SCM事業</option>
-              <option value="他AX">他AX事業</option>
-              <option value="IT">IT事業</option>
-              <option value="コスト削減">コスト削減事業</option>
-              <option value="その他">その他</option>
-            </select>
+            <label>事業種別L1</label>
+            <select id="sel-biz" class="biz-select">__BIZ_L1_OPTIONS_HTML__</select>
           </div>
+          <div class="biz-row">
+            <label>事業種別L2</label>
+            <select id="sel-biz-l2" class="biz-select">__BIZ_L2_OPTIONS_HTML__</select>
+          </div>
+        </div>
+        <div class="grid2">
           <div class="biz-row">
             <label>優先事業ですか？</label>
             <select id="sel-priority" class="biz-select">
@@ -1541,6 +1545,7 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
               <option value="yes">はい</option>
             </select>
           </div>
+          <div></div>
         </div>
         <div class="grid2" style="margin-top:6px" id="axis1"></div>
       </div>
@@ -1629,13 +1634,7 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
       <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
       <label>事業種別</label>
       <select id="strategy-biz-filter" class="filter-select">
-        <option value="">すべて</option>
-        <option value="調達SCM">調達SCM事業</option>
-        <option value="他AX">他AX事業</option>
-        <option value="IT">IT事業</option>
-        <option value="コスト削減">コスト削減事業</option>
-        <option value="その他">その他</option>
-      </select>
+        <option value="">すべて</option>__STRATEGY_BIZ_L1_OPTIONS_HTML__</select>
       <label style="margin-left:16px">優先度</label>
       <select id="strategy-prio-filter" class="filter-select">
         <option value="">すべて</option>
@@ -1765,7 +1764,7 @@ const AXIS1=[
    opts:[["高",2,"高：利用料 100万円/月〜 ／ 開発・購入 2,000万円〜"],
          ["中",3,"中：利用料 10万〜100万円/月 ／ 開発・購入 100〜2,000万円"],
          ["小",4,"小：利用料 10万円/月以下 ／ 開発・購入 100万円以下"]]},
-  {key:"size",  label:"企業規模",
+  {key:"size",  label:"企業規模", multi:true,
    opts:[["ENP",5,"ENP：大企業・エンタープライズ"],
          ["MM",6,"MM：中堅企業"],
          ["SMB",7,"SMB：中小企業・その他"]]},
@@ -1780,13 +1779,37 @@ const AXIS2=[
   {key:"sns",    label:"SNS発信力",                    opts:[["できる",19],["難しい",20]]},
 ];
 
-let sel1={cat:"あり",price:"高",size:"ENP",period:"長"};
+let sel1={cat:"あり",price:"高",size:["ENP"],period:"長"};
 let sel2={nps:"高い",sales:"あり",demo:"可",partner:"あり",sns:"できる"};
-let selBiz="調達SCM";
+// 事業種別はSFA本体のbusiness_type_l1/l2マスタと連動（2026-09-16）。マーケ診断ツール独自の
+// 固定5区分（調達SCM/他AX/IT/コスト削減/その他）は廃止し、値は可変（マスタ編集で増減しうる）。
+const BIZ_L1_LIST=__BUSINESS_TYPE_L1_JSON__;
+const BIZ_L2_MAP=__BUSINESS_TYPE_TREE_JSON__;
+let selBiz=BIZ_L1_LIST[0]||"その他";
+let selBizL2=(BIZ_L2_MAP[selBiz]||[])[0]||"";
+// L1変更時にL2選択肢を作り直す（keepSelectedを渡すと、それがL2候補にあればそれを残す。
+// 無ければ先頭を既定にする。loadSave()での復元にも使う）。
+function rebuildBizL2Select(l1,keepSelected){
+  const sel=document.getElementById('sel-biz-l2');
+  if(!sel) return;
+  const opts=BIZ_L2_MAP[l1]||[];
+  const cur=opts.includes(keepSelected)?keepSelected:(opts[0]||'');
+  sel.innerHTML=opts.map(v=>`<option value="${_hmEsc(v)}"${v===cur?' selected':''}>${_hmEsc(v)}</option>`).join('');
+  selBizL2=cur;
+}
 
 function getIdx(ax,label){
   const opt=ax.opts.find(o=>o[0]===label);
   return opt?opt[1]:ax.opts[0][1];
+}
+// 企業規模の複数選択（2026-09-16）対応。値が配列ならそれぞれのbit-indexを、
+// 単一値（旧保存データとの後方互換）ならその1件だけを配列で返す。
+function getIdxs(ax,val){
+  return (Array.isArray(val)?val:[val]).map(v=>getIdx(ax,v));
+}
+// 表示用: 企業規模が配列なら「ENP・MM」のように連結（旧保存データの単一文字列はそのまま）。
+function sizeLabel(val){
+  return Array.isArray(val)?val.join('・'):val;
 }
 
 const RANK_MAP={"小高":1,"小中":2,"中高":3,"小小":4,"中中":5,"高高":6,"中小":7,"高中":8,"高小":9};
@@ -1815,7 +1838,25 @@ function getBottlenecks(m){
 function buildAxis(id,axes,selObj,num){
   const el=document.getElementById(id);
   if(!el) return;
-  el.innerHTML=axes.map(ax=>`
+  el.innerHTML=axes.map(ax=>{
+    if(ax.multi){
+      // 企業規模（2026-09-16要望「複数選択できるようにしたい」）: 単一<select>ではなく
+      // チェックボックス群にし、複数の会社規模を同時に対象にできるようにする。
+      const selectedVals=Array.isArray(selObj[ax.key])?selObj[ax.key]:[selObj[ax.key]];
+      return `
+    <div class="row ${num===2?'con':''}">
+      <label>${ax.label}</label>
+      <div class="multi-chk-group" data-n="${num}" data-k="${ax.key}">
+        ${ax.opts.map(o=>{
+          const key=o[0],display=o[2]||o[0];
+          const checked=selectedVals.includes(key)?'checked':'';
+          return `<label class="multi-chk-opt" title="${display}">`
+            +`<input type="checkbox" value="${key}" ${checked}>${key}</label>`;
+        }).join('')}
+      </div>
+    </div>`;
+    }
+    return `
     <div class="row ${num===2?'con':''}">
       <label>${ax.label}</label>
       <select data-n="${num}" data-k="${ax.key}">
@@ -1824,7 +1865,8 @@ function buildAxis(id,axes,selObj,num){
           return `<option value="${key}" ${selObj[ax.key]===key?'selected':''}>${display}</option>`;
         }).join('')}
       </select>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   el.querySelectorAll('select').forEach(s=>{
     s.title=s.options[s.selectedIndex]?s.options[s.selectedIndex].text:'';
     s.addEventListener('change',e=>{
@@ -1836,13 +1878,34 @@ function buildAxis(id,axes,selObj,num){
       render();
     });
   });
+  el.querySelectorAll('.multi-chk-group').forEach(grp=>{
+    const boxes=[...grp.querySelectorAll('input[type=checkbox]')];
+    boxes.forEach(cb=>{
+      cb.addEventListener('change',()=>{
+        const checkedVals=boxes.filter(b=>b.checked).map(b=>b.value);
+        if(!checkedVals.length){
+          // 0件にはできない（マッチする手法が無意味に0件になるのを避ける）。元に戻す。
+          cb.checked=true;
+          return;
+        }
+        const k=grp.dataset.k;
+        if(grp.dataset.n==='1') sel1[k]=checkedVals;
+        else sel2[k]=checkedVals;
+        updateStickyBar();
+        render();
+      });
+    });
+  });
 }
 
 // ── 診断render ───────────────────────────────────────────────
 function getMatchedSorted(){
+  // 企業規模は複数選択可（2026-09-16）。選択した規模のうち1つでも対応していればOK（OR判定）、
+  // それ以外の軸（カテゴリ認知・契約単価・意思決定期間）は従来通り単一選択でAND判定。
+  const sizeIdxs=getIdxs(AXIS1[2],sel1.size);
   const matched=METHODS.filter(m=>
     m.s[getIdx(AXIS1[0],sel1.cat)]===1&&m.s[getIdx(AXIS1[1],sel1.price)]===1&&
-    m.s[getIdx(AXIS1[2],sel1.size)]===1&&m.s[getIdx(AXIS1[3],sel1.period)]===1
+    sizeIdxs.some(idx=>m.s[idx]===1)&&m.s[getIdx(AXIS1[3],sel1.period)]===1
   );
   return matched.sort((a,b)=>(RANK_MAP[a.cost_l+a.eff_l]||5)-(RANK_MAP[b.cost_l+b.eff_l]||5));
 }
@@ -1885,7 +1948,7 @@ function updateStickyBar(){
   const bizEl=document.getElementById('sticky-tool-biz-text');
   if(name&&bar){
     nameEl.textContent=name;
-    bizEl.textContent=selBiz+'事業';
+    bizEl.textContent=selBiz+(selBizL2?'／'+selBizL2:'');
     bar.classList.add('visible');
   } else if(bar){
     bar.classList.remove('visible');
@@ -1911,6 +1974,7 @@ window.saveCurrentState=function(){
   btn.disabled=true;btn.textContent='保存中…';
   const body='tool_name='+encodeURIComponent(name)
     +'&biz_type='+encodeURIComponent(selBiz)
+    +'&biz_type_l2='+encodeURIComponent(selBizL2)
     +'&priority='+(document.getElementById('sel-priority').value==='yes'?'1':'0')
     +'&sel1_json='+encodeURIComponent(JSON.stringify(sel1))
     +'&sel2_json='+encodeURIComponent(JSON.stringify(sel2))
@@ -1956,6 +2020,7 @@ window.loadSave=function(id){
   selBiz=save.bizType||'その他';
   const bizSel=document.getElementById('sel-biz');
   if(bizSel) bizSel.value=selBiz;
+  rebuildBizL2Select(selBiz,save.bizTypeL2||'');
   const prioSel=document.getElementById('sel-priority');
   if(prioSel) prioSel.value=save.priority?'yes':'no';
   document.getElementById('tool-name').value=save.toolName;
@@ -1966,7 +2031,23 @@ window.loadSave=function(id){
   window.scrollTo({top:0,behavior:'smooth'});
 };
 
-const BIZ_DOT={'調達SCM':'#6B8F5A','他AX':'#5B6B74','IT':'#8B5A78','コスト削減':'#D97757','その他':'#B9B4A8'};
+// 事業種別L1は可変（マスタ編集で増減しうる）ため、名前ごとの固定色ではなく、
+// BIZ_L1_LIST内の並び順インデックスからパレットを割り当てる（2026-09-16）。
+// 旧独自区分の値が残っている既存診断（調達SCM等、新マスタに存在しない）や
+// 事業種別未設定の診断はBIZ_FALLBACKのグレーになる。
+const BIZ_PALETTE=[
+  {bg:'#F5E6DD',fg:'#A8492C',dot:'#D97757'},
+  {bg:'#EAF1E3',fg:'#44603A',dot:'#6B8F5A'},
+  {bg:'#F3E7EF',fg:'#7A3B5C',dot:'#8B5A78'},
+  {bg:'#EAF0F0',fg:'#3F5560',dot:'#5B6B74'},
+  {bg:'#FBF3E3',fg:'#8A6D1D',dot:'#C9A227'},
+  {bg:'#E3EEF5',fg:'#2B5A78',dot:'#4A90B8'},
+];
+const BIZ_FALLBACK={bg:'#EDEAE2',fg:'#8A8578',dot:'#B9B4A8'};
+function bizStyle(bizType){
+  const idx=BIZ_L1_LIST.indexOf(bizType);
+  return idx>=0?BIZ_PALETTE[idx%BIZ_PALETTE.length]:BIZ_FALLBACK;
+}
 
 function renderSaves(){
   const saves=SAVES;
@@ -1976,11 +2057,11 @@ function renderSaves(){
   if(cnt) cnt.textContent=saves.length?saves.length+'件':'';
   if(!saves.length){el.innerHTML='<p class="saves-empty">まだ保存がありません</p>';return;}
   el.innerHTML=saves.map(s=>{
-    const tip=`${s.toolName} ／ ${s.bizType||'その他'} ／ ${s.sel1.size}・単価${s.sel1.price}・期間${s.sel1.period} ／ ${s.totalMatched}手法該当 ／ ${s.savedAt}`;
+    const tip=`${s.toolName} ／ ${s.bizType||'その他'} ／ ${sizeLabel(s.sel1.size)}・単価${s.sel1.price}・期間${s.sel1.period} ／ ${s.totalMatched}手法該当 ／ ${s.savedAt}`;
     return `
     <div class="save-item" title="${tip}">
       <div class="save-item-main">
-        <span class="save-dot" style="background:${BIZ_DOT[s.bizType]||'#B9B4A8'}"></span>
+        <span class="save-dot" style="background:${bizStyle(s.bizType).dot}"></span>
         <span class="save-name">${s.priority?'⭐ ':''}${s.toolName}</span>
       </div>
       <div class="save-actions">
@@ -2068,13 +2149,15 @@ const HEAT_CLASS=['','hm-r1','hm-r2','hm-r3','hm-r4','hm-r5','hm-r6','hm-r7','hm
 
 function getMethodRank(method, save){
   const s=method.s;
+  // save.sel1.sizeは新規保存なら配列、旧保存データなら単一文字列（getIdxsが両方吸収する）。
   const idxs=[
     getIdx(AXIS1[0],save.sel1.cat),
     getIdx(AXIS1[1],save.sel1.price),
-    getIdx(AXIS1[2],save.sel1.size),
     getIdx(AXIS1[3],save.sel1.period),
   ];
   if(idxs.some(idx=>s[idx]===0)) return null; // ×
+  const sizeIdxs=getIdxs(AXIS1[2],save.sel1.size);
+  if(!sizeIdxs.some(idx=>s[idx]===1)) return null; // 選択した企業規模のいずれにも対応していない
   return RANK_MAP[method.cost_l+method.eff_l]||5;
 }
 
@@ -2089,13 +2172,12 @@ function renderHeatmap(){
   let saves=SAVES;
   if(filterBiz) saves=saves.filter(s=>(s.bizType||'その他')===filterBiz);
   if(filterPrio==='on') saves=saves.filter(s=>s.priority);
-  // ソート
-  const BIZ_ORDER=['調達SCM','他AX','IT','コスト削減','その他'];
+  // ソート（事業種別順はBIZ_L1_LIST＝SFA本体マスタの並び順に準拠。2026-09-16）
   if(sortKey==='priority') saves=[...saves].sort((a,b)=>(b.priority?1:0)-(a.priority?1:0));
   else if(sortKey==='name') saves=[...saves].sort((a,b)=>a.toolName.localeCompare(b.toolName,'ja'));
   else if(sortKey==='biz') saves=[...saves].sort((a,b)=>{
-    const ai=BIZ_ORDER.indexOf(a.bizType||'その他');
-    const bi=BIZ_ORDER.indexOf(b.bizType||'その他');
+    const ai=BIZ_L1_LIST.indexOf(a.bizType||'');
+    const bi=BIZ_L1_LIST.indexOf(b.bizType||'');
     return ai-bi;
   });
 
@@ -2144,9 +2226,11 @@ function renderHeatmap(){
     const prioMark=save.priority?'<span style="color:#D97757;font-size:12px;margin-right:3px">⭐</span>':'';
     const rowBg=save.priority?'background:#FBF3E3':'';
     html+=`<tr style="${rowBg}">`;
+    const _bst=bizStyle(save.bizType||'');
+    const _bizLabel=(save.bizType||'その他')+(save.bizTypeL2?'／'+save.bizTypeL2:'');
     html+=`<td class="hm-biz-cell col-biz">
       <div class="hm-biz-name" title="${save.toolName}">${prioMark}${save.toolName}</div>
-      <span class="hm-biz-tag biz-tag-${save.bizType||'その他'}">${save.bizType||'その他'}</span>
+      <span class="hm-biz-tag" style="background:${_bst.bg};color:${_bst.fg}">${_bizLabel}</span>
     </td>`;
     METHOD_CATS.forEach(cat=>{
       cat.idxs.forEach(idx=>{
@@ -2291,6 +2375,11 @@ document.getElementById('saves-section').addEventListener('click',function(e){
 });
 document.getElementById('sel-biz').addEventListener('change',function(e){
   selBiz=e.target.value;
+  rebuildBizL2Select(selBiz);  // L1を変えたらL2選択肢も作り直す（先頭を既定選択）
+  updateStickyBar();
+});
+document.getElementById('sel-biz-l2').addEventListener('change',function(e){
+  selBizL2=e.target.value;
   updateStickyBar();
 });
 document.getElementById('tool-name').addEventListener('input',updateStickyBar);
@@ -2332,12 +2421,38 @@ console.log('[診断ツール v2] 初期化完了');
 
 
 def mktg_sim_page(con) -> str:
+    """マーケ施策診断ツール。事業種別はSFA本体のbusiness_type_l1/l2マスタと連動する
+    （2026-09-16。旧・独自の固定5区分[調達SCM/他AX/IT/コスト削減/その他]は廃止）。
+    既存の保存済み診断が持つ旧区分のbiz_typeは、新マスタのL1名とは一致しないため
+    表示上は「未対応」扱い（フォールバック色）になる——ユーザーが個別に選び直す運用。"""
     diagnostics = sfa_db.list_mktg_diagnostics(con)
     strategy_plans = sfa_db.list_mktg_strategy_plans(con)
+    biz_l1_list = sfa_db.get_master_list(con, "business_type_l1") or list(sfa_db.BUSINESS_TYPE_L1)
+    biz_tree = sfa_db.get_business_type_tree(con)
+    default_l1 = biz_l1_list[0] if biz_l1_list else ""
+    default_l2_opts = biz_tree.get(default_l1, [])
+
+    biz_l1_options = "".join(
+        f'<option value="{_esc(l1)}"{" selected" if l1 == default_l1 else ""}>{_esc(l1)}</option>'
+        for l1 in biz_l1_list
+    )
+    biz_l2_options = "".join(
+        f'<option value="{_esc(l2)}"{" selected" if i == 0 else ""}>{_esc(l2)}</option>'
+        for i, l2 in enumerate(default_l2_opts)
+    )
+    strategy_biz_l1_options = "".join(
+        f'<option value="{_esc(l1)}">{_esc(l1)}</option>' for l1 in biz_l1_list
+    )
+
     html = _MKTG_SIM_PAGE_TEMPLATE.replace(
         "__INITIAL_DIAGNOSTICS_JSON__", json.dumps(diagnostics, ensure_ascii=False))
-    return html.replace(
+    html = html.replace(
         "__INITIAL_STRATEGY_PLANS_JSON__", json.dumps(strategy_plans, ensure_ascii=False))
+    html = html.replace("__BUSINESS_TYPE_L1_JSON__", json.dumps(biz_l1_list, ensure_ascii=False))
+    html = html.replace("__BUSINESS_TYPE_TREE_JSON__", json.dumps(biz_tree, ensure_ascii=False))
+    html = html.replace("__BIZ_L1_OPTIONS_HTML__", biz_l1_options)
+    html = html.replace("__BIZ_L2_OPTIONS_HTML__", biz_l2_options)
+    return html.replace("__STRATEGY_BIZ_L1_OPTIONS_HTML__", strategy_biz_l1_options)
 
 
 # 記事(号)の読み物デザイン。artifactの2カラム・マガジン設計をアプリ側が保持し、
@@ -20681,6 +20796,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con,
                         tool_name=(f.get("tool_name", "") or "").strip() or "(無題)",
                         biz_type=(f.get("biz_type", "") or "その他"),
+                        biz_type_l2=(f.get("biz_type_l2", "") or "").strip() or None,
                         priority=(f.get("priority", "") == "1"),
                         sel1=json.loads(f.get("sel1_json", "{}") or "{}"),
                         sel2=json.loads(f.get("sel2_json", "{}") or "{}"),

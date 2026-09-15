@@ -1260,6 +1260,8 @@ CREATE TABLE IF NOT EXISTS mktg_diagnostics (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     tool_name         TEXT NOT NULL,
     biz_type          TEXT NOT NULL DEFAULT 'その他',
+    biz_type_l2       TEXT,              -- 事業種別L2（2026-09-16、SFA本体のbusiness_type_l1/l2
+                                          -- マスタと連動。biz_typeがL1に相当）。
     priority          INTEGER NOT NULL DEFAULT 0,
     sel1_json         TEXT NOT NULL,
     sel2_json         TEXT NOT NULL,
@@ -1771,6 +1773,13 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
                 con.execute(f"ALTER TABLE intake_transcripts ADD COLUMN {_col} {_decl}")
         con.execute("CREATE INDEX IF NOT EXISTS idx_intake_transcripts_ext "
                     "ON intake_transcripts(external_source, external_id)")
+        # マーケ診断の事業種別をSFA本体のbusiness_type_l1/l2マスタと連動させる際に追加
+        # （2026-09-16）。既存の保存済み診断のbiz_type（調達SCM/他AX/IT等の旧独自区分）は
+        # 新マスタのL1名とは一致しないため、ユーザーが個別に選び直す運用とする
+        # （自動変換はしない。ユーザー確定事項）。
+        _mktgd_cols = {c[1] for c in con.execute("PRAGMA table_info(mktg_diagnostics)")}
+        if "biz_type_l2" not in _mktgd_cols:
+            con.execute("ALTER TABLE mktg_diagnostics ADD COLUMN biz_type_l2 TEXT")
         # マーケ施策診断ツールの旧HTML版に埋め込まれていたプリロードデータを一度だけ移植
         # （テーブルが空のときのみ。ユーザーが1件でも保存した後は絶対に実行されない）。
         if con.execute("SELECT COUNT(*) FROM mktg_diagnostics").fetchone()[0] == 0:
@@ -6506,11 +6515,14 @@ def _to_halfwidth_alnum(s: str | None) -> str | None:
 
 
 def _mktg_diagnostic_row_to_dict(row: dict) -> dict:
-    """DB行 → クライアントJS（旧localStorage版と同じ形）に合わせた辞書に変換。"""
+    """DB行 → クライアントJS（旧localStorage版と同じ形）に合わせた辞書に変換。
+    bizTypeL2はSFA本体のbusiness_type_l1/l2マスタと連動させた際(2026-09-16)に追加した列で、
+    未設定の既存行はNoneのまま（自動変換はしない。ユーザー確定事項）。"""
     return {
         "id": row["id"],
         "toolName": _to_halfwidth_alnum(row["tool_name"]),
         "bizType": _to_halfwidth_alnum(row["biz_type"]),
+        "bizTypeL2": _to_halfwidth_alnum(row["biz_type_l2"]) if row["biz_type_l2"] else None,
         "priority": bool(row["priority"]),
         "sel1": json.loads(row["sel1_json"]),
         "sel2": json.loads(row["sel2_json"]),
@@ -6527,12 +6539,14 @@ def list_mktg_diagnostics(con) -> list[dict]:
 
 
 def create_mktg_diagnostic(con, *, tool_name: str, biz_type: str, priority: bool,
-                           sel1: dict, sel2: dict, top_methods: list, total_matched: int) -> dict:
+                           sel1: dict, sel2: dict, top_methods: list, total_matched: int,
+                           biz_type_l2: str | None = None) -> dict:
     cur = con.execute(
         "INSERT INTO mktg_diagnostics "
-        "(tool_name, biz_type, priority, sel1_json, sel2_json, top_methods_json, total_matched) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (_to_halfwidth_alnum(tool_name), _to_halfwidth_alnum(biz_type), int(bool(priority)),
+        "(tool_name, biz_type, biz_type_l2, priority, sel1_json, sel2_json, top_methods_json, total_matched) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (_to_halfwidth_alnum(tool_name), _to_halfwidth_alnum(biz_type),
+         _to_halfwidth_alnum(biz_type_l2) if biz_type_l2 else None, int(bool(priority)),
          json.dumps(sel1, ensure_ascii=False), json.dumps(sel2, ensure_ascii=False),
          json.dumps(top_methods, ensure_ascii=False), total_matched))
     con.commit()
