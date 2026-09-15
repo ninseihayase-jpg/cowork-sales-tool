@@ -8390,8 +8390,15 @@ def deal_issues_gantt_page(con) -> str:
         )
 
     for cat in cat_list:
+        # 2026-09-15修正: 従来はこの行自体が grid-column:1/-1（行全体の幅）でsticky指定されて
+        # いたが、要素が既にスクロール可能な全幅を占めている場合position:stickyは可動範囲を
+        # 持てず実質無効になり、右スクロール時にラベル文字列が読めなくなる不具合があった
+        # （タスク行の.gantt-lblは元々grid-column:1のみなので影響なし。ユーザー報告2026-09-15）。
+        # 帯の背景色は全幅の非stickyな装飾div、実際に読ませたいラベル文字はcolumn:1だけの
+        # sticky divに分離することで、スクロールしてもラベルが左に固定表示されるようにする。
         cells.append(
-            f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
+            f'<div style="grid-row:{row};grid-column:1 / -1;background:#f1f5f9"></div>'
+            f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1;background:#f1f5f9">'
             f'🗂 {_esc(cat["label"])}（{len(cat["issues"])}件）</div>')
         row += 1
         for issue in cat["issues"]:
@@ -8411,11 +8418,17 @@ def deal_issues_gantt_page(con) -> str:
             main_add_wrap_id = f"ig-mainadd-{issue['id']}"
             # 社内PJ1件＝行に「＋」ボタンのみを常設。クリックでメインタスク追加の
             # インライン入力欄（下の予約行）を開く（2026-09-11: フローティング画面は廃止）。
+            # 2026-09-15修正: カテゴリ帯見出しと同じ理由で、PJ名+＋ボタンをcolumn:1のみの
+            # sticky divに分離（右スクロールで読めなくなる不具合。ユーザー報告2026-09-15）。
+            # 帯の背景・罫線は全幅の非sticky装飾divとして別途敷く。
             cells.append(
                 f'<div style="grid-row:{row};grid-column:1 / -1;background:#fafbfc;'
-                f'border-top:1px solid #e2e8f0;padding:4px 8px;display:flex;gap:8px;align-items:center">'
-                f'<a href="/deal-issue/{issue["id"]}" style="font-weight:600;font-size:12px;flex:none;'
-                f'white-space:nowrap">📌{issue_label}</a>'
+                f'border-top:1px solid #e2e8f0"></div>'
+                f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1;background:#fafbfc;'
+                f'gap:8px">'
+                f'<a href="/deal-issue/{issue["id"]}" style="font-weight:600;font-size:12px;'
+                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0">'
+                f'📌{issue_label}</a>'
                 f'<span onclick="return igShowInlineAdd(\'{main_add_wrap_id}\')" title="メインタスクを追加" '
                 f'style="cursor:pointer;flex:none;width:22px;height:22px;border-radius:50%;'
                 f'border:1px dashed #94a3b8;color:#64748b;font-size:14px;line-height:1;'
@@ -8925,8 +8938,12 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
             else:
                 proj, cat = key
                 grp_label = f'📁{_esc(proj)} ／ 🏷{_esc(cat)}'
+            # 2026-09-15修正: 社内PJガントの同種バグ(grid-column:1/-1でのstickyが
+            # 可動範囲を持てず右スクロールで読めなくなる)をこちらにも予防適用。詳細は
+            # deal_issues_gantt_page側の同コメント参照。
             cells.append(
-                f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1 / -1">'
+                f'<div style="grid-row:{row};grid-column:1 / -1;background:#f1f5f9"></div>'
+                f'<div class="gantt-lbl grp" style="grid-row:{row};grid-column:1;background:#f1f5f9">'
                 f'{grp_label}（{len(items)}件・計{total}営業日）</div>')
             row += 1
             for t in sorted(items, key=_sort_key):

@@ -142,6 +142,20 @@ def test_gantt_grid_has_explicit_min_width_to_prevent_sticky_label_bug(con):
     assert int(m.group(2)) == 220 + n_days * 28
 
 
+def test_gantt_category_header_label_pinned_to_column_1_not_full_width(con):
+    """社内PJガントで発見・修正した同種バグ(2026-09-15、ユーザー報告): カテゴリ帯見出しが
+    grid-column:1/-1でstickyだと可動範囲を持てず右スクロールで読めなくなるため、
+    ラベルはcolumn:1のみに、帯の背景は全幅の非sticky装飾divに分離した。"""
+    import re
+    today = webapp._today_jst().isoformat()
+    sfa_db.upsert_task(con, title="短期タスク", due_date=today, effort_level="軽", category="開発")
+    html = webapp.tasks_gantt_page(con, group_by="category")
+    assert not re.search(r'class="gantt-lbl grp" style="grid-row:\d+;grid-column:1 / -1"', html)
+    assert re.search(r'<div class="gantt-lbl grp" style="grid-row:\d+;grid-column:1;'
+                     r'background:#f1f5f9">', html)
+    assert re.search(r'<div style="grid-row:\d+;grid-column:1 / -1;background:#f1f5f9"></div>', html)
+
+
 def test_gantt_group_tabs_render_with_active_state(con):
     """#124: 「作業種別ごと」「紐づけ単位」タブが両方出て、現在のgroup_byが強調表示される。"""
     html_type = webapp.tasks_gantt_page(con, group_by="type")
