@@ -6554,6 +6554,23 @@ def create_mktg_diagnostic(con, *, tool_name: str, biz_type: str, priority: bool
     return _mktg_diagnostic_row_to_dict(row)
 
 
+def update_mktg_diagnostic(con, diagnostic_id: int, *, tool_name: str, biz_type: str, priority: bool,
+                            sel1: dict, sel2: dict, top_methods: list, total_matched: int,
+                            biz_type_l2: str | None = None) -> dict:
+    """既存の保存済み診断を上書き更新する（2026-09-16追加）。読み込んで編集した診断を
+    保存すると新規行が増えてしまう不具合の修正で、create_mktg_diagnosticとは別に用意した。"""
+    con.execute(
+        "UPDATE mktg_diagnostics SET tool_name=?, biz_type=?, biz_type_l2=?, priority=?, "
+        "sel1_json=?, sel2_json=?, top_methods_json=?, total_matched=? WHERE id=?",
+        (_to_halfwidth_alnum(tool_name), _to_halfwidth_alnum(biz_type),
+         _to_halfwidth_alnum(biz_type_l2) if biz_type_l2 else None, int(bool(priority)),
+         json.dumps(sel1, ensure_ascii=False), json.dumps(sel2, ensure_ascii=False),
+         json.dumps(top_methods, ensure_ascii=False), total_matched, diagnostic_id))
+    con.commit()
+    row = dict(con.execute("SELECT * FROM mktg_diagnostics WHERE id=?", (diagnostic_id,)).fetchone())
+    return _mktg_diagnostic_row_to_dict(row)
+
+
 def delete_mktg_diagnostic(con, diagnostic_id: int) -> None:
     con.execute("DELETE FROM mktg_diagnostics WHERE id=?", (diagnostic_id,))
     con.commit()

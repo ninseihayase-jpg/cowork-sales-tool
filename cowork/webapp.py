@@ -1294,6 +1294,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
 .btn-save{padding:9px 20px;background:var(--blue);color:#fff;border:none;
   border-radius:var(--radius);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
 .btn-save:hover{background:var(--blue-dark)}
+.edit-banner{display:none;align-items:center;gap:8px;margin:-4px 0 10px;padding:7px 12px;
+  background:#FBF3E3;border:1px solid #E8D9A8;border-radius:var(--radius);
+  font-size:12.5px;color:#8A6D1D}
+.edit-banner.visible{display:flex}
+.edit-banner-name{font-weight:600}
+.edit-banner-cancel{margin-left:auto;padding:3px 10px;background:#fff;border:1px solid #E8D9A8;
+  border-radius:6px;font-size:11.5px;color:#8A6D1D;cursor:pointer;white-space:nowrap}
+.edit-banner-cancel:hover{background:#F5E6DD}
 
 .biz-row{display:flex;align-items:center;gap:8px;min-width:0;
   padding:6px 10px;background:var(--surface-soft);border:1px solid var(--border);border-radius:var(--radius)}
@@ -1518,6 +1526,10 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
           placeholder="ツール名・商材名を入力（例: InProc 調達AI）">
         <button class="btn-save" id="btn-save-main">💾 この診断を保存</button>
       </div>
+      <div class="edit-banner" id="edit-banner">
+        ✎ 編集中: <span class="edit-banner-name" id="edit-banner-name"></span>（保存すると上書きされます）
+        <button type="button" class="edit-banner-cancel" id="btn-cancel-edit">新規として保存する</button>
+      </div>
 
       <!-- STEP 1 & 2（横並び） -->
       <div class="step-layout">
@@ -1719,6 +1731,10 @@ td{padding:8px;vertical-align:middle;word-wrap:break-word}
 <script>
 // ── 保存データ（SFA-CRMのDBから注入） ──────────────────────
 let SAVES = __INITIAL_DIAGNOSTICS_JSON__;
+// 読み込み中の保存済み診断のID。nullなら「新規保存」、値ありなら「保存＝上書き更新」
+// （2026-09-16: 「保存すると重複してしまう」バグ修正。従来はloadSave()後もsaveCurrentState()が
+// 常に新規INSERTしていたため、既存診断を読み込んで編集→保存すると重複行ができていた）。
+let editingId=null;
 let STRATEGY_PLANS = __INITIAL_STRATEGY_PLANS_JSON__;
 // マス（事業×打ち手）の選択状態。key="診断id::手法名"。renderHeatmap()の再描画のたびに
 // このSetの内容をhm-selectedクラスとして反映する（2026-09-13追加）。
@@ -1980,10 +1996,18 @@ window.saveCurrentState=function(){
     +'&sel2_json='+encodeURIComponent(JSON.stringify(sel2))
     +'&top_methods_json='+encodeURIComponent(JSON.stringify(sorted.slice(0,3).map(m=>m.method)))
     +'&total_matched='+sorted.length;
-  fetch('/mktg-diagnostic/create',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+  // editingIdがあれば「更新」、無ければ「新規作成」（既存診断を読み込んで編集後に
+  // 保存すると重複行ができてしまう不具合の修正、2026-09-16）。
+  const url=editingId?('/mktg-diagnostic/'+editingId+'/update'):'/mktg-diagnostic/create';
+  fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(function(r){return r.json();})
     .then(function(saved){
-      SAVES.unshift(saved);
+      if(editingId){
+        const idx=SAVES.findIndex(s=>s.id===editingId);
+        if(idx>=0) SAVES[idx]=saved; else SAVES.unshift(saved);
+      } else {
+        SAVES.unshift(saved);
+      }
       renderSaves();
       renderHeatmap();
       btn.disabled=false;
@@ -1992,6 +2016,8 @@ window.saveCurrentState=function(){
       nameEl.value='';
       const ps=document.getElementById('sel-priority');
       if(ps) ps.value='no';
+      editingId=null;
+      setEditBanner(null);
       updateStickyBar();
       setTimeout(()=>{btn.textContent=origText;btn.style.background='';},2000);
     })
@@ -2008,6 +2034,7 @@ window.deleteSave=function(id){
       SAVES=SAVES.filter(function(s){return s.id!==id;});
       renderSaves();
       renderHeatmap();
+      if(editingId===id){editingId=null;setEditBanner(null);}
     })
     .catch(function(){alert('削除に失敗しました。時間をおいて再度お試しください。');});
 };
@@ -2028,7 +2055,26 @@ window.loadSave=function(id){
   buildAxis('axis2',AXIS2,sel2,2);
   updateStickyBar();
   render();
+  editingId=id;
+  setEditBanner(save.toolName);
   window.scrollTo({top:0,behavior:'smooth'});
+};
+
+function setEditBanner(name){
+  const banner=document.getElementById('edit-banner');
+  const nameEl=document.getElementById('edit-banner-name');
+  if(!banner) return;
+  if(name){
+    if(nameEl) nameEl.textContent=name;
+    banner.classList.add('visible');
+  } else {
+    banner.classList.remove('visible');
+  }
+}
+
+window.cancelEditSave=function(){
+  editingId=null;
+  setEditBanner(null);
 };
 
 // 事業種別L1は可変（マスタ編集で増減しうる）ため、名前ごとの固定色ではなく、
@@ -2368,6 +2414,7 @@ render();
 
 // イベントリスナー
 document.getElementById('btn-save-main').addEventListener('click',()=>saveCurrentState());
+document.getElementById('btn-cancel-edit').addEventListener('click',()=>cancelEditSave());
 document.getElementById('saves-section').addEventListener('click',function(e){
   var loadId=e.target.dataset.load, delId=e.target.dataset.del;
   if(loadId) loadSave(parseInt(loadId));
@@ -20794,6 +20841,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _total_matched = 0
                     _saved = sfa_db.create_mktg_diagnostic(
                         con,
+                        tool_name=(f.get("tool_name", "") or "").strip() or "(無題)",
+                        biz_type=(f.get("biz_type", "") or "その他"),
+                        biz_type_l2=(f.get("biz_type_l2", "") or "").strip() or None,
+                        priority=(f.get("priority", "") == "1"),
+                        sel1=json.loads(f.get("sel1_json", "{}") or "{}"),
+                        sel2=json.loads(f.get("sel2_json", "{}") or "{}"),
+                        top_methods=json.loads(f.get("top_methods_json", "[]") or "[]"),
+                        total_matched=_total_matched)
+                    self._send(json.dumps(_saved, ensure_ascii=False).encode(), ctype="application/json")
+                elif (path.startswith("/mktg-diagnostic/") and path.endswith("/update")
+                      and path.split("/")[2].isdigit()):
+                    try:
+                        _total_matched = int(f.get("total_matched", "0") or 0)
+                    except ValueError:
+                        _total_matched = 0
+                    _saved = sfa_db.update_mktg_diagnostic(
+                        con, int(path.split("/")[2]),
                         tool_name=(f.get("tool_name", "") or "").strip() or "(無題)",
                         biz_type=(f.get("biz_type", "") or "その他"),
                         biz_type_l2=(f.get("biz_type_l2", "") or "").strip() or None,
