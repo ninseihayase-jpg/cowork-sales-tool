@@ -4796,6 +4796,21 @@ def delivery_form(con, delivery_id: int) -> str:
           <button class="btn sec" type="submit">📋 このDeliveryを複製</button>
         </form>
       </div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <h2 style="margin:0">🎙️ 議論メモ</h2>
+        <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <a class="btn sec" href="/delivery/{delivery_id}/intake" style="font-size:12px"
+             title="議論の文字起こしを貼付→AIで整形してメモ化">🎙️ 議論を取り込む（AI整形）</a>
+          {_rich_note_chip("delivery", delivery_id)}
+        </span>
+      </div>
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">{_note_cards}</div>
+      {_dv_rn_links_html}
+      {_dv_intake_html}
+    </div>
+    <div class="card">
 
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;margin-bottom:14px">
         <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
@@ -4930,19 +4945,6 @@ def delivery_form(con, delivery_id: int) -> str:
               onsubmit="return confirm('このDelivery案件を削除します。アサインも消えます。よろしいですか？')">
           <button class="btn sec" style="font-size:12px;color:#c53030">このDeliveryを削除</button></form>
       </div>
-    </div>
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-        <h2 style="margin:0">🎙️ 議論メモ</h2>
-        <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <a class="btn sec" href="/delivery/{delivery_id}/intake" style="font-size:12px"
-             title="議論の文字起こしを貼付→AIで整形してメモ化">🎙️ 議論を取り込む（AI整形）</a>
-          {_rich_note_chip("delivery", delivery_id)}
-        </span>
-      </div>
-      <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">{_note_cards}</div>
-      {_dv_rn_links_html}
-      {_dv_intake_html}
     </div>
     <script>
     function _mondayOf(s){{ if(!s) return ''; var p=String(s).split('-'); if(p.length!==3) return s;

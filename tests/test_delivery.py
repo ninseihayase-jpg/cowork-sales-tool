@@ -304,6 +304,24 @@ def test_delivery_fee_both_present_is_trusted_as_is_manual_override():
     assert (mo, to) == (999, 300)
 
 
+def test_delivery_form_discussion_notes_card_moved_to_top(con):
+    """ユーザー要望(2026-09-16):「個別Deliveryページの議論メモを上部に移動させて」。
+    従来は月別入金計画・削除ボタンより下（ページ最下部）にあったため、常にスクロールが
+    必要だった。ヘッダー(タイトル/複製ボタン)の直後・基礎情報フォームより前に移動した。"""
+    acc = con.execute("INSERT INTO accounts(name) VALUES('A社')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="案件Z", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="納品Z")
+    html = webapp.delivery_form(con, dvid)
+    note_pos = html.index("議論メモ")
+    duplicate_btn_pos = html.index("このDeliveryを複製")
+    base_info_pos = html.index("基礎情報")
+    assign_pos = html.index("アサイン（役割")
+    assert duplicate_btn_pos < note_pos < base_info_pos < assign_pos
+    # divの開閉が壊れていないこと（カード分割時の閉じ忘れ/重複クローズ検知）
+    assert html.count("<div") == html.count("</div>")
+
+
 def test_delivery_form_role_add_row_appears_above_existing_roles(con):
     """#117: 役割追加の入力欄は体制エリアの一番上（既存の役割一覧より前）に出す
     （ユーザー要望2026-08-28: 役割数が増えると追加欄が下に流れて見えづらいため）。"""
