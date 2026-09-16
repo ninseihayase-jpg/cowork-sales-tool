@@ -13323,16 +13323,62 @@ function _rnLiIsEmpty(li){
   }
   return true;
 }
+// liの「自分の行」だけ（子ul/olの中身は除く）が空か判定。子リストを持つliで自分のテキストだけを
+// 消したケースの検出用（_rnLiIsEmptyは子ul/olがあると常にfalseになるため区別して判定する）。
+function _rnLiOwnTextEmpty(li){
+  for(var i=0;i<li.childNodes.length;i++){
+    var n=li.childNodes[i];
+    if(n.nodeName==='UL'||n.nodeName==='OL') continue;
+    if(n.nodeName==='BR') continue;
+    if((n.textContent||'').replace(/​/g,'').length) return false;
+  }
+  return true;
+}
 // 空ブレットでBackspace: 前のliへ吸収して消す（前がなければ親liがある場合のみアウトデント）。
 // ユーザー報告2026-08-23「ブレットが二重でかかって消せない」の復旧策（テキストが残る通常のケースは
 // 既定のcontentEditable挙動に任せ、完全に空の行だけを対象にした安全側の実装）。
 function _rnBackspaceAtLiStart(li){
-  if(!_rnLiIsEmpty(li)) return false;
-  var prev=li.previousElementSibling;
-  if(prev && prev.nodeName==='LI'){ li.remove(); rnCaretInLi(prev); return true; }
-  var ul=li.parentNode;
-  if(ul && (ul.nodeName==='UL'||ul.nodeName==='OL') && ul.parentNode && ul.parentNode.nodeName==='LI'){
-    rnDoOutdent(); return true;
+  if(_rnLiIsEmpty(li)){
+    var prev=li.previousElementSibling;
+    if(prev && prev.nodeName==='LI'){ li.remove(); rnCaretInLi(prev); return true; }
+    var ul=li.parentNode;
+    if(ul && (ul.nodeName==='UL'||ul.nodeName==='OL') && ul.parentNode && ul.parentNode.nodeName==='LI'){
+      rnDoOutdent(); return true;
+    }
+    return false;
+  }
+  // ユーザー報告2026-09-16「ブレットが重なって表示される」の対策: 子ul/olを持つliの自分の行の
+  // テキストだけをBackspaceで消し切ると、_rnLiIsEmptyは子リストがあるためfalseのままとなり
+  // 既定のcontentEditable挙動へフォールバックする。ネイティブ動作は自分の行の<br>だけを消して
+  // 「自分の行が完全に空（<br>すら無い）だが子ul/olは残る」状態を作りがちで、この状態はliの
+  // 行ボックスの高さが実質ゼロになるため、子ul/olの▽マーカーと自分のブレットマーカーが同じ位置に
+  // 重なって表示される。この「自分の行だけ空・子リストは残る」状態自体を発生させないよう、
+  // 子リストを前のliのサブリストへ吸収する（前のliが無ければ自分の位置に子リストの中身を
+  // そのまま繰り上げる）。
+  if(_rnLiOwnTextEmpty(li)){
+    var childList=null, ci;
+    for(ci=0;ci<li.children.length;ci++){
+      if(li.children[ci].nodeName==='UL'||li.children[ci].nodeName==='OL'){ childList=li.children[ci]; break; }
+    }
+    if(childList){
+      var prev2=li.previousElementSibling;
+      if(prev2 && prev2.nodeName==='LI'){
+        var sub=null,k=prev2.children,j;
+        for(j=0;j<k.length;j++){ if(k[j].nodeName===childList.nodeName){ sub=k[j]; break; } }
+        if(sub){ while(childList.firstChild) sub.appendChild(childList.firstChild); }
+        else { prev2.appendChild(childList); }
+        li.remove(); rnCaretInLi(prev2); return true;
+      }
+      // 前のliが無い場合: 子リストの中身をこのliが居た位置へそのまま繰り上げる（1階層外側扱い）。
+      var parentList=li.parentNode, first=childList.firstElementChild;
+      while(childList.firstChild){ parentList.insertBefore(childList.firstChild, li); }
+      li.remove();
+      if(first){
+        var r=document.createRange(); r.setStart(first,0); r.collapse(true);
+        var sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      }
+      return true;
+    }
   }
   return false;
 }
@@ -13382,13 +13428,33 @@ function rnDoOutdent(){ var lis=_rnSelectedLis(); if(!lis.length)return;
   lis.forEach(function(li){ grand.insertBefore(li, anchor); });
   if(!ul.children.length)ul.remove(); _rnReselectLis(lis); }
 // OneNote互換: Alt+Shift+↑/↓ で現在行(liとその子リストごと)を同階層内で上下に移動。
-// 端（先頭/末尾）ではそのまま。複数li選択時は選択ブロックをまとめて移動（隣接するliと丸ごと入れ替え）。
+// 同階層に移動先の兄弟liが無い場合（そのliが唯一の子等）は、親liの外側（1つ浅い階層）へ
+// 抜けて移動する（2026-09-16: 「一番下の階層の行が同階層に兄弟が無いと動かせない」報告の修正。
+// 従来は同階層の兄弟liが無いと何も起きなかった）。それ以上浅い階層が無ければそのまま。
+// 複数li選択時は選択ブロックをまとめて移動（隣接するliと丸ごと入れ替え）。
 function rnMoveLine(dir){ var lis=_rnSelectedLis(); if(!lis.length)return;
   var parent=lis[0].parentNode, last=lis[lis.length-1];
-  if(dir<0){ var prev=lis[0].previousElementSibling; if(!prev||prev.nodeName!=='LI')return;
-    parent.insertBefore(prev, last.nextSibling); }
-  else { var next=last.nextElementSibling; if(!next||next.nodeName!=='LI')return;
-    parent.insertBefore(next, lis[0]); }
+  if(dir<0){
+    var prev=lis[0].previousElementSibling;
+    if(prev&&prev.nodeName==='LI'){ parent.insertBefore(prev, last.nextSibling); }
+    else {
+      var grandLi=parent.parentNode;
+      if(!grandLi||grandLi.nodeName!=='LI')return;  // これ以上浅い階層が無い
+      var grandUl=grandLi.parentNode;
+      lis.forEach(function(li){ grandUl.insertBefore(li, grandLi); });
+      if(!parent.children.length)parent.remove();
+    }
+  } else {
+    var next=last.nextElementSibling;
+    if(next&&next.nodeName==='LI'){ parent.insertBefore(next, lis[0]); }
+    else {
+      var grandLi=parent.parentNode;
+      if(!grandLi||grandLi.nodeName!=='LI')return;
+      var grandUl=grandLi.parentNode, anchor=grandLi.nextSibling;
+      lis.forEach(function(li){ grandUl.insertBefore(li, anchor); });
+      if(!parent.children.length)parent.remove();
+    }
+  }
   _rnReselectLis(lis); rnDirty(); }
 function rnParentLiWithChildren(){ var li=rnCurrentLi();
   while(li){ if(li.nodeName==='LI'&&li.querySelector(':scope>ul, :scope>ol'))return li; li=li.parentNode; } return null; }

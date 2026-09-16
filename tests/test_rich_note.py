@@ -65,6 +65,43 @@ def test_rich_note_assets_include_link_chip_js():
     assert "RN_URL_RE" in webapp._RICH_NOTE_ASSETS
 
 
+def test_rich_note_assets_move_line_escalates_when_no_sibling_at_same_level():
+    """ユーザー報告(2026-09-16):「Alt+Shift+↑↓が、ブレットの同じ階層間でしか移動できない」
+    （最深階層の唯一の子liなど、同階層に兄弟liが無い行は移動できない仕様だった）。
+    修正: 同階層に移動先が無ければ、親liの外側（1つ浅い階層）へ抜けて移動するようにした。"""
+    js = webapp._RICH_NOTE_ASSETS
+    assert "function rnMoveLine(dir){" in js
+    # 同階層に兄弟が無い場合のエスケープ処理（親liの親ulへ抜ける）が両方向にあること
+    assert "var grandLi=parent.parentNode;" in js
+    assert "if(!grandLi||grandLi.nodeName!=='LI')return;" in js
+    assert "grandUl.insertBefore(li, grandLi);" in js  # 上方向: 親liの直前へ
+    assert "grandUl.insertBefore(li, anchor);" in js   # 下方向: 親liの直後へ
+    assert "if(!parent.children.length)parent.remove();" in js
+
+
+def test_rich_note_assets_fixes_nested_list_bullet_overlap_bug():
+    """ユーザー報告(2026-09-16):「複数ブレット表示が重なる」バグ（上の階層の空白行を消すと発生）。
+
+    根本原因: 子ul/olを持つliの自分のテキストだけをBackspaceで消し切ると、_rnLiIsEmptyは
+    子リストがある限りfalseを返すため、既定(ネイティブ)のcontentEditable挙動にフォールバック
+    してしまう。ネイティブ動作は自分の行の<br>だけを消して「自分の行が完全に空だが子ul/olは
+    残る」状態(<li><ul>...</ul></li>)を作り、liの行ボックスの高さが実質ゼロになるため、
+    子リストの▽マーカーと自分のブレットマーカーが同じ位置に重なって表示される
+    （Playwrightでの実機再現・スクリーンショットで確認済み）。
+    修正: 自分の行だけが空(子ul/olの中身は空判定から除外)と判定する_rnLiOwnTextEmptyを追加し、
+    _rnBackspaceAtLiStartがそのケースを明示的に処理する（前のliのサブリストへ子リストを吸収、
+    前のliが無ければ子リストの中身をこのliの位置へ繰り上げる）ことで、上記の壊れた中間状態
+    そのものを発生させないようにした。"""
+    js = webapp._RICH_NOTE_ASSETS
+    assert "function _rnLiOwnTextEmpty(li){" in js
+    assert "function _rnBackspaceAtLiStart(li){" in js
+    # 子ul/olを見つけて前のliのサブリストへ吸収する分岐
+    assert "if(_rnLiOwnTextEmpty(li)){" in js
+    assert "childList=li.children[ci];" in js
+    # 前のliが無ければ子リストの中身をこのliの位置へ繰り上げる分岐
+    assert "parentList.insertBefore(childList.firstChild, li);" in js
+
+
 def test_rich_note_assets_include_link_click_popup_js():
     """リンクチップは編集中クリックで即遷移させず、名前編集＋URL確認のポップアップを出す
     （ユーザー要望2026-08-27続き: いきなり飛ばない・後から名前を付けられる）。"""
