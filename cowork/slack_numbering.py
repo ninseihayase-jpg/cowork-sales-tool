@@ -72,6 +72,67 @@ def _field_question(field: str, req: dict) -> str:
     return "📋 内容を確認できませんでした。もう一度教えてください"
 
 
+# ユーザー要望(2026-09-17):「できるだけ手打ちの量を減らし、確認はボタン等の選択肢で」。
+# doc_type/契約種別は選択肢が固定・少数のため、ボタン(Block Kit)で選べるようにする
+# （対象の商談/取引先は候補が多く選択肢化しにくいため、文言＋一覧リンクのみのまま）。
+_DOC_TYPE_BUTTON_LABELS = [("quote", "見積書"), ("invoice", "請求書"), ("contract", "契約書")]
+_CONTRACT_TYPE_BUTTON_LABELS = [("M", "基本契約"), ("S", "個別契約"), ("N", "秘密保持契約"), ("O", "その他")]
+
+
+def _field_blocks(field: str, request_id: int) -> dict | None:
+    """ボタン付き質問がある項目ならactionsブロックを返す（無ければNone）。
+    action_idは"numbering_<kind>:<request_id>:<value>"の3分割固定形式
+    （handle_interactiveで同じ形式を前提にパースする）。"""
+    if field == "doc_type":
+        return {"type": "actions", "block_id": f"numreq_{request_id}", "elements": [
+            {"type": "button", "action_id": f"numbering_doctype:{request_id}:{v}", "value": v,
+             "text": {"type": "plain_text", "text": lbl}}
+            for v, lbl in _DOC_TYPE_BUTTON_LABELS]}
+    if field == "contract_type":
+        return {"type": "actions", "block_id": f"numreq_{request_id}", "elements": [
+            {"type": "button", "action_id": f"numbering_conttype:{request_id}:{v}", "value": v,
+             "text": {"type": "plain_text", "text": lbl}}
+            for v, lbl in _CONTRACT_TYPE_BUTTON_LABELS]}
+    return None
+
+
+def _respond_url(response_url: str, text: str, blocks: list | None = None) -> None:
+    """response_urlにPOSTしてメッセージを追記する（slack_tasks.pyの同名ヘルパーと同型。
+    ボタン押下後の返信はresponse_url経由にすることで、chat.postMessage用のBotトークンを
+    /slack/interactive側から個別に渡さずに済む＝他Botのボタン処理と同じ設計に揃えている）。"""
+    if not response_url:
+        return
+    import urllib.request
+    payload: dict = {"text": text, "replace_original": False}
+    if blocks:
+        payload["blocks"] = blocks
+    try:
+        req = urllib.request.Request(
+            response_url, data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:  # noqa: BLE001
+        print(f"[slack_numbering] _respond_url error: {e}", flush=True)
+
+
+def _post_question(*, channel: str | None = None, thread_ts: str | None = None,
+                   token: str | None = None, response_url: str | None = None,
+                   field: str, req: dict, request_id: int, prefix: str = "") -> None:
+    """未確定項目を尋ねるメッセージを送る。ボタン化できる項目(doc_type/契約種別)は
+    ボタンを添える。response_url指定時はそちら経由（ボタン押下時）、
+    無指定ならchat.postMessage（メンション/スレッド返信時）で送る。"""
+    text = prefix + _field_question(field, req)
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+    btn = _field_blocks(field, request_id)
+    if btn:
+        blocks.append(btn)
+    if response_url:
+        _respond_url(response_url, text, blocks)
+    else:
+        _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
+                   text=text, blocks=blocks)
+
+
 # ユーザー報告(2026-09-17):「TOPPANの見積書に採番して」で対象が特定できなかった。
 # find_deal/find_accountはメッセージ文中に「取引先名(DBの値)がそのまま部分文字列として
 # 含まれるか」しか見ておらず、DB側の値が「TOPPAN株式会社」等、法人格の接尾辞付きだと、
@@ -241,15 +302,19 @@ def _missing_field(req: dict) -> str | None:
     return None
 
 
-def _issue_and_reply(con, *, channel: str, thread_ts: str, req: dict, requested_by: str,
-                     token: str | None) -> None:
+def _issue_and_reply(con, *, channel: str | None = None, thread_ts: str | None = None,
+                     req: dict, requested_by: str, token: str | None = None,
+                     response_url: str | None = None) -> None:
     saved = sfa_db.issue_document_number(
         con, doc_type=req["doc_type"], entity_id=req["entity_id"],
         contract_type=req.get("contract_type"), revision_of=req.get("revision_of"),
         issued_by=requested_by, issued_via="slack")
     label = sfa_db.DOCUMENT_TYPE_LABELS[req["doc_type"]]
-    _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-               text=f"✅ {label}番号を発行しました: {saved['fullNumber']}")
+    text = f"✅ {label}番号を発行しました: {saved['fullNumber']}"
+    if response_url:
+        _respond_url(response_url, text)
+    else:
+        _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts, text=text)
 
 
 def handle_mention_numbering(con, channel: str, thread_ts: str, text: str, user_id: str,
@@ -280,13 +345,14 @@ def handle_mention_numbering(con, channel: str, thread_ts: str, text: str, user_
                        text=f"⚠️ {e}")
         return
 
-    sfa_db.create_numbering_request(
+    created = sfa_db.create_numbering_request(
         con, slack_channel=channel, slack_ts=thread_ts, doc_type=req["doc_type"],
         contract_type=req["contract_type"], entity_kind=req["entity_kind"],
-        entity_id=req["entity_id"], is_revision=req["is_revision"],
+        entity_id=req["entity_id"], entity_hint=parsed["entity_hint"],
+        is_revision=req["is_revision"],
         revision_of=req["revision_of"], requested_by=user_id)
-    _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-               text=_field_question(missing, req))
+    _post_question(channel=channel, thread_ts=thread_ts, token=token, field=missing,
+                   req=req, request_id=created["id"])
 
 
 def handle_message_numbering(con, event: dict, token: str | None = None) -> None:
@@ -322,19 +388,78 @@ def handle_message_numbering(con, event: dict, token: str | None = None) -> None
         if resolved:
             req["entity_kind"], req["entity_id"], _label = resolved
 
+    _continue_pending(con, pending, req, channel=channel, thread_ts=thread_ts, token=token,
+                      requested_by=user_id)
+
+
+def _continue_pending(con, pending: dict, req: dict, *, channel: str | None = None,
+                      thread_ts: str | None = None, token: str | None = None,
+                      requested_by: str, response_url: str | None = None) -> None:
+    """保留リクエストの項目を1つ埋めた後の共通処理（テキスト返信・ボタン押下の両方から
+    呼ばれる）。まだ足りなければ次の項目をボタン付きで尋ね返し、揃えば発行する。
+    response_url指定時（ボタン押下）はそちら経由で返信する。"""
+    if req.get("doc_type") and req.get("entity_id") is None and pending.get("entityHint"):
+        # doc_type確定前は対象(商談/取引先)の突合を試みていないため、doc_typeが今回新たに
+        # 判明した時点で、保留時に保存しておいた元メッセージ文面(entity_hint)を使って
+        # 再突合を試みる。これにより「対象は既に書いてあったのに聞き直す」typing量増加を防ぐ。
+        resolved = _resolve_entity(con, req["doc_type"], pending["entityHint"])
+        if resolved:
+            req["entity_kind"], req["entity_id"], _label = resolved
     still_missing = _missing_field(req)
     sfa_db.resolve_numbering_request(
         con, pending["id"], doc_type=req["doc_type"], contract_type=req["contract_type"],
         entity_kind=req["entity_kind"], entity_id=req["entity_id"], revision_of=req["revision_of"])
     if still_missing is not None:
-        _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-                   text=f"🙏 まだ特定できませんでした。{_field_question(still_missing, req)}")
+        _post_question(channel=channel, thread_ts=thread_ts, token=token, response_url=response_url,
+                       field=still_missing, req=req, request_id=pending["id"],
+                       prefix="🙏 まだ特定できませんでした。")
         return
 
     sfa_db.resolve_numbering_request(con, pending["id"], status="issued")
     try:
         _issue_and_reply(con, channel=channel, thread_ts=thread_ts, req=req,
-                         requested_by=user_id, token=token)
+                         requested_by=requested_by, token=token, response_url=response_url)
     except sfa_db.DocumentNumberOverflowError as e:
-        _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-                   text=f"⚠️ {e}")
+        if response_url:
+            _respond_url(response_url, f"⚠️ {e}")
+        else:
+            _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
+                       text=f"⚠️ {e}")
+
+
+def handle_interactive(con, payload: dict) -> None:
+    """採番Botのボタン(block_actions)押下を処理する。action_idは
+    "numbering_doctype:<request_id>:<value>" / "numbering_conttype:<request_id>:<value>"
+    の3分割形式（_field_blocksで生成）。/slack/interactiveから他Bot共通で呼ばれる
+    （task/desk系のボタンと同じくresponse_url経由で返信するため、Botトークンは不要）。"""
+    actions = payload.get("actions") or []
+    if not actions:
+        return
+    act = actions[0]
+    action_id = act.get("action_id", "")
+    response_url = payload.get("response_url", "")
+    parts = action_id.split(":")
+    if len(parts) != 3 or parts[0] not in ("numbering_doctype", "numbering_conttype"):
+        return
+    kind, request_id_s, value = parts
+    try:
+        request_id = int(request_id_s)
+    except ValueError:
+        return
+    pending = sfa_db.get_numbering_request(con, request_id)
+    if not pending or pending["status"] != "pending":
+        _respond_url(response_url, "⚠ この確認は既に処理済み、または見つかりませんでした。")
+        return
+
+    req = {"doc_type": pending["docType"], "contract_type": pending["contractType"],
+           "entity_kind": pending["entityKind"], "entity_id": pending["entityId"],
+           "is_revision": pending["isRevision"], "revision_of": pending["revisionOf"]}
+    if kind == "numbering_doctype" and value in sfa_db.DOCUMENT_TYPES:
+        req["doc_type"] = value
+    elif kind == "numbering_conttype" and value in sfa_db.CONTRACT_TYPES:
+        req["contract_type"] = value
+    else:
+        return
+
+    _continue_pending(con, pending, req, response_url=response_url,
+                      requested_by=pending.get("requestedBy") or (payload.get("user") or {}).get("id", ""))

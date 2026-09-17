@@ -355,3 +355,110 @@ def test_overflow_error_replies_with_warning_instead_of_crashing(con, deal_and_a
     sn.handle_mention_numbering(con, "C1", "700.001",
                                 "TOPPANの見積書に採番してもらえますか？", "U1")
     assert "⚠️" in posts[-1]
+
+
+# ── ボタン(block_actions): 選択肢はできるだけボタンで提示する（ユーザー要望2026-09-17） ──
+
+@pytest.fixture
+def responds(monkeypatch):
+    """response_url宛の返信(ボタン押下時)をキャプチャする。posts(_slack_post)とは別経路。"""
+    calls = []
+
+    def _fake_respond(url, text, blocks=None):
+        calls.append({"url": url, "text": text, "blocks": blocks})
+
+    monkeypatch.setattr(sn, "_respond_url", _fake_respond)
+    return calls
+
+
+def _click(con, request_id, kind, value, responds_list):
+    """action_idを組み立ててhandle_interactive相当のpayloadでボタン押下をシミュレートする。"""
+    payload = {"actions": [{"action_id": f"{kind}:{request_id}:{value}", "value": value}],
+              "response_url": "https://hooks.slack.com/fake", "user": {"id": "U1"}}
+    sn.handle_interactive(con, payload)
+    return responds_list[-1] if responds_list else None
+
+
+def test_doc_type_question_includes_three_buttons(con, deal_and_account, posts):
+    sn.handle_mention_numbering(con, "C1", "800.001", "TOPPANに採番して", "U1")
+    request_id = sfa_db.get_pending_numbering_request(con, "C1", "800.001")["id"]
+    # _slack_postはtext=キーワード引数のほか、blocksもキーワード引数として渡されている
+    # （posts fixtureはtextしか記録しないため、ここでは_field_blocksを直接検証する）。
+    btn = sn._field_blocks("doc_type", request_id)
+    values = [el["value"] for el in btn["elements"]]
+    assert values == ["quote", "invoice", "contract"]
+    assert all(el["action_id"] == f"numbering_doctype:{request_id}:{el['value']}"
+              for el in btn["elements"])
+
+
+def test_contract_type_question_includes_four_buttons(con):
+    btn = sn._field_blocks("contract_type", 42)
+    values = [el["value"] for el in btn["elements"]]
+    assert values == ["M", "S", "N", "O"]
+    assert all(el["action_id"] == f"numbering_conttype:42:{el['value']}" for el in btn["elements"])
+
+
+def test_entity_and_revision_of_have_no_buttons():
+    """対象(商談/取引先)・改版元番号は候補が多く/自由記述のためボタン化しない。"""
+    assert sn._field_blocks("entity", 1) is None
+    assert sn._field_blocks("revision_of", 1) is None
+
+
+def test_click_doc_type_button_then_ask_contract_type_with_buttons(con, deal_and_account, posts, responds):
+    """ユーザー要望(2026-09-17):「確認はボタン等の選択肢で」。doc_type不明時にボタンで
+    「契約書」を選ぶと、次の質問(契約種別)もボタン付きで返る。"""
+    sn.handle_mention_numbering(con, "C1", "810.001", "TOPPANに採番して", "U1")
+    request_id = sfa_db.get_pending_numbering_request(con, "C1", "810.001")["id"]
+
+    result = _click(con, request_id, "numbering_doctype", "contract", responds)
+    assert "契約書で発行します" in result["text"]
+    assert "契約種別" in result["text"]
+    assert result["blocks"] is not None
+    conttype_values = [el["value"] for el in result["blocks"][1]["elements"]]
+    assert conttype_values == ["M", "S", "N", "O"]
+
+    pending = sfa_db.get_pending_numbering_request(con, "C1", "810.001")
+    assert pending["docType"] == "contract"
+    assert pending["contractType"] is None  # まだ未確定
+
+
+def test_click_doc_type_then_contract_type_buttons_issues_number(con, deal_and_account, posts, responds):
+    """doc_type→契約種別の2段ボタンクリックだけで（手打ちゼロで）発行まで完了できること。
+    元メッセージに書かれていた対象(TOPPAN)は、doc_type確定前は突合を試みない設計だったが、
+    entity_hintとして保存しておき、doc_typeがボタンで確定した時点で再突合する
+    （聞き直しを避ける、#160追加要望「手打ちの量を減らす」対応）。"""
+    deal, _ = deal_and_account
+    sn.handle_mention_numbering(con, "C1", "820.001", "TOPPANに採番して", "U1")
+    request_id = sfa_db.get_pending_numbering_request(con, "C1", "820.001")["id"]
+
+    _click(con, request_id, "numbering_doctype", "contract", responds)
+    result = _click(con, request_id, "numbering_conttype", "S", responds)
+    assert result["text"].startswith("✅ 契約書番号を発行しました: ")
+    numbers = sfa_db.list_document_numbers(con)
+    assert len(numbers) == 1
+    assert numbers[0]["contractType"] == "S"
+    assert numbers[0]["entityId"] == deal
+
+
+def test_click_on_already_completed_request_is_ignored(con, deal_and_account, posts, responds):
+    """発行済み/存在しない保留リクエストへのボタン押下（二重クリック等）は無視し、
+    その旨をresponse_url経由で伝える（新しい採番を誤発行しない）。"""
+    sn.handle_mention_numbering(con, "C1", "830.001",
+                                "TOPPANの見積書に採番してもらえますか？", "U1")
+    assert posts[-1].startswith("✅")  # 即発行済み＝保留リクエストは残らない
+    before = len(sfa_db.list_document_numbers(con))
+
+    payload = {"actions": [{"action_id": "numbering_doctype:999999:quote", "value": "quote"}],
+              "response_url": "https://hooks.slack.com/fake", "user": {"id": "U1"}}
+    sn.handle_interactive(con, payload)
+    assert "処理済み" in responds[-1]["text"] or "見つかりません" in responds[-1]["text"]
+    assert len(sfa_db.list_document_numbers(con)) == before  # 増えていない
+
+
+def test_handle_interactive_ignores_unrelated_action_id(con):
+    """他Bot(task_done等)のaction_idは無視する（action_id前置詞で振り分けているため
+    webapp.py側で既にnumbering_*のみここに来る設計だが、念のため関数単体でも安全に無視）。"""
+    sn.handle_interactive(con, {"actions": [{"action_id": "task_done:1", "value": "1"}],
+                               "response_url": "https://hooks.slack.com/fake"})
+    # 例外にならず、何も起きなければOK（numbering_requestsテーブルに影響しない）
+    assert True

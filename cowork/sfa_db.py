@@ -1363,6 +1363,7 @@ CREATE TABLE IF NOT EXISTS numbering_requests (
     contract_type TEXT,
     entity_kind   TEXT,
     entity_id     INTEGER,
+    entity_hint   TEXT,                  -- 対象を特定できなかった時点の元メッセージ文面（doc_type確定後の再突合用）
     is_revision   INTEGER NOT NULL DEFAULT 0,  -- 1=改版番号の発行リクエスト（revision_of確定まで他項目は不問）
     revision_of   INTEGER REFERENCES document_numbers(id),
     status        TEXT NOT NULL DEFAULT 'pending',  -- pending/issued/cancelled
@@ -1836,6 +1837,13 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         _mktgd_cols = {c[1] for c in con.execute("PRAGMA table_info(mktg_diagnostics)")}
         if "biz_type_l2" not in _mktgd_cols:
             con.execute("ALTER TABLE mktg_diagnostics ADD COLUMN biz_type_l2 TEXT")
+        # 採番Bot(#160、2026-09-17): doc_typeが未確定の間は対象(商談/取引先)の突合を試みない
+        # 設計だったため、doc_typeをボタン等で後から確定させても、最初のメッセージに書かれていた
+        # 会社名等が再利用されず、対象を毎回聞き直す不具合があった。元メッセージ文面を保持し、
+        # doc_type確定後に再突合できるようにする。
+        _numreq_cols = {c[1] for c in con.execute("PRAGMA table_info(numbering_requests)")}
+        if "entity_hint" not in _numreq_cols:
+            con.execute("ALTER TABLE numbering_requests ADD COLUMN entity_hint TEXT")
         # マーケ施策診断ツールの旧HTML版に埋め込まれていたプリロードデータを一度だけ移植
         # （テーブルが空のときのみ。ユーザーが1件でも保存した後は絶対に実行されない）。
         if con.execute("SELECT COUNT(*) FROM mktg_diagnostics").fetchone()[0] == 0:
@@ -6913,6 +6921,7 @@ def _numbering_request_row_to_dict(row: dict) -> dict:
         "id": row["id"], "slackChannel": row["slack_channel"], "slackTs": row["slack_ts"],
         "docType": row["doc_type"], "contractType": row["contract_type"],
         "entityKind": row["entity_kind"], "entityId": row["entity_id"],
+        "entityHint": row["entity_hint"],
         "isRevision": bool(row["is_revision"]), "revisionOf": row["revision_of"],
         "status": row["status"], "requestedBy": row["requested_by"],
         "createdAt": row["created_at"],
@@ -6922,12 +6931,14 @@ def _numbering_request_row_to_dict(row: dict) -> dict:
 def create_numbering_request(con, *, slack_channel: str, slack_ts: str,
                              doc_type: str | None = None, contract_type: str | None = None,
                              entity_kind: str | None = None, entity_id: int | None = None,
+                             entity_hint: str | None = None,
                              is_revision: bool = False, revision_of: int | None = None,
                              requested_by: str | None = None) -> dict:
     cur = con.execute(
         "INSERT INTO numbering_requests (slack_channel, slack_ts, doc_type, contract_type, "
-        "entity_kind, entity_id, is_revision, revision_of, requested_by) VALUES (?,?,?,?,?,?,?,?,?)",
-        (slack_channel, slack_ts, doc_type, contract_type, entity_kind, entity_id,
+        "entity_kind, entity_id, entity_hint, is_revision, revision_of, requested_by) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (slack_channel, slack_ts, doc_type, contract_type, entity_kind, entity_id, entity_hint,
          int(bool(is_revision)), revision_of, requested_by))
     con.commit()
     row = con.execute(
@@ -6940,6 +6951,14 @@ def get_pending_numbering_request(con, slack_channel: str, slack_ts: str) -> dic
         "SELECT * FROM numbering_requests WHERE slack_channel=? AND slack_ts=? "
         "AND status='pending' ORDER BY id DESC LIMIT 1",
         (slack_channel, slack_ts)).fetchone()
+    return _numbering_request_row_to_dict(dict(row)) if row else None
+
+
+def get_numbering_request(con, request_id: int) -> dict | None:
+    """ボタン押下(block_actions)時、action_idに埋め込んだリクエストIDから直接引く用
+    （チャンネル+スレッドts経由のget_pending_numbering_requestとは別の取得経路）。"""
+    row = con.execute(
+        "SELECT * FROM numbering_requests WHERE id=?", (int(request_id),)).fetchone()
     return _numbering_request_row_to_dict(dict(row)) if row else None
 
 

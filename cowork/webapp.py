@@ -24926,14 +24926,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 # ── Slack インタラクティブ（ボタン・モーダル送信）──
                 elif path == "/slack/interactive":
                     # ボタン(block_actions)・モーダル送信(view_submission)は、NegoCollection・
-                    # 事務Bot・TaskBotの3アプリすべてがこの1エンドポイントへ送ってくる（アプリごとに
-                    # 個別のInteractivity Request URLは無い）。各アプリは自分のSigning Secretで
-                    # 署名するため、検証は3つの候補secretを順に試す（どれか1つに一致すればOK）。
-                    # 以前はデフォルト(NegoCollection)のsecretしか試しておらず、事務Bot/TaskBotの
-                    # ボタンはSlack側で「インタラクティビティURL未設定」表示になる（そもそも
+                    # 事務Bot・TaskBot・採番Botの4アプリすべてがこの1エンドポイントへ送ってくる
+                    # （アプリごとに個別のInteractivity Request URLは無い）。各アプリは自分の
+                    # Signing Secretで署名するため、検証は候補secretを順に試す（どれか1つに一致
+                    # すればOK）。以前はデフォルト(NegoCollection)のsecretしか試しておらず、事務Bot/
+                    # TaskBotのボタンはSlack側で「インタラクティビティURL未設定」表示になる（そもそも
                     # Slack App側でオンにしていない場合）か、設定しても署名不一致で401拒否される
                     # 状態だった（ユーザー報告2026-08-25: TaskBotのボタンでインタラクティビティ未設定
-                    # の警告が出る）。
+                    # の警告が出る）。新しいBotを追加する時は、この候補secretリストに追加し忘れないこと。
                     import threading as _threading
                     from cowork import slack_bot as _sb
                     _raw_bytes = raw.encode("utf-8")
@@ -24942,7 +24942,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _verified = any(
                         _secret and _sb.verify_signature(_raw_bytes, _sig_ts, _sig_val, secret=_secret)
                         for _secret in (_sb.SLACK_SIGNING_SECRET, _sb.SLACK_DESK_SIGNING_SECRET,
-                                       _sb.SLACK_TASK_SIGNING_SECRET))
+                                       _sb.SLACK_TASK_SIGNING_SECRET, _sb.SLACK_NUMBERING_SIGNING_SECRET))
                     if not _verified:
                         self._send(b'{"error":"invalid signature"}', 401, ctype="application/json")
                         return
@@ -24997,6 +24997,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 if _aid.startswith("jamie_"):
                                     # #98: Jamie候補ボタン（NegoCollection Bot経由）
                                     _sb.handle_interactive(_con, _payload)
+                                elif _aid.startswith("numbering_"):
+                                    # 採番Bot: doc_type/契約種別の選択ボタン（response_url経由で返信
+                                    # するためBotトークンは渡さない。他Botのボタンと同じ設計）。
+                                    from cowork import slack_numbering as _sn
+                                    _sn.handle_interactive(_con, _payload)
                                 else:
                                     _st.handle_interactive(_con, _payload)
                             except Exception as _e:  # noqa: BLE001
