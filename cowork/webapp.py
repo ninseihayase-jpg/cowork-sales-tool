@@ -25245,6 +25245,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _inner = data.get("event", {}) or {}
                             _tok = _sb2.SLACK_NUMBERING_TOKEN
                             _eid = data.get("event_id")
+                            print(f"[slack_numbering_events] event: type={_inner.get('type')!r} "
+                                  f"channel={_inner.get('channel')!r} event_id={_eid!r}", flush=True)
                             if _eid and not _sb2._mark_event_processed(_con, _eid):
                                 return  # Slack再送の冪等化
                             _etype = _inner.get("type")
