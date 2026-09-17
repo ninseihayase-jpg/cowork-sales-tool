@@ -813,6 +813,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
       <a href="/dev-point-master">🎯 開発点数マスタ</a>
       <a href="/base-workload">🧑‍💼 ベース工数（恒常稼働）</a>
       <a href="/tech-seed-master">🌱 技術シードマスタ</a>
+      <a href="/document-numbers">🔢 見積書/請求書/契約書 採番一覧</a>
       <div class="grp">一括タグ付け・取込（単発運用）</div>
       <a href="/data-tagging">🏷 データ整備（終了理由・活動）</a>
       <a href="/exhibition-tagging">🎪 展示会名タグ付け</a>
@@ -6647,6 +6648,50 @@ def deal_hygiene_page(con) -> str:
       <b>Delivery稼働予定は stage=受注 で判定するため、クローズしても確定稼働として残ります</b>（消えません）。</p>
       {won_tbl}
     </div>"""
+
+
+def document_numbers_page(con) -> str:
+    """採番Bot（#160、2026-09-17）が発行した見積書/請求書/契約書番号の一覧（監査用・読み取り専用）。
+    重複発行がないことの確認や、過去の発行履歴の参照に使う。実際の発行はSlack採番Bot経由。"""
+    rows = sfa_db.list_document_numbers(con)
+
+    def _label(r):
+        if r["entityKind"] == "deal":
+            d = con.execute("SELECT deal_name FROM deals WHERE id=?", (r["entityId"],)).fetchone()
+            return (d["deal_name"] if d else None) or f"SFA#{r['entityId']}"
+        a = con.execute("SELECT name FROM accounts WHERE id=?", (r["entityId"],)).fetchone()
+        return (a["name"] if a else None) or f"CCC#{r['entityId']}"
+
+    if rows:
+        body = "".join(
+            f'<tr><td><b>{_esc(r["fullNumber"])}</b></td>'
+            f'<td>{_esc(r["docTypeLabel"])}{(" / " + _esc(r["contractTypeLabel"])) if r["contractTypeLabel"] else ""}</td>'
+            f'<td>{_esc(_label(r))}</td>'
+            f'<td>{"改版(R" + str(r["revision"]) + ")" if r["revision"] else "初回"}</td>'
+            f'<td class="muted">{_esc((r["createdAt"] or "")[:16])}</td>'
+            f'<td class="muted">{_esc(r["issuedBy"] or "-")}（{_esc(r["issuedVia"])}）</td>'
+            f'<td><a href="#" onclick="return docNumDelete({r["id"]})" style="color:#c53030;font-size:12px">取消</a></td></tr>'
+            for r in rows)
+        tbl = (f'<table style="font-size:13px;width:100%;border-collapse:collapse">'
+               f'<tr><th>番号</th><th>種別</th><th>対象</th><th>区分</th><th>発行日時</th><th>発行者</th><th></th></tr>{body}</table>')
+    else:
+        tbl = '<p class="muted">まだ発行された番号はありません。</p>'
+
+    return f"""
+    <div class="card">
+      <h2>🔢 見積書/請求書/契約書 採番一覧</h2>
+      <p class="muted" style="font-size:13px">Slack「採番Bot」が発行した番号の一覧（監査・重複確認用、読み取り専用）。
+      フォーマットは「InProc社内採番ルール_v1_2609.xlsx」準拠。「取消」は誤発行時の削除で、連番は詰まりません
+      （欠番として扱う運用を想定）。</p>
+      {tbl}
+    </div>
+    <script>
+    function docNumDelete(id){{
+      if(!confirm('この番号を取り消します（誤発行の訂正用）。よろしいですか？'))return false;
+      fetch('/document-numbers/'+id+'/delete',{{method:'POST'}}).then(function(){{location.reload();}});
+      return false;
+    }}
+    </script>"""
 
 
 def sync_health_page(con, theme_client) -> str:
@@ -20325,6 +20370,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(sync_health_page(con, theme_client)))
                 elif path == "/deal-hygiene":
                     self._send(render(deal_hygiene_page(con)))
+                elif path == "/document-numbers":
+                    self._send(render(document_numbers_page(con)))
                 elif path == "/weekly-numbers":
                     self._send(render(weekly_numbers_page(con)))
                 elif path == "/weekly-numbers/audit":
@@ -20938,6 +20985,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif (path.startswith("/mktg-diagnostic/") and path.endswith("/delete")
                       and path.split("/")[2].isdigit()):
                     sfa_db.delete_mktg_diagnostic(con, int(path.split("/")[2]))
+                    self._send(b'{"ok":true}', ctype="application/json")
+                elif (path.startswith("/document-numbers/") and path.endswith("/delete")
+                      and path.split("/")[2].isdigit()):
+                    sfa_db.delete_document_number(con, int(path.split("/")[2]))
                     self._send(b'{"ok":true}', ctype="application/json")
 
                 # ── マーケ施策 実行対象プラン（戦略マップのマス選択の保存・削除。2026-09-13） ──
@@ -25146,6 +25197,71 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         finally:
                             _con.close()
                     _threading.Thread(target=_process_task, daemon=True).start()
+                    return
+
+                elif path == "/slack/numbering-events":
+                    # 採番Bot（別Slackアプリ・専用チャンネル、2026-09-17）。見積書/請求書/契約書番号の
+                    # 自動発行。@Botメンションと、対象特定待ちスレッドへの返信(message)のみ処理する。
+                    # 要Slackアプリ設定: Event SubscriptionsにEvent Subscriptions app_mention +
+                    # message.channels（プライベートチャンネルならmessage.groupsも）の購読、
+                    # Bot Token Scopes chat:write/app_mentions:read/channels:history(or groups:history)/
+                    # users:read、Socket ModeはOFF（過去の教訓、他Bot設定時と同じ罠）。
+                    import threading as _threading
+                    from cowork import slack_bot as _sb
+                    if not _sb.SLACK_NUMBERING_SIGNING_SECRET or not _sb.SLACK_NUMBERING_TOKEN:
+                        self._send(b'{"error":"numbering bot not configured"}', 503, ctype="application/json")
+                        return
+                    if not _sb.verify_signature(
+                        raw.encode("utf-8"),
+                        self.headers.get("X-Slack-Request-Timestamp", ""),
+                        self.headers.get("X-Slack-Signature", ""),
+                        secret=_sb.SLACK_NUMBERING_SIGNING_SECRET,
+                    ):
+                        self._send(b'{"error":"invalid signature"}', 401, ctype="application/json")
+                        return
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        self._send(b"<error/>", 400)
+                        return
+                    if data.get("type") == "url_verification":
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"challenge": data["challenge"]}).encode())
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+
+                    def _process_numbering():
+                        _con = sfa_db.connect(db_path)
+                        try:
+                            import re as _re
+                            from cowork import slack_bot as _sb2
+                            from cowork import slack_numbering as _sn
+                            _inner = data.get("event", {}) or {}
+                            _tok = _sb2.SLACK_NUMBERING_TOKEN
+                            _eid = data.get("event_id")
+                            if _eid and not _sb2._mark_event_processed(_con, _eid):
+                                return  # Slack再送の冪等化
+                            _etype = _inner.get("type")
+                            if _etype == "app_mention":
+                                _text = _re.sub(r"<@[^>]+>", "", _inner.get("text", "")).strip()
+                                _ch = _inner.get("channel", "")
+                                _ts = _inner.get("thread_ts") or _inner.get("ts", "")
+                                _uid = _inner.get("user", "")
+                                if _text and _ch and _ts:
+                                    _sn.handle_mention_numbering(_con, _ch, _ts, _text, _uid, token=_tok)
+                            elif (_etype == "message" and not _inner.get("subtype")
+                                  and not _inner.get("bot_id")):
+                                _sn.handle_message_numbering(_con, _inner, token=_tok)
+                        except Exception as _e:  # noqa: BLE001
+                            print(f"[slack_numbering_events] error: {_e}", flush=True)
+                        finally:
+                            _con.close()
+                    _threading.Thread(target=_process_numbering, daemon=True).start()
                     return
 
                 else:

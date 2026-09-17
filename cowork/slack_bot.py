@@ -40,6 +40,10 @@ SLACK_DESK_SIGNING_SECRET = os.environ.get("SLACK_DESK_SIGNING_SECRET", "")
 # NegoCollection（既存共有アプリ）側のまま＝desk-eventsと同じ分離範囲）。
 SLACK_TASK_TOKEN = os.environ.get("SLACK_TASK_BOT_TOKEN", "")
 SLACK_TASK_SIGNING_SECRET = os.environ.get("SLACK_TASK_SIGNING_SECRET", "")
+# 採番Bot（別Slackアプリ・専用チャンネル）用。/slack/numbering-events で使用
+# （未設定なら採番Botエンドポイントは無効。2026-09-17追加、見積書/請求書/契約書番号の自動発行）。
+SLACK_NUMBERING_TOKEN = os.environ.get("SLACK_NUMBERING_BOT_TOKEN", "")
+SLACK_NUMBERING_SIGNING_SECRET = os.environ.get("SLACK_NUMBERING_SIGNING_SECRET", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "http://localhost:8787")
 # #98: Jamie文字起こし到着時の商談候補提示を投稿する先（#sales）。2026-08-19以降は個人DM
@@ -185,6 +189,24 @@ def find_deal(con: sqlite3.Connection, text: str) -> dict | None:
         if acct and acct in text_l:
             return d
     return None
+
+
+def find_account(con: sqlite3.Connection, text: str) -> dict | None:
+    """取引先(account)を自由文中のテキストから部分一致で特定する。find_deal()の
+    account_nameフォールバック部分と対称のロジック（採番Bot#160の請求書番号=CCC番号は
+    取引先IDベースのため、商談ではなく取引先を直接特定する必要がある）。"""
+    rows = con.execute("SELECT * FROM accounts ORDER BY updated_at DESC").fetchall()
+    text_l = text.lower()
+    best, best_score = None, 0
+    for r in rows:
+        a = dict(r)
+        name = (a.get("name") or "").lower()
+        if name and name in text_l:
+            score = len(name)
+            if score > best_score:
+                best_score = score
+                best = a
+    return best
 
 
 def _get_open_deal_by_id(con: sqlite3.Connection, deal_id: int) -> dict | None:

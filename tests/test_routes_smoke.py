@@ -289,7 +289,8 @@ def test_inline_close_reason_and_ms_type_persist(server, db_path):
 
 
 @pytest.mark.parametrize("path", ["/", "/deals", "/dev-projects", "/deal-issues", "/accounts", "/leads",
-                                  "/deal-hygiene", "/weekly-numbers/audit", "/tasks", "/desk-tasks"])
+                                  "/deal-hygiene", "/weekly-numbers/audit", "/tasks", "/desk-tasks",
+                                  "/document-numbers"])
 def test_get_main_routes_return_200(server, path):
     code, resp = _get(server + path, headers=_auth_header())
     assert code == 200, f"{path} returned {code}"
@@ -1418,6 +1419,12 @@ def test_slack_desk_events_not_configured(server):
 def test_slack_task_events_not_configured(server):
     """#93 通常タスクBot未設定(環境変数なし)なら /slack/task-events は503（500/例外にならない）。"""
     code, _ = _post(server + "/slack/task-events", {"dummy": "1"}, headers=_auth_header())
+    assert code == 503
+
+
+def test_slack_numbering_events_not_configured(server):
+    """#160 採番Bot未設定(環境変数なし)なら /slack/numbering-events は503（500/例外にならない）。"""
+    code, _ = _post(server + "/slack/numbering-events", {"dummy": "1"}, headers=_auth_header())
     assert code == 503
 
 

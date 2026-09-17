@@ -436,6 +436,14 @@ LEAD_SOURCE_LABELS = {"exhibition": "展示会", "referral": "紹介・知人",
 LEAD_ACTIVITY_TYPES = ["note", "email", "call", "meeting"]
 LEAD_ACTIVITY_LABELS = {"note": "メモ", "email": "メール", "call": "電話", "meeting": "面談"}
 
+# 採番Bot（見積書・請求書・契約書番号の自動発行、2026-09-17）。
+# ルールは「InProc社内採番ルール_v1_2609.xlsx」準拠。
+DOCUMENT_TYPES = ["quote", "invoice", "contract"]
+DOCUMENT_TYPE_LABELS = {"quote": "見積書", "invoice": "請求書", "contract": "契約書"}
+_DOCUMENT_TYPE_CODE = {"quote": "Q", "invoice": "I", "contract": "C"}
+CONTRACT_TYPES = ["M", "S", "N", "O"]
+CONTRACT_TYPE_LABELS = {"M": "基本契約", "S": "個別契約", "N": "秘密保持契約", "O": "その他"}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1315,6 +1323,46 @@ CREATE TABLE IF NOT EXISTS deal_issue_progress_reports (
     UNIQUE(issue_id, report_date)
 );
 CREATE INDEX IF NOT EXISTS idx_issue_progress_reports_issue ON deal_issue_progress_reports(issue_id);
+
+-- 採番Bot（見積書・請求書・契約書番号の自動発行、2026-09-17）。
+-- 発行済み番号台帳。「InProc社内採番ルール_v1_2609.xlsx」準拠のフォーマットで発行する。
+CREATE TABLE IF NOT EXISTS document_numbers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_type      TEXT NOT NULL,        -- quote/invoice/contract
+    entity_kind   TEXT NOT NULL,        -- deal（quote/contract）/ account（invoice）
+    entity_id     INTEGER NOT NULL,
+    contract_type TEXT,                 -- M/S/N/O（contractのみ）
+    period_key    TEXT,                 -- quote/invoice=当月YYMM、contract=当年YYYY（リセット判定用。番号本体に出るのはinvoiceのYYMMのみ）
+    seq           INTEGER NOT NULL,
+    revision      INTEGER,              -- NULL=初回、1=R1、2=R2…
+    revision_of   INTEGER REFERENCES document_numbers(id),
+    full_number   TEXT NOT NULL UNIQUE,
+    issued_by     TEXT,
+    issued_via    TEXT NOT NULL DEFAULT 'web',  -- web/slack
+    note          TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_document_numbers_lookup
+    ON document_numbers(doc_type, entity_kind, entity_id, contract_type, period_key);
+
+-- Slack上の採番リクエストが曖昧な場合の「Bot提案→スレッド返信で確定」待ち状態。
+-- slack_tasks.pyのdue_date_confirmed方式(_admin_due_context/handle_admin_due_reply)と同じ設計思想。
+CREATE TABLE IF NOT EXISTS numbering_requests (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    slack_channel TEXT NOT NULL,
+    slack_ts      TEXT NOT NULL,        -- スレッド元ts
+    doc_type      TEXT,
+    contract_type TEXT,
+    entity_kind   TEXT,
+    entity_id     INTEGER,
+    is_revision   INTEGER NOT NULL DEFAULT 0,  -- 1=改版番号の発行リクエスト（revision_of確定まで他項目は不問）
+    revision_of   INTEGER REFERENCES document_numbers(id),
+    status        TEXT NOT NULL DEFAULT 'pending',  -- pending/issued/cancelled
+    requested_by  TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_numbering_requests_thread
+    ON numbering_requests(slack_channel, slack_ts, status);
 """
 
 # 進捗報告の本文セクションキー（DB列は<key>_html）。表示順・docxエクスポート順もこの並びに従う。
@@ -6693,4 +6741,217 @@ def open_progress_report_for_edit(con, issue_id: int, *, today: str,
 
 def delete_progress_report(con, report_id: int) -> None:
     con.execute("DELETE FROM deal_issue_progress_reports WHERE id=?", (int(report_id),))
+    con.commit()
+
+
+# ── 採番Bot（見積書・請求書・契約書番号の自動発行、2026-09-17） ──────────────
+# ルールは「InProc社内採番ルール_v1_2609.xlsx」準拠。
+#   見積書: SFA番号(商談ID,5桁ゼロ埋め)+"Q"+連番(2桁)[+"R#"]。連番は同一商談×同一発行月でリセット。
+#   請求書: CCC(取引先ID,5桁ゼロ埋め)+"I"+YYMM(4桁)+連番(2桁)[+"R#"]。連番は同一取引先×同一発行月でリセット。
+#   契約書: SFA番号(商談ID,5桁ゼロ埋め)+"C"+契約種別(1桁:M/S/N/O)+連番(2桁)[+"R#"]。
+#           連番は同一商談×同一契約種別×同一年でリセット。
+# 桁あふれ(99件/リセット単位を超える)は例外を送出し、桁数見直しの判断をユーザーに委ねる。
+
+class DocumentNumberOverflowError(Exception):
+    """連番が2桁(99件)を超えた場合。採番ルールの桁数見直しが必要というシグナル。"""
+
+
+def _document_number_row_to_dict(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "docType": row["doc_type"],
+        "docTypeLabel": DOCUMENT_TYPE_LABELS.get(row["doc_type"], row["doc_type"]),
+        "entityKind": row["entity_kind"],
+        "entityId": row["entity_id"],
+        "contractType": row["contract_type"],
+        "contractTypeLabel": CONTRACT_TYPE_LABELS.get(row["contract_type"] or "", None),
+        "periodKey": row["period_key"],
+        "seq": row["seq"],
+        "revision": row["revision"],
+        "revisionOf": row["revision_of"],
+        "fullNumber": row["full_number"],
+        "issuedBy": row["issued_by"],
+        "issuedVia": row["issued_via"],
+        "note": row["note"],
+        "createdAt": row["created_at"],
+    }
+
+
+def _document_number_period_key(doc_type: str, today: date) -> str | None:
+    """quote/invoiceは「発行月」、contractは「発行年」が連番のリセット単位、と
+    「InProc社内採番ルール_v1_2609.xlsx」に明記されている。ただし請求書番号だけは
+    番号本体にYYMM(4桁)を含む一方、見積書・契約書は番号本体に発行月/年を一切含まない
+    フォーマット（SFA番号+Q+連番、SFA番号+C+契約種別+連番）。そのためExcelの記述通りに
+    見積書/契約書も月/年でリセットすると、月/年をまたいだ再発行で見た目が完全に同一の
+    番号（例: 9月の1件目と10月の1件目が両方"12345Q01"）が生成されてしまい、「重複しない
+    ように採番したい」という本来の目的と矛盾する。この矛盾を避けるため、番号本体に
+    発行月/年を含まないquote/contractは期間でリセットせず、商談（+契約書は契約種別）単位で
+    連番を累積させる（=period_keyを使わない）。請求書のみExcelの記述通り月次リセットする
+    （番号自体にYYMMが出るため、月をまたいでも見た目が重複しない）。"""
+    if doc_type == "invoice":
+        return f"{today.year % 100:02d}{today.month:02d}"   # YYMM（番号本体にも表示される）
+    if doc_type in ("quote", "contract"):
+        return None
+    raise ValueError(f"unknown doc_type: {doc_type}")
+
+
+def issue_document_number(con, *, doc_type: str, entity_id: int, contract_type: str | None = None,
+                          revision_of: int | None = None, issued_by: str | None = None,
+                          issued_via: str = "web", note: str | None = None,
+                          today: date | None = None) -> dict:
+    """見積書/請求書/契約書番号を1件発行し、台帳(document_numbers)に記録して返す。
+    revision_ofに既存document_numbers.idを渡すと、その番号の改版(R#)を発行する
+    （2026-09-17ユーザー確定: 改版番号は3書類とも最初から対応する）。"""
+    if doc_type not in DOCUMENT_TYPES:
+        raise ValueError(f"unknown doc_type: {doc_type}")
+    if doc_type == "contract" and contract_type not in CONTRACT_TYPES:
+        raise ValueError("contract_type must be one of M/S/N/O for doc_type='contract'")
+    if today is None:
+        from datetime import datetime, timezone
+        today = datetime.now(timezone(timedelta(hours=9))).date()  # JST基準
+    entity_kind = "account" if doc_type == "invoice" else "deal"
+
+    if revision_of is not None:
+        base = get_document_number(con, revision_of)
+        if not base:
+            raise ValueError(f"revision_of={revision_of} not found")
+        if base["revision"] is not None:
+            # 改版の改版は元の初回発行を辿る（改版チェーンをフラットに保つ）。
+            base = get_document_number(con, base["revisionOf"])
+        max_rev = con.execute(
+            "SELECT MAX(revision) FROM document_numbers WHERE revision_of=?", (base["id"],)
+        ).fetchone()[0]
+        revision = (max_rev or 0) + 1
+        full_number = f"{base['fullNumber']}R{revision}"
+        cur = con.execute(
+            "INSERT INTO document_numbers (doc_type, entity_kind, entity_id, contract_type, "
+            "period_key, seq, revision, revision_of, full_number, issued_by, issued_via, note) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (base["docType"], base["entityKind"], base["entityId"], base["contractType"],
+             base["periodKey"], base["seq"], revision, base["id"], full_number,
+             issued_by, issued_via, note))
+        con.commit()
+        return get_document_number(con, cur.lastrowid)
+
+    period_key = _document_number_period_key(doc_type, today)
+    existing = con.execute(
+        "SELECT COUNT(*) FROM document_numbers WHERE doc_type=? AND entity_kind=? AND entity_id=? "
+        "AND COALESCE(contract_type,'')=COALESCE(?,'') AND COALESCE(period_key,'')=COALESCE(?,'') "
+        "AND revision IS NULL",
+        (doc_type, entity_kind, entity_id, contract_type, period_key)).fetchone()[0]
+    seq = existing + 1
+    if seq > 99:
+        raise DocumentNumberOverflowError(
+            f"{DOCUMENT_TYPE_LABELS[doc_type]}の連番が99件を超えました（entity_id={entity_id}, "
+            f"period={period_key}）。採番ルールの桁数見直しが必要です。")
+    code = _DOCUMENT_TYPE_CODE[doc_type]
+    entity_str = f"{int(entity_id):05d}"
+    if doc_type == "quote":
+        full_number = f"{entity_str}{code}{seq:02d}"
+    elif doc_type == "invoice":
+        full_number = f"{entity_str}{code}{period_key}{seq:02d}"
+    else:  # contract
+        full_number = f"{entity_str}{code}{contract_type}{seq:02d}"
+    cur = con.execute(
+        "INSERT INTO document_numbers (doc_type, entity_kind, entity_id, contract_type, "
+        "period_key, seq, revision, revision_of, full_number, issued_by, issued_via, note) "
+        "VALUES (?,?,?,?,?,?,NULL,NULL,?,?,?,?)",
+        (doc_type, entity_kind, entity_id, contract_type, period_key, seq,
+         full_number, issued_by, issued_via, note))
+    con.commit()
+    return get_document_number(con, cur.lastrowid)
+
+
+def get_document_number(con, document_number_id: int) -> dict | None:
+    row = con.execute(
+        "SELECT * FROM document_numbers WHERE id=?", (int(document_number_id),)).fetchone()
+    return _document_number_row_to_dict(dict(row)) if row else None
+
+
+def find_document_number_by_full_number(con, full_number: str) -> dict | None:
+    """Slackメッセージ中に既存の番号らしき文字列があった場合の改版対象特定に使う。"""
+    row = con.execute(
+        "SELECT * FROM document_numbers WHERE full_number=?", (full_number,)).fetchone()
+    return _document_number_row_to_dict(dict(row)) if row else None
+
+
+def list_document_numbers(con, *, doc_type: str | None = None, entity_kind: str | None = None,
+                          entity_id: int | None = None) -> list[dict]:
+    q = "SELECT * FROM document_numbers WHERE 1=1"
+    args: list = []
+    if doc_type:
+        q += " AND doc_type=?"; args.append(doc_type)
+    if entity_kind:
+        q += " AND entity_kind=?"; args.append(entity_kind)
+    if entity_id is not None:
+        q += " AND entity_id=?"; args.append(int(entity_id))
+    q += " ORDER BY id DESC"
+    return [_document_number_row_to_dict(dict(r)) for r in con.execute(q, args)]
+
+
+def delete_document_number(con, document_number_id: int) -> None:
+    """誤発行の取り消し用。改版が既に発行されている番号を消すと改版側がrevision_of切れに
+    なる点は許容する（誤発行の訂正は稀なケースであり、履歴を追えなくなるリスクより
+    取り消せない不便の方が実運用上問題になりやすいため）。"""
+    con.execute("DELETE FROM document_numbers WHERE id=?", (int(document_number_id),))
+    con.commit()
+
+
+# ── 採番リクエスト（Slack上で対象が特定できない場合の保留状態） ──────────────
+
+def _numbering_request_row_to_dict(row: dict) -> dict:
+    return {
+        "id": row["id"], "slackChannel": row["slack_channel"], "slackTs": row["slack_ts"],
+        "docType": row["doc_type"], "contractType": row["contract_type"],
+        "entityKind": row["entity_kind"], "entityId": row["entity_id"],
+        "isRevision": bool(row["is_revision"]), "revisionOf": row["revision_of"],
+        "status": row["status"], "requestedBy": row["requested_by"],
+        "createdAt": row["created_at"],
+    }
+
+
+def create_numbering_request(con, *, slack_channel: str, slack_ts: str,
+                             doc_type: str | None = None, contract_type: str | None = None,
+                             entity_kind: str | None = None, entity_id: int | None = None,
+                             is_revision: bool = False, revision_of: int | None = None,
+                             requested_by: str | None = None) -> dict:
+    cur = con.execute(
+        "INSERT INTO numbering_requests (slack_channel, slack_ts, doc_type, contract_type, "
+        "entity_kind, entity_id, is_revision, revision_of, requested_by) VALUES (?,?,?,?,?,?,?,?,?)",
+        (slack_channel, slack_ts, doc_type, contract_type, entity_kind, entity_id,
+         int(bool(is_revision)), revision_of, requested_by))
+    con.commit()
+    row = con.execute(
+        "SELECT * FROM numbering_requests WHERE id=?", (cur.lastrowid,)).fetchone()
+    return _numbering_request_row_to_dict(dict(row))
+
+
+def get_pending_numbering_request(con, slack_channel: str, slack_ts: str) -> dict | None:
+    row = con.execute(
+        "SELECT * FROM numbering_requests WHERE slack_channel=? AND slack_ts=? "
+        "AND status='pending' ORDER BY id DESC LIMIT 1",
+        (slack_channel, slack_ts)).fetchone()
+    return _numbering_request_row_to_dict(dict(row)) if row else None
+
+
+def resolve_numbering_request(con, request_id: int, **fields) -> None:
+    """未確定だった項目(doc_type/contract_type/entity_kind/entity_id/revision_of)を
+    埋める部分更新。statusは変えない（発行完了時はcancel_numbering_request系ではなく
+    呼び出し側でstatus='issued'に更新する想定のため、statusもfieldsで渡せば更新される）。"""
+    allowed = {"doc_type", "contract_type", "entity_kind", "entity_id", "revision_of", "status"}
+    sets, args = [], []
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        sets.append(f"{k}=?"); args.append(v)
+    if not sets:
+        return
+    args.append(int(request_id))
+    con.execute(f"UPDATE numbering_requests SET {', '.join(sets)} WHERE id=?", args)
+    con.commit()
+
+
+def cancel_numbering_request(con, request_id: int) -> None:
+    con.execute(
+        "UPDATE numbering_requests SET status='cancelled' WHERE id=?", (int(request_id),))
     con.commit()
