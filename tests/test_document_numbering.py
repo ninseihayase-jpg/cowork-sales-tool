@@ -255,8 +255,15 @@ def test_mention_issues_immediately_when_fully_specified(con, deal_and_account, 
 
 
 def test_mention_asks_when_entity_unresolved_then_completes_on_reply(con, deal_and_account, posts):
+    """ユーザー報告(2026-09-17):「見積書でいいか」「SFA番号は？」を聞いてほしいが、
+    種別に関係なく毎回SFA番号/CCC番号の両方を聞いていた。見積書/契約書=商談・SFA番号のみ、
+    請求書=取引先・CCC番号のみに絞り、書類種別も文中で確認できるようにした。"""
     sn.handle_mention_numbering(con, "C1", "200.001", "見積書に採番して", "U1")
-    assert "対象の商談名" in posts[-1]
+    assert "見積書で発行します" in posts[-1]       # doc_typeが分かっている場合は明示する
+    assert "対象の商談が特定できませんでした" in posts[-1]
+    assert "SFA番号" in posts[-1]
+    assert "CCC番号" not in posts[-1]              # 見積書はSFA番号のみ（CCC番号は聞かない）
+    assert sn._DEALS_LINK in posts[-1]              # 商談一覧へのリンクを添える
     assert sfa_db.list_document_numbers(con) == []
 
     sn.handle_message_numbering(con, {"channel": "C1", "ts": "200.002",
@@ -265,6 +272,27 @@ def test_mention_asks_when_entity_unresolved_then_completes_on_reply(con, deal_a
     numbers = sfa_db.list_document_numbers(con)
     assert len(numbers) == 1
     assert numbers[0]["entityId"] == deal_and_account[0]
+
+
+def test_entity_question_for_invoice_mentions_only_ccc_and_accounts_link(con, deal_and_account, posts):
+    sn.handle_mention_numbering(con, "C1", "210.001", "請求書に採番して", "U1")
+    assert "請求書で発行します" in posts[-1]
+    assert "対象の取引先が特定できませんでした" in posts[-1]
+    assert "CCC番号" in posts[-1]
+    assert "SFA番号" not in posts[-1]
+    assert sn._ACCOUNTS_LINK in posts[-1]
+
+
+def test_entity_matches_account_name_with_corporate_suffix(con, deal_and_account):
+    """ユーザー報告(2026-09-17):「TOPPANの見積書に採番して」で対象が特定できなかった。
+    実際の取引先名が法人格付き（例:「TOPPAN株式会社」）だと、法人格を書かない自然文とは
+    部分文字列として一致しないため。法人格を除いた形でも突合できるようにした。"""
+    deal, acc = deal_and_account
+    con.execute("UPDATE accounts SET name=? WHERE id=?", ("TOPPAN株式会社", acc))
+    con.commit()
+    resolved = sn._resolve_entity(con, "quote", "TOPPANの見積書に採番して")
+    assert resolved is not None
+    assert resolved[:2] == ("deal", deal)
 
 
 def test_mention_asks_contract_type_then_completes(con, deal_and_account, posts):

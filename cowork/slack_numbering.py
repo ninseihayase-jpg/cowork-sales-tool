@@ -11,10 +11,15 @@ Web本体(webapp.py)から呼ばれる。エンドポイント側で署名検証
 from __future__ import annotations
 
 import json
+import os
 import re
 
 from . import sfa_db
 from .slack_bot import _slack_post, _call_claude, find_deal, find_account
+
+SFA_TOOL_URL = os.environ.get("SFA_TOOL_URL", "") or "https://sfa-crm.onrender.com"
+_DEALS_LINK = f"{SFA_TOOL_URL}/deals?tab=active"
+_ACCOUNTS_LINK = f"{SFA_TOOL_URL}/accounts"
 
 _SFA_ID_RE = re.compile(r"SFA\s*#?\s*(\d+)", re.IGNORECASE)
 _CCC_ID_RE = re.compile(r"CCC\s*#?\s*(\d+)", re.IGNORECASE)
@@ -36,12 +41,82 @@ _DOC_TYPE_KEYWORDS = {"quote": ["見積書", "見積", "Q番号"],
                       "invoice": ["請求書", "請求", "I番号"],
                       "contract": ["契約書", "契約", "C番号"]}
 
-_FIELD_QUESTIONS = {
-    "doc_type": "📋 見積書・請求書・契約書のどれに採番しますか？",
-    "contract_type": "📋 契約種別を教えてください（基本契約/個別契約/秘密保持契約/その他）",
-    "entity": "📋 対象の商談名・取引先名、またはSFA番号/CCC番号を教えてください",
-    "revision_of": "📋 改版する元の番号を教えてください（例: 12345Q01）",
+# ユーザー報告(2026-09-17)への対応: 対象(商談/取引先)を尋ねる際、書類種別に関係なく
+# 「SFA番号/CCC番号」両方を毎回聞いていた（見積書・契約書はSFA番号のみ、請求書はCCC番号のみ
+# のはず）。書類種別ごとに対象の識別子・呼び方を分け、一覧画面へのリンクも添える。
+_ENTITY_LABELS = {
+    "quote": ("商談", "SFA番号", _DEALS_LINK, "商談一覧"),
+    "contract": ("商談", "SFA番号", _DEALS_LINK, "商談一覧"),
+    "invoice": ("取引先", "CCC番号", _ACCOUNTS_LINK, "取引先一覧"),
 }
+
+
+def _field_question(field: str, req: dict) -> str:
+    """未確定項目を尋ねる文言を組み立てる。書類種別が分かっていれば、その種別の呼び方
+    （見積書/契約書→商談・SFA番号、請求書→取引先・CCC番号）に絞って聞く
+    （ユーザー報告: 種別に関係なく毎回両方を聞いていた不具合の修正）。"""
+    doc_type = req.get("doc_type")
+    label = sfa_db.DOCUMENT_TYPE_LABELS.get(doc_type, "") if doc_type else ""
+    prefix = f"📋 {label}で発行します。" if label else "📋 "
+    if field == "doc_type":
+        return "📋 見積書・請求書・契約書のどれに採番しますか？"
+    if field == "contract_type":
+        return f"{prefix}契約種別を教えてください（基本契約/個別契約/秘密保持契約/その他）"
+    if field == "entity":
+        target, idlabel, link, linktext = _ENTITY_LABELS.get(
+            doc_type, ("商談・取引先", "SFA番号/CCC番号", _DEALS_LINK, "商談一覧"))
+        return (f"{prefix}対象の{target}が特定できませんでした。{target}名または{idlabel}を"
+               f"教えてください（<{link}|{linktext}>）")
+    if field == "revision_of":
+        return f"{prefix}改版する元の番号を教えてください（例: 12345Q01）"
+    return "📋 内容を確認できませんでした。もう一度教えてください"
+
+
+# ユーザー報告(2026-09-17):「TOPPANの見積書に採番して」で対象が特定できなかった。
+# find_deal/find_accountはメッセージ文中に「取引先名(DBの値)がそのまま部分文字列として
+# 含まれるか」しか見ておらず、DB側の値が「TOPPAN株式会社」等、法人格の接尾辞付きだと、
+# 接尾辞を書かない自然文（「TOPPANの見積書」）とは一致しない。法人格を取り除いた形でも
+# 突合できるようフォールバックを追加する（find_deal/find_account自体はNegoCollection等
+# 他の呼び出し元もあるため、共通ロジックは変えずここだけ拡張する）。
+_CORP_SUFFIX_RE = re.compile(
+    r"(株式会社|有限会社|合同会社|合資会社|一般社団法人|公益財団法人|財団法人|社団法人|"
+    r"\(株\)|（株）|\(有\)|（有）|Co\.,?\s*Ltd\.?|Incorporated|Inc\.?|Corporation|Corp\.?|LLC)",
+    re.IGNORECASE)
+
+
+def _norm_company(name: str) -> str:
+    return _CORP_SUFFIX_RE.sub("", name or "").strip()
+
+
+def _find_deal_normalized(con, text: str) -> dict | None:
+    """find_deal()のフォールバック: 法人格の接尾辞を除いた名前でも一致を試す。"""
+    text_l = text.lower()
+    rows = con.execute(
+        "SELECT d.*, a.name AS account_name FROM deals d "
+        "LEFT JOIN accounts a ON d.account_id = a.id "
+        "WHERE d.status='open' ORDER BY d.updated_at DESC").fetchall()
+    best, best_score = None, 0
+    for r in rows:
+        d = dict(r)
+        for candidate in (d.get("deal_name"), d.get("account_name")):
+            if not candidate or candidate == "未定":
+                continue
+            norm = _norm_company(candidate).lower()
+            if norm and len(norm) > best_score and norm in text_l:
+                best_score, best = len(norm), d
+    return best
+
+
+def _find_account_normalized(con, text: str) -> dict | None:
+    text_l = text.lower()
+    rows = con.execute("SELECT * FROM accounts ORDER BY updated_at DESC").fetchall()
+    best, best_score = None, 0
+    for r in rows:
+        a = dict(r)
+        norm = _norm_company(a.get("name")).lower()
+        if norm and len(norm) > best_score and norm in text_l:
+            best_score, best = len(norm), a
+    return best
 
 
 def _get_deal_by_id(con, deal_id: int) -> dict | None:
@@ -66,7 +141,7 @@ def _resolve_entity(con, doc_type: str, text: str) -> tuple[str, int, str] | Non
             deal = _get_deal_by_id(con, int(m.group(1)))
             if deal:
                 return ("deal", deal["id"], deal.get("deal_name") or "")
-        deal = find_deal(con, text)
+        deal = find_deal(con, text) or _find_deal_normalized(con, text)
         if deal:
             return ("deal", deal["id"], deal.get("deal_name") or "")
         return None
@@ -76,7 +151,7 @@ def _resolve_entity(con, doc_type: str, text: str) -> tuple[str, int, str] | Non
             acc = _get_account_by_id(con, int(m.group(1)))
             if acc:
                 return ("account", acc["id"], acc.get("name") or "")
-        acc = find_account(con, text)
+        acc = find_account(con, text) or _find_account_normalized(con, text)
         if acc:
             return ("account", acc["id"], acc.get("name") or "")
         return None
@@ -211,7 +286,7 @@ def handle_mention_numbering(con, channel: str, thread_ts: str, text: str, user_
         entity_id=req["entity_id"], is_revision=req["is_revision"],
         revision_of=req["revision_of"], requested_by=user_id)
     _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-               text=_FIELD_QUESTIONS[missing])
+               text=_field_question(missing, req))
 
 
 def handle_message_numbering(con, event: dict, token: str | None = None) -> None:
@@ -253,7 +328,7 @@ def handle_message_numbering(con, event: dict, token: str | None = None) -> None
         entity_kind=req["entity_kind"], entity_id=req["entity_id"], revision_of=req["revision_of"])
     if still_missing is not None:
         _slack_post("chat.postMessage", token=token, channel=channel, thread_ts=thread_ts,
-                   text=f"🙏 まだ特定できませんでした。{_FIELD_QUESTIONS[still_missing]}")
+                   text=f"🙏 まだ特定できませんでした。{_field_question(still_missing, req)}")
         return
 
     sfa_db.resolve_numbering_request(con, pending["id"], status="issued")
