@@ -2789,10 +2789,10 @@ def duplicate_deal(con, deal_id: int) -> int | None:
 # 集計（MS超過・Slack通知・Hisho同期）は従来どおりキャッシュ列を読むため影響範囲が最小。
 
 def list_deal_milestones(con, deal_id: int) -> list[dict]:
-    """商談のMSを 未完了→完了 / 日付昇順(未設定は末尾) で返す。"""
+    """商談のMSを 未完了→完了 / 日付新しい順(未設定は末尾) で返す。"""
     return [dict(r) for r in con.execute(
         "SELECT * FROM deal_milestones WHERE deal_id=? "
-        "ORDER BY done ASC, (ms_date IS NULL OR ms_date='') ASC, ms_date ASC, id ASC",
+        "ORDER BY done ASC, (ms_date IS NULL OR ms_date='') ASC, ms_date DESC, id DESC",
         (int(deal_id),))]
 
 
