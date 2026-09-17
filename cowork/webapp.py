@@ -2797,6 +2797,7 @@ def _snap_monday(s) -> str:
 
 
 _DELIVERY_CONFIDENCE_COLORS = {
+    "見込み(提案前)": "#64748b",  # 商談が提案未満に差し戻された既存Delivery。他の暖色系と区別する落ち着いた色
     "見込み(提案中)": "#b45309",
     "見込み(クロージング)": "#c2410c",
     "確定": "#047857",
@@ -2902,7 +2903,7 @@ def _delivery_owner_roles_box_html(dv: dict) -> str:
     )
 
 
-_DELIVERY_ACTIVE_CONF_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2}
+_DELIVERY_ACTIVE_CONF_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2, "見込み(提案前)": 2}
 
 
 def _delivery_sort_key(dv: dict, lbl: str) -> tuple:

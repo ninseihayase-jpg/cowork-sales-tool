@@ -137,6 +137,47 @@ def test_confidence_auto_derivation():
     assert sfa_db.delivery_confidence_auto("提案", "closed") == "無効(終了)"   # 失注等
 
 
+def test_confidence_auto_shows_pre_proposal_when_deal_regresses(con, acc_id):
+    """ユーザー報告(2026-09-17):「商談を『要件詰め』に戻したのにDeliveryに反映されない」。
+    既にDeliveryが起票された後、商談が提案未満（要件詰め/初回アポ実施/保留中）に差し戻されても、
+    従来は"見込み(提案中)"のまま何も変化しなかった（提案未満を区別するバケットが無かった）。
+    ユーザー確定事項: バッジ表示のみを区別する新区分"見込み(提案前)"を追加。集計上の扱い
+    （_DELIVERY_CONFIDENCE_BUCKET）・稼働集計除外・並び順（_DELIVERY_ACTIVE_CONF_RANK）は
+    "見込み(提案中)"と一切変えない。"""
+    assert sfa_db.delivery_confidence_auto("要件詰め", "open") == "見込み(提案前)"
+    assert sfa_db.delivery_confidence_auto("初回アポ実施", "open") == "見込み(提案前)"
+    assert sfa_db.delivery_confidence_auto("保留中", "open") == "見込み(提案前)"
+
+    did = _deal(con, acc_id, "提案")
+    dv_id = sfa_db.create_delivery(con, deal_id=did, title="D")
+    assert sfa_db.delivery_confidence_effective(sfa_db.get_delivery(con, dv_id)) == "見込み(提案中)"
+    con.execute("UPDATE deals SET stage=? WHERE id=?", ("要件詰め", did))  # 商談を提案未満へ差し戻す
+    con.commit()
+    assert sfa_db.delivery_confidence_effective(sfa_db.get_delivery(con, dv_id)) == "見込み(提案前)"
+
+
+def test_pre_proposal_confidence_bucket_and_sort_rank_unchanged_from_proposal(con, acc_id):
+    """新区分はバッジ表示のみを区別する設計。集計バケット（_DELIVERY_CONFIDENCE_BUCKET）・
+    一覧の並び順ランク（webapp._DELIVERY_ACTIVE_CONF_RANK）は"見込み(提案中)"と同じであること。"""
+    from cowork import webapp
+    assert (sfa_db._DELIVERY_CONFIDENCE_BUCKET["見込み(提案前)"]
+            == sfa_db._DELIVERY_CONFIDENCE_BUCKET["見込み(提案中)"])
+    assert (webapp._DELIVERY_ACTIVE_CONF_RANK["見込み(提案前)"]
+            == webapp._DELIVERY_ACTIVE_CONF_RANK["見込み(提案中)"])
+
+
+def test_compute_load_still_counts_pre_proposal_delivery_same_as_proposal(con, acc_id):
+    """稼働集計は"見込み(提案前)"でも除外されない（バッジ表示だけの区別であり、集計上は
+    "見込み(提案中)"と同じ扱いのまま。除外したいなら状態(status)を保留/中止にする運用は変わらない）。"""
+    did = _deal(con, acc_id, "要件詰め", name="差し戻し案件")
+    dv_id = sfa_db.create_delivery(con, deal_id=did, status="進行中")
+    W0 = "2026-07-27"
+    sfa_db.add_delivery_assignment(con, delivery_id=dv_id, owner="早瀬", role="担当",
+                                   member_kind="内部", from_week=W0, to_week=W0, fte_pct=50)
+    load = sfa_db.compute_delivery_load(con, start_week=W0, n_weeks=1)
+    assert load["cells"]["早瀬"][W0]["actual"]["proposal"] == 50
+
+
 def test_confidence_override_takes_priority_over_auto(con, acc_id):
     did = _deal(con, acc_id, "提案")
     dv_id = sfa_db.create_delivery(con, deal_id=did, title="D")

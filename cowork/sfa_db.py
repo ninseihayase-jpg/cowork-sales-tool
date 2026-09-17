@@ -160,7 +160,12 @@ DELIVERY_TRIGGER_STAGES = ("提案", "クロージング", "受注")
 DELIVERY_HEAT_THRESHOLDS = {"ok": 70, "full": 100, "over": 150}
 # Deliveryの確度（2026-08-18: 見込みを提案中/クロージングの2段階に分割）。
 # 自動導出=商談のstage/statusから毎回算出。deliveries.confidence_overrideがあればそれを優先（人間の手修正）。
-DELIVERY_CONFIDENCE_LEVELS = ["見込み(提案中)", "見込み(クロージング)", "確定", "無効(終了)"]
+# 2026-09-17: 「見込み(提案前)」を追加。既にDeliveryが起票された後、商談のステージが
+# 提案未満（要件詰め/初回アポ実施/保留中）に差し戻された場合の区分。ユーザー確定事項:
+# バッジ表示のみを区別する（集計上の扱い(_DELIVERY_CONFIDENCE_BUCKET)・並び順
+# (_DELIVERY_ACTIVE_CONF_RANK@webapp.py)・稼働集計除外は「見込み(提案中)」と同じままにし、
+# 一切変えない）。
+DELIVERY_CONFIDENCE_LEVELS = ["見込み(提案前)", "見込み(提案中)", "見込み(クロージング)", "確定", "無効(終了)"]
 
 
 def delivery_confidence_auto(deal_stage: str | None, deal_status: str | None) -> str:
@@ -174,7 +179,10 @@ def delivery_confidence_auto(deal_stage: str | None, deal_status: str | None) ->
         return "確定"
     if stage == "クロージング":
         return "見込み(クロージング)"
-    return "見込み(提案中)"
+    if stage == "提案":
+        return "見込み(提案中)"
+    # 提案未満（要件詰め/初回アポ実施/保留中等）に差し戻された既存Delivery。
+    return "見込み(提案前)"
 
 
 def delivery_confidence_effective(dv: dict) -> str:
@@ -6142,6 +6150,7 @@ _DELIVERY_CONFIDENCE_BUCKET = {
     "確定": "committed",
     "見込み(クロージング)": "closing",
     "見込み(提案中)": "proposal",
+    "見込み(提案前)": "proposal",  # バッジ表示のみ区別。集計上は見込み(提案中)と同じ扱い(2026-09-17)
 }   # "無効(終了)" はバケット無し＝集計除外
 
 
