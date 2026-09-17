@@ -25210,6 +25210,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     import threading as _threading
                     from cowork import slack_bot as _sb
                     if not _sb.SLACK_NUMBERING_SIGNING_SECRET or not _sb.SLACK_NUMBERING_TOKEN:
+                        print("[slack_numbering_events] 503: bot not configured "
+                              f"(secret_set={bool(_sb.SLACK_NUMBERING_SIGNING_SECRET)}, "
+                              f"token_set={bool(_sb.SLACK_NUMBERING_TOKEN)})", flush=True)
                         self._send(b'{"error":"numbering bot not configured"}', 503, ctype="application/json")
                         return
                     if not _sb.verify_signature(
@@ -25218,6 +25221,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         self.headers.get("X-Slack-Signature", ""),
                         secret=_sb.SLACK_NUMBERING_SIGNING_SECRET,
                     ):
+                        print("[slack_numbering_events] 401: invalid signature", flush=True)
                         self._send(b'{"error":"invalid signature"}', 401, ctype="application/json")
                         return
                     try:
