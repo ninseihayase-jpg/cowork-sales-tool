@@ -1619,10 +1619,17 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # 技術シード機能（#46）: 必要な技術シード（カンマ区切り）を後方互換追加
         if "tech_seeds" not in dp_cols:
             con.execute("ALTER TABLE dev_projects ADD COLUMN tech_seeds TEXT")
-        # 失注クローズ済みだがステージが失注/受注でない既存商談を stage='失注' に補正（冪等・表示整合）。
+        # クローズ済みだが終了理由に対応するステージになっていない既存商談を補正（冪等・表示整合）。
+        # 元は失注のみだったが#181でCLOSE_REASON_TO_STAGE全体（保留・時期尚早→保留中／
+        # ニーズなし・キャンセル・自社都合で撤退→他Closed）に拡張。受注は対象外(別枠で保持)。
+        for _cr, _cs in CLOSE_REASON_TO_STAGE.items():
+            con.execute(
+                "UPDATE deals SET stage=? WHERE status='closed' AND close_reason=? "
+                "AND COALESCE(stage,'') NOT IN (?, '受注')", (_cs, _cr, _cs))
+        # クローズ済み商談の重要度が未入力なら「Closed」を補完（#181）。既に何らかの値が
+        # 入っている場合は手動設定を尊重し上書きしない。
         con.execute(
-            "UPDATE deals SET stage='失注' WHERE status='closed' AND close_reason='失注' "
-            "AND COALESCE(stage,'') NOT IN ('失注','受注')")
+            "UPDATE deals SET importance='Closed' WHERE status='closed' AND COALESCE(importance,'')=''")
         # tasks に project(大項目)・next_action(次アクション) を後方互換追加（#30・前回デプロイ後の追加列）
         _task_cols = {r[1] for r in con.execute("PRAGMA table_info(tasks)")}
         if _task_cols and "project" not in _task_cols:

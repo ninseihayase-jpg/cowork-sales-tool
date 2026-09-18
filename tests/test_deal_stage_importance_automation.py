@@ -278,6 +278,71 @@ def test_deal_save_route_bumps_importance_on_stage_transition(server, db_path):
     con2.close()
 
 
+# ── 既存データのバックフィル（init_db()移行、#181） ──
+
+def test_init_db_backfills_stage_for_all_close_reasons_not_just_lost():
+    """本番既存データ想定: #181導入前に生SQLでクローズされた（stage/importance未対応の）
+    商談を、init_db()の再実行（＝次回デプロイ相当）で一括補正できること。
+    受注クローズはstage='受注'を保護し、書き換えない。"""
+    d = tempfile.mkdtemp(prefix="sfa_stage_imp_migrate_")
+    try:
+        path = str(Path(d) / "t.db")
+        sfa_db.init_db(path)
+        con = sfa_db.connect(path)
+        acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+        legacy = {}
+        for label, reason in (
+            ("lost", "失注"), ("hold", "保留・時期尚早"), ("no_need", "ニーズなし"),
+            ("cancel", "キャンセル"), ("withdraw", "自社都合で撤退"),
+        ):
+            did = con.execute(
+                "INSERT INTO deals(account_id, deal_name, stage, status, close_reason) "
+                "VALUES (?,?,?,?,?)", (acc, label, "クロージング", "closed", reason)).lastrowid
+            legacy[label] = did
+        won_did = con.execute(
+            "INSERT INTO deals(account_id, deal_name, stage, status, close_reason) "
+            "VALUES (?,?,?,?,?)", (acc, "won", "受注", "closed", "受注")).lastrowid
+        con.commit()
+        con.close()
+
+        sfa_db.init_db(path)  # 次回デプロイ相当の再実行
+
+        con2 = sfa_db.connect(path)
+        assert sfa_db.get_deal(con2, legacy["lost"])["stage"] == "失注"
+        assert sfa_db.get_deal(con2, legacy["hold"])["stage"] == "保留中"
+        assert sfa_db.get_deal(con2, legacy["no_need"])["stage"] == "他Closed"
+        assert sfa_db.get_deal(con2, legacy["cancel"])["stage"] == "他Closed"
+        assert sfa_db.get_deal(con2, legacy["withdraw"])["stage"] == "他Closed"
+        assert sfa_db.get_deal(con2, won_did)["stage"] == "受注"  # 保護される
+        for did in list(legacy.values()) + [won_did]:
+            assert sfa_db.get_deal(con2, did)["importance"] == "Closed"
+        con2.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_init_db_backfill_does_not_overwrite_manually_set_importance():
+    d = tempfile.mkdtemp(prefix="sfa_stage_imp_migrate2_")
+    try:
+        path = str(Path(d) / "t.db")
+        sfa_db.init_db(path)
+        con = sfa_db.connect(path)
+        acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+        did = con.execute(
+            "INSERT INTO deals(account_id, deal_name, stage, status, close_reason, importance) "
+            "VALUES (?,?,?,?,?,?)", (acc, "D", "受注", "closed", "受注", "低")).lastrowid
+        con.commit()
+        con.close()
+
+        sfa_db.init_db(path)
+
+        con2 = sfa_db.connect(path)
+        assert sfa_db.get_deal(con2, did)["importance"] == "低"
+        con2.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_deal_field_route_close_reason_maps_to_stage(server, db_path):
     """#26のバックフィルUI等から終了理由を直接付与するインライン編集でも、
     ステージが自動対応すること。"""
