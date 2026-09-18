@@ -318,6 +318,40 @@ def test_delivery_month_count():
     assert sfa_db.delivery_month_count(None, None) == 1.0  # 未設定は1
 
 
+# ---- 日ベースの日程入力 × 週ベースの集計（#180、2026-09-18） ----
+# ユーザー要望: 「deliveryの日程を、日ベースで設定できるようにして。一方、集計はすべて週単位で。
+# （金曜から始まるプロジェクトでも、50%稼働であれば、その週は50%稼働、と単純に見做す）」
+# → 開始/終了は月曜に限らない任意の日付を許容し、週集計側(_assignment_weeks/compute_delivery_load等)
+# で月曜にスナップしてから週数を数える。部分週は按分せず単純に1週として数える。
+
+def test_assignment_weeks_counts_partial_week_from_non_monday_start():
+    # 2026-09-18は金曜(週の月曜=09-14)。2026-09-24は翌週木曜(週の月曜=09-21)。
+    # →09-14週と09-21週の2週にまたがる。
+    assert sfa_db._assignment_weeks("2026-09-18", "2026-09-24") == 2
+    # 同じ週の中に収まる場合（金曜開始・同じ週の日曜終了）は1週。
+    assert sfa_db._assignment_weeks("2026-09-18", "2026-09-20") == 1
+    # 月曜スナップ後に既に週が揃っている既存データ（月曜〜月曜）は従来どおり。
+    assert sfa_db._assignment_weeks("2026-07-27", "2026-08-10") == 3
+
+
+def test_delivery_month_count_with_friday_start():
+    # 金曜開始でも、その週を1週として単純にカウントする（按分しない）。
+    assert sfa_db.delivery_month_count("2026-09-18", "2026-09-24") == 0.5   # 2週÷4
+
+
+def test_compute_delivery_load_treats_partial_week_as_full_for_friday_start(con, acc_id):
+    """金曜から始まる案件で稼働率50%の場合、その週(月曜始まり)は単純に50%稼働とみなす
+    （部分週の按分をしない、というユーザー方針#180に基づく）。"""
+    did = _deal(con, acc_id, "提案", name="金曜開始案件")
+    dv_id = sfa_db.create_delivery(con, deal_id=did, status="進行中")
+    sfa_db.add_delivery_assignment(con, delivery_id=dv_id, owner="早瀬", role="担当",
+                                   member_kind="内部", from_week="2026-09-18", to_week="2026-09-18",
+                                   fte_pct=50)
+    W0 = "2026-09-14"  # 2026-09-18(金)が属する週の月曜
+    load = sfa_db.compute_delivery_load(con, start_week=W0, n_weeks=1)
+    assert load["cells"]["早瀬"][W0]["actual"]["proposal"] == 50
+
+
 def test_delivery_fee_monthly_to_total():
     mo, to = sfa_db.compute_delivery_fee("monthly", 100, None, 3)
     assert (mo, to) == (100, 300.0)

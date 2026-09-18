@@ -2786,12 +2786,28 @@ def _delivery_owner_from_form(f) -> tuple[str, str]:
 
 
 def _snap_monday(s) -> str:
-    """任意の日付文字列(YYYY-MM-DD)をその週の月曜に丸める。空/不正は空文字。"""
+    """任意の日付文字列(YYYY-MM-DD)をその週の月曜に丸める。空/不正は空文字。
+    ※Delivery日程(開始/終了・アサイン週)には使わない（#180で日ベース入力化）。
+    ベース最大稼働率の期間（base-workload）専用。Delivery側は_valid_dateを使う。"""
     s = (s or "").strip()
     if not s:
         return ""
     try:
         return sfa_db._monday_of(date.fromisoformat(s))
+    except ValueError:
+        return ""
+
+
+def _valid_date(s) -> str:
+    """任意の日付文字列(YYYY-MM-DD)を形式チェックのみでそのまま返す（丸めない）。空/不正は空文字。
+    Delivery日程は日ベースで入力させ、週単位の集計は読み出し側(compute_delivery_load等)で
+    月曜スナップして行う（#180: 金曜開始でもその週を1週の稼働として単純にカウントする）。"""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    try:
+        date.fromisoformat(s)
+        return s
     except ValueError:
         return ""
 
@@ -4576,7 +4592,7 @@ def deliveries_page(con) -> str:
 
 def _delivery_row_fields(owners: list, b: dict, dv: dict) -> str:
     """アサイン1行分の入力フィールド群（役割→区分(内部/外部)→メンバー(sel/txt)→期間→請求→実想定→メモ→責任者/担当者）。
-    追加/編集の両方で使う。週入力は class=wkdate（JSで月曜スナップ）。
+    追加/編集の両方で使う。期間入力は class=wkdate（日ベースでそのまま入力・集計時のみ週スナップ）。
     責任者/担当者はこの行のメンバーをチェックボックスで指定する（2026-08-29。排他はJS側で制御し、
     ajaxで/delivery/{id}/fieldへ即時保存。値のバリデーションと参照切れクリアはサーバ側でも行う）。"""
     kind = b.get("member_kind") or "内部"
@@ -4595,8 +4611,8 @@ def _delivery_row_fields(owners: list, b: dict, dv: dict) -> str:
         f'<label style="font-size:11px">メンバー<br>'
         f'<select name="owner_sel" class="mint" style="font-size:12px;{sel_disp}">{_opt(owners, owner if kind != "外部" else None)}</select>'
         f'<input type="text" name="owner_txt" class="mext" placeholder="外部メンバー名" value="{_esc(owner if kind == "外部" else "")}" style="width:120px;{txt_disp}"></label>'
-        f'<label style="font-size:11px">開始週<br><input type="date" class="wkdate" name="from_week" value="{_esc(b.get("from_week") or "")}"></label>'
-        f'<label style="font-size:11px">終了週<br><input type="date" class="wkdate" name="to_week" value="{_esc(b.get("to_week") or "")}"></label>'
+        f'<label style="font-size:11px">開始日<br><input type="date" class="wkdate" name="from_week" value="{_esc(b.get("from_week") or "")}"></label>'
+        f'<label style="font-size:11px">終了日<br><input type="date" class="wkdate" name="to_week" value="{_esc(b.get("to_week") or "")}"></label>'
         f'<label style="font-size:11px">稼働率(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="{_num_pct(_bill)}" style="width:80px"></label>'
         f'<label style="font-size:11px">稼働率(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="{_num_pct(b.get("fte_pct"))}" style="width:80px"></label>'
         f'<label style="font-size:11px">メモ<br><input type="text" name="note" value="{_esc(b.get("note") or "")}" style="width:130px"></label>'
@@ -4658,13 +4674,12 @@ def delivery_form(con, delivery_id: int) -> str:
     _assign_effort = sfa_db.delivery_total_assign_effort(con, delivery_id)
     _assign_effort_bill = sfa_db.delivery_total_assign_effort(con, delivery_id, use_billing=True)
     _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # マスタ優先（後追加メンバーも反映）
-    # 現在の週数（開始/終了が両方あれば算出）
+    # 現在の週数（開始/終了が両方あれば算出。開始/終了は日ベースの任意の日付なので、
+    # 月曜スナップしてから跨る暦週数を数える_assignment_weeks()を使う＝#180）。
     _weeks_val = ""
-    try:
-        if dv.get("start_week") and dv.get("end_week"):
-            _weeks_val = str((date.fromisoformat(dv["end_week"]) - date.fromisoformat(dv["start_week"])).days // 7 + 1)
-    except Exception:  # noqa: BLE001
-        _weeks_val = ""
+    if dv.get("start_week") and dv.get("end_week"):
+        _w = sfa_db._assignment_weeks(dv["start_week"], dv["end_week"])
+        _weeks_val = str(_w) if _w > 0 else ""
     # 体制（役割の並び順）を先に取得。アサインはこの並びに合わせて表示する。
     roles = sfa_db.list_delivery_roles(con, delivery_id)
     _role_order = {r["role"]: i for i, r in enumerate(roles)}
@@ -4826,8 +4841,8 @@ def delivery_form(con, delivery_id: int) -> str:
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
               <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:200px"></label>
               <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:60px" oninput="hdrCalcEnd();dvFeeRecalc();dvCostRecalc()"></label>
-              <label style="font-size:12px">開始週(月曜)<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd();dvFeeRecalc();dvCostRecalc()"></label>
-              <label style="font-size:12px">終了週(月曜)<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
+              <label style="font-size:12px">開始日<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd();dvFeeRecalc();dvCostRecalc()"></label>
+              <label style="font-size:12px">終了日<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
@@ -4899,8 +4914,10 @@ def delivery_form(con, delivery_id: int) -> str:
             <label style="font-size:12px;display:flex;flex-direction:column;flex:1;margin-top:8px">概要・納品方針
               <textarea name="overview" style="width:100%;flex:1;min-height:60px;margin-top:2px">{_esc(dv.get("overview") or "")}</textarea></label>
             <p class="muted" style="font-size:11px;margin:4px 0 0">※基礎情報は各項目の入力後（フォーカスを外した時点）で自動保存されます。「保存」ボタンは押し忘れても問題ありません
-              （週数/開始週/終了週の変更のみ、アサイン週の連動再計算のため保存後に自動で再読込します）。
-              週は月曜に自動スナップ。週数＋開始週で終了週を自動計算。開始/終了週は体制「複製」で生成する行の初期値（ガイド）です。
+              （週数/開始日/終了日の変更のみ、アサイン週の連動再計算のため保存後に自動で再読込します）。
+              開始日/終了日は日ベースでそのまま入力できます（週の途中からでもOK）。集計（負荷・請求月数等）は
+              週単位で行い、開始日が週の途中でもその週は1週として単純にカウントします（按分しません）。
+              週数＋開始日で終了日を自動計算。開始/終了日は体制「複製」で生成する行の初期値（ガイド）です。
               月額/総額は自動換算されますが、灰色側を直接編集すると手修正として保持されます（報酬形態を切り替えると自動換算に戻ります）。</p>
           </form>
         </div>
@@ -4949,21 +4966,24 @@ def delivery_form(con, delivery_id: int) -> str:
       </div>
     </div>
     <script>
+    // 日ベースの日付をその週の月曜へ変換（#180）。集計用の変換にのみ使う。入力欄の値自体は
+    // 丸めない（金曜開始等の日ベース入力をそのまま保持する）。
     function _mondayOf(s){{ if(!s) return ''; var p=String(s).split('-'); if(p.length!==3) return s;
       var d=new Date(+p[0], +p[1]-1, +p[2]); if(isNaN(d)) return s;
       var wd=(d.getDay()+6)%7; d.setDate(d.getDate()-wd);
       return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
-    function snapWk(el){{ if(el.value) el.value=_mondayOf(el.value); }}
     function hdrCalcEnd(){{ var w=parseInt(document.getElementById('hdrWeeks').value,10),
       s=document.getElementById('hdrStart').value, e=document.getElementById('hdrEnd');
-      if(!(w>0)||!s) return; var mo=_mondayOf(s); var p=mo.split('-');
+      if(!(w>0)||!s) return; var p=s.split('-');  /* 開始日はそのまま(月曜スナップしない)。
+        同じ曜日を保つことで、週数どおりの暦週数になる（#180）。 */
       var d=new Date(+p[0], +p[1]-1, +p[2]); d.setDate(d.getDate()+(w-1)*7);
       e.value=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
     function _dvFeeMonths(){{ var s=document.getElementById('hdrStart').value,
       e=document.getElementById('hdrEnd').value; if(!s||!e) return 0;
-      var sd=new Date(s), ed=new Date(e); var days=Math.round((ed-sd)/86400000);
+      var sd=new Date(_mondayOf(s)), ed=new Date(_mondayOf(e)); var days=Math.round((ed-sd)/86400000);
       if(isNaN(days)||days<0) return 0;
-      var weeks=Math.floor(days/7)+1; return weeks/4; }}  /* 月数=合計週数÷4(≒1ヶ月)で統一 */
+      var weeks=Math.floor(days/7)+1; return weeks/4; }}  /* 月数=合計週数÷4(≒1ヶ月)で統一。
+        開始/終了は月曜スナップしてから週数を数える（日ベース入力・週ベース集計、#180）。 */
     /* 月額/総額の自動換算＋手修正（新規タスク）: 従来はreadOnlyで灰色側を編集不可にしていたが、
        灰色側（自動算出される方）を直接編集した場合はdata-manual='1'を立てて手修正として保持する
        （以後、報酬形態を切り替えるまで自動換算で上書きしない）。 */
@@ -5274,7 +5294,6 @@ def delivery_form(con, delivery_id: int) -> str:
         .catch(function(){{ if(st){{ st.textContent='保存失敗（通信エラー）'; st.style.color='#b91c1c'; }} }});
     }}
     document.addEventListener('DOMContentLoaded',function(){{
-      document.querySelectorAll('.wkdate').forEach(function(el){{el.addEventListener('change',function(){{snapWk(el);}});}});
       document.querySelectorAll('.mkind').forEach(function(s){{tglMember(s);}});
       // 入力（rate/role/target/メンバー/期間）で整合＋プレビューをライブ更新
       document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing],.asgForm [name=role],'
@@ -21700,7 +21719,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if _fld in ("title", "status", "start_week", "end_week", "overview",
                                  "payment_cycle_months", "responsible_owner", "handling_owner"):
                         if _fld in ("start_week", "end_week"):
-                            _val = _snap_monday(_val)
+                            _val = _valid_date(_val)
                             _old_dv = sfa_db.get_delivery(con, _dvid) or {}
                             sfa_db.update_delivery(con, _dvid, **{_fld: _val})
                             _new_dv = sfa_db.get_delivery(con, _dvid) or {}
@@ -21755,8 +21774,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                       and path.split("/")[2].isdigit()):
                     _dvid = int(path.split("/")[2])
                     _old_dv = sfa_db.get_delivery(con, _dvid) or {}
-                    _sw = _snap_monday(f.get("start_week", ""))
-                    _ew = _snap_monday(f.get("end_week", ""))
+                    _sw = _valid_date(f.get("start_week", ""))
+                    _ew = _valid_date(f.get("end_week", ""))
                     # 報酬額: 月数（期間を含む暦月）でサーバ側でも月額↔総額を換算し両方保持
                     _fee_mode = (f.get("fee_mode", "") or "monthly").strip()
                     _months = sfa_db.delivery_month_count(_sw, _ew)
@@ -21839,8 +21858,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _kind, _ow = _delivery_owner_from_form(f)
                     _adv = sfa_db.get_delivery(con, _dvid) or {}
                     # 週が未入力なら、デリバリー全体の開始週/終了週をデフォルト採用（メンバー追加を楽に）
-                    _fw = _snap_monday(f.get("from_week", "")) or _snap_monday(_adv.get("start_week") or "")
-                    _tw = _snap_monday(f.get("to_week", "")) or _snap_monday(_adv.get("end_week") or "")
+                    _fw = _valid_date(f.get("from_week", "")) or _valid_date(_adv.get("start_week") or "")
+                    _tw = _valid_date(f.get("to_week", "")) or _valid_date(_adv.get("end_week") or "")
                     if _fw and _tw:  # ownerは未定(空)でも可（体制生成行など）
                         if _tw < _fw:
                             _fw, _tw = _tw, _fw   # 逆順は入れ替え
@@ -21857,8 +21876,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _dvid = int(path.split("/")[2])
                     _aid = path.split("/")[4]
                     _kind, _ow = _delivery_owner_from_form(f)
-                    _fw = _snap_monday(f.get("from_week", ""))
-                    _tw = _snap_monday(f.get("to_week", ""))
+                    _fw = _valid_date(f.get("from_week", ""))
+                    _tw = _valid_date(f.get("to_week", ""))
                     if _aid.isdigit() and _fw and _tw:
                         if _tw < _fw:
                             _fw, _tw = _tw, _fw
@@ -21886,8 +21905,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _dv = sfa_db.get_delivery(con, _dvid)
                         sfa_db.add_delivery_assignment(
                             con, delivery_id=_dvid, owner="", member_kind="内部", role=_role,
-                            from_week=_snap_monday((_dv or {}).get("start_week") or "") or "",
-                            to_week=_snap_monday((_dv or {}).get("end_week") or "") or "",
+                            from_week=_valid_date((_dv or {}).get("start_week") or "") or "",
+                            to_week=_valid_date((_dv or {}).get("end_week") or "") or "",
                             fte_pct=(_ra if _ra is not None else 0.0), fte_billing=_rb)
                     self._redirect(f"/delivery/{_dvid}")
                 elif (path.startswith("/delivery/") and "/role/" in path
@@ -21915,8 +21934,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _dv = sfa_db.get_delivery(con, _dvid)
                         sfa_db.add_delivery_assignment(
                             con, delivery_id=_dvid, owner="", member_kind="内部", role=_rr["role"],
-                            from_week=_snap_monday((_dv or {}).get("start_week") or "") or "",
-                            to_week=_snap_monday((_dv or {}).get("end_week") or "") or "",
+                            from_week=_valid_date((_dv or {}).get("start_week") or "") or "",
+                            to_week=_valid_date((_dv or {}).get("end_week") or "") or "",
                             fte_pct=(_rr.get("fte_pct") if _rr.get("fte_pct") is not None else 0.0),
                             fte_billing=_rr.get("fte_billing"))
                     self._redirect(f"/delivery/{_dvid}")
@@ -22203,6 +22222,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 for did in ids:
                                     sfa_db.set_earliest_milestone_field(con, did, _mf, value)
                             else:
+                                _old_stages = {}
+                                if field == "stage":
+                                    _old_stages = {r["id"]: r["stage"] for r in con.execute(
+                                        f"SELECT id, stage FROM deals WHERE id IN "
+                                        f"({','.join('?' for _ in ids)})", ids)}
                                 for did in ids:
                                     con.execute(
                                         f"UPDATE deals SET {field}=?, updated_at=datetime('now') WHERE id=?",
@@ -22224,6 +22248,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                             sfa_db.ensure_dev_requirement_for_deal(con, did, value)
                                         except Exception:  # noqa: BLE001
                                             pass
+                                        # #181: 提案/クロージングに進んだら重要度を自動的に「高」へ
+                                        sfa_db.bump_importance_on_stage_change(
+                                            con, did, _old_stages.get(did), value, commit=True)
                             if theme_client is not None:
                                 for did in ids:
                                     try:
@@ -22273,10 +22300,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # クローズはモーダル経由に一本化したため、編集フォームはstatusを送らない。
                     # 既存商談のstatus（open/closed）は保持し、編集で誤って再オープンしない。
                     _keep_status = "open"
+                    _old_stage = None
                     if _deal_id_in:
                         _ex_deal = sfa_db.get_deal(con, _deal_id_in)
                         if _ex_deal:
                             _keep_status = _ex_deal.get("status") or "open"
+                            _old_stage = _ex_deal.get("stage")
                     did = sfa_db.upsert_deal(
                         con, id=_deal_id_in,
                         account_id=deal_account_id,
@@ -22313,6 +22342,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # #67の「リードに戻す」と同一処理を通す）
                     if (f.get("stage") or "") == "失注":
                         sfa_db.close_deal_to_lead(con, did, "失注")
+                    # #181: 提案/クロージングに進んだら重要度を自動的に「高」へ
+                    sfa_db.bump_importance_on_stage_change(con, did, _old_stage, f.get("stage") or "", commit=True)
                     # #75: 提案以降ステージで保存されたらDeliveryを自動起票（未作成時のみ）
                     try:
                         sfa_db.ensure_delivery_on_stage(con, did, f.get("stage") or "")
@@ -23618,6 +23649,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             if value and value not in valid_stages:
                                 _err = "不正なステージ値"
                             else:
+                                _old_stage_row = con.execute(
+                                    "SELECT stage FROM deals WHERE id=?", (deal_id,)).fetchone()
+                                _old_stage = _old_stage_row["stage"] if _old_stage_row else None
                                 con.execute(
                                     "UPDATE deals SET stage=?, updated_at=datetime('now') WHERE id=?",
                                     (value or None, deal_id),
@@ -23628,6 +23662,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 # 変更した場合も#67の「リードに戻す」と同一処理を通す）
                                 if value == "失注":
                                     sfa_db.close_deal_to_lead(con, deal_id, "失注")
+                                # #181: 提案/クロージングに進んだら重要度を自動的に「高」へ
+                                sfa_db.bump_importance_on_stage_change(con, deal_id, _old_stage, value)
                                 con.commit()
                                 _ok = True
                                 # #75: 提案以降に到達したらDeliveryを自動起票（未作成時のみ）
@@ -23647,13 +23683,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             sfa_db.set_earliest_milestone_field(con, deal_id, _mf, value)
                             _ok = True
                         elif field == "close_reason":
-                            # 終了理由=失注ならステージも「失注」に同期（表示を実態と一致・#67例外）。
-                            if value == "失注":
-                                con.execute("UPDATE deals SET close_reason=?, stage='失注', "
-                                            "updated_at=datetime('now') WHERE id=?", (value, deal_id))
-                            else:
-                                con.execute("UPDATE deals SET close_reason=?, updated_at=datetime('now') WHERE id=?",
-                                            (value or None, deal_id))
+                            # 終了理由に応じてステージも自動対応させる（表示を実態と一致・#67の失注限定を
+                            # #181で全終了理由に拡張。対応表に無ければステージは変更しない）。
+                            _mapped_stage = sfa_db.CLOSE_REASON_TO_STAGE.get(value)
+                            con.execute(
+                                "UPDATE deals SET close_reason=?, stage=COALESCE(?, stage), "
+                                "updated_at=datetime('now') WHERE id=?",
+                                (value or None, _mapped_stage, deal_id))
                             con.commit()
                             _ok = True
                         else:
@@ -24078,6 +24114,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             # 「失注」もここに含まれ得るため、旧DEAL_STAGES固定リストでは弾かれてしまっていた）
                             _valid_stages = sfa_db.get_master_list(con, "deal_stages") or list(sfa_db.DEAL_STAGES)
                             if _new_stage and _new_stage in _valid_stages:
+                                _old_stage_row = con.execute(
+                                    "SELECT stage FROM deals WHERE id=?", (_did,)).fetchone()
+                                _old_stage = _old_stage_row["stage"] if _old_stage_row else None
                                 con.execute("UPDATE deals SET stage=?, updated_at=datetime('now') WHERE id=?",
                                             (_new_stage, _did))
                                 con.commit()
@@ -24089,6 +24128,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                         sfa_db.close_deal_to_lead(con, _did, "失注")
                                     except Exception as _e:  # noqa: BLE001
                                         print(f"[intake] close_deal_to_lead failed: {_e}", flush=True)
+                                # #181: 提案/クロージングに進んだら重要度を自動的に「高」へ
+                                sfa_db.bump_importance_on_stage_change(con, _did, _old_stage, _new_stage, commit=True)
                                 try:
                                     sfa_db.ensure_delivery_on_stage(con, _did, _new_stage)
                                 except Exception as _e:  # noqa: BLE001

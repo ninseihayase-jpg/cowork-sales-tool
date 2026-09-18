@@ -35,6 +35,22 @@ NEXT_MS_TYPES = ["アポ", "タスク"]
 # 商談/リードの終了理由（区分）。「自社都合で撤退」を独立させ"失注"と区別する（戦略的な選別を数字で語るため）。
 # 展示会ファネルの有効母数は「ニーズなし」を除いて算出する。
 CLOSE_REASONS = ["ニーズなし", "キャンセル", "失注", "自社都合で撤退", "保留・時期尚早"]
+# クローズ時の終了理由→ステージの自動対応（#181）。受注クローズはclose_won_if_needed側で
+# stage='受注'のまま扱うためここには含めない。失注/他Closed同様、これらは終了理由経由でのみ
+# セットされる「クローズ専用」のステージ値であり、通常のステージ選択肢(DEAL_STAGES)には出さない
+# （#67の「失注」撤廃と同じ考え方）。deal_stagesマスタに無い値でも直接書き込む。
+CLOSE_REASON_TO_STAGE = {
+    "失注": "失注",
+    "保留・時期尚早": "保留中",
+    "ニーズなし": "他Closed",
+    "キャンセル": "他Closed",
+    "自社都合で撤退": "他Closed",
+}
+# 重要度を自動的に「高」へ引き上げるステージ（#181: ユーザー要望「ステージが提案/クロージングに
+# 進んだら重要度を自動で高にしたい。手動変更は変わらない」）。「進んだ時」だけ発火する一方向の
+# ブースト＝呼び出し側で旧ステージ≠新ステージの遷移時にのみ呼ぶこと（毎回の保存で手動値を
+# 踏みつけないため）。
+IMPORTANCE_AUTO_HIGH_STAGES = {"提案", "クロージング"}
 BUSINESS_TYPE_L1 = ["コスト削減", "コンサルティング", "AI導入", "他"]
 BUSINESS_TYPE_L2_BY_L1 = {
     "コスト削減":     ["コスト診断(無償)", "コスト診断(有償)", "コスト削減(成果報酬)"],
@@ -49,7 +65,8 @@ TARGET_DOMAINS = ["製造", "建設", "その他"]
 LEAD_PATTERNS = ["Connection", "Exh.", "Partner", "Advisor", "PE", "Under", "SNS", "HP", "na"]
 COMPANY_SIZES = ["500億未満", "1000億未満", "3000億未満", "5000億未満", "5000億以上"]
 ACTIVITY_TYPES = ["面談", "電話", "メール", "メモ"]
-IMPORTANCE_OPTIONS = ["高", "中", "低"]
+# "Closed"はクローズ済み商談に自動付与される値（#181）。手動でも選び直せる（例: 誤クローズの訂正）。
+IMPORTANCE_OPTIONS = ["高", "中", "低", "Closed"]
 OWNERS = ["吉江", "中島", "早瀬", "岩崎", "高橋", "土屋", "戸田", "片山", "杉山", "山端", "堀籠", "Shreyas"]
 INDUSTRIES = [
     "製造業(自動車・モビリティ)", "製造業(電機・電子・精密)", "製造業(重工・鉄鋼)",
@@ -2615,11 +2632,19 @@ def reopen_deal(con, deal_id: int) -> dict:
     deal = get_deal(con, deal_id)
     if not deal:
         return {"reopened": False}
-    # 失注クローズ時にstage='失注'にしていた場合、再開時は進行中ステージ(提案)へ戻す（受注は保持）。
-    _stg_fix = ", stage='提案'" if (deal.get("stage") == "失注") else ""
+    # 終了理由経由の「クローズ専用」ステージ(失注/保留中[終了理由]/他Closed。#181で拡張)だった
+    # 場合、再開時は進行中ステージ(提案)へ戻す（受注は保持）。
+    _old_stage = deal.get("stage")
+    _new_stage = "提案" if _old_stage in CLOSE_REASON_TO_STAGE.values() else _old_stage
+    # クローズで自動付与した重要度「Closed」も、再開に合わせて解除する（#181の対称動作。
+    # 手動で他の値に変えていた場合はそれを尊重し触らない）。
+    _clear_importance = 1 if deal.get("importance") == "Closed" else 0
     con.execute(
-        f"UPDATE deals SET status='open', close_reason=NULL{_stg_fix}, updated_at=datetime('now') WHERE id=?",
-        (int(deal_id),))
+        "UPDATE deals SET status='open', close_reason=NULL, stage=?, "
+        "importance=CASE WHEN ?=1 THEN NULL ELSE importance END, "
+        "updated_at=datetime('now') WHERE id=?",
+        (_new_stage, _clear_importance, int(deal_id)))
+    bump_importance_on_stage_change(con, deal_id, _old_stage, _new_stage)
     relinked = None
     accname = deal.get("account_name")
     if accname:
@@ -5241,13 +5266,10 @@ def list_deliveries(con, *, deal_id: int | None = None) -> list[dict]:
 
 def delivery_month_count(start_week: str | None, end_week: str | None) -> float:
     """月額↔総額換算・月額換算に使う『月数』。全て『合計週数 ÷ 4週(≒1ヶ月)』で統一。
-    例: 8週 → 2.0ヶ月 / 11週 → 2.75ヶ月。不正/未設定は1。"""
-    try:
-        s = date.fromisoformat(str(start_week)[:10])
-        e = date.fromisoformat(str(end_week)[:10])
-    except (TypeError, ValueError):
-        return 1.0
-    weeks = (e - s).days // 7 + 1
+    例: 8週 → 2.0ヶ月 / 11週 → 2.75ヶ月。不正/未設定は1。
+    週数は_assignment_weeks()に委譲（開始/終了は日ベースの日付を許容し、月曜スナップしてから
+    暦週を数える＝#180: 金曜開始でもその週を1週として単純にカウント）。"""
+    weeks = _assignment_weeks(start_week, end_week)
     if weeks < 1:
         return 1.0
     return round(weeks / 4.0, 4)
@@ -5628,6 +5650,24 @@ def delete_dev_requirements_upload(con, upload_id: int) -> None:
     con.commit()
 
 
+def bump_importance_on_stage_change(con, deal_id: int, old_stage: str | None, new_stage: str | None,
+                                    *, commit: bool = False) -> bool:
+    """ステージが「提案」「クロージング」に進んだら重要度を自動的に「高」へ上げる（#181）。
+    旧ステージ≠新ステージ かつ 新ステージがIMPORTANCE_AUTO_HIGH_STAGESの時だけ発火する
+    「進んだ瞬間」限定の一方向ブースト。既にそのステージのまま再保存した場合は発火しない＝
+    その間にユーザーが手動で変えた重要度を踏みつけない（ユーザー要望「手動変更できることは
+    変わらない」）。呼び出し側はステージ変更のたびに旧ステージを渡すこと。"""
+    if (old_stage or "") == (new_stage or ""):
+        return False
+    if (new_stage or "") not in IMPORTANCE_AUTO_HIGH_STAGES:
+        return False
+    con.execute("UPDATE deals SET importance='高', updated_at=datetime('now') WHERE id=?",
+                (int(deal_id),))
+    if commit:
+        con.commit()
+    return True
+
+
 def close_won_if_needed(con, deal_id: int, *, commit: bool = False) -> bool:
     """「受注・契約処理完了」の明示的なクローズ処理: stage='受注' かつ未クローズなら
     status='closed' にする（close_reason は既存が空のとき '受注' を既定投入。stage は
@@ -5644,6 +5684,7 @@ def close_won_if_needed(con, deal_id: int, *, commit: bool = False) -> bool:
     con.execute(
         "UPDATE deals SET status='closed', "
         "close_reason=COALESCE(NULLIF(close_reason,''),'受注'), "
+        "importance='Closed', "
         "updated_at=datetime('now') WHERE id=?", (int(deal_id),))
     if commit:
         con.commit()
@@ -5671,12 +5712,18 @@ def close_deal_to_lead(con, deal_id: int, close_reason: str, memo: str = "") -> 
     body = f"{existing_note}\n{close_line}" if existing_note else close_line
     new_note = f"[リードに戻す時のメモ] {memo}\n{body}" if memo else body
 
+    # 終了理由に応じてステージも自動対応させる（#181: 失注→失注／保留・時期尚早→保留中／
+    # ニーズなし・キャンセル・自社都合で撤退→他Closed）。理由が対応表に無ければステージは
+    # 変更しない（stage=COALESCE(?, stage)で現状維持）。合わせて重要度も自動的に「Closed」へ。
+    _effective_reason = close_reason or deal.get("close_reason") or ""
+    _close_stage = CLOSE_REASON_TO_STAGE.get(_effective_reason)
     con.execute(
         "UPDATE deals SET status='closed', note=?, "
         "close_reason=COALESCE(?, close_reason), "
-        "stage=CASE WHEN ?='失注' THEN '失注' ELSE stage END, "
+        "stage=COALESCE(?, stage), "
+        "importance='Closed', "
         "updated_at=datetime('now') WHERE id=?",
-        (new_note, close_reason, close_reason, deal_id),
+        (new_note, close_reason, _close_stage, deal_id),
     )
     close_deliveries_on_deal_lost(con, deal_id, close_reason)
 
@@ -5778,13 +5825,18 @@ def reschedule_delivery_assignments(con, delivery_id: int, old_start, old_end,
 
 
 def _assignment_weeks(from_week: str | None, to_week: str | None) -> int:
-    """アサインの週数（from〜to の週数・両端含む）。月曜スナップ前提だが日付差で算出。"""
+    """アサインの週数（from〜to が跨る暦週(月曜始まり)の数・両端含む）。from/toは日ベースの
+    任意の日付でよく、それぞれ月曜にスナップしてから週数を数える（#180: 日ベースで日程を
+    設定しても、集計は週単位＝部分週を按分せず単純に1週として数えるため。例: 金曜開始・
+    翌週木曜終了は2週）。"""
     try:
         s = date.fromisoformat(str(from_week)[:10])
         e = date.fromisoformat(str(to_week)[:10])
     except (TypeError, ValueError):
         return 0
-    d = (e - s).days
+    sm = s - timedelta(days=s.weekday())
+    em = e - timedelta(days=e.weekday())
+    d = (em - sm).days
     return (d // 7) + 1 if d >= 0 else 0
 
 
@@ -6210,13 +6262,20 @@ def compute_delivery_load(con, *, start_week: str | None = None,
         key = _DELIVERY_CONFIDENCE_BUCKET[confidence]
         actual = r["fte_pct"] or 0
         billing = float(r["fte_billing"]) if r["fte_billing"] is not None else actual
+        # from_week/to_weekは日ベースの任意の日付（#180）。週バケットへの割当は月曜スナップ後に
+        # 判定する＝金曜開始でもその週(月曜)を1週として単純にカウントする（部分週の按分はしない）。
+        try:
+            _fw_mon = _monday_of(date.fromisoformat(str(r["from_week"])[:10]))
+            _tw_mon = _monday_of(date.fromisoformat(str(r["to_week"])[:10]))
+        except (TypeError, ValueError):
+            continue
         for wk in weeks:
-            if r["from_week"] <= wk <= r["to_week"]:
+            if _fw_mon <= wk <= _tw_mon:
                 c = cells.setdefault(r["owner"], {}).setdefault(wk, _blank())
                 c["actual"][key] += actual
                 c["billing"][key] += billing
         # 表示窓に期間が重なるアサインだけ明細に含める
-        if r["from_week"] <= week_end and r["to_week"] >= start_week:
+        if _fw_mon <= week_end and _tw_mon >= start_week:
             items.append({
                 "owner": r["owner"], "role": r["role"] or "", "member_kind": r["member_kind"] or "内部",
                 "from_week": r["from_week"], "to_week": r["to_week"],
