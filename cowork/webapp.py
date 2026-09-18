@@ -8388,9 +8388,15 @@ _GANTT_CSS = """<style>
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-right:1px solid #e2e8f0;height:100%;
   display:flex;align-items:center}
 .gantt-lbl.grp{font-weight:700;background:#f1f5f9;color:#334155}
-.gantt-daylabel{font-size:10px;color:#64748b;text-align:center;border-left:1px solid #f1f5f9}
+/* 日付行の固定表示（ユーザー要望2026-09-18）。.gantt-wrapはoverflow-x:autoのみでy方向は
+   ページ側でスクロールするため、position:stickyのtop基準はページの直近スクロール祖先を
+   自動的に使う。角セル(1行1列目)はさらにleftも固定し、行/列両方のスクロールで常に見える
+   よう最前面(z-index最大)に置く。 */
+.gantt-daylabel{position:sticky;top:0;z-index:3;background:#fff;font-size:10px;color:#64748b;
+  text-align:center;border-left:1px solid #f1f5f9}
 .gantt-daylabel.weekend{background:#f8fafc}
 .gantt-daylabel.today{background:#fef3c7;font-weight:700}
+.gantt-corner{position:sticky;top:0;left:0;z-index:4;background:#fff}
 .gantt-bar{border-radius:4px;height:16px;align-self:center;font-size:10px;color:#fff;
   white-space:nowrap;overflow:hidden;line-height:16px;display:block;z-index:1;position:relative;
   cursor:grab}
@@ -8573,7 +8579,7 @@ def deal_issues_gantt_page(con) -> str:
     weekend_end = (today + timedelta(days=6 - today.weekday())).isoformat()
     today_iso = today.isoformat()
 
-    cells = ['<div class="gantt-lbl grp" style="grid-row:1;grid-column:1"></div>']
+    cells = ['<div class="gantt-lbl grp gantt-corner" style="grid-row:1;grid-column:1"></div>']
     for i in range(n_days):
         dd = min_d + timedelta(days=i)
         cls = "gantt-daylabel"
@@ -8586,6 +8592,12 @@ def deal_issues_gantt_page(con) -> str:
                     f'style="grid-row:1;grid-column:{i + 2}">{label}</div>')
 
     row = 2
+    # タスク追加用の予約行（_ig_add_row_html）は既定でdisplay:noneだが、grid-auto-rowsが
+    # 全行に均一な高さを強制するため、非表示でも26px分の空白行として見えてしまい
+    # 「メインタスクとサブタスクが離れて表示される」不具合になっていた（ユーザー報告
+    # 2026-09-18）。この行番号だけをminmax(0,26px)にして、非表示時は0に収縮させる
+    # （表示時は最大26pxまで伸びられるので、開いた時の見た目は変わらない）。
+    _spacer_rows: set[int] = set()
     _item_data: dict = {}
     if not all_issues:
         cells.append(
@@ -8664,6 +8676,7 @@ def deal_issues_gantt_page(con) -> str:
                 f'display:flex;align-items:center;justify-content:center">＋</span>'
                 f'</div>')
             row += 1
+            _spacer_rows.add(row)
             cells.append(_ig_add_row_html(row, main_add_wrap_id, issue["id"], None))
             row += 1
 
@@ -8707,6 +8720,7 @@ def deal_issues_gantt_page(con) -> str:
                     f'<span class="gt-bar-label">{_esc(s["title"])}</span>'
                     f'<span class="gt-grip gt-grip-r"></span></div>')
                 row += 1
+                _spacer_rows.add(row)
                 cells.append(_ig_add_row_html(row, sub_add_wrap_id, issue["id"], s["id"]))
                 row += 1
 
@@ -8745,8 +8759,13 @@ def deal_issues_gantt_page(con) -> str:
     # min-widthも同じCSS変数を参照させる（週表示でdaycol-minを縮めた時に、この値が固定pxの
     # ままだと1frが余白を埋めてしまい列が実際には縮まらず「見た目上の圧縮」が効かなくなるため）。
     _min_w_calc = f"calc(260px + {n_days} * var(--ig-daycol-min, 28px))"
+    # 行の高さを全て明示（grid-template-rows）: タスク追加の予約行(_spacer_rows)だけ
+    # minmax(0,26px)にして、非表示時は0に収縮させる（ユーザー要望2026-09-18「メインタスクと
+    # サブタスクが離れて表示される」「全体的にスキマが大きい」の解消。他の行は従来通り26px固定）。
+    _row_tpl = " ".join("minmax(0,26px)" if r in _spacer_rows else "26px" for r in range(1, row))
     grid_html = (f'<div class="gantt-wrap"><div class="gantt-grid" '
-                f'style="grid-template-columns:{col_tpl};min-width:{_min_w_calc}">{"".join(cells)}</div></div>')
+                f'style="grid-template-columns:{col_tpl};grid-template-rows:{_row_tpl};'
+                f'min-width:{_min_w_calc}">{"".join(cells)}</div></div>')
 
     missing_html = ""
     if missing_items:
@@ -8803,6 +8822,23 @@ def deal_issues_gantt_page(con) -> str:
     var IG_ITEMS = {items_json};
     var IG_MIN_DATE = {json.dumps(_ig_min_date_iso)};
     var IG_NUM_DAYS = {json.dumps(_ig_n_days)};
+    // 初期表示位置＝当日の1週間前を一番左に（ユーザー要望2026-09-18）。従来は常に最古の
+    // 日付(min_d)が左端で、直近のタスクを見るのに毎回右へスクロールする必要があった。
+    (function(){{
+      if (!IG_MIN_DATE || !IG_NUM_DAYS) return;
+      function run(){{
+        var wrap = document.querySelector('.gantt-wrap'), grid = document.querySelector('.gantt-grid');
+        if (!wrap || !grid) return;
+        var LABEL_W = 260;
+        var minD = new Date(IG_MIN_DATE + 'T00:00:00');
+        var target = new Date(); target.setHours(0,0,0,0); target.setDate(target.getDate() - 7);
+        var offsetDays = Math.round((target - minD) / 86400000);
+        offsetDays = Math.max(0, Math.min(IG_NUM_DAYS - 1, offsetDays));
+        var dayW = Math.max(1, (grid.clientWidth - LABEL_W) / IG_NUM_DAYS);
+        wrap.scrollLeft = offsetDays * dayW;
+      }}
+      if (document.readyState === 'complete') run(); else window.addEventListener('load', run);
+    }})();
     function _igEsc(s){{ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }}
     function igPopHtml(id,it){{
       // 概要はガント一覧・バー上には出さず、ステップをクリックして開くこのポップアップ内でのみ
@@ -9142,7 +9178,7 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
                 out.append(f'<div class="{cls}" style="grid-row:{row};grid-column:{i + 2}"></div>')
             return "".join(out)
 
-        cells = ['<div class="gantt-lbl grp" style="grid-row:1;grid-column:1"></div>']
+        cells = ['<div class="gantt-lbl grp gantt-corner" style="grid-row:1;grid-column:1"></div>']
         for i in range(n_days):
             dd = min_d + timedelta(days=i)
             cls = "gantt-daylabel"
@@ -9263,6 +9299,22 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
     var GANTT_STATUSES = {json.dumps(sfa_db.TASK_STATUSES, ensure_ascii=False)};
     var GANTT_MIN_DATE = {json.dumps(_gantt_min_date_iso, ensure_ascii=False)};
     var GANTT_NUM_DAYS = {json.dumps(_gantt_n_days)};
+    // 初期表示位置＝当日の1週間前を一番左に（社内PJガントと同仕様、ユーザー要望2026-09-18）。
+    (function(){{
+      if (!GANTT_MIN_DATE || !GANTT_NUM_DAYS) return;
+      function run(){{
+        var wrap = document.querySelector('.gantt-wrap'), grid = document.querySelector('.gantt-grid');
+        if (!wrap || !grid) return;
+        var LABEL_W = 220;
+        var minD = new Date(GANTT_MIN_DATE + 'T00:00:00');
+        var target = new Date(); target.setHours(0,0,0,0); target.setDate(target.getDate() - 7);
+        var offsetDays = Math.round((target - minD) / 86400000);
+        offsetDays = Math.max(0, Math.min(GANTT_NUM_DAYS - 1, offsetDays));
+        var dayW = Math.max(1, (grid.clientWidth - LABEL_W) / GANTT_NUM_DAYS);
+        wrap.scrollLeft = offsetDays * dayW;
+      }}
+      if (document.readyState === 'complete') run(); else window.addEventListener('load', run);
+    }})();
     function _gtEsc(s){{ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;')
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }}
     function _gtOpt(list,cur){{ var h='<option value=""></option>';
