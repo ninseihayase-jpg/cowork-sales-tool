@@ -8830,9 +8830,17 @@ def deal_issues_gantt_page(con) -> str:
             子を持つメインタスクは▼で折りたたみ可能です。期間が確定したタスクはガントバーで表示され、
             バーをドラッグすると日程スライド、左右の端をドラッグすると期間の伸縮ができます（コンサルタスクガントと同じ操作）。</p>
         </div>
-        <div class="ig-zoom-toggle" style="flex:none;display:flex;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden">
-          <button type="button" class="ig-zoom-btn active" data-zoom="day" onclick="setIgGanttZoom('day')">日次</button>
-          <button type="button" class="ig-zoom-btn" data-zoom="week" onclick="setIgGanttZoom('week')">週次</button>
+        <div style="flex:none;display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn sec" style="font-size:12px" onclick="igCollapseAllSubtasks()"
+                  title="全PJの、子を持つメインタスクのサブタスクをまとめて折りたたむ（メインタスク行は残る）">
+            ▶ サブタスクをすべて閉じる</button>
+          <button type="button" class="btn sec" style="font-size:12px" onclick="igCollapseAllIssues()"
+                  title="全PJをメインタスクごとまとめて折りたたむ（PJ見出し行だけが残る）">
+            ▶ メインタスクも含めすべて閉じる</button>
+          <div class="ig-zoom-toggle" style="flex:none;display:flex;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden">
+            <button type="button" class="ig-zoom-btn active" data-zoom="day" onclick="setIgGanttZoom('day')">日次</button>
+            <button type="button" class="ig-zoom-btn" data-zoom="week" onclick="setIgGanttZoom('week')">週次</button>
+          </div>
         </div>
       </div>
     </div>
@@ -8983,6 +8991,24 @@ def deal_issues_gantt_page(con) -> str:
       Object.keys(rowShow).forEach(function(r){{ _igSetRowHeight(parseInt(r,10), rowShow[r] ? '26px' : '0px'); }});
       btnEl.setAttribute('data-collapsed', next ? '1' : '0');
       btnEl.textContent = next ? '▶' : '▼';
+    }}
+    // 全PJ一括操作（2026-09-18要望「サブタスクだけすべて閉じる」「メインタスクも含めすべて閉じる」）。
+    // igToggleChildren/igToggleIssueはそれぞれ状態を反転させるだけなので、無条件に全ボタンへ
+    // 呼ぶと既に閉じている物を開いてしまう。data-collapsed==='1'（既に折りたたみ済み）は
+    // スキップし、既存の単体トグル関数をそのまま再利用する（新たな状態管理を増やさない）。
+    function igCollapseAllSubtasks(){{
+      document.querySelectorAll('[id^="ig-toggle-"]').forEach(function(btn){{
+        if (btn.getAttribute('data-collapsed') === '1') return;
+        var mainId = parseInt(btn.id.slice('ig-toggle-'.length), 10);
+        if (!isNaN(mainId)) igToggleChildren(mainId, btn);
+      }});
+    }}
+    function igCollapseAllIssues(){{
+      document.querySelectorAll('[id^="ig-pj-toggle-"]').forEach(function(btn){{
+        if (btn.getAttribute('data-collapsed') === '1') return;
+        var issueId = parseInt(btn.id.slice('ig-pj-toggle-'.length), 10);
+        if (!isNaN(issueId)) igToggleIssue(issueId, btn);
+      }});
     }}
     // 日次/週次ズーム切替（2026-09-13）。--ig-daycol-minを書き換えるだけなので、
     // グリッドの列数・ドラッグ判定(dayColWidth()は実測clientWidthベース)は変わらず、

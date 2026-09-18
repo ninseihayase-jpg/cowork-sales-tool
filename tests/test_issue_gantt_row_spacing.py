@@ -222,3 +222,39 @@ def test_issue_toggle_js_respects_nested_main_task_collapse(con):
     assert "function igToggleIssue(issueId, btnEl)" in html
     assert "el.hasAttribute('data-parent-task')" in html
     assert "document.getElementById('ig-toggle-'+el.getAttribute('data-parent-task'))" in html
+
+
+# ── 全PJ一括「すべて閉じる」ボタン(2026-09-18要望)。実機Playwright検証で下記の
+# 挙動を確認済み: ①サブタスクだけ閉じる/②メインタスクも含め閉じるの両方が既に折りたたみ
+# 済みの物を再展開しない(冪等) ③PJ再展開時、個別に折りたたんでいたメインタスクの子行は
+# 開かない(ネストした折りたたみ状態が持続する)。ここではサーバ側の出力に必要な要素
+# （ボタン・関数・接頭辞による識別）が揃っていることを確認する。 ──
+
+def test_collapse_all_buttons_rendered(con):
+    _issue(con, issue="論点A")
+    html = webapp.deal_issues_gantt_page(con)
+    assert 'onclick="igCollapseAllSubtasks()"' in html
+    assert 'onclick="igCollapseAllIssues()"' in html
+    assert "サブタスクをすべて閉じる" in html
+    assert "メインタスクも含めすべて閉じる" in html
+
+
+def test_collapse_all_subtasks_js_skips_already_collapsed_and_uses_prefix_selector(con):
+    """igCollapseAllSubtasksは既に折りたたみ済み(data-collapsed==='1')をスキップし
+    （無条件に呼ぶとigToggleChildrenの反転仕様で再展開してしまう）、
+    id接頭辞"ig-toggle-"でメインタスクのトグルだけを対象にすること
+    （"ig-pj-toggle-"はこのprefix selectorに一致しないため誤って混ざらない）。"""
+    _issue(con, issue="論点A")
+    html = webapp.deal_issues_gantt_page(con)
+    assert "function igCollapseAllSubtasks()" in html
+    assert "document.querySelectorAll('[id^=\"ig-toggle-\"]')" in html
+    assert "if (btn.getAttribute('data-collapsed') === '1') return;" in html
+    assert "igToggleChildren(mainId, btn)" in html
+
+
+def test_collapse_all_issues_js_skips_already_collapsed_and_uses_prefix_selector(con):
+    _issue(con, issue="論点A")
+    html = webapp.deal_issues_gantt_page(con)
+    assert "function igCollapseAllIssues()" in html
+    assert "document.querySelectorAll('[id^=\"ig-pj-toggle-\"]')" in html
+    assert "igToggleIssue(issueId, btn)" in html
