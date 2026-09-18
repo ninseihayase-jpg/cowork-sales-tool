@@ -3297,9 +3297,12 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
     （ユーザー要望2026-08-28: 検収/入金は同じxlsx内に同居させ、「検収/入金」列の値で
     Excelのフィルタ機能により絞り込めるようにする）。一番左は「確度」列（Delivery一覧と
     同じ_delivery_confidenceのラベル）。
-    月列は実データの有無に関わらず「今月〜+18ヶ月後」の固定19ヶ月分を表示し、登録が無い月は
-    0を入力する。検収額の入力が無い案件も含め全Deliveryを出力する（ユーザー要望2026-08-28続き。
-    以前は検収登録が無い案件を除外していたが、予定を立てる前の案件も一覧できるよう変更）。
+    月列は「今月〜+18ヶ月後」の固定19ヶ月分に加え、実データ（検収額/入金額）が存在する
+    月（完了済み案件の過去の実績も含む）を必ず含める（ユーザー報告2026-09-18: 過去の実績月が
+    出力されず「当月以降の金額のみ」になっていた不具合の修正。以前は今月起点の19ヶ月固定窓の
+    外にある実績データが黙って欠落していた）。登録が無い月は0を入力する。検収額の入力が無い
+    案件も含め全Deliveryを出力する（ユーザー要望2026-08-28続き。以前は検収登録が無い案件を
+    除外していたが、予定を立てる前の案件も一覧できるよう変更）。
     責任者/担当者(dv.responsible_owner/handling_owner。個別編集画面でアサインリストから選択)、
     請求方法・請求期日・請求送付先・経費請求有無/メモも列挙する。アサインは全員を1人1列
     （アサインN。全案件を通じた最大人数分の列数に揃え、足りない案件は空欄）でも列挙する。"""
@@ -3314,10 +3317,10 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
         return v
 
     today = _today_jst()
-    months = []
-    for i in range(19):  # 今月から+18ヶ月後まで(19ヶ月分)
+    months_set = set()
+    for i in range(19):  # 今月から+18ヶ月後まで(19ヶ月分)は常に含める（予定が無い先月も見通せるように）
         yy, mm = sfa_db._add_months_ym(today.year, today.month, i)
-        months.append(f"{yy:04d}-{mm:02d}")
+        months_set.add(f"{yy:04d}-{mm:02d}")
 
     # 並び順は確度順(完了含む) × 開始週の早い順（ユーザー要望2026-08-30）。Delivery一覧の
     # `_delivery_sort_key`は状態(完了/中止/保留)を確度より優先して下段に沈めるが、入金予定表は
@@ -3336,11 +3339,15 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
         cf = sfa_db.delivery_cashflow(con, dv["id"])
         receipts = cf.get("receipts") or {}
         payments = cf.get("payments") or {}
+        # 完了済み案件を含め、過去の実績月（19ヶ月固定窓の外）も欠落させない。
+        months_set.update(receipts.keys())
+        months_set.update(payments.keys())
         blocks = sfa_db.list_delivery_assignments(con, dv["id"])
         assignees = sorted({b["owner"] for b in blocks if (b.get("owner") or "").strip()})
         max_assignees = max(max_assignees, len(assignees))
         per_delivery.append((dv, conf_lbl, "検収", receipts, assignees))
         per_delivery.append((dv, conf_lbl, "入金", payments, assignees))
+    months = sorted(months_set)
 
     wb = openpyxl.Workbook()
     ws = wb.active

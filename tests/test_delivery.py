@@ -1069,6 +1069,30 @@ def test_payment_schedule_xlsx_includes_deliveries_with_no_amount_registered(con
     assert all(r[_ml(_ym(0))] == 0 for r in rows)  # 登録が無い月は0埋め
 
 
+def test_payment_schedule_xlsx_includes_past_months_for_completed_deliveries(con, acc_id):
+    """ユーザー報告(2026-09-18):「入金予定表Excelが当月以降の金額のみ出力される。完了した
+    案件含め、全案件・全月の実績を出力してほしい」。月列が今月〜+18ヶ月の固定窓だったため、
+    完了済み案件の過去の検収/入金実績（窓の外）が黙って欠落していた不具合の回帰確認。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, title="完了済み案件", status="完了")
+    m_past2, m_past1 = _ym(-24), _ym(-13)  # 固定19ヶ月窓の外側の過去月
+    sfa_db.set_delivery_receipt(con, dvid, m_past2, 300)
+    sfa_db.set_delivery_receipt(con, dvid, m_past1, 400)
+    import openpyxl
+    from io import BytesIO
+    wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
+    ws = wb.active
+    hdr = [c.value for c in ws[1]]
+    assert _ml(m_past2) in hdr and _ml(m_past1) in hdr, "過去の実績月が列に出力されていない"
+    rows = [dict(zip(hdr, [c.value for c in ws[r]])) for r in range(2, ws.max_row + 1)]
+    receipt_row = next(r for r in rows if r["#"] == dvid and r["検収/入金"] == "検収")
+    assert receipt_row[_ml(m_past2)] == 300 and receipt_row[_ml(m_past1)] == 400
+    # payment_cycle_months未設定(既定1ヶ月)なので入金は検収の翌月
+    payment_row = next(r for r in rows if r["#"] == dvid and r["検収/入金"] == "入金")
+    m_past2_pay = _ym(-23)
+    assert payment_row[_ml(m_past2_pay)] == 300
+
+
 def test_deliveries_page_renders_full_width_and_wider_columns(con, acc_id):
     """#118: Delivery一覧は画面幅いっぱいに表示（main-wide）し、状態セレクト等が
     潰れて見えなくならないよう最低幅を確保する（ユーザー報告2026-08-28: 状態が潰れている）。"""
