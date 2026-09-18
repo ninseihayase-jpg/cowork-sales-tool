@@ -8556,13 +8556,18 @@ def deal_issues_gantt_page(con) -> str:
     def _col_of(d: date) -> int:
         return (d - min_d).days + 2
 
-    def _day_bg_cells(row: int, parent_task_id: int | None = None) -> str:
+    def _day_bg_cells(row: int, parent_task_id: int | None = None, issue_id: int | None = None) -> str:
         # parent_task_id指定時は、その行がサブタスク行であることを示すdata属性を付ける
         # （2026-09-11: メインタスクの折りたたみでサブタスク行一式を丸ごと隠すために使う。
-        # 行内の全要素——日付背景セル・ラベル・バー——に同じdata-parent-taskを付ける必要がある。
-        # .gantt-gridはgrid-auto-rows固定高のため、非表示にした行はdisplay:noneで高さごと
-        # 消える一方、表示されている行の高さには影響しない）。
+        # 行内の全要素——日付背景セル・ラベル・バー——に同じdata-parent-taskを付ける必要がある）。
+        # issue_id指定時は、PJ単位の折りたたみ（2026-09-18）用にdata-parent-issueも付ける
+        # （メインタスク行・サブタスク行の両方に付き、igToggleIssueがdata-parent-taskの
+        # 有無でメイン/サブを区別して個別の折りたたみ状態を尊重する）。
+        # 非表示にした行は、行の高さもgrid-template-rows経由でJSが0pxに書き換える
+        # （.gantt-gridは行高さを明示するため、display:noneだけでは高さが縮まない。
+        # _igSetRowHeight参照）。
         _pt = f' data-parent-task="{parent_task_id}"' if parent_task_id else ""
+        _pi = f' data-parent-issue="{issue_id}"' if issue_id else ""
         out = []
         for i in range(n_days):
             dd = min_d + timedelta(days=i)
@@ -8571,7 +8576,7 @@ def deal_issues_gantt_page(con) -> str:
                 cls += " weekend"
             if dd == today:
                 cls += " today"
-            out.append(f'<div class="{cls}"{_pt} data-dow="{dd.weekday()}" '
+            out.append(f'<div class="{cls}"{_pt}{_pi} data-dow="{dd.weekday()}" '
                        f'style="grid-row:{row};grid-column:{i + 2}"></div>')
         return "".join(out)
 
@@ -8662,6 +8667,14 @@ def deal_issues_gantt_page(con) -> str:
 
             issue_label = _esc(sfa_db.task_link_label(con, "issue", issue["id"]) or issue.get("issue") or "")
             main_add_wrap_id = f"ig-mainadd-{issue['id']}"
+            # PJ全体の折りたたみ▼/▶（2026-09-18要望「PJごとに畳めるようにしたい」）。
+            # メインタスクが1件も無いPJには畳む対象が無いため出さない。
+            _pj_toggle_html = (
+                f'<span class="ig-collapse-toggle" id="ig-pj-toggle-{issue["id"]}" data-collapsed="0" '
+                f'onclick="igToggleIssue({issue["id"]},this)" '
+                f'title="PJ全体の表示/折りたたみ" style="cursor:pointer;color:#64748b;'
+                f'font-size:9px;flex:none">▼</span>' if main_tasks else ""
+            )
             # 社内PJ1件＝行に「＋」ボタンのみを常設。クリックでメインタスク追加の
             # インライン入力欄（下の予約行）を開く（2026-09-11: フローティング画面は廃止）。
             # 2026-09-15修正: カテゴリ帯見出しと同じ理由で、PJ名+＋ボタンをcolumn:1のみの
@@ -8672,6 +8685,7 @@ def deal_issues_gantt_page(con) -> str:
                 f'border-top:1px solid #e2e8f0"></div>'
                 f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1;background:#fafbfc;'
                 f'gap:8px">'
+                f'{_pj_toggle_html}'
                 f'<a href="/deal-issue/{issue["id"]}" style="font-weight:600;font-size:12px;'
                 f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0">'
                 f'📌{issue_label}</a>'
@@ -8689,7 +8703,7 @@ def deal_issues_gantt_page(con) -> str:
                 _item_data[s["id"]] = {"title": s["title"], "start_date": s["start_date"],
                                        "end_date": s["end_date"], "issue_id": issue["id"],
                                        "overview": s.get("overview") or ""}
-                cells.append(_day_bg_cells(row))
+                cells.append(_day_bg_cells(row, issue_id=issue["id"]))
                 sd = date.fromisoformat(s["start_date"])
                 ed = date.fromisoformat(s["end_date"])
                 ucolor, _ = _task_urgency(s["end_date"], today_iso, d3, weekend_end)
@@ -8698,14 +8712,17 @@ def deal_issues_gantt_page(con) -> str:
                 # メインタスクの右側に「＋」（サブタスク追加）。子を持つ場合は折りたたみ▼/▶も表示
                 # （2026-09-11要望: 「サブタスクの追加はメインタスクの右側にくっつける」
                 # 「サブタスクとして追加したら、メインタスクに紐づいて、折りたたんだりできる」）。
+                # id="ig-toggle-{id}"はPJ全体の折りたたみ(igToggleIssue)が、展開時に
+                # このメインタスク個別の折りたたみ状態を尊重するために参照する。
                 _toggle_html = (
-                    f'<span class="ig-collapse-toggle" data-collapsed="0" '
+                    f'<span class="ig-collapse-toggle" id="ig-toggle-{s["id"]}" data-collapsed="0" '
                     f'onclick="igToggleChildren({s["id"]},this)" '
                     f'title="サブタスクの表示/折りたたみ" style="cursor:pointer;color:#64748b;'
                     f'font-size:9px;flex:none">▼</span>' if _children else ""
                 )
                 cells.append(
-                    f'<div class="gantt-lbl" style="grid-row:{row};grid-column:1;display:flex;'
+                    f'<div class="gantt-lbl" data-parent-issue="{issue["id"]}" '
+                    f'style="grid-row:{row};grid-column:1;display:flex;'
                     f'align-items:center;gap:3px">'
                     f'{_toggle_html}'
                     f'<a href="#" onclick="return igOpenItem({s["id"]})" style="color:inherit;'
@@ -8717,6 +8734,7 @@ def deal_issues_gantt_page(con) -> str:
                 c1, c2 = _col_of(sd), _col_of(ed) + 1
                 cells.append(
                     f'<div class="gantt-bar" draggable="true" data-iid="{s["id"]}" '
+                    f'data-parent-issue="{issue["id"]}" '
                     f'data-start="{s["start_date"]}" data-end="{s["end_date"]}" '
                     f'style="grid-row:{row};grid-column:{c1} / {c2};background:{ucolor}" '
                     f'onclick="return igBarClick(event,{s["id"]})" '
@@ -8733,12 +8751,12 @@ def deal_issues_gantt_page(con) -> str:
                     _item_data[child["id"]] = {"title": child["title"], "start_date": child["start_date"],
                                                "end_date": child["end_date"], "issue_id": issue["id"],
                                                "overview": child.get("overview") or ""}
-                    cells.append(_day_bg_cells(row, parent_task_id=s["id"]))
+                    cells.append(_day_bg_cells(row, parent_task_id=s["id"], issue_id=issue["id"]))
                     csd = date.fromisoformat(child["start_date"])
                     ced = date.fromisoformat(child["end_date"])
                     cucolor, _ = _task_urgency(child["end_date"], today_iso, d3, weekend_end)
                     cells.append(
-                        f'<div class="gantt-lbl" data-parent-task="{s["id"]}" '
+                        f'<div class="gantt-lbl" data-parent-task="{s["id"]}" data-parent-issue="{issue["id"]}" '
                         f'style="grid-row:{row};grid-column:1;padding-left:16px">'
                         f'<a href="#" onclick="return igOpenItem({child["id"]})" style="color:inherit;'
                         f'text-decoration:none;overflow:hidden;text-overflow:ellipsis" '
@@ -8746,7 +8764,7 @@ def deal_issues_gantt_page(con) -> str:
                     cc1, cc2 = _col_of(csd), _col_of(ced) + 1
                     cells.append(
                         f'<div class="gantt-bar" draggable="true" data-iid="{child["id"]}" '
-                        f'data-parent-task="{s["id"]}" '
+                        f'data-parent-task="{s["id"]}" data-parent-issue="{issue["id"]}" '
                         f'data-start="{child["start_date"]}" data-end="{child["end_date"]}" '
                         f'style="grid-row:{row};grid-column:{cc1} / {cc2};background:{cucolor};opacity:.8" '
                         f'onclick="return igBarClick(event,{child["id"]})" '
@@ -8922,15 +8940,47 @@ def deal_issues_gantt_page(con) -> str:
       else if(el.classList.contains('ig-add-overview')){{ wrap.querySelector('.ig-add-period').focus(); }}
       else if(el.classList.contains('ig-add-period')){{ igSubmitInlineAdd(wrap.id); }}
     }});
+    // 折りたたんだ行の高さをまとめて書き換える（.gantt-gridは行高さをgrid-template-rowsで
+    // 明示するため、display:noneだけでは行の高さが縮まない。要素のインラインgrid-rowから
+    // 対象行番号を集めてから_igSetRowHeightする、2026-09-18修正）。
+    function _igCollectRows(elList){{
+      var rows={{}};
+      elList.forEach(function(el){{ var r=parseInt(el.style.gridRow,10); if(r) rows[r]=true; }});
+      return Object.keys(rows).map(function(s){{ return parseInt(s,10); }});
+    }}
     // メインタスクの折りたたみ（子=サブタスクを持つ場合のみ表示される▼/▶トグル）。
     // サブタスクの各行要素（日付背景セル・ラベル・バー）は全て data-parent-task で
-    // 紐付けてあるので、まとめて表示/非表示を切り替えられる。
+    // 紐付けてあるので、まとめて表示/非表示・行高さを切り替えられる。
     function igToggleChildren(mainId, btnEl){{
-      var collapsed = btnEl.getAttribute('data-collapsed')==='1';
-      var next = !collapsed;
-      document.querySelectorAll('[data-parent-task="'+mainId+'"]').forEach(function(el){{
-        el.style.display = next ? 'none' : '';
+      var next = btnEl.getAttribute('data-collapsed')!=='1';
+      var els = Array.prototype.slice.call(document.querySelectorAll('[data-parent-task="'+mainId+'"]'));
+      els.forEach(function(el){{ el.style.display = next ? 'none' : ''; }});
+      _igCollectRows(els).forEach(function(r){{ _igSetRowHeight(r, next ? '0px' : '26px'); }});
+      btnEl.setAttribute('data-collapsed', next ? '1' : '0');
+      btnEl.textContent = next ? '▶' : '▼';
+    }}
+    // PJ全体の折りたたみ（2026-09-18要望「PJごとに畳めるようにしたい」）。
+    // メインタスク行・サブタスク行の両方にdata-parent-issueが付いている。折りたたみ時は
+    // 全部隠す／展開時はメインタスク行は常に出すが、サブタスク行は各メインタスクの
+    // 個別の折りたたみ状態(ig-toggle-{{id}}のdata-collapsed)を尊重する（メインタスク単位で
+    // 畳んでいたのにPJ展開で勝手に開いてしまわないように）。
+    function igToggleIssue(issueId, btnEl){{
+      var next = btnEl.getAttribute('data-collapsed')!=='1';
+      var rowShow = {{}};
+      document.querySelectorAll('[data-parent-issue="'+issueId+'"]').forEach(function(el){{
+        var isSub = el.hasAttribute('data-parent-task');
+        var show;
+        if (next) {{ show = false; }}
+        else if (!isSub) {{ show = true; }}
+        else {{
+          var mtBtn = document.getElementById('ig-toggle-'+el.getAttribute('data-parent-task'));
+          show = !(mtBtn && mtBtn.getAttribute('data-collapsed')==='1');
+        }}
+        el.style.display = show ? '' : 'none';
+        var r = parseInt(el.style.gridRow, 10);
+        if (r) rowShow[r] = rowShow[r] || show;
       }});
+      Object.keys(rowShow).forEach(function(r){{ _igSetRowHeight(parseInt(r,10), rowShow[r] ? '26px' : '0px'); }});
       btnEl.setAttribute('data-collapsed', next ? '1' : '0');
       btnEl.textContent = next ? '▶' : '▼';
     }}

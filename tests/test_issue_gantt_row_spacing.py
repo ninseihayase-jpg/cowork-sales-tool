@@ -162,3 +162,63 @@ def test_tasks_gantt_page_default_scroll_uses_same_logic(con):
     html = webapp.tasks_gantt_page(con)
     assert "target.setDate(target.getDate() - 7)" in html
     assert "wrap.scrollLeft = offsetDays * dayW" in html
+
+
+# ── メインタスク折りたたみ時の行高さ収縮(2026-09-18再報告)＋PJ全体の折りたたみ(新規要望) ──
+
+def test_main_task_collapse_toggle_rewrites_child_row_heights(con):
+    """「サブタスクを畳んでも行高さが変わらない」報告への対応: メインタスク折りたたみ
+    (igToggleChildren)も_igSetRowHeightで子行の高さを書き換えること。"""
+    iid = _issue(con, issue="論点A")
+    main_id = sfa_db.create_deal_issue_subitem(con, iid, "メインタスク1", "2026-09-10", "2026-09-20")
+    sfa_db.create_deal_issue_subitem(con, iid, "サブタスク1", "2026-09-12", "2026-09-15",
+                                     parent_id=main_id)
+    html = webapp.deal_issues_gantt_page(con)
+    assert "function igToggleChildren(mainId, btnEl)" in html
+    assert "_igCollectRows(els).forEach(function(r){ _igSetRowHeight(r, next ? '0px' : '26px'); });" in html
+    assert f'id="ig-toggle-{main_id}"' in html
+
+
+def test_pj_toggle_rendered_when_issue_has_main_tasks(con):
+    """「PJごとに畳めるようにしたい」要望: メインタスクを持つPJの見出し行にPJ全体の
+    折りたたみ▼が付くこと。"""
+    iid = _issue(con, issue="論点A")
+    sfa_db.create_deal_issue_subitem(con, iid, "メインタスク1", "2026-09-10", "2026-09-20")
+    html = webapp.deal_issues_gantt_page(con)
+    assert f'id="ig-pj-toggle-{iid}"' in html
+    assert f'onclick="igToggleIssue({iid},this)"' in html
+
+
+def test_pj_toggle_absent_when_issue_has_no_main_tasks(con):
+    """メインタスクが1件も無いPJには畳む対象が無いため、トグル自体を出さない。"""
+    iid = _issue(con, issue="論点B")
+    html = webapp.deal_issues_gantt_page(con)
+    assert f'id="ig-pj-toggle-{iid}"' not in html
+
+
+def test_main_task_and_child_rows_tagged_with_parent_issue(con):
+    """PJ全体折りたたみ(igToggleIssue)がメインタスク行・サブタスク行を一括で
+    hide/showできるよう、両方にdata-parent-issueが付いていること
+    （data-parent-taskの有無でメイン/サブを区別する）。"""
+    iid = _issue(con, issue="論点A")
+    main_id = sfa_db.create_deal_issue_subitem(con, iid, "メインタスク1", "2026-09-10", "2026-09-20")
+    sfa_db.create_deal_issue_subitem(con, iid, "サブタスク1", "2026-09-12", "2026-09-15",
+                                     parent_id=main_id)
+    html = webapp.deal_issues_gantt_page(con)
+    assert re.search(
+        r'<div class="gantt-lbl" data-parent-issue="' + str(iid) + r'" '
+        r'style="grid-row:\d+;grid-column:1;display:flex;', html), "メインタスク行にdata-parent-issueが無い"
+    assert re.search(
+        r'<div class="gantt-lbl" data-parent-task="' + str(main_id) + r'" data-parent-issue="' + str(iid) + r'" ',
+        html), "サブタスク行にdata-parent-issueが無い"
+
+
+def test_issue_toggle_js_respects_nested_main_task_collapse(con):
+    """igToggleIssue展開時、個別に折りたたまれているメインタスクの子行は開かない
+    （data-parent-taskを持つ行はig-toggle-{id}の折りたたみ状態を見る）ことをJS実装の
+    構造から確認する。"""
+    _issue(con, issue="論点A")
+    html = webapp.deal_issues_gantt_page(con)
+    assert "function igToggleIssue(issueId, btnEl)" in html
+    assert "el.hasAttribute('data-parent-task')" in html
+    assert "document.getElementById('ig-toggle-'+el.getAttribute('data-parent-task'))" in html
