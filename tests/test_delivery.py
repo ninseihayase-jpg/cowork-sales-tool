@@ -1422,6 +1422,61 @@ def test_role_delete_route_via_http_removes_matching_assignment(monkeypatch, tmp
     assert sfa_db.list_delivery_roles(con3, dvid) == []
 
 
+def test_assignment_update_route_saves_owner_even_without_dates(monkeypatch, tmp_path):
+    """ユーザー報告(2026-09-18):「担当を入れても保存されない」「アサイン日程表も出てこない」。
+    原因: /delivery/{id}/assignment/{id}/updateが開始日/終了日の両方が入力されていないと
+    保存自体を丸ごとスキップしていたため、日程未定のまま担当・役割・稼働率だけ先に決めて
+    おく（体制欄から役割だけ作った直後によくある状態）という使い方で、担当を入れても
+    保存されないように見えていた。日付が空でも他フィールドは保存されることを確認する。"""
+    import base64
+    import threading
+    import urllib.parse
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    db_path = str(tmp_path / "srv3.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con2, name="テスト社")
+    did = sfa_db.upsert_deal(con2, account_id=aid, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con2, deal_id=did, title="D")
+    # 体制から役割だけ作った直後を再現: 日付は空文字のアサイン行。
+    aid2 = sfa_db.add_delivery_assignment(con2, delivery_id=dvid, owner="", from_week="",
+                                          to_week="", fte_pct=0, role="PM")
+    con2.close()
+
+    user, pw = "u", "p"
+    monkeypatch.setattr(webapp, "SFA_BASIC_USER", user)
+    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", pw)
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        token = base64.b64encode(f"{user}:{pw}".encode()).decode()
+        headers = {"Authorization": f"Basic {token}",
+                   "Content-Type": "application/x-www-form-urlencoded"}
+        body = urllib.parse.urlencode({
+            "role": "PM", "member_kind": "内部", "owner_sel": "早瀬",
+            "from_week": "", "to_week": "", "fte_pct": "10", "fte_billing": "", "note": "",
+        }).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/delivery/{dvid}/assignment/{aid2}/update",
+            data=body, headers=headers, method="POST")
+        urllib.request.urlopen(req, timeout=10)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+    con3 = sfa_db.connect(db_path)
+    row = next(r for r in sfa_db.list_delivery_assignments(con3, dvid) if r["id"] == aid2)
+    assert row["owner"] == "早瀬", "日付未入力を理由に担当(owner)が保存されていない"
+    assert row["fte_pct"] == 10.0
+    assert row["from_week"] == "" and row["to_week"] == ""  # 日付は入力していないので空のまま
+
+
 def test_roles_reorder_route_via_http(monkeypatch, tmp_path):
     import base64
     import threading

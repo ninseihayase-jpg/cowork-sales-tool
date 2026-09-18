@@ -22032,8 +22032,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _kind, _ow = _delivery_owner_from_form(f)
                     _fw = _valid_date(f.get("from_week", ""))
                     _tw = _valid_date(f.get("to_week", ""))
-                    if _aid.isdigit() and _fw and _tw:
-                        if _tw < _fw:
+                    # 開始/終了日が未入力（or片方だけ）でも、担当/役割/稼働率等の他フィールドは
+                    # 保存する（ユーザー報告2026-09-18:「担当を入れても保存されない」。以前は
+                    # 両方の日付が無いと保存自体をスキップしていたため、日程は後回しで先に
+                    # 担当だけ決めておく、という使い方ができなかった）。両方揃っている時のみ
+                    # 前後逆転を補正する。
+                    if _aid.isdigit():
+                        if _fw and _tw and _tw < _fw:
                             _fw, _tw = _tw, _fw
                         sfa_db.update_delivery_assignment(
                             con, int(_aid), owner=_ow, member_kind=_kind,
