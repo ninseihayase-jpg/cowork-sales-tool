@@ -8595,8 +8595,8 @@ def deal_issues_gantt_page(con) -> str:
     # タスク追加用の予約行（_ig_add_row_html）は既定でdisplay:noneだが、grid-auto-rowsが
     # 全行に均一な高さを強制するため、非表示でも26px分の空白行として見えてしまい
     # 「メインタスクとサブタスクが離れて表示される」不具合になっていた（ユーザー報告
-    # 2026-09-18）。この行番号だけをminmax(0,26px)にして、非表示時は0に収縮させる
-    # （表示時は最大26pxまで伸びられるので、開いた時の見た目は変わらない）。
+    # 2026-09-18）。この行番号だけ0pxで生成し、「＋」クリック時にJS(_igSetRowHeight)が
+    # 明示的に26pxへ書き換える（詳細は_ig_add_row_htmlのdocstring参照）。
     _spacer_rows: set[int] = set()
     _item_data: dict = {}
     if not all_issues:
@@ -8612,10 +8612,15 @@ def deal_issues_gantt_page(con) -> str:
         操作感に変更（ユーザー要望「フローティング画面はやめたい」）。
         .gantt-gridはgrid-auto-rowsで行高が固定（26px）のため、行が伸び縮みして
         隣接行と重なる旧不具合を避けるべく、常にこの専用の1行を予約しておき
-        （非表示時は高さ0）、動的に行を増減させない設計にしている。"""
+        （非表示時は高さ0）、動的に行を増減させない設計にしている。
+        2026-09-18修正: grid-template-rowsでこの行だけminmax(0,26px)にする方式では
+        実機で0に収縮せず隙間が残ったため、常に0pxとして生成し、「＋」クリック時に
+        JS(_igSetRowHeight)でその行番号だけ26pxへ書き換える確実な方式に変更した
+        （data-row-noで自分の行番号をJSに伝える）。"""
         _pid_attr = str(parent_id) if parent_id else ""
         return (
             f'<div id="{wrap_id}" class="ig-add-wrap" data-issue-id="{issue_id}" data-parent-id="{_pid_attr}" '
+            f'data-row-no="{row_no}" '
             f'style="grid-row:{row_no};grid-column:1 / -1;display:none;background:#f8fafc;'
             f'border-top:1px dashed #cbd5e1;padding:2px 8px;align-items:center;gap:6px;'
             f'white-space:nowrap;overflow:hidden">'
@@ -8759,10 +8764,12 @@ def deal_issues_gantt_page(con) -> str:
     # min-widthも同じCSS変数を参照させる（週表示でdaycol-minを縮めた時に、この値が固定pxの
     # ままだと1frが余白を埋めてしまい列が実際には縮まらず「見た目上の圧縮」が効かなくなるため）。
     _min_w_calc = f"calc(260px + {n_days} * var(--ig-daycol-min, 28px))"
-    # 行の高さを全て明示（grid-template-rows）: タスク追加の予約行(_spacer_rows)だけ
-    # minmax(0,26px)にして、非表示時は0に収縮させる（ユーザー要望2026-09-18「メインタスクと
-    # サブタスクが離れて表示される」「全体的にスキマが大きい」の解消。他の行は従来通り26px固定）。
-    _row_tpl = " ".join("minmax(0,26px)" if r in _spacer_rows else "26px" for r in range(1, row))
+    # 行の高さを全て明示（grid-template-rows）: タスク追加の予約行(_spacer_rows)だけ0pxにし、
+    # 「＋」クリック時にJS(_igSetRowHeight)がその行番号だけ26pxへ書き換える（ユーザー要望
+    # 2026-09-18「メインタスクとサブタスクが離れて表示される」「全体的にスキマが大きい」の解消。
+    # minmax(0,26px)で自動収縮させる方式は実機で0に収縮しなかったため、常に0pxで生成し
+    # JSで明示的に開閉する確実な方式にした。他の行は従来通り26px固定）。
+    _row_tpl = " ".join("0px" if r in _spacer_rows else "26px" for r in range(1, row))
     grid_html = (f'<div class="gantt-wrap"><div class="gantt-grid" '
                 f'style="grid-template-columns:{col_tpl};grid-template-rows:{_row_tpl};'
                 f'min-width:{_min_w_calc}">{"".join(cells)}</div></div>')
@@ -8869,15 +8876,27 @@ def deal_issues_gantt_page(con) -> str:
     // タスク追加（メイン/サブ共通）: 「＋」クリックで直下の予約行を表示し、タスク名/概要/期間を
     // その場で入力してEnterで送信する（2026-09-11要望: フローティングのポップアップ入力は
     // やめてほしい、という指示により旧ポップアップ方式から置き換え）。
+    // 予約行は既定0px（2026-09-18修正）。表示/非表示に合わせてgrid-template-rowsの
+    // 該当行だけを26px/0pxに書き換える（data-row-noで自分の行番号を持っている）。
+    function _igSetRowHeight(rowNo, height){{
+      var g=document.querySelector('.gantt-grid'); if(!g || !rowNo) return;
+      var cur=(g.style.gridTemplateRows||'').trim(); if(!cur) return;
+      var parts=cur.split(/\s+/), idx=rowNo-1;
+      if(idx<0||idx>=parts.length) return;
+      parts[idx]=height;
+      g.style.gridTemplateRows=parts.join(' ');
+    }}
     function igShowInlineAdd(wrapId){{
       var wrap=document.getElementById(wrapId); if(!wrap) return false;
       wrap.style.display='flex';
+      _igSetRowHeight(parseInt(wrap.dataset.rowNo,10),'26px');
       var t=wrap.querySelector('.ig-add-title'); if(t) t.focus();
       return false;
     }}
     function igHideInlineAdd(wrapId){{
       var wrap=document.getElementById(wrapId); if(!wrap) return;
       wrap.style.display='none';
+      _igSetRowHeight(parseInt(wrap.dataset.rowNo,10),'0px');
       wrap.querySelectorAll('input').forEach(function(el){{ el.value=''; }});
     }}
     function igSubmitInlineAdd(wrapId){{

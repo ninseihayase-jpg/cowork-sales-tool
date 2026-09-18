@@ -5,11 +5,14 @@
 見づらい。日付行を固定表示して、かつデフォルトで当日の1週間前を一番左にあわせて表示するように。
 （いまは一番古い8/1から常に表示されていて、直近のタスクがわかりづらい）」
 
-原因: タスク追加用の予約行(_ig_add_row_html、既定display:none)がgrid-auto-rows:26px
-により非表示でも26pxの空白行として描画され、メインタスク→サブタスクの間・PJ見出し→
+原因: タスク追加用の予約行(_ig_add_row_html、既定display:none)がgrid-auto-rows:26pxに
+より非表示でも26pxの空白行として描画され、メインタスク→サブタスクの間・PJ見出し→
 最初のメインタスクの間に常に1行分の隙間ができていた。
-修正: grid-template-rowsを行ごとに明示し、予約行だけminmax(0,26px)にして
-非表示時は0に収縮させる（他の行は26px固定で変わらない）。
+1回目の修正（grid-template-rows + 予約行だけminmax(0,26px)）は実機で0に収縮せず
+隙間が残った（ユーザー再報告2026-09-18「変わらず、メインタスクの下に変なスキマ行がある」）。
+2回目の修正: 予約行は常に0pxで生成し、「＋」クリック時にJS(_igSetRowHeight)がその
+行番号だけ26pxへ明示的に書き換える確実な方式に変更した（他の行は26px固定で変わらない）。
+
 併せて日付行(.gantt-daylabel/.gantt-corner)にposition:sticky;top:0を付与し、
 初期表示のスクロール位置を「当日の1週間前」に合わせるJSを追加した。
 
@@ -50,26 +53,25 @@ def _grid_template_rows(html: str) -> list[str]:
     return m.group(1).strip().split(" ")
 
 
-# ── 予約行(add-wrap)の高さ収縮 ──
+# ── 予約行(add-wrap)の高さ収縮（既定0px） ──
 
-def test_main_add_reserved_row_is_collapsible_between_pj_header_and_first_main_task(con):
-    """PJ見出し行の直後（メインタスク追加の予約行）はminmax(0,26px)で、非表示時は0に
-    収縮する＝メインタスクがPJ見出しにくっつく。"""
+def test_main_add_reserved_row_is_zero_between_pj_header_and_first_main_task(con):
+    """PJ見出し行の直後（メインタスク追加の予約行）は既定0pxで、メインタスクが
+    PJ見出しにくっついて見える。"""
     _issue(con, issue="論点A")
-    html = webapp.deal_issues_gantt_page(con)
     sfa_db.create_deal_issue_subitem(con, sfa_db.list_deal_issues(con)[0]["id"],
                                      "メインタスク1", "2026-09-10", "2026-09-20")
     html = webapp.deal_issues_gantt_page(con)
     rows = _grid_template_rows(html)
-    # row1=日付行, row2=カテゴリ帯, row3=PJ見出し, row4=メインタスク追加予約行(収縮対象),
+    # row1=日付行, row2=カテゴリ帯, row3=PJ見出し, row4=メインタスク追加予約行(0px対象),
     # row5=メインタスク本体。
-    assert rows[3] == "minmax(0,26px)", f"予約行が収縮対象になっていない: {rows}"
+    assert rows[3] == "0px", f"予約行が0pxになっていない: {rows}"
     assert rows[4] == "26px"
 
 
-def test_sub_add_reserved_row_is_collapsible_between_main_and_first_subtask(con):
-    """メインタスクの直後（サブタスク追加の予約行）も同様にminmax(0,26px)で収縮する
-    ＝サブタスクがメインタスクにくっつく（ユーザー報告の核心）。"""
+def test_sub_add_reserved_row_is_zero_between_main_and_first_subtask_or_next_main(con):
+    """メインタスクの直後（サブタスク追加の予約行）も既定0px＝サブタスクや次の
+    メインタスクがくっついて見える（ユーザー報告の核心）。"""
     iid = _issue(con, issue="論点A")
     main_id = sfa_db.create_deal_issue_subitem(con, iid, "メインタスク1", "2026-09-10", "2026-09-20")
     sfa_db.create_deal_issue_subitem(con, iid, "サブタスク1", "2026-09-12", "2026-09-15",
@@ -77,19 +79,43 @@ def test_sub_add_reserved_row_is_collapsible_between_main_and_first_subtask(con)
     html = webapp.deal_issues_gantt_page(con)
     rows = _grid_template_rows(html)
     # row1=日付行,row2=カテゴリ帯,row3=PJ見出し,row4=メイン追加予約行,row5=メインタスク,
-    # row6=サブ追加予約行(収縮対象),row7=サブタスク本体。
-    assert rows[5] == "minmax(0,26px)", f"サブタスク直前の予約行が収縮対象になっていない: {rows}"
+    # row6=サブ追加予約行(0px対象),row7=サブタスク本体。
+    assert rows[5] == "0px", f"サブタスク直前の予約行が0pxになっていない: {rows}"
+    assert rows[6] == "26px"
+
+
+def test_two_childless_main_tasks_back_to_back_have_zero_gap_row(con):
+    """ユーザー報告の再現ケース: 子を持たないメインタスクが連続する場合も、間の
+    サブタスク追加予約行は0px（子の有無に関わらず必ず挿入される行のため要確認）。"""
+    iid = _issue(con, issue="マーケ")
+    sfa_db.create_deal_issue_subitem(con, iid, "マーケ手法の洗い出し", "2026-09-01", "2026-09-30")
+    sfa_db.create_deal_issue_subitem(con, iid, "ファンドABM準備", "2026-09-01", "2026-09-30")
+    html = webapp.deal_issues_gantt_page(con)
+    rows = _grid_template_rows(html)
+    # row5=タスク1, row6=間の予約行(0px), row7=タスク2
+    assert rows[4] == "26px"
+    assert rows[5] == "0px", f"連続するメインタスク間の予約行が0pxになっていない: {rows}"
     assert rows[6] == "26px"
 
 
 def test_reserved_rows_still_exist_for_inline_add_toggle(con):
     """収縮対象でも行自体（予約枠）は残っており、「＋」クリック時のインライン追加UIは
-    従来通り動作すること（.ig-add-wrap自体は削除しない）。"""
+    従来通り動作すること（.ig-add-wrap自体は削除しない）。行番号はdata-row-noで
+    JSに伝えられ、開閉時にその行だけ26px/0pxへ書き換えられる。"""
     iid = _issue(con, issue="論点A")
     html = webapp.deal_issues_gantt_page(con)
     assert f'data-issue-id="{iid}"' in html
     assert "ig-add-wrap" in html
     assert "display:none" in html
+    assert re.search(r'data-row-no="\d+"', html)
+
+
+def test_js_toggle_functions_rewrite_specific_row_height(con):
+    _issue(con, issue="論点A")
+    html = webapp.deal_issues_gantt_page(con)
+    assert "function _igSetRowHeight(rowNo, height)" in html
+    assert "_igSetRowHeight(parseInt(wrap.dataset.rowNo,10),'26px')" in html
+    assert "_igSetRowHeight(parseInt(wrap.dataset.rowNo,10),'0px')" in html
 
 
 def test_content_rows_unaffected_by_row_collapse_fix(con):
