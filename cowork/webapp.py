@@ -901,12 +901,12 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
       <a href="/slack-memo-backfill">🩹 Slack追記メモ復旧</a>
       <div class="grp">システム</div>
       <a href="/backups">🗄 バックアップ</a>
-      <a href="/logout">🚪 ログアウト</a>
     </div>
   </details>
   <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#e0e8ff;text-decoration:none">InProc dashboard ↗</a>
   <a href="/dashboard" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#cdd7ff;text-decoration:none">📊 SFA dashboard</a>
   <a href="/reports" style="background:rgba(224,178,122,.16);border:1px solid rgba(224,178,122,.4);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#f0d9be;text-decoration:none">📰 週次レポート</a>
+  <a href="/logout" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#cdd7ff;text-decoration:none">🚪 ログアウト</a>
 </header>
 <main class="{main_class}">{flash}{body}</main></body></html>"""
 
