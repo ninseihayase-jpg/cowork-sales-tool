@@ -89,6 +89,7 @@ def login_page(next_url: str = "/", error: str = "") -> bytes:
     body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">
 <title>ログイン ・ Inproc Salesforce</title>
+{_SFA_FAVICON}
 <style>
  body{{font-family:system-ui,'Hiragino Kaku Gothic ProN',sans-serif;background:#f4f6f9;margin:0;
    display:flex;min-height:100vh;align-items:center;justify-content:center;color:#1d2430}}
@@ -444,7 +445,7 @@ def doc_view_page(con, doc: dict) -> bytes:
     """資料の閲覧ページ（CRMのナビ枠なし・シンプルなHTML。週次レポートと同じ考え方）。"""
     html_out = (
         "<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\">"
-        f"<title>{_esc(doc.get('title') or '資料')}｜InProc</title>{_DOC_PAGE_CSS}</head>"
+        f"<title>{_esc(doc.get('title') or '資料')}｜InProc</title>{_SFA_FAVICON}{_DOC_PAGE_CSS}</head>"
         "<body class=\"doc-body\">"
         f"<div class=\"doc-meta\"><a href=\"/docs\">← 資料庫一覧</a></div>"
         f"<div class=\"doc-wrap\">{doc.get('body_html') or ''}</div>"
@@ -526,9 +527,30 @@ def _ai_prompt_block(prompt_text: str, download_url: str) -> str:
     </details>"""
 
 
+def _svg_favicon_link(svg: str) -> str:
+    """SVGをdata URIのfaviconとして埋め込む<link>タグを生成する（追加アセット管理不要）。
+    2026-09-20: Windows/Chromeでタスクバーにピン留めした際、Hisho dashboard（別リポジトリの
+    姉妹アプリ）と同じ既定の「I」アイコンで見分けが付かない、というユーザー報告への対応。
+    独自faviconを明示することで、タスクバー上でも一目でどちらのアプリか分かるようにする。"""
+    return (f'<link rel="icon" type="image/svg+xml" '
+            f'href="data:image/svg+xml,{urllib.parse.quote(svg)}">')
+
+
+# 商談パイプライン（営業支援ツールの役割）を示す漏斗アイコン。白抜き漏斗＋青地
+# （#2f6fed、既存UIのボタン色と同系統）。Hisho dashboard側は別配色・別モチーフの
+# アイコンを使う想定（このアプリからは変更できないため、favicon以外の対応はしない）。
+_SFA_FAVICON = _svg_favicon_link(
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+    "<rect width='64' height='64' rx='14' fill='#2f6fed'/>"
+    "<path d='M14 18h36l-12 16v14l-12 6V34z' fill='#fff'/>"
+    "</svg>"
+)
+
+
 PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">
 <title>Inproc Salesforce</title>
+{favicon}
 <style>
  body{{font-family:system-ui,'Segoe UI','Hiragino Kaku Gothic ProN',sans-serif;margin:0;background:#f4f6f9;color:#1d2430}}
  header{{background:#1f2a44;color:#fff;padding:10px 18px;display:flex;align-items:center;gap:15px;flex-wrap:wrap;position:sticky;top:0;z-index:100}}
@@ -1019,6 +1041,7 @@ def render(body: str, flash: str = "", wide: bool = False) -> bytes:
         flash=flash_html,
         delivery_url=delivery_url,
         main_class="main-wide" if wide else "",
+        favicon=_SFA_FAVICON,
     ).encode("utf-8")
 
 
@@ -1154,6 +1177,7 @@ def _reports_doc(inner: str, *, page_title: str) -> str:
     return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">
 <title>{_esc(page_title)}</title>
+{_SFA_FAVICON}
 <style>{_REPORTS_CSS}</style>
 </head><body>
 <div class="rwrap">
@@ -1237,6 +1261,7 @@ _MKTG_SIM_PAGE_TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>マーケ施策 診断ツール | InProc</title>
+__FAVICON_LINK__
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -2492,7 +2517,8 @@ def mktg_sim_page(con) -> str:
         f'<option value="{_esc(l1)}">{_esc(l1)}</option>' for l1 in biz_l1_list
     )
 
-    html = _MKTG_SIM_PAGE_TEMPLATE.replace(
+    html = _MKTG_SIM_PAGE_TEMPLATE.replace("__FAVICON_LINK__", _SFA_FAVICON)
+    html = html.replace(
         "__INITIAL_DIAGNOSTICS_JSON__", json.dumps(diagnostics, ensure_ascii=False))
     html = html.replace(
         "__INITIAL_STRATEGY_PLANS_JSON__", json.dumps(strategy_plans, ensure_ascii=False))
@@ -2594,6 +2620,7 @@ def report_article_html(rep: dict, rail_html: str = "") -> str:
         '<!doctype html><html lang="ja"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">'
         f'<title>{title}｜InProc 営業レポート</title>'
+        f'{_SFA_FAVICON}'
         f'<style>{_REPORT_ARTICLE_CSS}</style></head><body>'
         '<div class="wrap">'
         '<a class="backlink" href="/reports">← レポート一覧</a>'
