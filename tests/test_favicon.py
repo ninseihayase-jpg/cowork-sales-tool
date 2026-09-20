@@ -1,10 +1,12 @@
-"""独自faviconの回帰テスト(2026-09-20)。
+"""独自アイコンの回帰テスト(2026-09-20〜)。
 
 ユーザー報告: Windows/ChromeでSFA-CRMとHisho dashboard（別リポジトリの姉妹アプリ）を
 タスクバーにピン留めすると、どちらも既定の「I」アイコンで見分けが付かない。
-SVGをdata URIで埋め込んだ独自faviconを主要な画面（ログイン・メインアプリ・資料閲覧・
-週次レポート・マーケ診断ツール）に設定し、タスクバー上でも一目でどちらのアプリか
-分かるようにする。
+当初は仮のインラインSVG(data URI)で対応していたが、後日ユーザーが正式デザインの
+アイコンセット（cowork/static/icons/配下、/static/icons/ 経由で配信）を用意したため、
+そちらに切り替えた。主要画面（ログイン・メインアプリ・資料閲覧・週次レポート・
+マーケ診断ツール）のfavicon、ヘッダーロゴ、/static/icons/配信ルート、/favicon.ico
+フォールバックを回帰テストする。
 
 一時DBのみ使用。本番DB(cowork_sfa.db)には一切触れない。
 """
@@ -12,7 +14,6 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -31,27 +32,37 @@ def con():
     shutil.rmtree(d, ignore_errors=True)
 
 
-def _favicon_svg_source() -> str:
-    """_SFA_FAVICONのdata URIから元のSVG文字列を復元する。"""
-    href = webapp._SFA_FAVICON.split('href="', 1)[1].rsplit('"', 1)[0]
-    assert href.startswith("data:image/svg+xml,")
-    return urllib.parse.unquote(href[len("data:image/svg+xml,"):])
+def test_icon_files_exist_on_disk():
+    for _fn in ("salesforce.svg", "salesforce.ico", "salesforce-512.png"):
+        p = Path(webapp._ICON_DIR) / _fn
+        assert p.is_file(), f"{p} が見つかりません"
+        assert p.stat().st_size > 0
 
 
-def test_favicon_is_valid_svg_with_distinct_color_from_hisho():
-    svg = _favicon_svg_source()
-    assert svg.startswith("<svg") and svg.endswith("</svg>")
-    assert "#2f6fed" in svg  # SFA-CRM側の配色（Hisho dashboard側は#d97706で別配色）
+def test_salesforce_svg_is_valid_and_distinct_from_hisho_delivery():
+    svg = (Path(webapp._ICON_DIR) / "salesforce.svg").read_text(encoding="utf-8")
+    assert svg.strip().startswith("<svg") and svg.strip().endswith("</svg>")
+    # 内製Salesforceは「回る（120度ずつ回転）」（README.md参照）。Hisho/デリバリー管理とは
+    # 組み方・配色が異なるアイコンであることの目印としてrotate(120指定を確認する。
+    assert "rotate(120" in svg
 
 
-def test_main_page_head_includes_favicon(con):
+def test_sfa_favicon_links_point_to_static_icon_files():
+    assert '/static/icons/salesforce.svg' in webapp._SFA_FAVICON
+    assert '/static/icons/salesforce.ico' in webapp._SFA_FAVICON
+    assert '/static/icons/salesforce-512.png' in webapp._SFA_FAVICON
+
+
+def test_main_page_head_includes_favicon_and_header_logo(con):
     html = webapp.render(webapp.deliveries_page(con)).decode("utf-8")
     assert webapp._SFA_FAVICON in html
+    assert webapp._SFA_LOGO_IMG in html
 
 
-def test_login_page_includes_favicon():
+def test_login_page_includes_favicon_and_logo():
     html = webapp.login_page("/deliveries").decode("utf-8")
     assert webapp._SFA_FAVICON in html
+    assert webapp._SFA_LOGO_IMG in html
 
 
 def test_reports_page_includes_favicon(con):

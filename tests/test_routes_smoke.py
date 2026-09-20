@@ -1127,6 +1127,21 @@ def test_deliveries_route_renders_wide_main(server):
     assert '<main class="main-wide">' in body
 
 
+@pytest.mark.parametrize("path,ctype", [
+    ("/static/icons/salesforce.svg", "image/svg+xml"),
+    ("/static/icons/salesforce.ico", "image/x-icon"),
+    ("/static/icons/salesforce-512.png", "image/png"),
+    ("/favicon.ico", "image/x-icon"),
+])
+def test_icon_routes_serve_without_auth(server, path, ctype):
+    """2026-09-20: 独自アイコン配信ルートは/staticの除外設定によりBasic認証なしで読める
+    （未ログインのログイン画面や外部プレビューでも表示できる必要があるため）。"""
+    code, resp = _get(server + path)  # 認証ヘッダなし
+    assert code == 200
+    assert resp.headers.get("Content-Type") == ctype
+    assert int(resp.headers.get("Content-Length", "0")) > 0
+
+
 @pytest.mark.parametrize("path", [
     "/", "/deals", "/leads", "/accounts", "/tasks", "/desk-tasks",
     "/deal-issues", "/hearings",

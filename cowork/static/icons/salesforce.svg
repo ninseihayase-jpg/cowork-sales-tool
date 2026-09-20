@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="内製Salesforce">
+  <title>内製Salesforce</title>
+  <defs>
+    <linearGradient id="salesforce-face" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="200" y2="200">
+      <stop offset="0" stop-color="#4E86FF"/><stop offset="1" stop-color="#9B5BFF"/>
+    </linearGradient>
+    <linearGradient id="salesforce-deep" gradientUnits="userSpaceOnUse" x1="42" y1="18" x2="158" y2="182">
+      <stop offset="0" stop-color="#14267E"/><stop offset="1" stop-color="#37106E"/>
+    </linearGradient>
+    <radialGradient id="salesforce-lift" gradientUnits="userSpaceOnUse" cx="34" cy="20" r="210">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="salesforce-edge" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="200">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.46"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.34"/>
+    </linearGradient>
+    <clipPath id="salesforce-clip"><rect x="0" y="0" width="200" height="200" rx="45" ry="45"/></clipPath>
+  </defs>
+  <g clip-path="url(#salesforce-clip)">
+    <rect x="0" y="0" width="200" height="200" fill="url(#salesforce-face)"/>
+    <rect x="0" y="0" width="200" height="200" fill="url(#salesforce-lift)"/>
+    <g fill="none" stroke="url(#salesforce-deep)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"><path d="M78 34 L78 80"/><path d="M78 34 L78 80" transform="rotate(120 100 100)"/><path d="M78 34 L78 80" transform="rotate(240 100 100)"/></g>
+  </g>
+  <rect x="1.5" y="1.5" width="197" height="197" rx="43.5" ry="43.5" fill="none" stroke="url(#salesforce-edge)" stroke-width="3"/>
+  <rect x="0.5" y="0.5" width="199" height="199" rx="44.5" ry="44.5" fill="none" stroke="#000000" stroke-opacity="0.12" stroke-width="1"/>
+</svg>

@@ -100,7 +100,7 @@ def login_page(next_url: str = "/", error: str = "") -> bytes:
  button{{width:100%;margin-top:18px;background:#2f6fed;color:#fff;border:0;border-radius:9px;padding:12px;font-size:15px;cursor:pointer}}
 </style></head><body>
 <form class="box" method="post" action="/login">
-  <h1>Inproc Salesforce</h1>
+  <h1>{_SFA_LOGO_IMG}Inproc Salesforce</h1>
   <p class="sub">ログインしてください</p>
   {err_html}
   <input type="hidden" name="next" value="{html.escape(nxt)}">
@@ -527,24 +527,28 @@ def _ai_prompt_block(prompt_text: str, download_url: str) -> str:
     </details>"""
 
 
-def _svg_favicon_link(svg: str) -> str:
-    """SVGをdata URIのfaviconとして埋め込む<link>タグを生成する（追加アセット管理不要）。
-    2026-09-20: Windows/Chromeでタスクバーにピン留めした際、Hisho dashboard（別リポジトリの
-    姉妹アプリ）と同じ既定の「I」アイコンで見分けが付かない、というユーザー報告への対応。
-    独自faviconを明示することで、タスクバー上でも一目でどちらのアプリか分かるようにする。"""
-    return (f'<link rel="icon" type="image/svg+xml" '
-            f'href="data:image/svg+xml,{urllib.parse.quote(svg)}">')
-
-
-# 商談パイプライン（営業支援ツールの役割）を示す漏斗アイコン。白抜き漏斗＋青地
-# （#2f6fed、既存UIのボタン色と同系統）。Hisho dashboard側は別配色・別モチーフの
-# アイコンを使う想定（このアプリからは変更できないため、favicon以外の対応はしない）。
-_SFA_FAVICON = _svg_favicon_link(
-    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
-    "<rect width='64' height='64' rx='14' fill='#2f6fed'/>"
-    "<path d='M14 18h36l-12 16v14l-12 6V34z' fill='#fff'/>"
-    "</svg>"
+# 独自アイコン（2026-09-20〜: デザイン部品「太さ34・両端まる」のカプセルを内製Salesforceは
+# 120度ずつ回転させて配置。Hisho dashboard/デリバリー管理ツールとは組み方・配色が異なり、
+# タスクバー/Dockにピン留めしても一目で見分けられる。実体は cowork/static/icons/ 配下の
+# 静的ファイル（/static/icons/ 経由で配信、詳細は _ICON_FILES を参照）。
+_SFA_FAVICON = (
+    '<link rel="icon" type="image/svg+xml" href="/static/icons/salesforce.svg">'
+    '<link rel="icon" type="image/x-icon" href="/static/icons/salesforce.ico">'
+    '<link rel="apple-touch-icon" href="/static/icons/salesforce-512.png">'
 )
+# ヘッダーのタイトル横に添えるロゴ<img>（faviconと同じsalesforce.svgを使い回す）。
+_SFA_LOGO_IMG = ('<img src="/static/icons/salesforce.svg" alt="" width="26" height="26" '
+                 'style="border-radius:6px;vertical-align:middle;margin-right:8px">')
+
+# /static/icons/ 配下で配信を許可する静的アセットの固定リスト（path traversal対策として
+# ファイルシステムを直接辿らず、既知のリクエストパスのみをホワイトリストで許可する）。
+_ICON_DIR = os.path.join(os.path.dirname(__file__), "static", "icons")
+_ICON_FILES = {
+    "/static/icons/salesforce.svg": ("salesforce.svg", "image/svg+xml"),
+    "/static/icons/salesforce.ico": ("salesforce.ico", "image/x-icon"),
+    "/static/icons/salesforce-512.png": ("salesforce-512.png", "image/png"),
+    "/favicon.ico": ("salesforce.ico", "image/x-icon"),
+}
 
 
 PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
@@ -798,7 +802,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
 </script>
 </head><body>
 <header>
-  <h1>Inproc Salesforce</h1>
+  <h1>{logo}Inproc Salesforce</h1>
   <!-- 日常（2026-09-05メニュー再編: デモ開発(旧/dev-projects)は/dev-requirements内のタブへ統合） -->
   <a href="/deals">商談</a>
   <a href="/deliveries" style="opacity:.85;font-size:13px">Delivery</a>
@@ -1042,6 +1046,7 @@ def render(body: str, flash: str = "", wide: bool = False) -> bytes:
         delivery_url=delivery_url,
         main_class="main-wide" if wide else "",
         favicon=_SFA_FAVICON,
+        logo=_SFA_LOGO_IMG,
     ).encode("utf-8")
 
 
@@ -19933,14 +19938,15 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
         def _check_basic_auth(self) -> bool:
             """ブラウザ向け全ルートの認証（フォームCookieセッション or 従来のBasic認証を許可）。
 
-            除外: /health, /api/*, /slack/*, /login, /logout, /favicon.ico。
+            除外: /health, /api/*, /slack/*, /login, /logout, /favicon.ico, /static/*。
             SFA_BASIC_USER/SFA_BASIC_PASS 未設定時はfail-closed（503）。
             未認証: GETは /login へ302誘導（ネイティブBasicダイアログを出さない＝モバイルのループ回避, #54）、
             それ以外は401 JSON。呼び出し側は即returnすること。
             """
             path = self.path.split("?")[0].rstrip("/") or "/"
             if (path in ("/health", "/login", "/logout", "/favicon.ico")
-                    or path.startswith("/api/") or path.startswith("/slack/")):
+                    or path.startswith("/api/") or path.startswith("/slack/")
+                    or path.startswith("/static/")):
                 return True
             if not SFA_BASIC_USER or not SFA_BASIC_PASS:
                 body = ("<h1>503</h1><p>SFA_BASIC_USER / SFA_BASIC_PASS が未設定のため"
@@ -19984,6 +19990,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             try:
                 if path == "/health":
                     self._send(b'{"status":"ok"}', ctype="application/json")
+                elif path in _ICON_FILES:
+                    _icon_fn, _icon_ctype = _ICON_FILES[path]
+                    with open(os.path.join(_ICON_DIR, _icon_fn), "rb") as _icon_f:
+                        _icon_data = _icon_f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", _icon_ctype)
+                    self.send_header("Cache-Control", "public, max-age=604800")
+                    self.send_header("Content-Length", str(len(_icon_data)))
+                    self.end_headers()
+                    self.wfile.write(_icon_data)
                 elif path == "/login":
                     _nxt = self._qs().get("next", ["/"])[0] or "/"
                     self._send(login_page(_nxt), ctype="text/html; charset=utf-8")
