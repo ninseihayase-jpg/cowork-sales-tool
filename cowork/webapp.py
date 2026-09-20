@@ -20246,7 +20246,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         ms_type=_qs1("ms_type"), week=_qs1("week"),
                         exclude_today=(_qs1("exclude_today") != "0"),  # 既定で当日MS除外
                         stages_sel=[s for s in qs.get("stg", []) if s],
-                    )))
+                    ), wide=True))
                 elif path == "/dashboard":
                     self._send(render(dashboard_page(con)))
                 # ── メールパターン ──
@@ -20331,7 +20331,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         tid = int(tid_raw) if tid_raw else None
                     except ValueError:
                         tid = None
-                    self._send(render(hearings_page(con, template_id=tid)))
+                    self._send(render(hearings_page(con, template_id=tid), wide=True))
                 elif path == "/hearing-templates/new":
                     self._send(render(hearing_template_form(con)))
                 elif path == "/hearing-templates":
@@ -20473,7 +20473,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         ms_type=qs1("ms_type"), week=qs1("week"),
                         exclude_today=(qs1("exclude_today") != "0"),  # 既定で当日MS除外
                         stages_sel=[s for s in qs.get("stg", []) if s],
-                    )))
+                    ), wide=True))
                 elif path == "/deals/import":
                     self._send(render(deals_import_page(con)))
                 elif path == "/deals/import/template.csv":
@@ -20514,7 +20514,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         link_type=(_tq.get("link_type", [""])[0] or None),
                         link_id=(int(_tq["link_id"][0]) if _tq.get("link_id", [""])[0].isdigit() else None),
                         pick=bool(_tq.get("pick", [""])[0]),
-                        issue_company_function=(_tq.get("issue_company_function", [""])[0] or None))))
+                        issue_company_function=(_tq.get("issue_company_function", [""])[0] or None)),
+                                      wide=True))
                 elif path == "/tasks/gantt":
                     _gq = self._qs()
                     _group = (_gq.get("group", ["link"])[0] or "link")
@@ -20542,7 +20543,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         urgency=(_dq.get("urgency", [""])[0] or None),
                         assignee=(_dq.get("assignee", [""])[0] or None),
                         pinned=bool(_dq.get("pinned", [""])[0]),
-                        deleted=bool(_dq.get("deleted", [""])[0]))))
+                        deleted=bool(_dq.get("deleted", [""])[0])), wide=True))
                 elif path == "/tasks/digest":
                     self._send(render(tasks_digest_page(con)))
                 elif path == "/task-projects":
@@ -20834,7 +20835,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         responsible=qs1("responsible"),
                         q=qs1("q"), sort=qs1("sort"), open_issue=qs1("open_issue"),
                         company_function=qs1("company_function"),
-                    )))
+                    ), wide=True))
                 elif path == "/deal-issue/new":
                     qs = self._qs()
                     did_raw = qs.get("deal_id", [None])[0]
@@ -20999,7 +21000,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             import traceback as _tb; _tb.print_exc()
                             self._send(render(f"<div class=card>docx出力に失敗しました: {_esc(str(_e))}</div>"), 500)
                 elif path == "/accounts":
-                    self._send(render(accounts_page(con)))
+                    self._send(render(accounts_page(con), wide=True))
                 elif path == "/accounts/duplicates":
                     self._send(render(account_duplicates_page(con)))
                 elif path == "/account/new":
@@ -21010,7 +21011,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     def qs1(k): return (qs.get(k, [None])[0] or None)
                     self._send(render(leads_page(
                         con, status=qs1("status"), source=qs1("source"), q=qs1("q"),
-                    )))
+                    ), wide=True))
                 elif path == "/leads/new":
                     self._send(render(lead_form(con)))
                 elif path == "/leads/import":
@@ -24608,7 +24609,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 elif path == "/deals/sync_pending":
                     if theme_client is None:
-                        self._send(render(home_page(con), flash="テーマDB連携が無効です（THEME_API_TOKEN未設定）。"))
+                        self._send(render(home_page(con), flash="テーマDB連携が無効です（THEME_API_TOKEN未設定）。", wide=True))
                     else:
                         pending = con.execute("SELECT COUNT(*) c FROM deals WHERE theme_id IS NULL").fetchone()["c"]
                         import threading as _threading
@@ -24620,6 +24621,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             home_page(con),
                             flash=f"テーマDB未同期の商談{pending}件の同期をバックグラウンドで開始しました。"
                                   f"数分後に商談一覧の「連携」列で確認できます。",
+                            wide=True,
                         ))
 
                 elif path == "/deals/migrate_lost_stage":
@@ -24659,7 +24661,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/sync-failures/retry":
                     # 記録済みのHisho同期失敗を1件ずつ再同期し、成功したものは記録から消す
                     if theme_client is None:
-                        self._send(render(home_page(con), flash="テーマDB連携が無効です（THEME_API_TOKEN未設定）。"))
+                        self._send(render(home_page(con), flash="テーマDB連携が無効です（THEME_API_TOKEN未設定）。", wide=True))
                     else:
                         failures = sfa_db.list_sync_failures(con)
                         ok = 0
@@ -24684,6 +24686,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             home_page(con),
                             flash=f"再同期: 成功{ok}件 / 失敗{still_failing}件。"
                                   + ("失敗分は記録に残しています。" if still_failing else ""),
+                            wide=True,
                         ))
 
                 elif path == "/leads/bulk_source":
@@ -24879,7 +24882,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _dlid = int(_dl_s)
                     _dl = sfa_db.get_deal(con, _dlid)
                     if not _dl:
-                        self._send(render(deals_page(con), flash="対象の商談が見つかりませんでした。"))
+                        self._send(render(deals_page(con), flash="対象の商談が見つかりませんでした。", wide=True))
                         return
                     _imp = sfa_db.deal_delete_impact(con, _dlid)
                     _hisho_note = ""
@@ -24909,7 +24912,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _lead_msg = "／リードは未商談化に戻しました" if _imp["leads_detached"] else ""
                     self._send(render(
                         deals_page(con),
-                        flash=f"🗑 商談「{_nm}」を完全に削除しました（連鎖削除: {_child}{_lead_msg}）{_hisho_note}"))
+                        flash=f"🗑 商談「{_nm}」を完全に削除しました（連鎖削除: {_child}{_lead_msg}）{_hisho_note}",
+                        wide=True))
 
                 # ── 商談 → リード戻し ──
                 elif path.endswith("/revert_to_lead") and "/deal/" in path:

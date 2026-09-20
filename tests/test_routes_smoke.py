@@ -1127,6 +1127,19 @@ def test_deliveries_route_renders_wide_main(server):
     assert '<main class="main-wide">' in body
 
 
+@pytest.mark.parametrize("path", [
+    "/", "/deals", "/leads", "/accounts", "/tasks", "/desk-tasks",
+    "/deal-issues", "/hearings",
+])
+def test_main_list_routes_render_wide_main(server, path):
+    """2026-09-20: 商談一覧が横幅いっぱいのDelivery一覧と違い右側に余白が空く不具合を修正。
+    列数の多い一覧系ページは横幅いっぱい(main-wide)で統一する。"""
+    code, resp = _get(server + path, headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert '<main class="main-wide">' in body
+
+
 def test_tasks_save_route_preserves_admin_flag_and_untouched_fields(server, db_path):
     """#123: 事務タスク(is_admin=1)をタスク編集フォーム(/tasks/save)経由で保存しても、
     フォームが扱わないフィールド(is_admin/priority/requester/slack_*/created_by/source)が
