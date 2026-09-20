@@ -17,6 +17,7 @@ import html.parser
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import urllib.parse
@@ -47,6 +48,13 @@ SFA_BASIC_USER = os.environ.get("SFA_BASIC_USER", "")
 SFA_BASIC_PASS = os.environ.get("SFA_BASIC_PASS", "")
 _SESSION_COOKIE = "sfa_session"
 _SESSION_MAX_AGE = 30 * 86400  # 30日
+# Googleログイン（2026-09-20〜）。ID/PWログインと併存し、@inproc.orgのGoogleアカウントのみ許可
+# （OAuth同意画面を「内部」設定にして Workspace側でも制限、さらにサーバー側でもemailドメインを
+# 検証する二重防御）。未設定（GOOGLE_CLIENT_ID空）ならボタンを出さずID/PWのみで動作する。
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_ALLOWED_DOMAIN = "inproc.org"
+_OAUTH_STATE_COOKIE = "sfa_oauth_state"
 
 
 _JST = timezone(timedelta(hours=9))
@@ -81,11 +89,38 @@ def _valid_session_token(tok: str) -> bool:
     return hmac.compare_digest(sig, good)
 
 
+def _oauth_redirect_uri(handler) -> str:
+    """RenderはTLSを外側で終端しHTTPで転送するため、X-Forwarded-Protoでスキームを判定する
+    （フォームログインのSecure Cookie判定, `/login`と同方式）。Googleの承認済みリダイレクトURIと
+    1文字も違わず一致させる必要がある。"""
+    scheme = "https" if handler.headers.get("X-Forwarded-Proto", "") == "https" else "http"
+    host = handler.headers.get("Host", "localhost")
+    return f"{scheme}://{host}/auth/google/callback"
+
+
 def login_page(next_url: str = "/", error: str = "") -> bytes:
     """ネイティブBasic認証ダイアログの代わりに出すログイン画面（モバイル安定）。"""
     nxt = next_url if next_url.startswith("/") else "/"
     err_html = (f'<p style="color:#b91c1c;font-size:13px;margin:0 0 10px">{html.escape(error)}</p>'
                 if error else "")
+    google_html = ""
+    if GOOGLE_CLIENT_ID:
+        _google_url = "/auth/google/login?next=" + urllib.parse.quote(nxt, safe="")
+        google_html = f"""
+  <a href="{_google_url}" style="display:flex;align-items:center;justify-content:center;gap:8px;
+     margin-top:4px;padding:11px;border:1px solid #d4dae4;border-radius:9px;text-decoration:none;
+     color:#1d2430;font-size:14px;background:#fff">
+    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#4285F4" d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z"/>
+      <path fill="#34A853" d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.86-12.31-9.05H4.34v5.7C7.96 41.07 15.4 46 24 46z"/>
+      <path fill="#FBBC05" d="M11.69 28.2A11.96 11.96 0 0 1 11 24c0-1.46.25-2.87.69-4.2v-5.7H4.34A21.96 21.96 0 0 0 2 24c0 3.55.85 6.91 2.34 9.9l7.35-5.7z"/>
+      <path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.1l7.35 5.7c1.73-5.19 6.58-9.05 12.31-9.05z"/>
+    </svg>
+    Googleでログイン
+  </a>
+  <div style="display:flex;align-items:center;gap:8px;margin:16px 0 6px;color:#b8bfcc;font-size:11px">
+    <div style="flex:1;height:1px;background:#e6e9f0"></div>または<div style="flex:1;height:1px;background:#e6e9f0"></div>
+  </div>"""
     body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">
 <title>ログイン ・ Inproc Salesforce</title>
@@ -103,6 +138,7 @@ def login_page(next_url: str = "/", error: str = "") -> bytes:
   <h1>{_SFA_LOGO_IMG}Inproc Salesforce</h1>
   <p class="sub">ログインしてください</p>
   {err_html}
+  {google_html}
   <input type="hidden" name="next" value="{html.escape(nxt)}">
   <label>ユーザー名</label>
   <input name="username" autocapitalize="off" autocorrect="off" autocomplete="username" spellcheck="false" required>
@@ -19956,7 +19992,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             """ブラウザ向け全ルートの認証（フォームCookieセッション or 従来のBasic認証を許可）。
 
             除外: /health, /api/*, /slack/*, /login, /logout, /favicon.ico, /static/*,
-            /manifest.webmanifest。
+            /manifest.webmanifest, /auth/google/*（Googleログインの往復自体は未認証で許可する）。
             SFA_BASIC_USER/SFA_BASIC_PASS 未設定時はfail-closed（503）。
             未認証: GETは /login へ302誘導（ネイティブBasicダイアログを出さない＝モバイルのループ回避, #54）、
             それ以外は401 JSON。呼び出し側は即returnすること。
@@ -19964,6 +20000,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             path = self.path.split("?")[0].rstrip("/") or "/"
             if (path in ("/health", "/login", "/logout", "/favicon.ico", "/manifest.webmanifest")
                     or path.startswith("/api/") or path.startswith("/slack/")
+                    or path.startswith("/auth/google/")
                     or path.startswith("/static/")):
                 return True
             if not SFA_BASIC_USER or not SFA_BASIC_PASS:
@@ -20028,6 +20065,85 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif path == "/login":
                     _nxt = self._qs().get("next", ["/"])[0] or "/"
                     self._send(login_page(_nxt), ctype="text/html; charset=utf-8")
+                elif path == "/auth/google/login":
+                    if not GOOGLE_CLIENT_ID:
+                        self._send(login_page("/", error="Googleログインが未設定です（GOOGLE_CLIENT_ID未設定）。"),
+                                   status=503, ctype="text/html; charset=utf-8")
+                    else:
+                        _g_nxt = self._qs().get("next", ["/"])[0] or "/"
+                        if not _g_nxt.startswith("/"):
+                            _g_nxt = "/"
+                        _nonce = secrets.token_urlsafe(24)
+                        _auth_params = {
+                            "client_id": GOOGLE_CLIENT_ID,
+                            "redirect_uri": _oauth_redirect_uri(self),
+                            "response_type": "code",
+                            "scope": "openid email",
+                            "state": f"{_nonce}:{_g_nxt}",
+                            "hd": GOOGLE_ALLOWED_DOMAIN,
+                            "prompt": "select_account",
+                        }
+                        _secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "") == "https" else ""
+                        self.send_response(302)
+                        self.send_header("Location", "https://accounts.google.com/o/oauth2/v2/auth?"
+                                          + urllib.parse.urlencode(_auth_params))
+                        self.send_header("Set-Cookie",
+                                          f"{_OAUTH_STATE_COOKIE}={_nonce}; Path=/; HttpOnly; "
+                                          f"SameSite=Lax; Max-Age=600{_secure}")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                elif path == "/auth/google/callback":
+                    _g_qs = self._qs()
+                    _code = _g_qs.get("code", [""])[0] or ""
+                    _state = _g_qs.get("state", [""])[0] or ""
+                    _g_err = _g_qs.get("error", [""])[0] or ""
+                    _g_nonce, _, _g_next = _state.partition(":")
+                    if not _g_next.startswith("/"):
+                        _g_next = "/"
+                    _ck = SimpleCookie(self.headers.get("Cookie", ""))
+                    _cookie_nonce = _ck[_OAUTH_STATE_COOKIE].value if _OAUTH_STATE_COOKIE in _ck else ""
+                    _g_email = ""
+                    _g_verified = False
+                    if _g_err or not _code or not _cookie_nonce or not hmac.compare_digest(_g_nonce, _cookie_nonce):
+                        self._send(login_page(_g_next, error="Googleログインに失敗しました。もう一度お試しください。"),
+                                   status=401, ctype="text/html; charset=utf-8")
+                    else:
+                        try:
+                            _token_body = urllib.parse.urlencode({
+                                "code": _code,
+                                "client_id": GOOGLE_CLIENT_ID,
+                                "client_secret": GOOGLE_CLIENT_SECRET,
+                                "redirect_uri": _oauth_redirect_uri(self),
+                                "grant_type": "authorization_code",
+                            }).encode("utf-8")
+                            _token_req = urllib.request.Request(
+                                "https://oauth2.googleapis.com/token", data=_token_body, method="POST")
+                            with urllib.request.urlopen(_token_req, timeout=10) as _resp:
+                                _access_token = json.loads(_resp.read().decode("utf-8")).get("access_token", "")
+                            _ui_req = urllib.request.Request(
+                                "https://www.googleapis.com/oauth2/v3/userinfo",
+                                headers={"Authorization": f"Bearer {_access_token}"})
+                            with urllib.request.urlopen(_ui_req, timeout=10) as _resp:
+                                _userinfo = json.loads(_resp.read().decode("utf-8"))
+                            _g_email = (_userinfo.get("email") or "").lower()
+                            _g_verified = bool(_userinfo.get("email_verified"))
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[google-oauth] token exchange failed: {exc}")
+                        if not _g_verified or not _g_email.endswith(f"@{GOOGLE_ALLOWED_DOMAIN}"):
+                            self._send(login_page(
+                                _g_next, error=f"@{GOOGLE_ALLOWED_DOMAIN} のGoogleアカウントでログインしてください。"),
+                                status=403, ctype="text/html; charset=utf-8")
+                        else:
+                            _secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "") == "https" else ""
+                            self.send_response(303)
+                            self.send_header("Location", _g_next)
+                            self.send_header("Set-Cookie",
+                                              f"{_SESSION_COOKIE}={_make_session_token()}; Path=/; HttpOnly; "
+                                              f"SameSite=Lax; Max-Age={_SESSION_MAX_AGE}{_secure}")
+                            self.send_header("Set-Cookie",
+                                              f"{_OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+                            self.send_header("Content-Length", "0")
+                            self.end_headers()
                 elif path == "/logout":
                     self.send_response(302)
                     self.send_header("Location", "/login")
