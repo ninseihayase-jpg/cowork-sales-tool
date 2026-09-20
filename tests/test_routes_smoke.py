@@ -1142,6 +1142,14 @@ def test_icon_routes_serve_without_auth(server, path, ctype):
     assert int(resp.headers.get("Content-Length", "0")) > 0
 
 
+def test_manifest_route_serves_without_auth(server):
+    code, resp = _get(server + "/manifest.webmanifest")  # 認証ヘッダなし
+    assert code == 200
+    assert resp.headers.get("Content-Type") == "application/manifest+json"
+    body = json.loads(resp.read())
+    assert body["name"] == "Inproc Salesforce"
+
+
 @pytest.mark.parametrize("path", [
     "/", "/deals", "/leads", "/accounts", "/tasks", "/desk-tasks",
     "/deal-issues", "/hearings",

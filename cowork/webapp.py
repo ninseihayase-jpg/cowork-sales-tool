@@ -532,9 +532,10 @@ def _ai_prompt_block(prompt_text: str, download_url: str) -> str:
 # タスクバー/Dockにピン留めしても一目で見分けられる。実体は cowork/static/icons/ 配下の
 # 静的ファイル（/static/icons/ 経由で配信、詳細は _ICON_FILES を参照）。
 _SFA_FAVICON = (
-    '<link rel="icon" type="image/svg+xml" href="/static/icons/salesforce.svg">'
-    '<link rel="icon" type="image/x-icon" href="/static/icons/salesforce.ico">'
-    '<link rel="apple-touch-icon" href="/static/icons/salesforce-512.png">'
+    '<link rel="icon" type="image/svg+xml" sizes="any" href="/static/icons/salesforce.svg">'
+    '<link rel="icon" type="image/x-icon" sizes="16x16 32x32 48x48" href="/static/icons/salesforce.ico">'
+    '<link rel="apple-touch-icon" sizes="512x512" href="/static/icons/salesforce-512.png">'
+    '<link rel="manifest" href="/manifest.webmanifest">'
 )
 # ヘッダーのタイトル横に添えるロゴ<img>（faviconと同じsalesforce.svgを使い回す）。
 _SFA_LOGO_IMG = ('<img src="/static/icons/salesforce.svg" alt="" width="26" height="26" '
@@ -549,6 +550,22 @@ _ICON_FILES = {
     "/static/icons/salesforce-512.png": ("salesforce-512.png", "image/png"),
     "/favicon.ico": ("salesforce.ico", "image/x-icon"),
 }
+# Web App Manifest（2026-09-20〜: Chromeの「アプリとしてインストール」機能はsizes未指定の
+# favicon/apple-touch-iconだけだとアイコン選定に失敗し既定アイコンにフォールバックすることが
+# あったため、明示的なmanifestでicons(192相当のsvg+512png)を宣言する。/manifest.webmanifest
+# で配信（_check_basic_auth側で/static/*と同様に認証除外）。
+_SFA_MANIFEST = json.dumps({
+    "name": "Inproc Salesforce",
+    "short_name": "Salesforce",
+    "start_url": "/",
+    "display": "standalone",
+    "theme_color": "#2f6fed",
+    "background_color": "#ffffff",
+    "icons": [
+        {"src": "/static/icons/salesforce.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+        {"src": "/static/icons/salesforce-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    ],
+}, ensure_ascii=False).encode("utf-8")
 
 
 PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
@@ -19938,13 +19955,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
         def _check_basic_auth(self) -> bool:
             """ブラウザ向け全ルートの認証（フォームCookieセッション or 従来のBasic認証を許可）。
 
-            除外: /health, /api/*, /slack/*, /login, /logout, /favicon.ico, /static/*。
+            除外: /health, /api/*, /slack/*, /login, /logout, /favicon.ico, /static/*,
+            /manifest.webmanifest。
             SFA_BASIC_USER/SFA_BASIC_PASS 未設定時はfail-closed（503）。
             未認証: GETは /login へ302誘導（ネイティブBasicダイアログを出さない＝モバイルのループ回避, #54）、
             それ以外は401 JSON。呼び出し側は即returnすること。
             """
             path = self.path.split("?")[0].rstrip("/") or "/"
-            if (path in ("/health", "/login", "/logout", "/favicon.ico")
+            if (path in ("/health", "/login", "/logout", "/favicon.ico", "/manifest.webmanifest")
                     or path.startswith("/api/") or path.startswith("/slack/")
                     or path.startswith("/static/")):
                 return True
@@ -19990,6 +20008,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             try:
                 if path == "/health":
                     self._send(b'{"status":"ok"}', ctype="application/json")
+                elif path == "/manifest.webmanifest":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/manifest+json")
+                    self.send_header("Cache-Control", "public, max-age=604800")
+                    self.send_header("Content-Length", str(len(_SFA_MANIFEST)))
+                    self.end_headers()
+                    self.wfile.write(_SFA_MANIFEST)
                 elif path in _ICON_FILES:
                     _icon_fn, _icon_ctype = _ICON_FILES[path]
                     with open(os.path.join(_ICON_DIR, _icon_fn), "rb") as _icon_f:

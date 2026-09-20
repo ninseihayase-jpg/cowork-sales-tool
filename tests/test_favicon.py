@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -74,3 +75,19 @@ def test_mktg_sim_page_includes_favicon(con):
     html = webapp.mktg_sim_page(con)
     assert webapp._SFA_FAVICON in html
     assert "__FAVICON_LINK__" not in html  # プレースホルダの置換漏れが無いこと
+
+
+def test_favicon_links_declare_sizes():
+    """2026-09-20: sizes未指定だとChromeの「アプリとしてインストール」がアイコン選定に
+    失敗し既定アイコンにフォールバックすることがあったため、明示する。"""
+    assert 'sizes="any"' in webapp._SFA_FAVICON
+    assert 'sizes="16x16 32x32 48x48"' in webapp._SFA_FAVICON
+    assert 'sizes="512x512"' in webapp._SFA_FAVICON
+
+
+def test_manifest_link_present_and_content_valid():
+    assert '<link rel="manifest" href="/manifest.webmanifest">' in webapp._SFA_FAVICON
+    manifest = json.loads(webapp._SFA_MANIFEST)
+    assert manifest["name"] == "Inproc Salesforce"
+    sizes = {icon["sizes"] for icon in manifest["icons"]}
+    assert "any" in sizes and "512x512" in sizes
