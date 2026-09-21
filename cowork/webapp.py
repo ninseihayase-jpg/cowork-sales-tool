@@ -20892,7 +20892,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif (path.startswith("/delivery/") and len(path.split("/")) == 3
                       and path.split("/")[2].isdigit()):
                     try:
-                        self._send(render(delivery_form(con, int(path.split("/")[2]))))
+                        self._send(render(delivery_form(con, int(path.split("/")[2])), wide=True))
                     except Exception as _dfe:  # noqa: BLE001 データ不整合で500/502にせず画面で知らせる
                         import traceback as _tb; _tb.print_exc()
                         self._send(render(

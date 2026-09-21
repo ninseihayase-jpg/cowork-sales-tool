@@ -1127,6 +1127,21 @@ def test_deliveries_route_renders_wide_main(server):
     assert '<main class="main-wide">' in body
 
 
+def test_delivery_detail_route_renders_wide_main(server, db_path):
+    """2026-09-21: 個別Delivery詳細ページも一覧と同じく画面幅いっぱいに表示する。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    con.commit()
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    con.close()
+
+    code, resp = _get(server + f"/delivery/{dvid}", headers=_auth_header())
+    body = resp.read().decode("utf-8")
+    assert code == 200
+    assert '<main class="main-wide">' in body
+
+
 @pytest.mark.parametrize("path,ctype", [
     ("/static/icons/salesforce.svg", "image/svg+xml"),
     ("/static/icons/salesforce.ico", "image/x-icon"),
