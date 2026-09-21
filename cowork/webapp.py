@@ -4827,7 +4827,25 @@ def delivery_form(con, delivery_id: int) -> str:
     if grid["weeks"]:
         grid["owners"] = sorted(grid["owners"], key=lambda o: (_own_role_idx.get(o, 10_000), o))
         head = "".join(f'<th style="font-size:11px;white-space:nowrap">{_fmt_week(w)}</th>' for w in grid["weeks"])
-        grows = ""
+        _prod = sfa_db.delivery_weekly_productivity(con, delivery_id, grid["weeks"])
+        _rev_cells = ""
+        _prod_cells = ""
+        for w in grid["weeks"]:
+            _rev = _prod["weekly_revenue"].get(w, 0.0)
+            _rev_cells += (f'<td style="text-align:center;background:#f0f7ff">'
+                           f'{_num_pct(_rev) + "万" if _rev else "·"}</td>')
+            _p = _prod["productivity"].get(w)
+            _cr = _prod["cum_revenue"].get(w, 0.0)
+            _cw = _prod["cum_workload"].get(w, 0.0)
+            if _p is None:
+                _prod_cells += '<td style="text-align:center;background:#f5f0ff">·</td>'
+            else:
+                _prod_cells += (f'<td style="text-align:center;background:#f5f0ff" '
+                                 f'title="累計売上{_num_pct(_cr)}万 ÷ 累計稼働率{_num_pct(_cw)}%">'
+                                 f'{_num_pct(_p)}万<br><span style="font-size:9px;opacity:.7">'
+                                 f'/100%</span></td>')
+        grows = (f'<tr><th style="text-align:left;white-space:nowrap">週別売上</th>{_rev_cells}</tr>'
+                 f'<tr><th style="text-align:left;white-space:nowrap">累計生産性</th>{_prod_cells}</tr>')
         for ow in grid["owners"]:
             cells = ""
             for w in grid["weeks"]:
@@ -4845,7 +4863,10 @@ def delivery_form(con, delivery_id: int) -> str:
         grid_html = (f'<div style="overflow:auto"><table style="border-collapse:collapse">'
                      f'<tr><th></th>{head}</tr>{grows}</table></div>'
                      '<p class="muted" style="font-size:11px;margin:6px 0 0">※色は<b>実想定</b>基準。請求が実想定と異なる週は小さく「請◯」を併記。'
-                     'このグリッドはこのDelivery分のみ。全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。</p>')
+                     'このグリッドはこのDelivery分のみ。全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。<br>'
+                     '「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）。'
+                     '「累計生産性」＝その週までの売上累計÷稼働率累計（100%あたり単価・万円）。'
+                     '契約期間の前後に実稼働がある場合も稼働だけを分母に含め、生産性の過大評価を防ぎます。</p>')
     else:
         grid_html = '<p class="muted">アサインを追加するとここに週別グリッドが表示されます。</p>'
 

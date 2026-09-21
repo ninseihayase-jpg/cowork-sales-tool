@@ -5946,6 +5946,51 @@ def delivery_grid(con, delivery_id: int) -> dict:
     return {"weeks": weeks, "owners": owners, "cells": cells}
 
 
+def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dict:
+    """週別売上・累計生産性（2026-09-21〜）。
+
+    週別売上＝fee_total（案件総額報酬）を、契約期間（deliveries.start_week〜end_week。未設定なら
+    weeksの全期間＝アサイン実働の最小〜最大）内の週にのみ均等配分（期間外の週は0円。週の途中開始/
+    終了は考慮せず1週=1単位で割る）。
+    累計生産性(その週まで)＝Σ週別売上 ÷ (Σ週別総稼働率(実想定・全メンバー合算)/100)。
+    Delivery期間の前後に実稼働がある週（weeksが契約期間より広い＝delivery_gridがアサイン実働の
+    範囲で返すため）でも、稼働だけを分母に加算し売上は0のまま＝生産性を薄める（過大評価を防ぐ）。
+    productivityはその週までの稼働累計が0なら算出不可としてNoneを返す。
+    """
+    dv = get_delivery(con, delivery_id) or {}
+    # fee_mode='monthly'（月額入力）の案件はfee_total列が空のことがあるため、表示用と同じ
+    # delivery_display_fees()で解決した総額を使う（月額入力→総額=月額×月数の換算を含む）。
+    fee_total = float(delivery_display_fees(dv)[1] or 0)
+    if dv.get("start_week") and dv.get("end_week"):
+        try:
+            sd, ed = date.fromisoformat(str(dv["start_week"])[:10]), date.fromisoformat(str(dv["end_week"])[:10])
+            n = (ed - sd).days // 7 + 1
+            revenue_weeks = set(_weeks_from(_monday_of(sd), n)) if n > 0 else set()
+        except (TypeError, ValueError):
+            revenue_weeks = set(weeks)
+    else:
+        revenue_weeks = set(weeks)
+    n_revenue_weeks = len(revenue_weeks)
+    per_week_revenue = (fee_total / n_revenue_weeks) if n_revenue_weeks > 0 else 0.0
+
+    grid = delivery_grid(con, delivery_id)
+    weekly_actual_total = {wk: sum((grid["cells"].get(ow, {}).get(wk) or {}).get("actual", 0.0)
+                                    for ow in grid["owners"]) for wk in weeks}
+
+    weekly_revenue, cum_revenue, cum_workload, productivity = {}, {}, {}, {}
+    running_rev, running_work = 0.0, 0.0
+    for wk in weeks:
+        rev = per_week_revenue if wk in revenue_weeks else 0.0
+        weekly_revenue[wk] = round(rev, 1)
+        running_rev += rev
+        running_work += weekly_actual_total.get(wk, 0.0)
+        cum_revenue[wk] = round(running_rev, 1)
+        cum_workload[wk] = round(running_work, 1)
+        productivity[wk] = round(running_rev / (running_work / 100), 1) if running_work > 0 else None
+    return {"weeks": weeks, "fee_total": fee_total, "weekly_revenue": weekly_revenue,
+            "cum_revenue": cum_revenue, "cum_workload": cum_workload, "productivity": productivity}
+
+
 def list_delivery_roles(con, delivery_id: int) -> list[dict]:
     return [dict(r) for r in con.execute(
         "SELECT * FROM delivery_roles WHERE delivery_id=? ORDER BY sort_order, id", (int(delivery_id),))]
@@ -6237,6 +6282,7 @@ def compute_delivery_load(con, *, start_week: str | None = None,
     # owner -> week -> {actual:{committed,closing,proposal}, billing:{committed,closing,proposal}}
     cells: dict = {}
     items: list = []
+    deliveries_meta: dict = {}  # delivery_id -> {fee_total, start_week, end_week}（生産性算出用・2026-09-21〜）
 
     def _blank():
         return {"actual": {"committed": 0.0, "closing": 0.0, "proposal": 0.0},
@@ -6254,7 +6300,9 @@ def compute_delivery_load(con, *, start_week: str | None = None,
         "d.stage AS deal_stage, d.status AS deal_status, d.deal_name, "
         "dv.id AS delivery_id, dv.title AS delivery_title, dv.status AS dv_status, "
         "dv.confidence_override AS confidence_override, "
-        "dv.start_week AS delivery_start, acc.name AS account_name "
+        "dv.start_week AS delivery_start, dv.end_week AS delivery_end, "
+        "dv.fee_mode AS fee_mode, dv.fee_monthly AS fee_monthly, dv.fee_total AS fee_total_raw, "
+        "acc.name AS account_name "
         "FROM delivery_assignments da "
         "JOIN deliveries dv ON dv.id=da.delivery_id "
         "JOIN deals d ON d.id=dv.deal_id "
@@ -6292,11 +6340,20 @@ def compute_delivery_load(con, *, start_week: str | None = None,
                 "delivery_id": r["delivery_id"], "delivery_start": r["delivery_start"] or "",
                 "role_order": _role_order.get(r["delivery_id"], {}).get(r["role"] or "", 9999),
             })
+        if r["delivery_id"] not in deliveries_meta:
+            _fee_total = delivery_display_fees({
+                "fee_mode": r["fee_mode"], "fee_monthly": r["fee_monthly"], "fee_total": r["fee_total_raw"],
+                "start_week": r["delivery_start"], "end_week": r["delivery_end"],
+            })[1]
+            deliveries_meta[r["delivery_id"]] = {
+                "fee_total": _fee_total or 0.0,
+                "start_week": r["delivery_start"] or "", "end_week": r["delivery_end"] or "",
+            }
     base = base_workload_by_owner(con)
     owners = sorted(set(list(base.keys()) + list(cells.keys())),
                     key=lambda o: (OWNERS.index(o) if o in OWNERS else 999, o))
     return {"start_week": start_week, "weeks": weeks, "owners": owners,
-            "base": base, "cells": cells, "items": items}
+            "base": base, "cells": cells, "items": items, "deliveries_meta": deliveries_meta}
 
 
 def set_deal_issue_ai_summary(con, issue_id: int, summary: str) -> None:

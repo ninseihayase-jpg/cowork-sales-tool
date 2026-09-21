@@ -178,6 +178,22 @@ def test_compute_load_still_counts_pre_proposal_delivery_same_as_proposal(con, a
     assert load["cells"]["早瀬"][W0]["actual"]["proposal"] == 50
 
 
+def test_compute_delivery_load_includes_deliveries_meta_for_productivity(con, acc_id):
+    """2026-09-21〜: Hisho側で週別売上・生産性を算出できるよう、delivery_idごとのfee_total
+    （fee_mode='monthly'でも解決済み）・start_week/end_weekを deliveries_meta として返す。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dv_id = sfa_db.create_delivery(con, deal_id=did, title="X", status="進行中")
+    sfa_db.update_delivery(con, dv_id, fee_mode="monthly", fee_monthly=100,
+                            start_week="2026-06-01", end_week="2026-06-22")
+    W0 = "2026-06-01"
+    sfa_db.add_delivery_assignment(con, delivery_id=dv_id, owner="早瀬", from_week=W0, to_week=W0, fte_pct=50)
+    load = sfa_db.compute_delivery_load(con, start_week=W0, n_weeks=1)
+    meta = load["deliveries_meta"][dv_id]
+    assert meta["fee_total"] == 100.0  # 月額100万×1ヶ月(4週)分に解決済み
+    assert meta["start_week"] == "2026-06-01"
+    assert meta["end_week"] == "2026-06-22"
+
+
 def test_confidence_override_takes_priority_over_auto(con, acc_id):
     did = _deal(con, acc_id, "提案")
     dv_id = sfa_db.create_delivery(con, deal_id=did, title="D")
@@ -1518,3 +1534,72 @@ def test_roles_reorder_route_via_http(monkeypatch, tmp_path):
 
     con3 = sfa_db.connect(db_path)
     assert [r["id"] for r in sfa_db.list_delivery_roles(con3, dvid)] == [r2, r1]
+
+
+# ---- 週別売上・累計生産性（2026-09-21〜） ----
+
+def test_delivery_weekly_productivity_dilutes_when_actual_extends_past_contract_period(con, acc_id):
+    """契約期間(start_week〜end_week)は3週・総額300万→週100万。アサインは契約期間+1週(6/22)まで
+    実稼働あり（Delivery期間の前後に実稼働があるケース）。6/22週は売上0のまま稼働だけ分母に乗るため、
+    累計生産性は6/15週の200万/100%から6/22週で150万/100%へ薄まる。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total",
+                            start_week="2026-06-01", end_week="2026-06-15")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
+                                    to_week="2026-06-22", fte_pct=50)
+    grid = sfa_db.delivery_grid(con, dvid)
+    assert grid["weeks"] == ["2026-06-01", "2026-06-08", "2026-06-15", "2026-06-22"]
+
+    prod = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
+    assert prod["fee_total"] == 300.0
+    assert prod["weekly_revenue"] == {
+        "2026-06-01": 100.0, "2026-06-08": 100.0, "2026-06-15": 100.0, "2026-06-22": 0.0,
+    }
+    assert prod["cum_revenue"]["2026-06-22"] == 300.0  # 契約期間終了後は売上が増えない
+    assert prod["cum_workload"] == {
+        "2026-06-01": 50.0, "2026-06-08": 100.0, "2026-06-15": 150.0, "2026-06-22": 200.0,
+    }
+    assert prod["productivity"]["2026-06-01"] == 200.0
+    assert prod["productivity"]["2026-06-15"] == 200.0
+    assert prod["productivity"]["2026-06-22"] == 150.0  # 契約後の稼働で薄まる
+
+
+def test_delivery_weekly_productivity_none_when_no_workload_yet(con, acc_id):
+    """稼働が始まっていない週はproductivity=None（0除算にしない）。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_total=100, fee_mode="total",
+                            start_week="2026-06-01", end_week="2026-06-08")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
+                                    to_week="2026-06-08", fte_pct=0)
+    grid = sfa_db.delivery_grid(con, dvid)
+    prod = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
+    assert all(v is None for v in prod["productivity"].values())
+
+
+def test_delivery_weekly_productivity_resolves_monthly_fee_mode(con, acc_id):
+    """fee_mode='monthly'（月額入力）だとfee_total列は空のことがあるため、delivery_display_fees
+    と同じ換算（月額×月数）で解決する。月額100万・期間4週(=1ヶ月)→総額100万。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=100,
+                            start_week="2026-06-01", end_week="2026-06-22")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
+                                    to_week="2026-06-22", fte_pct=50)
+    grid = sfa_db.delivery_grid(con, dvid)
+    prod = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
+    assert prod["fee_total"] == 100.0
+
+
+def test_delivery_form_renders_revenue_and_productivity_rows(con, acc_id):
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total",
+                            start_week="2026-06-01", end_week="2026-06-15")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
+                                    to_week="2026-06-15", fte_pct=50)
+    html = webapp.delivery_form(con, dvid)
+    assert "週別売上" in html
+    assert "累計生産性" in html
+    assert "100万" in html  # 週別売上のセル
