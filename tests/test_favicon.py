@@ -91,3 +91,19 @@ def test_manifest_link_present_and_content_valid():
     assert manifest["name"] == "Inproc Salesforce"
     sizes = {icon["sizes"] for icon in manifest["icons"]}
     assert "any" in sizes and "512x512" in sizes
+
+
+def test_manifest_declares_window_controls_overlay():
+    """2026-09-21: Chromeの「アプリとしてインストール」時に付く既定のタイトルバー（青帯）を
+    消すため、display_overrideでwindow-controls-overlayを指定する（display=standaloneは
+    未対応ブラウザ向けフォールバックとして残す）。"""
+    manifest = json.loads(webapp._SFA_MANIFEST)
+    assert manifest["display_override"] == ["window-controls-overlay"]
+    assert manifest["display"] == "standalone"
+
+
+def test_header_css_reserves_space_for_overlay_window_controls(con):
+    html = webapp.render(webapp.deliveries_page(con)).decode("utf-8")
+    assert "display-mode: window-controls-overlay" in html
+    assert "app-region:drag" in html
+    assert "app-region:no-drag" in html

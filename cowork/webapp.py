@@ -595,6 +595,9 @@ _SFA_MANIFEST = json.dumps({
     "short_name": "Salesforce",
     "start_url": "/",
     "display": "standalone",
+    # window-controls-overlay対応ブラウザ(Chrome/Edge)ではOS既定のタイトルバーを消し、
+    # ヘッダー自体を最上部まで伸ばす（未対応ブラウザはdisplay:"standalone"にフォールバック）。
+    "display_override": ["window-controls-overlay"],
     "theme_color": "#2f6fed",
     "background_color": "#ffffff",
     "icons": [
@@ -612,6 +615,14 @@ PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
  body{{font-family:system-ui,'Segoe UI','Hiragino Kaku Gothic ProN',sans-serif;margin:0;background:#f4f6f9;color:#1d2430}}
  header{{background:#1f2a44;color:#fff;padding:10px 18px;display:flex;align-items:center;gap:15px;flex-wrap:wrap;position:sticky;top:0;z-index:100}}
  header h1{{font-size:16px;margin:0 4px 0 0;white-space:nowrap}} header a{{color:#cdd7ff;text-decoration:none;font-size:13px;white-space:nowrap}}
+ /* PWA「ウィンドウコントロールオーバーレイ」対応（2026-09-21〜）: Chromeの「アプリとしてインストール」時に
+    付く既定のタイトルバー（青帯）を消し、ヘッダー自体を最上部まで伸ばす。display-modeがoverlay時のみ有効
+    （manifest.webmanifestのdisplay_overrideが対応ブラウザで有効な場合のみ発生し、通常のタブ表示には影響しない）。
+    右端は最小化/最大化/閉じるボタンの実測幅ぶんpaddingを空け、ヘッダーの空白部分はウィンドウ移動用にドラッグ可能にする。 */
+ @media (display-mode: window-controls-overlay) {{
+   header{{app-region:drag;padding-right:calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px))}}
+   header a, header button, header summary, header select, header input, header details {{app-region:no-drag}}
+ }}
  /* 個別編集/入力フォームの上部固定・保存バー（スクロールしても常に保存できる） */
  .save-bar{{position:sticky;top:50px;z-index:40;background:#fff;padding:8px 0;margin:0 0 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #e6e9f0}}
  .save-bar .sb-title{{font-weight:700;font-size:15px;margin-right:auto}}
