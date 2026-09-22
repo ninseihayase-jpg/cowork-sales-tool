@@ -1607,6 +1607,44 @@ def test_delivery_form_renders_revenue_and_productivity_rows(con, acc_id):
     assert "100万" in html  # 週別売上のセル
 
 
+def test_delivery_weekly_productivity_returns_non_cumulative_weekly_figures(con, acc_id):
+    """週別売上/週別生産性・累計売上/累計生産性・累計稼働率/週別稼働率の3行表示（2026-09-22）用に、
+    非累計（その週単体）のweekly_workload/weekly_productivityも返す。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_total=200, fee_mode="total",
+                            start_week="2026-06-01", end_week="2026-06-08")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
+                                    to_week="2026-06-08", fte_pct=50)
+    grid = sfa_db.delivery_grid(con, dvid)
+    prod = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
+    assert prod["weekly_workload"] == {"2026-06-01": 50.0, "2026-06-08": 50.0}
+    # 週別生産性＝週別売上100万÷週別稼働率50% = 200万/100%（非累計。両週とも同一稼働率のため
+    # 累計生産性と同じ値になるが、算出元(週単体 vs 累計)が異なる）。
+    assert prod["weekly_productivity"] == {"2026-06-01": 200.0, "2026-06-08": 200.0}
+
+
+def test_delivery_form_renders_three_row_layout(con, acc_id):
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_total=200, fee_mode="total",
+                            start_week="2026-06-01", end_week="2026-06-08")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
+                                    to_week="2026-06-08", fte_pct=50)
+    html = webapp.delivery_form(con, dvid)
+    assert "週別売上/週別生産性" in html
+    assert "累計売上/累計生産性" in html
+    assert "累計稼働率/週別稼働率" in html
+
+
+def test_delivery_form_renders_excluded_period_calendar_widget(con, acc_id):
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    html = webapp.delivery_form(con, dvid)
+    assert 'id="dvExclCal"' in html
+    assert "dvExclCalRender" in html
+
+
 # ---- 対象外期間（盆休み等・#189） ----
 
 def _excl_json(*pairs):
@@ -1725,3 +1763,51 @@ def test_compute_delivery_load_deliveries_meta_includes_excluded_periods(con, ac
     load = sfa_db.compute_delivery_load(con, start_week="2026-06-29", n_weeks=4)
     meta = load["deliveries_meta"][dvid]
     assert meta["excluded_periods"] == [{"from": "2026-07-01", "to": "2026-07-03"}]
+
+
+# ---- 役割マスタ・選択制（2026-09-22） ----
+
+def test_delivery_roles_master_has_default_seven_roles(con):
+    assert sfa_db.get_master_list(con, "delivery_roles") == [
+        "プロジェクトマネジャー", "リードコンサルタント", "ジュニアコンサルタント",
+        "リードエンジニア", "エンジニア", "内部アドバイザー", "外部アドバイザー",
+    ]
+
+
+def test_delivery_roles_master_dynamically_reflected(con, acc_id):
+    """マスタ設定(delivery_roles)を変更すると、体制・アサインの役割<select>の選択肢に動的に反映される。"""
+    sfa_db.set_master_list(con, "delivery_roles", ["カスタム役割A", "カスタム役割B"])
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    html = webapp.delivery_form(con, dvid)
+    assert "カスタム役割A" in html
+    assert "カスタム役割B" in html
+    assert "プロジェクトマネジャー" not in html  # デフォルトは上書きされ、もう選択肢に出ない
+
+
+def test_delivery_form_role_select_marks_master_role_selected(con, acc_id):
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="リードコンサルタント")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", role="リードコンサルタント",
+                                    from_week="2026-06-01", to_week="2026-06-08", fte_pct=50)
+    html = webapp.delivery_form(con, dvid)
+    assert '<option value="リードコンサルタント" selected>リードコンサルタント</option>' in html
+
+
+def test_delivery_form_role_select_preserves_legacy_free_text_value(con, acc_id):
+    """マスタ導入前の自由記述時代の役割値（マスタに存在しない）は、選択済みの追加選択肢として
+    残る（黙って空欄化/別の値に変わらない。張り替えは利用者が明示的に選び直す）。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="謎の旧役割")
+    html = webapp.delivery_form(con, dvid)
+    assert '<option value="謎の旧役割" selected>謎の旧役割（旧値・要見直し）</option>' in html
+
+
+def test_delivery_role_add_form_lists_all_master_roles(con, acc_id):
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    html = webapp.delivery_form(con, dvid)
+    for role in sfa_db.DELIVERY_ROLES:
+        assert f'<option value="{role}">{role}</option>' in html

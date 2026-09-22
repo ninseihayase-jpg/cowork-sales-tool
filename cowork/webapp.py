@@ -222,6 +222,24 @@ def _opt_l2(con, l1: str | None, selected: str | None) -> str:
     return "".join(opts)
 
 
+def _delivery_role_opts(con, current: str | None) -> str:
+    """Delivery体制・アサインの役割<select>選択肢（マスタ"delivery_roles"を参照。2026-09-22〜選択制）。
+    現在値がマスタに無い旧データ（自由記述時代の値）は、選択済みの追加選択肢として残す
+    （黙って空欄化/別の値に化けさせない。役割の張り替えは利用者が明示的に選び直す）。"""
+    values = sfa_db.get_master_list(con, "delivery_roles")
+    cur = (current or "").strip()
+    opts = f'<option value=""{"" if cur else " selected"}></option>'
+    matched = False
+    for v in values:
+        sel = " selected" if v == cur else ""
+        if v == cur:
+            matched = True
+        opts += f'<option value="{_esc(v)}"{sel}>{_esc(v)}</option>'
+    if cur and not matched:
+        opts += f'<option value="{_esc(cur)}" selected>{_esc(cur)}（旧値・要見直し）</option>'
+    return opts
+
+
 def _decode_uploaded_csv(file_item) -> str | None:
     """CSV一括取込のファイルアップロード欄（multipart）から取得したバイト列をCSVテキストにする。
 
@@ -4693,7 +4711,7 @@ def deliveries_page(con) -> str:
     </script>"""
 
 
-def _delivery_row_fields(owners: list, b: dict, dv: dict) -> str:
+def _delivery_row_fields(con, owners: list, b: dict, dv: dict) -> str:
     """アサイン1行分の入力フィールド群（役割→区分(内部/外部)→メンバー(sel/txt)→期間→請求→実想定→メモ→責任者/担当者）。
     追加/編集の両方で使う。期間入力は class=wkdate（日ベースでそのまま入力・集計時のみ週スナップ）。
     責任者/担当者はこの行のメンバーをチェックボックスで指定する（2026-08-29。排他はJS側で制御し、
@@ -4709,7 +4727,7 @@ def _delivery_row_fields(owners: list, b: dict, dv: dict) -> str:
     _resp_checked = " checked" if owner and owner == (dv.get("responsible_owner") or "") else ""
     _handle_checked = " checked" if owner and owner == (dv.get("handling_owner") or "") else ""
     return (
-        f'<label style="font-size:11px">役割<br><input type="text" name="role" value="{_esc(b.get("role") or "")}" placeholder="PM/エンジニア等" style="width:110px"></label>'
+        f'<label style="font-size:11px">役割<br><select name="role" style="width:130px;font-size:12px">{_delivery_role_opts(con, b.get("role"))}</select></label>'
         f'<label style="font-size:11px">区分<br><select name="member_kind" class="mkind" onchange="tglMember(this)" style="font-size:12px">{kind_opts}</select></label>'
         f'<label style="font-size:11px">メンバー<br>'
         f'<select name="owner_sel" class="mint" style="font-size:12px;{sel_disp}">{_opt(owners, owner if kind != "外部" else None)}</select>'
@@ -4808,7 +4826,7 @@ def delivery_form(con, delivery_id: int) -> str:
         bedit += f"""
         <form method="post" action="/delivery/{delivery_id}/assignment/{b['id']}/update" class="asgForm"
               style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border:1px solid #e6e9f0;border-radius:8px;padding:8px;margin-bottom:6px">
-          {_delivery_row_fields(_owners, b, dv)}
+          {_delivery_row_fields(con, _owners, b, dv)}
           <span class="asgSaved" style="font-size:10px;color:#94a3b8;align-self:center">自動保存</span>
           <button formaction="/delivery/{delivery_id}/assignment/{b['id']}/delete" formnovalidate
                   class="btn sec" style="font-size:11px;color:#c53030"
@@ -4840,23 +4858,33 @@ def delivery_form(con, delivery_id: int) -> str:
 
         head = "".join(_wk_head_cell(w) for w in grid["weeks"])
         _rev_cells = ""
-        _prod_cells = ""
+        _cumrev_cells = ""
+        _work_cells = ""
         for w in grid["weeks"]:
             _rev = _prod["weekly_revenue"].get(w, 0.0)
+            _wp = _prod["weekly_productivity"].get(w)
+            _wp_sub = (f'<br><span style="font-size:9px;opacity:.7">生{_num_pct(_wp)}万/100%</span>' if _wp is not None else "")
             _rev_cells += (f'<td style="text-align:center;background:#f0f7ff">'
-                           f'{_num_pct(_rev) + "万" if _rev else "·"}</td>')
+                            f'{(_num_pct(_rev) + "万") if _rev else "·"}{_wp_sub}</td>')
+
             _p = _prod["productivity"].get(w)
             _cr = _prod["cum_revenue"].get(w, 0.0)
             _cw = _prod["cum_workload"].get(w, 0.0)
             if _p is None:
-                _prod_cells += '<td style="text-align:center;background:#f5f0ff">·</td>'
+                _cumrev_cells += '<td style="text-align:center;background:#f5f0ff">·</td>'
             else:
-                _prod_cells += (f'<td style="text-align:center;background:#f5f0ff" '
-                                 f'title="累計売上{_num_pct(_cr)}万 ÷ 累計稼働率{_num_pct(_cw)}%">'
-                                 f'{_num_pct(_p)}万<br><span style="font-size:9px;opacity:.7">'
-                                 f'/100%</span></td>')
-        grows = (f'<tr><th style="text-align:left;white-space:nowrap">週別売上</th>{_rev_cells}</tr>'
-                 f'<tr><th style="text-align:left;white-space:nowrap">累計生産性</th>{_prod_cells}</tr>')
+                _cumrev_cells += (f'<td style="text-align:center;background:#f5f0ff" '
+                                   f'title="累計売上{_num_pct(_cr)}万 ÷ 累計稼働率{_num_pct(_cw)}%">'
+                                   f'{_num_pct(_cr)}万<br><span style="font-size:9px;opacity:.7">'
+                                   f'生{_num_pct(_p)}万/100%</span></td>')
+
+            _ww = _prod["weekly_workload"].get(w, 0.0)
+            _work_cells += (f'<td style="text-align:center;background:#f0fdf4">'
+                             f'{_num_pct(_cw)}%<br><span style="font-size:9px;opacity:.7">'
+                             f'週{_num_pct(_ww)}%</span></td>')
+        grows = (f'<tr><th style="text-align:left;white-space:nowrap">週別売上/週別生産性</th>{_rev_cells}</tr>'
+                 f'<tr><th style="text-align:left;white-space:nowrap">累計売上/累計生産性</th>{_cumrev_cells}</tr>'
+                 f'<tr><th style="text-align:left;white-space:nowrap">累計稼働率/週別稼働率</th>{_work_cells}</tr>')
         for ow in grid["owners"]:
             cells = ""
             for w in grid["weeks"]:
@@ -4876,7 +4904,8 @@ def delivery_form(con, delivery_id: int) -> str:
                      '<p class="muted" style="font-size:11px;margin:6px 0 0">※色は<b>実想定</b>基準。請求が実想定と異なる週は小さく「請◯」を併記。'
                      'このグリッドはこのDelivery分のみ。全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。<br>'
                      '「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）。'
-                     '「累計生産性」＝その週までの売上累計÷稼働率累計（100%あたり単価・万円）。'
+                     '「週別生産性」＝その週単体の売上÷稼働率（非累計・100%あたり単価・万円）。'
+                     '「累計生産性」＝その週までの売上累計÷稼働率累計（同じく100%あたり単価・万円）。'
                      '契約期間の前後に実稼働がある場合も稼働だけを分母に含め、生産性の過大評価を防ぎます。'
                      '週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、'
                      '<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。'
@@ -4897,7 +4926,7 @@ def delivery_form(con, delivery_id: int) -> str:
               data-role-id="{r['id']}"
               style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;border:1px solid #eef1f6;border-radius:6px;padding:6px;margin-bottom:5px;background:#fff">
           <span class="drag-handle" draggable="true" title="ドラッグで並び替え" style="cursor:grab;color:#aab;font-size:15px;line-height:1;align-self:center">⠿</span>
-          <label style="font-size:11px">役割<br><input type="text" name="role" class="rRole" value="{_esc(r['role'])}" style="width:120px"></label>
+          <label style="font-size:11px">役割<br><select name="role" class="rRole" style="width:130px;font-size:12px">{_delivery_role_opts(con, r['role'])}</select></label>
           <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" class="rTgtB" min="0" max="300" step="5" value="{_num_pct(_rb) if _rb is not None else ''}" style="width:74px"></label>
           <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" class="rTgtA" min="0" max="300" step="5" value="{_num_pct(_ra) if _ra is not None else ''}" style="width:74px"></label>
           <span style="font-size:11px;color:#64748b">現在(期間平均) 請<b class="curB">-</b>% / 実<b class="curA">-</b>%</span>
@@ -4984,12 +5013,11 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">終了日<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
             </div>
-            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
-              <label style="font-size:12px">対象外期間を追加（盆休み等）<br>
-                <input type="date" id="dvExclFromDate" style="width:130px">〜<input type="date" id="dvExclToDate" style="width:130px">
-                <button type="button" class="btn sec" style="font-size:11px;padding:3px 8px" onclick="dvExclAdd()">＋追加</button></label>
+            <div style="margin-top:8px">
+              <div style="font-size:12px;margin-bottom:4px">対象外期間を追加（盆休み等）<span class="muted" style="font-size:10px">　カレンダーをドラッグしてなぞる（クリックのみなら1日だけ）</span></div>
+              <div id="dvExclCal" style="max-width:280px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div>
             </div>
-            <div id="dvExclChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px"></div>
+            <div id="dvExclChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>
             <input type="hidden" id="dvExcludedPeriods" name="excluded_periods"
                    value="{_esc(_json.dumps([{"from": f.isoformat(), "to": t.isoformat()} for f, t in sfa_db._delivery_excluded_periods(dv)]))}">
             <p class="muted" style="font-size:10px;margin:2px 0 0">※開始週〜終了週の中で報酬対象外にしたい日付範囲（盆休み等）を指定。週の一部だけでも可（例: 7/1〜7/3）。
@@ -5083,7 +5111,7 @@ def delivery_form(con, delivery_id: int) -> str:
               各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。⠿をドラッグすると並び替えられます。</p>
             <form method="post" action="/delivery/{delivery_id}/role/add"
                   style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-bottom:8px">
-              <label style="font-size:11px">役割<br><input type="text" name="role" required placeholder="PM/エンジニア等" style="width:130px"></label>
+              <label style="font-size:11px">役割<br><select name="role" required style="width:150px;font-size:12px">{_delivery_role_opts(con, None)}</select></label>
               <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="100" style="width:76px"></label>
               <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" min="0" max="300" step="5" value="100" style="width:76px"></label>
               <button class="btn sec" style="font-size:12px">＋役割追加（アサイン行も生成）</button>
@@ -5192,22 +5220,71 @@ def delivery_form(con, delivery_id: int) -> str:
       var hid=document.getElementById('dvExcludedPeriods'); if(!hid) return;
       hid.value=JSON.stringify(_dvExclPeriods);
       dvExclRenderChips();
+      dvExclCalRender(); // カレンダー側の対象外期間ハイライトも更新
       dvFeeRecalc(); // 月数の変化を報酬額/週別売上プレビューへ即時反映
       hid.dispatchEvent(new Event('change',{{bubbles:true}})); // dvBaseFormの自動保存(+reload)へ委譲
-    }}
-    function dvExclAdd(){{
-      var fEl=document.getElementById('dvExclFromDate'), tEl=document.getElementById('dvExclToDate');
-      if(!fEl||!fEl.value) return;
-      var f=fEl.value, t=(tEl&&tEl.value)?tEl.value:f;
-      if(t<f){{ var tmp=f; f=t; t=tmp; }}
-      _dvExclPeriods.push({{from:f, to:t}});
-      fEl.value=''; if(tEl) tEl.value='';
-      dvExclSync();
     }}
     function dvExclRemove(idx){{
       _dvExclPeriods.splice(idx,1);
       dvExclSync();
     }}
+    // 対象外期間の入力カレンダー（ドラッグでなぞって範囲選択・クリックのみなら1日選択）。
+    // 開始日/終了日を1つずつ選ばせる従来のUIから、直感的な範囲選択に変更（ユーザー要望）。
+    var _dvExclCalYMD=(function(){{
+      var s=(document.getElementById('hdrStart')||{{}}).value;
+      var d=s?new Date(s+'T00:00:00'):new Date();
+      return {{y:d.getFullYear(), m:d.getMonth()}};
+    }})();
+    var _dvExclDragging=false, _dvExclDragStart=null, _dvExclDragCur=null;
+    function _dvExclInAnyPeriod(ds){{ return _dvExclPeriods.some(function(p){{ return p.from<=ds && ds<=p.to; }}); }}
+    function _dvExclCalPrev(){{ _dvExclCalYMD.m--; if(_dvExclCalYMD.m<0){{_dvExclCalYMD.m=11;_dvExclCalYMD.y--;}} dvExclCalRender(); }}
+    function _dvExclCalNext(){{ _dvExclCalYMD.m++; if(_dvExclCalYMD.m>11){{_dvExclCalYMD.m=0;_dvExclCalYMD.y++;}} dvExclCalRender(); }}
+    function dvExclCalRender(){{
+      var box=document.getElementById('dvExclCal'); if(!box) return;
+      var y=_dvExclCalYMD.y, m=_dvExclCalYMD.m;
+      var startWd=(new Date(y,m,1).getDay()+6)%7, daysInMonth=new Date(y,m+1,0).getDate();
+      var html='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
+        +'<button type="button" onclick="_dvExclCalPrev()" style="border:0;background:none;cursor:pointer;font-size:13px;color:#64748b">◀</button>'
+        +'<b style="font-size:12px">'+y+'年'+(m+1)+'月</b>'
+        +'<button type="button" onclick="_dvExclCalNext()" style="border:0;background:none;cursor:pointer;font-size:13px;color:#64748b">▶</button></div>';
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font-size:10px;color:#94a3b8;text-align:center;margin-bottom:2px">'
+        +['月','火','水','木','金','土','日'].map(function(w){{return '<div>'+w+'</div>';}}).join('')+'</div>';
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px" onmouseleave="_dvExclCalLeave()">';
+      for(var i=0;i<startWd;i++) html+='<div></div>';
+      var dragLo=null, dragHi=null;
+      if(_dvExclDragging && _dvExclDragStart && _dvExclDragCur){{
+        dragLo=_dvExclDragStart<_dvExclDragCur?_dvExclDragStart:_dvExclDragCur;
+        dragHi=_dvExclDragStart<_dvExclDragCur?_dvExclDragCur:_dvExclDragStart;
+      }}
+      for(var d=1; d<=daysInMonth; d++){{
+        var ds=y+'-'+('0'+(m+1)).slice(-2)+'-'+('0'+d).slice(-2);
+        var dow=new Date(y,m,d).getDay(), isWeekend=(dow===0||dow===6);
+        var inPeriod=_dvExclInAnyPeriod(ds), inDrag=dragLo && ds>=dragLo && ds<=dragHi;
+        var bg=inPeriod?'#fecaca':(inDrag?'#bfdbfe':(isWeekend?'#f8fafc':'#fff'));
+        var color=inPeriod?'#991b1b':(isWeekend?'#94a3b8':'#1e293b');
+        html+='<div data-date="'+ds+'" style="text-align:center;padding:4px 0;border-radius:4px;cursor:pointer;'
+          +'user-select:none;background:'+bg+';color:'+color+';font-size:11px" '
+          +'onmousedown="_dvExclDayDown(\\''+ds+'\\')" onmouseenter="_dvExclDayEnter(\\''+ds+'\\')" '
+          +'onmouseup="_dvExclDayUp(\\''+ds+'\\')">'+d+'</div>';
+      }}
+      html+='</div>';
+      box.innerHTML=html;
+    }}
+    function _dvExclDayDown(ds){{ _dvExclDragging=true; _dvExclDragStart=ds; _dvExclDragCur=ds; dvExclCalRender(); }}
+    function _dvExclDayEnter(ds){{ if(!_dvExclDragging) return; _dvExclDragCur=ds; dvExclCalRender(); }}
+    function _dvExclDayUp(ds){{
+      if(!_dvExclDragging) return;
+      _dvExclDragging=false;
+      var lo=_dvExclDragStart<_dvExclDragCur?_dvExclDragStart:_dvExclDragCur;
+      var hi=_dvExclDragStart<_dvExclDragCur?_dvExclDragCur:_dvExclDragStart;
+      _dvExclDragStart=null; _dvExclDragCur=null;
+      _dvExclPeriods.push({{from:lo, to:hi}});
+      dvExclSync();
+    }}
+    function _dvExclCalLeave(){{ /* グリッド外に出てもドラッグ状態は維持（document mouseupで確定/解除） */ }}
+    document.addEventListener('mouseup', function(){{
+      if(_dvExclDragging){{ _dvExclDragging=false; _dvExclDragStart=null; _dvExclDragCur=null; dvExclCalRender(); }}
+    }});
     function _dvFeeMonths(){{ var s=document.getElementById('hdrStart').value,
       e=document.getElementById('hdrEnd').value; if(!s||!e) return 0;
       var sd=new Date(_mondayOf(s)), ed=new Date(_mondayOf(e)); var days=Math.round((ed-sd)/86400000);
@@ -5357,6 +5434,7 @@ def delivery_form(con, delivery_id: int) -> str:
       }});
     }}
     dvExclRenderChips();
+    dvExclCalRender();
     dvFeeRecalc();
     dvCostRecalc();
     dvPerfFeeChanged();
@@ -5483,16 +5561,21 @@ def delivery_form(con, delivery_id: int) -> str:
       var revWeeksSet={{}}; revWeeksList.forEach(function(k){{ revWeeksSet[k]=true; }});
       var totalWeight=0; revWeeksList.forEach(function(k){{ totalWeight+=(weightOf[k]||0); }});
       var perWeightRevenue = totalWeight>0 ? feeTotal/totalWeight : 0;
-      var runningRev=0, runningWork=0, revRow='', prodRow='';
+      var runningRev=0, runningWork=0, revRow='', cumRevRow='', workRow='';
       weeks.forEach(function(k){{
         var wgt=weightOf[k]!=null?weightOf[k]:1.0;
         var rev = revWeeksSet[k] ? perWeightRevenue*wgt : 0;
-        runningRev+=rev; runningWork+=(weeklyActual[k]||0)*wgt;
-        revRow += '<td style="text-align:center;background:#f0f7ff">'+(rev?_r1(rev)+'万':'·')+'</td>';
+        var work = (weeklyActual[k]||0)*wgt;
+        runningRev+=rev; runningWork+=work;
+        var wp = work>0 ? _r1(rev/(work/100)) : null;
+        revRow += '<td style="text-align:center;background:#f0f7ff">'+(rev?_r1(rev)+'万':'·')
+          +(wp!==null?'<br><span style="font-size:9px;opacity:.7">生'+wp+'万/100%</span>':'')+'</td>';
         if(runningWork>0){{
-          prodRow += '<td style="text-align:center;background:#f5f0ff" title="累計売上'+_r1(runningRev)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%">'
-            +_r1(runningRev/(runningWork/100))+'万<br><span style="font-size:9px;opacity:.7">/100%</span></td>';
-        }} else {{ prodRow += '<td style="text-align:center;background:#f5f0ff">·</td>'; }}
+          cumRevRow += '<td style="text-align:center;background:#f5f0ff" title="累計売上'+_r1(runningRev)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%">'
+            +_r1(runningRev)+'万<br><span style="font-size:9px;opacity:.7">生'+_r1(runningRev/(runningWork/100))+'万/100%</span></td>';
+        }} else {{ cumRevRow += '<td style="text-align:center;background:#f5f0ff">·</td>'; }}
+        workRow += '<td style="text-align:center;background:#f0fdf4">'+_r1(runningWork)+'%'
+          +'<br><span style="font-size:9px;opacity:.7">週'+_r1(work)+'%</span></td>';
       }});
       var html='<div style="overflow:auto"><table style="border-collapse:collapse"><tr><th></th>'
         +weeks.map(function(k){{var p=k.split('-'), wgt=weightOf[k]!=null?weightOf[k]:1.0, partial=wgt<1;
@@ -5500,8 +5583,9 @@ def delivery_form(con, delivery_id: int) -> str:
           var mark = wgt<=0 ? '✕' : (partial ? ('('+_r1(wgt)+')') : '');
           return '<th style="font-size:11px;white-space:nowrap'+bg+'"'
             +(partial?' title="対象外期間により有効週数='+_r1(wgt)+'（営業日ベース按分）"':'')+'>'+(+p[1])+'/'+(+p[2])+mark+'</th>';}}).join('')+'</tr>'
-        +'<tr><th style="text-align:left;white-space:nowrap">週別売上</th>'+revRow+'</tr>'
-        +'<tr><th style="text-align:left;white-space:nowrap">累計生産性</th>'+prodRow+'</tr>';
+        +'<tr><th style="text-align:left;white-space:nowrap">週別売上/週別生産性</th>'+revRow+'</tr>'
+        +'<tr><th style="text-align:left;white-space:nowrap">累計売上/累計生産性</th>'+cumRevRow+'</tr>'
+        +'<tr><th style="text-align:left;white-space:nowrap">累計稼働率/週別稼働率</th>'+workRow+'</tr>';
       rows.forEach(function(r){{
         html+='<tr><th style="text-align:left;white-space:nowrap">'+_esc3(r.label)+'</th>';
         weeks.forEach(function(k){{ var c=r.cells[k];
@@ -5511,8 +5595,8 @@ def delivery_form(con, delivery_id: int) -> str:
         html+='</tr>';
       }});
       html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。<br>'
-        +'「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）。'
-        +'「累計生産性」＝その週までの売上累計÷稼働率累計（100%あたり単価・万円）。'
+        +'「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）。「週別生産性」＝その週単体の売上÷稼働率（非累計）。'
+        +'「累計生産性」＝その週までの売上累計÷稼働率累計（同じく100%あたり単価・万円）。'
         +'週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。</p>';
       box.innerHTML=html;
     }}

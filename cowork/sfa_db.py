@@ -114,6 +114,9 @@ TASK_PROJECT_STATUSES = ["進行中", "保留", "完了"]
 # 経費請求有無は固定enum（ドロップダウン+自由記述の値ドロップダウン側のみ）。
 DELIVERY_BILLING_METHODS = ["請求書送付(オペレータ)", "顧客PF入力(アサイン者)", "顧客PF入力(オペレータ)"]
 DELIVERY_BILLING_DUE_OPTIONS = ["当月末日", "翌月1日", "翌月2日", "翌月3日"]
+# 体制・アサインの役割マスタ（2026-09-22〜選択制）。マスタ設定（/masters）で追加/削除/並び替え可能。
+DELIVERY_ROLES = ["プロジェクトマネジャー", "リードコンサルタント", "ジュニアコンサルタント",
+                  "リードエンジニア", "エンジニア", "内部アドバイザー", "外部アドバイザー"]
 DELIVERY_BILLING_DUE_DEFAULT = "当月末日"
 DELIVERY_EXPENSE_BILLING_OPTIONS = ["有", "無", "不明(要確認)"]
 DELIVERY_PERFORMANCE_FEE_OPTIONS = ["有", "無"]  # 成果報酬有無（2026-08-30）。「有」の場合のみ比率入力が必須。
@@ -142,6 +145,7 @@ MASTER_KEYS = {
     "target_domains":    TARGET_DOMAINS,
     "delivery_billing_methods": DELIVERY_BILLING_METHODS,
     "delivery_billing_due":     DELIVERY_BILLING_DUE_OPTIONS,
+    "delivery_roles":           DELIVERY_ROLES,
     "company_functions":        COMPANY_FUNCTIONS,
     "dev_req_confidentiality":  DEV_REQUIREMENT_CONFIDENTIALITY_LEVELS,
     "dev_req_contract_types":   DEV_REQUIREMENT_CONTRACT_TYPES,
@@ -160,6 +164,7 @@ MASTER_LABELS = {
     "target_domains":    "ターゲット領域",
     "delivery_billing_methods": "Delivery請求方法",
     "delivery_billing_due":     "Delivery請求期日",
+    "delivery_roles":           "Delivery役割（体制・アサイン）",
     "company_functions":        "社内PJの会社機能（商談共通社内PJ向け）",
     "dev_req_confidentiality":  "開発要件: データの機密性",
     "dev_req_contract_types":   "開発要件: 契約形態",
@@ -6054,6 +6059,8 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     これにより「対象外期間を挟んで毎週同じ稼働が続く」ケースでも、稼働の累計が暦週数（例:14週）
     分そのまま積み上がることはなく、実質的な有効週数（例:12週）分に正しく収まる。
     productivityはその週までの稼働累計が0なら算出不可としてNoneを返す。
+    weekly_workload/weekly_productivityは非累計（その週単体）の稼働率・生産性（週別売上÷週別稼働率×100）。
+    こちらもその週の稼働が0ならweekly_productivityはNoneを返す。
     """
     dv = get_delivery(con, delivery_id) or {}
     excluded_periods = _delivery_excluded_periods(dv)
@@ -6085,19 +6092,24 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     weekly_actual_total = {wk: sum((grid["cells"].get(ow, {}).get(wk) or {}).get("actual", 0.0)
                                     for ow in grid["owners"]) for wk in weeks}
 
-    weekly_revenue, cum_revenue, cum_workload, productivity = {}, {}, {}, {}
+    (weekly_revenue, cum_revenue, cum_workload, productivity,
+     weekly_workload, weekly_productivity) = {}, {}, {}, {}, {}, {}
     running_rev, running_work = 0.0, 0.0
     for wk in weeks:
         w = weights.get(wk, 1.0)
         rev = per_weight_revenue * w if wk in revenue_weeks_set else 0.0
+        work = weekly_actual_total.get(wk, 0.0) * w
         weekly_revenue[wk] = round(rev, 1)
+        weekly_workload[wk] = round(work, 1)
+        weekly_productivity[wk] = round(rev / (work / 100), 1) if work > 0 else None
         running_rev += rev
-        running_work += weekly_actual_total.get(wk, 0.0) * w
+        running_work += work
         cum_revenue[wk] = round(running_rev, 1)
         cum_workload[wk] = round(running_work, 1)
         productivity[wk] = round(running_rev / (running_work / 100), 1) if running_work > 0 else None
     return {"weeks": weeks, "fee_total": fee_total, "weekly_revenue": weekly_revenue,
             "cum_revenue": cum_revenue, "cum_workload": cum_workload, "productivity": productivity,
+            "weekly_workload": weekly_workload, "weekly_productivity": weekly_productivity,
             "excluded_periods": [{"from": f.isoformat(), "to": t.isoformat()} for f, t in excluded_periods],
             "week_weights": {wk: round(weights.get(wk, 1.0), 4) for wk in weeks}}
 
