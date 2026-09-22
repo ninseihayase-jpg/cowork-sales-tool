@@ -6050,7 +6050,13 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     weeksの全期間＝アサイン実働の最小〜最大）内の週に、各週の「有効週数」（対象外期間なしなら
     フラットに1週=1単位、対象外期間ありなら営業日ベースで按分。_delivery_period_weight参照）に
     比例して配分（合計は必ずfee_totalに一致。期間外の週は0円）。
-    累計生産性(その週まで)＝Σ週別売上 ÷ (Σ週別総稼働率(実想定・全メンバー合算×その週の有効週数)/100)。
+    累計生産性(その週まで)＝「月100%稼働あたりの単価（万円）」。Σ週別総稼働率(実想定・全メンバー
+    合算×その週の有効週数)は%週単位（例: 100%を12週続けると1200）で積み上がるため、月換算
+    （既存のdelivery_month_count等と同じ1ヶ月=4週の換算）で÷4してから100%稼働あたりに割り戻す:
+    累計生産性 = Σ週別売上 ÷ ((Σ週別総稼働率/4)/100) = Σ週別売上 × 400 ÷ Σ週別総稼働率。
+    こうすることで「100%稼働のまま1ヶ月(4週)働いた場合、月額報酬とちょうど一致する」という
+    自己整合性が成り立つ（月換算を入れずに%週のままで割ると、月額報酬の1/4の値になってしまう
+    バグがあった。ユーザー報告2026-09-22「生産性の計算が間違えていそう」）。
     Delivery期間の前後に実稼働がある週（weeksが契約期間より広い＝delivery_gridがアサイン実働の
     範囲で返すため）は常に有効週数1.0でフル計上＝稼働だけを分母に加算し売上は0のまま
     （過大評価を防ぐ、既存方針）。
@@ -6059,7 +6065,7 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     これにより「対象外期間を挟んで毎週同じ稼働が続く」ケースでも、稼働の累計が暦週数（例:14週）
     分そのまま積み上がることはなく、実質的な有効週数（例:12週）分に正しく収まる。
     productivityはその週までの稼働累計が0なら算出不可としてNoneを返す。
-    weekly_workload/weekly_productivityは非累計（その週単体）の稼働率・生産性（週別売上÷週別稼働率×100）。
+    weekly_workload/weekly_productivityは非累計（その週単体）の稼働率・生産性（同じ月換算式）。
     こちらもその週の稼働が0ならweekly_productivityはNoneを返す。
     """
     dv = get_delivery(con, delivery_id) or {}
@@ -6101,12 +6107,14 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
         work = weekly_actual_total.get(wk, 0.0) * w
         weekly_revenue[wk] = round(rev, 1)
         weekly_workload[wk] = round(work, 1)
-        weekly_productivity[wk] = round(rev / (work / 100), 1) if work > 0 else None
+        # ×400 = ÷4(%週→%月換算) ÷ (1/100)(100%稼働あたりに換算)。100%で4週(=1ヶ月)働けば
+        # 月額報酬とちょうど一致する（自己整合性チェック。#189フォローアップ）。
+        weekly_productivity[wk] = round(rev * 400 / work, 1) if work > 0 else None
         running_rev += rev
         running_work += work
         cum_revenue[wk] = round(running_rev, 1)
         cum_workload[wk] = round(running_work, 1)
-        productivity[wk] = round(running_rev / (running_work / 100), 1) if running_work > 0 else None
+        productivity[wk] = round(running_rev * 400 / running_work, 1) if running_work > 0 else None
     return {"weeks": weeks, "fee_total": fee_total, "weekly_revenue": weekly_revenue,
             "cum_revenue": cum_revenue, "cum_workload": cum_workload, "productivity": productivity,
             "weekly_workload": weekly_workload, "weekly_productivity": weekly_productivity,

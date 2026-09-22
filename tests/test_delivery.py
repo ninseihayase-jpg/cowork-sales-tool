@@ -1541,7 +1541,9 @@ def test_roles_reorder_route_via_http(monkeypatch, tmp_path):
 def test_delivery_weekly_productivity_dilutes_when_actual_extends_past_contract_period(con, acc_id):
     """契約期間(start_week〜end_week)は3週・総額300万→週100万。アサインは契約期間+1週(6/22)まで
     実稼働あり（Delivery期間の前後に実稼働があるケース）。6/22週は売上0のまま稼働だけ分母に乗るため、
-    累計生産性は6/15週の200万/100%から6/22週で150万/100%へ薄まる。"""
+    累計生産性は6/15週の800万/100%（月換算）から6/22週で600万/100%へ薄まる（2026-09-22〜:
+    生産性は「月100%稼働あたり単価」＝売上×400÷稼働率(%週)。100%で4週=1ヶ月働けば月額報酬と
+    一致する自己整合性チェックのため×4した。従来は%週のままで割っており月額報酬の1/4だった）。"""
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
     sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total",
@@ -1560,9 +1562,9 @@ def test_delivery_weekly_productivity_dilutes_when_actual_extends_past_contract_
     assert prod["cum_workload"] == {
         "2026-06-01": 50.0, "2026-06-08": 100.0, "2026-06-15": 150.0, "2026-06-22": 200.0,
     }
-    assert prod["productivity"]["2026-06-01"] == 200.0
-    assert prod["productivity"]["2026-06-15"] == 200.0
-    assert prod["productivity"]["2026-06-22"] == 150.0  # 契約後の稼働で薄まる
+    assert prod["productivity"]["2026-06-01"] == 800.0
+    assert prod["productivity"]["2026-06-15"] == 800.0
+    assert prod["productivity"]["2026-06-22"] == 600.0  # 契約後の稼働で薄まる
 
 
 def test_delivery_weekly_productivity_none_when_no_workload_yet(con, acc_id):
@@ -1617,9 +1619,8 @@ def test_delivery_weekly_productivity_returns_non_cumulative_weekly_figures(con,
     grid = sfa_db.delivery_grid(con, dvid)
     prod = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
     assert prod["weekly_workload"] == {"2026-06-01": 50.0, "2026-06-08": 50.0}
-    # 週別生産性＝週別売上100万÷週別稼働率50% = 200万/100%（非累計。両週とも同一稼働率のため
-    # 累計生産性と同じ値になるが、算出元(週単体 vs 累計)が異なる）。
-    assert prod["weekly_productivity"] == {"2026-06-01": 200.0, "2026-06-08": 200.0}
+    # 週別生産性＝週別売上100万×400÷週別稼働率50%(%週) = 800万/100%（月100%稼働換算・非累計）。
+    assert prod["weekly_productivity"] == {"2026-06-01": 800.0, "2026-06-08": 800.0}
 
 
 def test_delivery_form_renders_three_row_layout(con, acc_id):
@@ -1630,9 +1631,9 @@ def test_delivery_form_renders_three_row_layout(con, acc_id):
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
                                     to_week="2026-06-08", fte_pct=50)
     html = webapp.delivery_form(con, dvid)
-    assert "週別売上/週別生産性" in html
-    assert "累計売上/累計生産性" in html
-    assert "累計稼働率/週別稼働率" in html
+    assert "週別売上/累計売上" in html
+    assert "累計生産性/累計稼働率" in html
+    assert "週別生産性/週別稼働率" in html
 
 
 def test_delivery_form_renders_excluded_period_calendar_widget(con, acc_id):

@@ -4838,6 +4838,21 @@ def delivery_form(con, delivery_id: int) -> str:
         bedit = '<p class="muted">まだアサインがありません。体制で役割を追加するか、各役割の「複製」で行を増やせます。</p>'
     # プレビューグリッド（実想定を主に色付け・請求は小さく併記）。行の並びは体制の役割順に合わせる。
     grid = sfa_db.delivery_grid(con, delivery_id)
+    # 契約期間（開始週〜終了週）もプレビュー週に含める。従来はアサイン行のfrom〜to範囲だけで
+    # 表示週を決めていたため、契約終了間際にアサインが途切れている（誰もその週にアサインされて
+    # いない）と、残りの契約期間ぶんの週別売上がプレビューに一切現れず、累計売上が総額報酬まで
+    # 届かないように見えるバグがあった（ユーザー報告2026-09-22）。アサインが1件もない場合は
+    # 従来通り何も表示しない（grid["weeks"]が空のまま）。
+    if grid["weeks"] and dv.get("start_week") and dv.get("end_week"):
+        try:
+            _csd = date.fromisoformat(str(dv["start_week"])[:10])
+            _ced = date.fromisoformat(str(dv["end_week"])[:10])
+            _cn = (_ced - _csd).days // 7 + 1
+            if _cn > 0:
+                _contract_weeks = sfa_db._weeks_from(sfa_db._monday_of(_csd), _cn)
+                grid["weeks"] = sorted(set(grid["weeks"]) | set(_contract_weeks))
+        except (TypeError, ValueError):
+            pass
     _own_role_idx = {}
     for b in blocks:
         _ow = b.get("owner") or ""
@@ -4860,33 +4875,30 @@ def delivery_form(con, delivery_id: int) -> str:
 
         head = "".join(_wk_head_cell(w) for w in grid["weeks"])
         _rev_cells = ""
-        _cumrev_cells = ""
+        _prod_cells = ""
         _work_cells = ""
         for w in grid["weeks"]:
             _rev = _prod["weekly_revenue"].get(w, 0.0)
-            _wp = _prod["weekly_productivity"].get(w)
-            _wp_sub = (f'<br><span style="font-size:9px;opacity:.7">生{_num_pct(_wp)}万/100%</span>' if _wp is not None else "")
+            _cr = _prod["cum_revenue"].get(w, 0.0)
             _rev_cells += (f'<td style="text-align:center;background:#f0f7ff">'
-                            f'{(_num_pct(_rev) + "万") if _rev else "·"}{_wp_sub}</td>')
+                            f'{(_num_pct(_rev) + "万") if _rev else "·"}'
+                            f'<br><span style="font-size:9px;opacity:.7">累{_num_pct(_cr)}万</span></td>')
 
             _p = _prod["productivity"].get(w)
-            _cr = _prod["cum_revenue"].get(w, 0.0)
             _cw = _prod["cum_workload"].get(w, 0.0)
-            if _p is None:
-                _cumrev_cells += '<td style="text-align:center;background:#f5f0ff">·</td>'
-            else:
-                _cumrev_cells += (f'<td style="text-align:center;background:#f5f0ff" '
-                                   f'title="累計売上{_num_pct(_cr)}万 ÷ 累計稼働率{_num_pct(_cw)}%">'
-                                   f'{_num_pct(_cr)}万<br><span style="font-size:9px;opacity:.7">'
-                                   f'生{_num_pct(_p)}万/100%</span></td>')
+            _p_title = f' title="累計売上{_num_pct(_cr)}万 ÷ 累計稼働率{_num_pct(_cw)}%（月換算）"' if _p is not None else ""
+            _prod_cells += (f'<td style="text-align:center;background:#f5f0ff"{_p_title}>'
+                             f'{(_num_pct(_p) + "万/100%") if _p is not None else "·"}'
+                             f'<br><span style="font-size:9px;opacity:.7">稼{_num_pct(_cw)}%</span></td>')
 
+            _wp = _prod["weekly_productivity"].get(w)
             _ww = _prod["weekly_workload"].get(w, 0.0)
             _work_cells += (f'<td style="text-align:center;background:#f0fdf4">'
-                             f'{_num_pct(_cw)}%<br><span style="font-size:9px;opacity:.7">'
-                             f'週{_num_pct(_ww)}%</span></td>')
-        grows = (f'<tr><th style="text-align:left;white-space:nowrap">週別売上/週別生産性</th>{_rev_cells}</tr>'
-                 f'<tr><th style="text-align:left;white-space:nowrap">累計売上/累計生産性</th>{_cumrev_cells}</tr>'
-                 f'<tr><th style="text-align:left;white-space:nowrap">累計稼働率/週別稼働率</th>{_work_cells}</tr>')
+                             f'{(_num_pct(_wp) + "万/100%") if _wp is not None else "·"}'
+                             f'<br><span style="font-size:9px;opacity:.7">週{_num_pct(_ww)}%</span></td>')
+        grows = (f'<tr><th style="text-align:left;white-space:nowrap">週別売上/累計売上</th>{_rev_cells}</tr>'
+                 f'<tr><th style="text-align:left;white-space:nowrap">累計生産性/累計稼働率</th>{_prod_cells}</tr>'
+                 f'<tr><th style="text-align:left;white-space:nowrap">週別生産性/週別稼働率</th>{_work_cells}</tr>')
         for ow in grid["owners"]:
             cells = ""
             for w in grid["weeks"]:
@@ -4905,9 +4917,9 @@ def delivery_form(con, delivery_id: int) -> str:
                      f'<tr><th></th>{head}</tr>{grows}</table></div>'
                      '<p class="muted" style="font-size:11px;margin:6px 0 0">※色は<b>実想定</b>基準。請求が実想定と異なる週は小さく「請◯」を併記。'
                      'このグリッドはこのDelivery分のみ。全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。<br>'
-                     '「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）。'
-                     '「週別生産性」＝その週単体の売上÷稼働率（非累計・100%あたり単価・万円）。'
-                     '「累計生産性」＝その週までの売上累計÷稼働率累計（同じく100%あたり単価・万円）。'
+                     '「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）／「累計売上」＝その週までの売上累計。'
+                     '「累計生産性」＝月100%稼働あたり単価（万円）＝累計売上÷(累計稼働率÷4ヶ月換算)／「累計稼働率」＝その週までの稼働率累計（%週）。'
+                     '「週別生産性」＝その週単体を月100%稼働に換算した場合の単価（非累計）／「週別稼働率」＝その週単体の稼働率。'
                      '契約期間の前後に実稼働がある場合も稼働だけを分母に含め、生産性の過大評価を防ぎます。'
                      '週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、'
                      '<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。'
@@ -5631,6 +5643,12 @@ def delivery_form(con, delivery_id: int) -> str:
         while(w<=tw && g<520){{ row.cells[w]=row.cells[w]||{{a:0,b:0}}; row.cells[w].a+=a; row.cells[w].b+=b; w=_isoAdd(w,1); g++; }}
       }});
       if(minW===null){{ box.innerHTML='<p class="muted">アサインを入力するとここに週別グリッドが表示されます。</p>'; return; }}
+      // 契約期間（開始週〜終了週）もプレビュー週に含める（サーバ側delivery_form()と同じ理由。
+      // アサイン期間が契約期間より短いと、残りの契約期間ぶんの週別売上が表に出ないバグの修正・
+      // ユーザー報告2026-09-22）。
+      var _cSw=(document.getElementById('hdrStart')||{{}}).value, _cEw=(document.getElementById('hdrEnd')||{{}}).value;
+      if(_cSw && _cEw){{ var _csm=_mondayOf(_cSw), _cem=_mondayOf(_cEw);
+        if(_csm<minW) minW=_csm; if(_cem>maxW) maxW=_cem; }}
       var weeks=[], w=minW, g=0; while(w<=maxW && g<520){{ weeks.push(w); w=_isoAdd(w,1); g++; }}
       // 週別売上・累計生産性（サーバ側delivery_weekly_productivity()と同じ式。#dvPreviewは
       // このJS関数で丸ごと再構築されるため、サーバ側で算出した行もここに含めないと消える）。
@@ -5652,20 +5670,23 @@ def delivery_form(con, delivery_id: int) -> str:
       var revWeeksSet={{}}; revWeeksList.forEach(function(k){{ revWeeksSet[k]=true; }});
       var totalWeight=0; revWeeksList.forEach(function(k){{ totalWeight+=(weightOf[k]||0); }});
       var perWeightRevenue = totalWeight>0 ? feeTotal/totalWeight : 0;
-      var runningRev=0, runningWork=0, revRow='', cumRevRow='', workRow='';
+      var runningRev=0, runningWork=0, revRow='', prodRow='', workRow='';
       weeks.forEach(function(k){{
         var wgt=weightOf[k]!=null?weightOf[k]:1.0;
         var rev = revWeeksSet[k] ? perWeightRevenue*wgt : 0;
         var work = (weeklyActual[k]||0)*wgt;
         runningRev+=rev; runningWork+=work;
-        var wp = work>0 ? _r1(rev/(work/100)) : null;
+        // ×400 = ÷4(%週→%月換算) ÷ (1/100)。100%で4週(1ヶ月)働けば月額報酬と一致する
+        // 自己整合性チェック（#189フォローアップ・ユーザー報告2026-09-22「生産性の計算が
+        // 間違えていそう」の修正。従来は%週のままで割っており月額報酬の1/4になっていた）。
+        var wp = work>0 ? _r1(rev*400/work) : null;
+        var cp = runningWork>0 ? _r1(runningRev*400/runningWork) : null;
         revRow += '<td style="text-align:center;background:#f0f7ff">'+(rev?_r1(rev)+'万':'·')
-          +(wp!==null?'<br><span style="font-size:9px;opacity:.7">生'+wp+'万/100%</span>':'')+'</td>';
-        if(runningWork>0){{
-          cumRevRow += '<td style="text-align:center;background:#f5f0ff" title="累計売上'+_r1(runningRev)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%">'
-            +_r1(runningRev)+'万<br><span style="font-size:9px;opacity:.7">生'+_r1(runningRev/(runningWork/100))+'万/100%</span></td>';
-        }} else {{ cumRevRow += '<td style="text-align:center;background:#f5f0ff">·</td>'; }}
-        workRow += '<td style="text-align:center;background:#f0fdf4">'+_r1(runningWork)+'%'
+          +'<br><span style="font-size:9px;opacity:.7">累'+_r1(runningRev)+'万</span></td>';
+        prodRow += '<td style="text-align:center;background:#f5f0ff"'
+          +(cp!==null?' title="累計売上'+_r1(runningRev)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%（月換算）"':'')+'>'
+          +(cp!==null?cp+'万/100%':'·')+'<br><span style="font-size:9px;opacity:.7">稼'+_r1(runningWork)+'%</span></td>';
+        workRow += '<td style="text-align:center;background:#f0fdf4">'+(wp!==null?wp+'万/100%':'·')
           +'<br><span style="font-size:9px;opacity:.7">週'+_r1(work)+'%</span></td>';
       }});
       var html='<div style="overflow:auto"><table style="border-collapse:collapse"><tr><th></th>'
@@ -5674,9 +5695,9 @@ def delivery_form(con, delivery_id: int) -> str:
           var mark = wgt<=0 ? '✕' : (partial ? ('('+_r1(wgt)+')') : '');
           return '<th style="font-size:11px;white-space:nowrap'+bg+'"'
             +(partial?' title="対象外期間により有効週数='+_r1(wgt)+'（営業日ベース按分）"':'')+'>'+(+p[1])+'/'+(+p[2])+mark+'</th>';}}).join('')+'</tr>'
-        +'<tr><th style="text-align:left;white-space:nowrap">週別売上/週別生産性</th>'+revRow+'</tr>'
-        +'<tr><th style="text-align:left;white-space:nowrap">累計売上/累計生産性</th>'+cumRevRow+'</tr>'
-        +'<tr><th style="text-align:left;white-space:nowrap">累計稼働率/週別稼働率</th>'+workRow+'</tr>';
+        +'<tr><th style="text-align:left;white-space:nowrap">週別売上/累計売上</th>'+revRow+'</tr>'
+        +'<tr><th style="text-align:left;white-space:nowrap">累計生産性/累計稼働率</th>'+prodRow+'</tr>'
+        +'<tr><th style="text-align:left;white-space:nowrap">週別生産性/週別稼働率</th>'+workRow+'</tr>';
       rows.forEach(function(r){{
         html+='<tr><th style="text-align:left;white-space:nowrap">'+_esc3(r.label)+'</th>';
         weeks.forEach(function(k){{ var c=r.cells[k];
@@ -5686,8 +5707,9 @@ def delivery_form(con, delivery_id: int) -> str:
         html+='</tr>';
       }});
       html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。<br>'
-        +'「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）。「週別生産性」＝その週単体の売上÷稼働率（非累計）。'
-        +'「累計生産性」＝その週までの売上累計÷稼働率累計（同じく100%あたり単価・万円）。'
+        +'「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）／「累計売上」＝その週までの売上累計。'
+        +'「累計生産性」＝月100%稼働あたり単価（万円）＝累計売上÷(累計稼働率÷4ヶ月換算)／「累計稼働率」＝その週までの稼働率累計（%週）。'
+        +'「週別生産性」＝その週単体を月100%稼働に換算した場合の単価（非累計）／「週別稼働率」＝その週単体の稼働率。'
         +'週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。</p>';
       box.innerHTML=html;
     }}
