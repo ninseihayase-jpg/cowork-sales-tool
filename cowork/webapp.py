@@ -2880,6 +2880,14 @@ def _num_pct(v) -> str:
     return str(int(f)) if f == int(f) else f"{f:.1f}"
 
 
+def _num0(v) -> str:
+    """四捨五入して小数点以下は表示しない（生産性等、単価は円単位までの精度が不要な表示用）。"""
+    try:
+        return str(round(float(v or 0)))
+    except (TypeError, ValueError):
+        return "0"
+
+
 def _to_float(v, default=None):
     """フォーム値をfloatに。空/不正は default（Noneも可）。"""
     try:
@@ -4863,6 +4871,7 @@ def delivery_form(con, delivery_id: int) -> str:
         grid["owners"] = sorted(grid["owners"], key=lambda o: (_own_role_idx.get(o, 10_000), o))
         _prod = sfa_db.delivery_weekly_productivity(con, delivery_id, grid["weeks"])
         _wk_weights = _prod.get("week_weights") or {}
+        _LABEL_W, _FINAL_W = 150, 90  # 項目欄・最終列の固定表示（sticky）用の幅
 
         def _wk_head_cell(w):
             wgt = _wk_weights.get(w, 1.0)
@@ -4873,32 +4882,61 @@ def delivery_form(con, delivery_id: int) -> str:
             title = f' title="対象外期間により有効週数={_num_pct(wgt)}（営業日ベース按分）"'
             return f'<th style="font-size:11px;white-space:nowrap;{style}"{title}>{_fmt_week(w)}{mark}</th>'
 
-        head = "".join(_wk_head_cell(w) for w in grid["weeks"])
+        def _sticky_label(text, bg, title=""):
+            t = f' title="{_esc(title)}"' if title else ""
+            return (f'<th style="text-align:left;white-space:nowrap;width:{_LABEL_W}px;'
+                    f'position:sticky;left:0;z-index:2;background:{bg}"{t}>{text}</th>')
+
+        def _sticky_final(html, bg):
+            return (f'<td style="text-align:center;white-space:nowrap;width:{_FINAL_W}px;'
+                    f'position:sticky;left:{_LABEL_W}px;z-index:2;background:{bg}">{html}</td>')
+
+        _last_wk = grid["weeks"][-1]
+        head = (f'<th style="position:sticky;left:0;z-index:3;background:#fff"></th>'
+                f'<th style="font-size:11px;white-space:nowrap;position:sticky;left:{_LABEL_W}px;'
+                f'z-index:3;background:#fff">最終</th>'
+                + "".join(_wk_head_cell(w) for w in grid["weeks"]))
         _rev_cells = ""
         _prod_cells = ""
         _work_cells = ""
         for w in grid["weeks"]:
-            _rev = _prod["weekly_revenue"].get(w, 0.0)
+            _mg = _prod["weekly_margin"].get(w, 0.0)
+            _cmg = _prod["cum_margin"].get(w, 0.0)
             _cr = _prod["cum_revenue"].get(w, 0.0)
-            _rev_cells += (f'<td style="text-align:center;background:#f0f7ff">'
-                            f'{(_num_pct(_rev) + "万") if _rev else "·"}'
-                            f'<br><span style="font-size:9px;opacity:.7">累{_num_pct(_cr)}万</span></td>')
+            _cc = _prod["cum_cost"].get(w, 0.0)
+            _ce = _prod["cum_expense"].get(w, 0.0)
+            _mg_title = (f' title="売上{_num_pct(_cr)}万－外注費{_num_pct(_cc)}万－経費{_num_pct(_ce)}万'
+                         f'＝限界利益累計{_num_pct(_cmg)}万（累計値。想定経費={_num_pct(_prod["expense_pct"])}%）"')
+            _rev_cells += (f'<td style="text-align:center;white-space:nowrap;background:#f0f7ff"{_mg_title}>'
+                            f'{(_num_pct(_mg) + "万") if _mg else "·"}'
+                            f'<br><span style="font-size:9px;opacity:.7">累{_num_pct(_cmg)}万</span></td>')
 
             _p = _prod["productivity"].get(w)
             _cw = _prod["cum_workload"].get(w, 0.0)
-            _p_title = f' title="累計売上{_num_pct(_cr)}万 ÷ 累計稼働率{_num_pct(_cw)}%（月換算）"' if _p is not None else ""
-            _prod_cells += (f'<td style="text-align:center;background:#f5f0ff"{_p_title}>'
-                             f'{(_num_pct(_p) + "万/100%") if _p is not None else "·"}'
+            _p_title = f' title="累計限界利益{_num_pct(_cmg)}万 ÷ 累計稼働率{_num_pct(_cw)}%（月換算）"' if _p is not None else ""
+            _prod_cells += (f'<td style="text-align:center;white-space:nowrap;background:#f5f0ff"{_p_title}>'
+                             f'{(_num0(_p) + "万") if _p is not None else "·"}'
                              f'<br><span style="font-size:9px;opacity:.7">稼{_num_pct(_cw)}%</span></td>')
 
             _wp = _prod["weekly_productivity"].get(w)
             _ww = _prod["weekly_workload"].get(w, 0.0)
-            _work_cells += (f'<td style="text-align:center;background:#f0fdf4">'
-                             f'{(_num_pct(_wp) + "万/100%") if _wp is not None else "·"}'
+            _work_cells += (f'<td style="text-align:center;white-space:nowrap;background:#f0fdf4">'
+                             f'{(_num0(_wp) + "万") if _wp is not None else "·"}'
                              f'<br><span style="font-size:9px;opacity:.7">週{_num_pct(_ww)}%</span></td>')
-        grows = (f'<tr><th style="text-align:left;white-space:nowrap">週別売上/累計売上</th>{_rev_cells}</tr>'
-                 f'<tr><th style="text-align:left;white-space:nowrap">累計生産性/累計稼働率</th>{_prod_cells}</tr>'
-                 f'<tr><th style="text-align:left;white-space:nowrap">週別生産性/週別稼働率</th>{_work_cells}</tr>')
+
+        _final_p = _prod["productivity"].get(_last_wk)
+        _final_w = _prod["cum_workload"].get(_last_wk, 0.0)
+        _final_html = (f'{_num0(_final_p)}万<br><span style="font-size:9px;opacity:.7">稼{_num_pct(_final_w)}%</span>'
+                       if _final_p is not None else "·")
+        _label_title_rev = "限界利益＝売上－外注費－想定経費。週別＝その週の限界利益、累計＝開始からその週までの累計。"
+        _label_title_prod = "累計生産性＝月100%稼働あたりの限界利益単価＝累計限界利益×400÷累計稼働率（%週）÷4ヶ月換算。累計稼働率＝開始からその週までの稼働率(%週)累計。"
+        _label_title_work = "週別生産性＝その週単体を月100%稼働に換算した場合の限界利益単価（非累計）。週別稼働率＝その週単体の稼働率。"
+        grows = (f'<tr>{_sticky_label("週別限界利益/累計限界利益", "#f0f7ff", _label_title_rev)}'
+                 f'{_sticky_final("·", "#f0f7ff")}{_rev_cells}</tr>'
+                 f'<tr>{_sticky_label("累計生産性/累計稼働率", "#f5f0ff", _label_title_prod)}'
+                 f'{_sticky_final(_final_html, "#f5f0ff")}{_prod_cells}</tr>'
+                 f'<tr>{_sticky_label("週別生産性/週別稼働率", "#f0fdf4", _label_title_work)}'
+                 f'{_sticky_final("·", "#f0fdf4")}{_work_cells}</tr>')
         for ow in grid["owners"]:
             cells = ""
             for w in grid["weeks"]:
@@ -4911,19 +4949,18 @@ def delivery_form(con, delivery_id: int) -> str:
                     inner = f'{_num_pct(a)}%{_sub}'
                 else:
                     inner = "·"
-                cells += f'<td style="text-align:center;{_heat_style(a)}">{inner}</td>'
-            grows += f'<tr><th style="text-align:left;white-space:nowrap">{_esc(ow)}</th>{cells}</tr>'
+                cells += f'<td style="text-align:center;white-space:nowrap;{_heat_style(a)}">{inner}</td>'
+            grows += (f'<tr>{_sticky_label(_esc(ow), "#fff")}{_sticky_final("·", "#fff")}{cells}</tr>')
         grid_html = (f'<div style="overflow:auto"><table style="border-collapse:collapse">'
-                     f'<tr><th></th>{head}</tr>{grows}</table></div>'
+                     f'<tr>{head}</tr>{grows}</table></div>'
                      '<p class="muted" style="font-size:11px;margin:6px 0 0">※色は<b>実想定</b>基準。請求が実想定と異なる週は小さく「請◯」を併記。'
-                     'このグリッドはこのDelivery分のみ。全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。<br>'
-                     '「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）／「累計売上」＝その週までの売上累計。'
-                     '「累計生産性」＝月100%稼働あたり単価（万円）＝累計売上÷(累計稼働率÷4ヶ月換算)／「累計稼働率」＝その週までの稼働率累計（%週）。'
-                     '「週別生産性」＝その週単体を月100%稼働に換算した場合の単価（非累計）／「週別稼働率」＝その週単体の稼働率。'
+                     'このグリッドはこのDelivery分のみ。全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。'
+                     '項目欄・最終列は固定表示、項目欄にカーソルを合わせると定義が出ます。<br>'
+                     '「限界利益」＝売上－外注費－想定経費（想定経費は売上に対する%。基礎情報「想定経費(%)」で設定）。'
                      '契約期間の前後に実稼働がある場合も稼働だけを分母に含め、生産性の過大評価を防ぎます。'
                      '週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、'
                      '<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。'
-                     '有効週数は月額↔総額の自動換算・週別売上の按分・生産性の稼働累計のすべてに反映されます'
+                     '有効週数は月額↔総額の自動換算・週別限界利益の按分・生産性の稼働累計のすべてに反映されます'
                      '（対象外期間の設定は基礎情報の「対象外期間を追加」から）。</p>')
     else:
         grid_html = '<p class="muted">アサインを追加するとここに週別グリッドが表示されます。</p>'
@@ -5085,6 +5122,9 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">外注費/総額(万)<br>
                 <input type="number" step="0.1" min="0" id="dvCostTotal" name="cost_total" style="width:110px"
                        value="{"" if dv.get("cost_total") is None else dv.get("cost_total")}" oninput="dvCostFieldInput(this)"></label>
+              <label style="font-size:12px">想定経費(%)<span class="muted" style="font-size:10px">売上比</span><br>
+                <input type="number" step="0.1" min="0" max="100" id="dvExpensePct" name="expected_expense_pct" style="width:80px"
+                       value="{_num_pct(sfa_db.delivery_expected_expense_pct(dv))}" oninput="dvFeeRecalc()"></label>
               <span class="muted" style="font-size:11px;align-self:center" id="dvCostMonths"></span>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
@@ -5127,7 +5167,7 @@ def delivery_form(con, delivery_id: int) -> str:
             <p class="muted" style="font-size:11px;margin:0 0 8px">下の「アサイン」各行のチェックボックスで指定します（自動表示のみ）。</p>
             <div id="dvOwnerRolesBox" style="display:flex;gap:14px;flex-wrap:wrap">{_delivery_owner_roles_box_html(dv)}</div>
           </div>
-          <div style="flex:1;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+          <div style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
             <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
             <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。削除すると、対応するアサイン行も削除されます。
               各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。⠿をドラッグすると並び替えられます。</p>
@@ -5140,12 +5180,13 @@ def delivery_form(con, delivery_id: int) -> str:
             </form>
             <div id="dvRoleRows" style="overflow:auto">{role_rows}</div>
           </div>
+          <div style="flex:1;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+            <h3 style="margin:0 0 6px;font-size:14px">アサイン（役割 × 区分 × メンバー × 期間 × 稼働率）</h3>
+            <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は<b>請求</b>（クライアント請求上）と<b>実想定</b>（実稼働・負荷計算はこちら）。区分「外部」でメンバーを自由記述。<b>入力すると自動保存</b>されます。行の追加は体制の「複製」から。並びは体制の役割順。</p>
+            {bedit}
+          </div>
         </div>
       </div>
-
-      <h3 style="margin:16px 0 6px;font-size:14px">アサイン（役割 × 区分 × メンバー × 期間 × 稼働率）</h3>
-      <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は<b>請求</b>（クライアント請求上）と<b>実想定</b>（実稼働・負荷計算はこちら）。区分「外部」でメンバーを自由記述。<b>入力すると自動保存</b>されます。行の追加は体制の「複製」から。並びは体制の役割順。</p>
-      {bedit}
 
       <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
       <div id="dvPreview">{grid_html}</div>
@@ -5251,11 +5292,23 @@ def delivery_form(con, delivery_id: int) -> str:
       var d=s?new Date(s+'T00:00:00'):new Date();
       return {{y:d.getFullYear(), m:d.getMonth()}};
     }}
+    // 対象外期間が既にあれば、その一番古い(from最小)期間の月をデフォルト表示にする
+    // （まっさらな開始日の月より、既存の期間を見せた方が使いやすいため）。
+    function _dvExclCalDefaultYMD(){{
+      if(_dvExclPeriods.length){{
+        var oldest=_dvExclPeriods.reduce(function(a,b){{ return (a.from<b.from)?a:b; }});
+        var d=new Date(oldest.from+'T00:00:00');
+        return {{y:d.getFullYear(), m:d.getMonth()}};
+      }}
+      return _dvCalYMDFromField('hdrStart');
+    }}
     var _dvStartCalYMD=_dvCalYMDFromField('hdrStart');
     var _dvEndCalYMD=_dvCalYMDFromField('hdrEnd');
-    var _dvExclCalYMD=_dvCalYMDFromField('hdrStart');
+    var _dvExclCalYMD=_dvExclCalDefaultYMD();
     function _dvExclInAnyPeriod(ds){{ return _dvExclPeriods.some(function(p){{ return p.from<=ds && ds<=p.to; }}); }}
     // 3カレンダー共通のグリッド描画（月ナビ＋曜日ヘッダ＋日セル）。日セルの中身はdayHtmlFnに委譲。
+    // 月によって4〜6週分と行数が変わり、3つ並べた時に高さがデコボコになるため、
+    // 最低5週(35マス)分は常に描画し、6週必要な月だけ6週目まで伸ばす（ユーザー要望2026-09-23）。
     function _dvCalBuildHtml(ymd, prevFn, nextFn, dayHtmlFn){{
       var y=ymd.y, m=ymd.m;
       var startWd=(new Date(y,m,1).getDay()+6)%7, daysInMonth=new Date(y,m+1,0).getDate();
@@ -5272,6 +5325,8 @@ def delivery_form(con, delivery_id: int) -> str:
         var dow=new Date(y,m,d).getDay(), isWeekend=(dow===0||dow===6);
         html+=dayHtmlFn(ds, d, isWeekend);
       }}
+      var usedCells=startWd+daysInMonth, minCells=Math.max(35, Math.ceil(usedCells/7)*7);
+      for(var pad=usedCells; pad<minCells; pad++) html+='<div></div>';
       html+='</div>';
       return html;
     }}
@@ -5429,6 +5484,7 @@ def delivery_form(con, delivery_id: int) -> str:
         if(m && mo.value!=='' && to.dataset.manual!=='1') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
       }}
       dvProfitRecalc();
+      if(typeof renderPreview==='function') renderPreview(); // 外注費の変更を限界利益プレビューへ即反映
     }}
     function dvCostFieldInput(el){{
       var modeEl=document.getElementById('dvCostMode');
@@ -5534,6 +5590,7 @@ def delivery_form(con, delivery_id: int) -> str:
       return {{a:sa/ks.length, b:sb/ks.length, n:ks.length}};
     }}
     function _r1(x){{ return Math.round(x*10)/10; }}
+    function _r0(x){{ return Math.round(x); }}
     // 「＋役割追加」フォーム送信前チェック（サーバ側検証と二重だが、送信前に即気づけるように）。
     function _dvRoleAddCheck(form){{
       var sel=form.querySelector('[name=role]'); if(!sel) return true;
@@ -5655,11 +5712,14 @@ def delivery_form(con, delivery_id: int) -> str:
       var weeklyActual={{}}; weeks.forEach(function(k){{ weeklyActual[k]=0; }});
       rows.forEach(function(r){{ weeks.forEach(function(k){{ var c=r.cells[k]; if(c) weeklyActual[k]+=(c.a||0); }}); }});
       var feeEl=document.getElementById('dvFeeTotal'), feeTotal=feeEl?(parseFloat(feeEl.value)||0):0;
+      var costEl=document.getElementById('dvCostTotal'), costTotal=costEl?(parseFloat(costEl.value)||0):0;
+      var expEl=document.getElementById('dvExpensePct'), expensePct=expEl&&expEl.value!==''?parseFloat(expEl.value):5;
       var swEl=document.getElementById('hdrStart'), ewEl=document.getElementById('hdrEnd');
       var sw=swEl?swEl.value:'', ew=ewEl?ewEl.value:'';
-      // 週別売上・稼働累計の按分（サーバ側delivery_weekly_productivity()と同じ式。#189）:
+      // 週別限界利益・稼働累計の按分（サーバ側delivery_weekly_productivity()と同じ式。#189）:
       // 対象外期間なしはフラット（各週=1.0）、ありなら境界週・対象外期間と重なる週だけ
-      // 営業日ベースで按分した「有効週数」の比率で配分する。
+      // 営業日ベースで按分した「有効週数」の比率で配分する。外注費も売上と同じ比率で按分し、
+      // 想定経費はその週の売上に直接%を掛ける（限界利益＝売上－外注費－想定経費）。
       var revWeeksList=[];
       if(sw && ew){{ var rw=_mondayOf(sw), ewMon=_mondayOf(ew), rg=0;
         while(rw<=ewMon && rg<520){{ revWeeksList.push(rw); rw=_isoAdd(rw,1); rg++; }} }}
@@ -5670,46 +5730,65 @@ def delivery_form(con, delivery_id: int) -> str:
       var revWeeksSet={{}}; revWeeksList.forEach(function(k){{ revWeeksSet[k]=true; }});
       var totalWeight=0; revWeeksList.forEach(function(k){{ totalWeight+=(weightOf[k]||0); }});
       var perWeightRevenue = totalWeight>0 ? feeTotal/totalWeight : 0;
-      var runningRev=0, runningWork=0, revRow='', prodRow='', workRow='';
-      weeks.forEach(function(k){{
+      var perWeightCost = totalWeight>0 ? costTotal/totalWeight : 0;
+      var runningMargin=0, runningWork=0, revRow='', prodRow='', workRow='', finalP=null, finalW=0;
+      var LABEL_W=150, FINAL_W=90;
+      weeks.forEach(function(k,i){{
         var wgt=weightOf[k]!=null?weightOf[k]:1.0;
         var rev = revWeeksSet[k] ? perWeightRevenue*wgt : 0;
+        var cost = revWeeksSet[k] ? perWeightCost*wgt : 0;
+        var exp = rev*(expensePct/100);
+        var margin = rev - cost - exp;
         var work = (weeklyActual[k]||0)*wgt;
-        runningRev+=rev; runningWork+=work;
-        // ×400 = ÷4(%週→%月換算) ÷ (1/100)。100%で4週(1ヶ月)働けば月額報酬と一致する
-        // 自己整合性チェック（#189フォローアップ・ユーザー報告2026-09-22「生産性の計算が
-        // 間違えていそう」の修正。従来は%週のままで割っており月額報酬の1/4になっていた）。
-        var wp = work>0 ? _r1(rev*400/work) : null;
-        var cp = runningWork>0 ? _r1(runningRev*400/runningWork) : null;
-        revRow += '<td style="text-align:center;background:#f0f7ff">'+(rev?_r1(rev)+'万':'·')
-          +'<br><span style="font-size:9px;opacity:.7">累'+_r1(runningRev)+'万</span></td>';
-        prodRow += '<td style="text-align:center;background:#f5f0ff"'
-          +(cp!==null?' title="累計売上'+_r1(runningRev)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%（月換算）"':'')+'>'
-          +(cp!==null?cp+'万/100%':'·')+'<br><span style="font-size:9px;opacity:.7">稼'+_r1(runningWork)+'%</span></td>';
-        workRow += '<td style="text-align:center;background:#f0fdf4">'+(wp!==null?wp+'万/100%':'·')
+        runningMargin+=margin; runningWork+=work;
+        // ×400 = ÷4(%週→%月換算) ÷ (1/100)。100%で4週(1ヶ月)働けば月額報酬(の限界利益分)と
+        // 一致する自己整合性チェック（#189フォローアップ）。生産性の「/100%」表記・小数点以下は
+        // 不要（ユーザー要望2026-09-23）のため_r0で四捨五入した整数のみ表示する。
+        var wp = work>0 ? _r0(margin*400/work) : null;
+        var cp = runningWork>0 ? _r0(runningMargin*400/runningWork) : null;
+        if(i===weeks.length-1){{ finalP=cp; finalW=runningWork; }}
+        revRow += '<td style="text-align:center;white-space:nowrap;background:#f0f7ff" title="売上'+_r1(rev)+'万－外注費'+_r1(cost)+'万－経費'+_r1(exp)+'万＝限界利益累計'+_r1(runningMargin)+'万（想定経費='+_r1(expensePct)+'%）">'
+          +(margin?_r1(margin)+'万':'·')+'<br><span style="font-size:9px;opacity:.7">累'+_r1(runningMargin)+'万</span></td>';
+        prodRow += '<td style="text-align:center;white-space:nowrap;background:#f5f0ff"'
+          +(cp!==null?' title="累計限界利益'+_r1(runningMargin)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%（月換算）"':'')+'>'
+          +(cp!==null?cp+'万':'·')+'<br><span style="font-size:9px;opacity:.7">稼'+_r1(runningWork)+'%</span></td>';
+        workRow += '<td style="text-align:center;white-space:nowrap;background:#f0fdf4">'+(wp!==null?wp+'万':'·')
           +'<br><span style="font-size:9px;opacity:.7">週'+_r1(work)+'%</span></td>';
       }});
-      var html='<div style="overflow:auto"><table style="border-collapse:collapse"><tr><th></th>'
+      var finalHtml = finalP!==null ? (finalP+'万<br><span style="font-size:9px;opacity:.7">稼'+_r1(finalW)+'%</span>') : '·';
+      var stickyLabel = function(text, bg, title){{
+        return '<th style="text-align:left;white-space:nowrap;width:'+LABEL_W+'px;position:sticky;left:0;'
+          +'z-index:2;background:'+bg+'"'+(title?' title="'+title+'"':'')+'>'+text+'</th>';
+      }};
+      var stickyFinal = function(html, bg){{
+        return '<td style="text-align:center;white-space:nowrap;width:'+FINAL_W+'px;position:sticky;left:'+LABEL_W+'px;'
+          +'z-index:2;background:'+bg+'">'+html+'</td>';
+      }};
+      var html='<div style="overflow:auto"><table style="border-collapse:collapse"><tr>'
+        +'<th style="position:sticky;left:0;z-index:3;background:#fff"></th>'
+        +'<th style="font-size:11px;white-space:nowrap;position:sticky;left:'+LABEL_W+'px;z-index:3;background:#fff">最終</th>'
         +weeks.map(function(k){{var p=k.split('-'), wgt=weightOf[k]!=null?weightOf[k]:1.0, partial=wgt<1;
           var bg = wgt<=0 ? ';background:#fef2f2;color:#b91c1c' : (partial ? ';background:#fff7ed;color:#c2410c' : '');
           var mark = wgt<=0 ? '✕' : (partial ? ('('+_r1(wgt)+')') : '');
           return '<th style="font-size:11px;white-space:nowrap'+bg+'"'
             +(partial?' title="対象外期間により有効週数='+_r1(wgt)+'（営業日ベース按分）"':'')+'>'+(+p[1])+'/'+(+p[2])+mark+'</th>';}}).join('')+'</tr>'
-        +'<tr><th style="text-align:left;white-space:nowrap">週別売上/累計売上</th>'+revRow+'</tr>'
-        +'<tr><th style="text-align:left;white-space:nowrap">累計生産性/累計稼働率</th>'+prodRow+'</tr>'
-        +'<tr><th style="text-align:left;white-space:nowrap">週別生産性/週別稼働率</th>'+workRow+'</tr>';
+        +'<tr>'+stickyLabel('週別限界利益/累計限界利益','#f0f7ff','限界利益＝売上－外注費－想定経費。週別＝その週の限界利益、累計＝開始からその週までの累計。')
+          +stickyFinal('·','#f0f7ff')+revRow+'</tr>'
+        +'<tr>'+stickyLabel('累計生産性/累計稼働率','#f5f0ff','累計生産性＝月100%稼働あたりの限界利益単価＝累計限界利益×400÷累計稼働率（%週）÷4ヶ月換算。累計稼働率＝開始からその週までの稼働率(%週)累計。')
+          +stickyFinal(finalHtml,'#f5f0ff')+prodRow+'</tr>'
+        +'<tr>'+stickyLabel('週別生産性/週別稼働率','#f0fdf4','週別生産性＝その週単体を月100%稼働に換算した場合の限界利益単価（非累計）。週別稼働率＝その週単体の稼働率。')
+          +stickyFinal('·','#f0fdf4')+workRow+'</tr>';
       rows.forEach(function(r){{
-        html+='<tr><th style="text-align:left;white-space:nowrap">'+_esc3(r.label)+'</th>';
+        html+='<tr>'+stickyLabel(_esc3(r.label),'#fff')+stickyFinal('·','#fff');
         weeks.forEach(function(k){{ var c=r.cells[k];
           if(c&&(c.a||c.b)){{ var sub=(Math.abs((c.b||0)-(c.a||0))>0.01)?'<br><span style="font-size:9px;opacity:.7">請'+_r1(c.b)+'</span>':'';
-            html+='<td style="text-align:center;'+_heatJs(c.a)+'">'+_r1(c.a)+'%'+sub+'</td>'; }}
+            html+='<td style="text-align:center;white-space:nowrap;'+_heatJs(c.a)+'">'+_r1(c.a)+'%'+sub+'</td>'; }}
           else {{ html+='<td style="text-align:center;color:#cbd5e1">·</td>'; }} }});
         html+='</tr>';
       }});
-      html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。<br>'
-        +'「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）／「累計売上」＝その週までの売上累計。'
-        +'「累計生産性」＝月100%稼働あたり単価（万円）＝累計売上÷(累計稼働率÷4ヶ月換算)／「累計稼働率」＝その週までの稼働率累計（%週）。'
-        +'「週別生産性」＝その週単体を月100%稼働に換算した場合の単価（非累計）／「週別稼働率」＝その週単体の稼働率。'
+      html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。'
+        +'項目欄・最終列は固定表示、項目欄にカーソルを合わせると定義が出ます。<br>'
+        +'「限界利益」＝売上－外注費－想定経費（想定経費は売上に対する%。基礎情報「想定経費(%)」で設定）。'
         +'週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。</p>';
       box.innerHTML=html;
     }}
@@ -22556,6 +22635,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         cost_monthly=_cost_monthly,
                         cost_total=_cost_total,
                         cost_vendor=(f.get("cost_vendor", "") or "").strip(),
+                        expected_expense_pct=_to_float(f.get("expected_expense_pct"), None),
                         business_type_l1_override=_biz_l1_ov,
                         business_type_l2_override=_biz_l2_ov,
                         billing_method=_billing_method,

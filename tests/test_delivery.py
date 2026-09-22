@@ -1546,7 +1546,7 @@ def test_delivery_weekly_productivity_dilutes_when_actual_extends_past_contract_
     一致する自己整合性チェックのため×4した。従来は%週のままで割っており月額報酬の1/4だった）。"""
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
-    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total",
+    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total", expected_expense_pct=0,
                             start_week="2026-06-01", end_week="2026-06-15")
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
                                     to_week="2026-06-22", fte_pct=50)
@@ -1597,14 +1597,14 @@ def test_delivery_weekly_productivity_resolves_monthly_fee_mode(con, acc_id):
 def test_delivery_form_renders_revenue_and_productivity_rows(con, acc_id):
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
-    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total",
+    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total", expected_expense_pct=0,
                             start_week="2026-06-01", end_week="2026-06-15")
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
                                     to_week="2026-06-15", fte_pct=50)
     html = webapp.delivery_form(con, dvid)
-    assert "週別売上" in html
+    assert "週別限界利益" in html
     assert "累計生産性" in html
-    assert "100万" in html  # 週別売上のセル
+    assert "100万" in html  # 週別限界利益のセル（想定経費0%指定なので売上と同額）
 
 
 def test_delivery_weekly_productivity_returns_non_cumulative_weekly_figures(con, acc_id):
@@ -1612,14 +1612,15 @@ def test_delivery_weekly_productivity_returns_non_cumulative_weekly_figures(con,
     非累計（その週単体）のweekly_workload/weekly_productivityも返す。"""
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
-    sfa_db.update_delivery(con, dvid, fee_total=200, fee_mode="total",
+    sfa_db.update_delivery(con, dvid, fee_total=200, fee_mode="total", expected_expense_pct=0,
                             start_week="2026-06-01", end_week="2026-06-08")
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
                                     to_week="2026-06-08", fte_pct=50)
     grid = sfa_db.delivery_grid(con, dvid)
     prod = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
     assert prod["weekly_workload"] == {"2026-06-01": 50.0, "2026-06-08": 50.0}
-    # 週別生産性＝週別売上100万×400÷週別稼働率50%(%週) = 800万/100%（月100%稼働換算・非累計）。
+    # 週別生産性＝週別限界利益(想定経費0%指定なので売上と同額)100万×400÷週別稼働率50%(%週)
+    # = 800万/100%（月100%稼働換算・非累計）。
     assert prod["weekly_productivity"] == {"2026-06-01": 800.0, "2026-06-08": 800.0}
 
 
@@ -1631,7 +1632,7 @@ def test_delivery_form_renders_three_row_layout(con, acc_id):
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
                                     to_week="2026-06-08", fte_pct=50)
     html = webapp.delivery_form(con, dvid)
-    assert "週別売上/累計売上" in html
+    assert "週別限界利益/累計限界利益" in html
     assert "累計生産性/累計稼働率" in html
     assert "週別生産性/週別稼働率" in html
 
