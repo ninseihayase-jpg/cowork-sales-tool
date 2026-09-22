@@ -852,18 +852,16 @@ def test_delivery_form_base_info_autosaves_without_save_button(con, acc_id):
     assert 'id="dvOwnerRolesBox"' in html
 
 
-def test_delivery_form_weeks_field_skips_autosave_reload_without_start_week(con, acc_id):
-    """#154(2026-09-03): 週数(hdrWeeks)はDB列を持たない表示専用フィールドで、開始週から
-    逆算した終了週をhdrCalcEnd()が計算するだけ。開始週が未入力のまま週数だけ入力すると、
-    以前は無条件で自動保存＋即時reloadされ、せっかく入力した週数がどこにも保存されずに
-    画面から消えてしまっていた（ユーザー報告）。開始週が入力済みで実際にend_weekが
-    計算できた時だけ保存・再読込するよう修正。"""
+def test_delivery_form_weeks_field_is_readonly_auto_calculated(con, acc_id):
+    """2026-09-22〜: 週数(hdrWeeks)は開始日・終了日・対象外期間から自動計算する表示専用フィールド
+    になった（3カレンダーでの直接選択に置き換え、タイプ入力から終了日を逆算するhdrCalcEnd()は廃止）。
+    readonlyで、ユーザー操作による自動保存トリガーの対象にはならない。"""
     d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
     dvid = sfa_db.create_delivery(con, deal_id=d)
     html = webapp.delivery_form(con, dvid)
-    assert "if(!(document.getElementById('hdrStart')||{}).value) return;" in html
-    # 旧実装: el.id==='hdrWeeks' を無条件でreload対象に含めていたOR条件が残っていないこと
-    assert "el.name==='end_week'||el.id==='hdrWeeks'" not in html
+    assert 'id="hdrWeeks"' in html
+    assert "readonly" in html
+    assert "hdrCalcEnd" not in html  # 廃止された旧関数が残っていないこと
 
 
 def test_delivery_form_save_button_is_beside_base_info_heading(con, acc_id):
@@ -1811,3 +1809,28 @@ def test_delivery_role_add_form_lists_all_master_roles(con, acc_id):
     html = webapp.delivery_form(con, dvid)
     for role in sfa_db.DELIVERY_ROLES:
         assert f'<option value="{role}">{role}</option>' in html
+
+
+def test_delivery_role_name_taken_detects_duplicate_within_same_delivery(con, acc_id):
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="ジュニアコンサルタント")
+    assert sfa_db.delivery_role_name_taken(con, dvid, "ジュニアコンサルタント") is True
+    assert sfa_db.delivery_role_name_taken(con, dvid, "エンジニア") is False
+
+
+def test_delivery_role_name_taken_excludes_self_on_update(con, acc_id):
+    """自分自身の行を編集する場合（役割名を変えずに他フィールドだけ保存等）は重複扱いしない。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    rid = sfa_db.add_delivery_role(con, delivery_id=dvid, role="ジュニアコンサルタント")
+    assert sfa_db.delivery_role_name_taken(con, dvid, "ジュニアコンサルタント", exclude_role_id=rid) is False
+
+
+def test_delivery_role_name_taken_scoped_per_delivery(con, acc_id):
+    """役割名の一意性は同一Delivery内のみでのチェックで、別Deliveryの同名役割とは衝突しない。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid1 = sfa_db.create_delivery(con, deal_id=did, title="X")
+    dvid2 = sfa_db.create_delivery(con, deal_id=did, title="Y")
+    sfa_db.add_delivery_role(con, delivery_id=dvid1, role="ジュニアコンサルタント")
+    assert sfa_db.delivery_role_name_taken(con, dvid2, "ジュニアコンサルタント") is False

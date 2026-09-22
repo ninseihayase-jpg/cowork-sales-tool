@@ -4795,12 +4795,14 @@ def delivery_form(con, delivery_id: int) -> str:
     _assign_effort = sfa_db.delivery_total_assign_effort(con, delivery_id)
     _assign_effort_bill = sfa_db.delivery_total_assign_effort(con, delivery_id, use_billing=True)
     _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # マスタ優先（後追加メンバーも反映）
-    # 現在の週数（開始/終了が両方あれば算出。開始/終了は日ベースの任意の日付なので、
-    # 月曜スナップしてから跨る暦週数を数える_assignment_weeks()を使う＝#180）。
+    # 現在の週数（開始/終了が両方あれば算出。対象外期間を除いた有効週数＝月数×4。
+    # クライアント側dvFeeRecalc()も同じ_dvPeriodWeight/_dvFeeMonthsで再計算して上書きするが、
+    # JS読み込み前の初期表示・no-JS環境でも矛盾しない値にするためサーバ側でも揃えておく）。
     _weeks_val = ""
     if dv.get("start_week") and dv.get("end_week"):
-        _w = sfa_db._assignment_weeks(dv["start_week"], dv["end_week"])
-        _weeks_val = str(_w) if _w > 0 else ""
+        _w = sfa_db.delivery_month_count(dv["start_week"], dv["end_week"],
+                                          sfa_db._delivery_excluded_periods(dv)) * 4
+        _weeks_val = _num_pct(_w) if _w > 0 else ""
     # 体制（役割の並び順）を先に取得。アサインはこの並びに合わせて表示する。
     roles = sfa_db.list_delivery_roles(con, delivery_id)
     _role_order = {r["role"]: i for i, r in enumerate(roles)}
@@ -5008,14 +5010,22 @@ def delivery_form(con, delivery_id: int) -> str:
           <form id="dvBaseForm" method="post" action="/delivery/{delivery_id}/save" style="display:flex;flex-direction:column;flex:1">
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
               <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:200px"></label>
-              <label style="font-size:12px">週数<br><input type="number" id="hdrWeeks" min="1" max="104" value="{_weeks_val}" style="width:60px" oninput="hdrCalcEnd();dvFeeRecalc();dvCostRecalc()"></label>
-              <label style="font-size:12px">開始日<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="hdrCalcEnd();dvFeeRecalc();dvCostRecalc()"></label>
+              <label style="font-size:12px">週数<span class="muted" style="font-size:10px">（対象外期間を除いた有効週数・自動計算）</span><br><input type="text" id="hdrWeeks" value="{_weeks_val}" readonly style="width:60px;background:#f8fafc;color:#64748b"></label>
+              <label style="font-size:12px">開始日<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">終了日<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
             </div>
             <div style="margin-top:8px">
-              <div style="font-size:12px;margin-bottom:4px">対象外期間を追加（盆休み等）<span class="muted" style="font-size:10px">　カレンダーをドラッグしてなぞる（クリックのみなら1日だけ）</span></div>
-              <div id="dvExclCal" style="max-width:280px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div>
+              <div style="font-size:12px;margin-bottom:4px">開始日・終了日・対象外期間をカレンダーで選択
+                <span class="muted" style="font-size:10px">　開始日・終了日はクリック、対象外期間はドラッグしてなぞる（クリックのみなら1日だけ）</span></div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap">
+                <div><div class="muted" style="font-size:11px;margin-bottom:2px">開始日</div>
+                  <div id="dvStartCal" style="width:220px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div></div>
+                <div><div class="muted" style="font-size:11px;margin-bottom:2px">終了日</div>
+                  <div id="dvEndCal" style="width:220px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div></div>
+                <div><div class="muted" style="font-size:11px;margin-bottom:2px">対象外期間（盆休み等）</div>
+                  <div id="dvExclCal" style="width:220px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div></div>
+              </div>
             </div>
             <div id="dvExclChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>
             <input type="hidden" id="dvExcludedPeriods" name="excluded_periods"
@@ -5109,7 +5119,7 @@ def delivery_form(con, delivery_id: int) -> str:
             <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
             <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。削除すると、対応するアサイン行も削除されます。
               各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。⠿をドラッグすると並び替えられます。</p>
-            <form method="post" action="/delivery/{delivery_id}/role/add"
+            <form method="post" action="/delivery/{delivery_id}/role/add" onsubmit="return _dvRoleAddCheck(this)"
                   style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-bottom:8px">
               <label style="font-size:11px">役割<br><select name="role" required style="width:150px;font-size:12px">{_delivery_role_opts(con, None)}</select></label>
               <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="100" style="width:76px"></label>
@@ -5150,12 +5160,6 @@ def delivery_form(con, delivery_id: int) -> str:
       var d=new Date(+p[0], +p[1]-1, +p[2]); if(isNaN(d)) return s;
       var wd=(d.getDay()+6)%7; d.setDate(d.getDate()-wd);
       return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
-    function hdrCalcEnd(){{ var w=parseInt(document.getElementById('hdrWeeks').value,10),
-      s=document.getElementById('hdrStart').value, e=document.getElementById('hdrEnd');
-      if(!(w>0)||!s) return; var p=s.split('-');  /* 開始日はそのまま(月曜スナップしない)。
-        同じ曜日を保つことで、週数どおりの暦週数になる（#180）。 */
-      var d=new Date(+p[0], +p[1]-1, +p[2]); d.setDate(d.getDate()+(w-1)*7);
-      e.value=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
     // 日本の祝日（アルゴリズム算出・手動の祝日カレンダー更新は不要）。Hisho側dashboard.htmlの
     // 同名JSロジック・sfa_db.py _jp_holidays_for_year()のポート。3者は常に同じ結果になるよう保つこと。
     function _jpEquinoxDay(year,isSpring){{ var base=isSpring?20.8431:23.2488, leap=Math.floor((year-1980)/4);
@@ -5228,62 +5232,111 @@ def delivery_form(con, delivery_id: int) -> str:
       _dvExclPeriods.splice(idx,1);
       dvExclSync();
     }}
-    // 対象外期間の入力カレンダー（ドラッグでなぞって範囲選択・クリックのみなら1日選択）。
-    // 開始日/終了日を1つずつ選ばせる従来のUIから、直感的な範囲選択に変更（ユーザー要望）。
-    var _dvExclCalYMD=(function(){{
-      var s=(document.getElementById('hdrStart')||{{}}).value;
+    // 開始日・終了日・対象外期間の3カレンダー（ユーザー要望2026-09-22: 3つ並べて選択できるように）。
+    // 対象外期間だけドラッグで範囲選択（クリックのみなら1日選択）、開始日・終了日はクリックで1日選択。
+    function _dvCalYMDFromField(id){{
+      var s=(document.getElementById(id)||{{}}).value;
       var d=s?new Date(s+'T00:00:00'):new Date();
       return {{y:d.getFullYear(), m:d.getMonth()}};
-    }})();
-    var _dvExclDragging=false, _dvExclDragStart=null, _dvExclDragCur=null;
+    }}
+    var _dvStartCalYMD=_dvCalYMDFromField('hdrStart');
+    var _dvEndCalYMD=_dvCalYMDFromField('hdrEnd');
+    var _dvExclCalYMD=_dvCalYMDFromField('hdrStart');
     function _dvExclInAnyPeriod(ds){{ return _dvExclPeriods.some(function(p){{ return p.from<=ds && ds<=p.to; }}); }}
-    function _dvExclCalPrev(){{ _dvExclCalYMD.m--; if(_dvExclCalYMD.m<0){{_dvExclCalYMD.m=11;_dvExclCalYMD.y--;}} dvExclCalRender(); }}
-    function _dvExclCalNext(){{ _dvExclCalYMD.m++; if(_dvExclCalYMD.m>11){{_dvExclCalYMD.m=0;_dvExclCalYMD.y++;}} dvExclCalRender(); }}
-    function dvExclCalRender(){{
-      var box=document.getElementById('dvExclCal'); if(!box) return;
-      var y=_dvExclCalYMD.y, m=_dvExclCalYMD.m;
+    // 3カレンダー共通のグリッド描画（月ナビ＋曜日ヘッダ＋日セル）。日セルの中身はdayHtmlFnに委譲。
+    function _dvCalBuildHtml(ymd, prevFn, nextFn, dayHtmlFn){{
+      var y=ymd.y, m=ymd.m;
       var startWd=(new Date(y,m,1).getDay()+6)%7, daysInMonth=new Date(y,m+1,0).getDate();
       var html='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
-        +'<button type="button" onclick="_dvExclCalPrev()" style="border:0;background:none;cursor:pointer;font-size:13px;color:#64748b">◀</button>'
+        +'<button type="button" onclick="'+prevFn+'" style="border:0;background:none;cursor:pointer;font-size:13px;color:#64748b">◀</button>'
         +'<b style="font-size:12px">'+y+'年'+(m+1)+'月</b>'
-        +'<button type="button" onclick="_dvExclCalNext()" style="border:0;background:none;cursor:pointer;font-size:13px;color:#64748b">▶</button></div>';
+        +'<button type="button" onclick="'+nextFn+'" style="border:0;background:none;cursor:pointer;font-size:13px;color:#64748b">▶</button></div>';
       html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font-size:10px;color:#94a3b8;text-align:center;margin-bottom:2px">'
         +['月','火','水','木','金','土','日'].map(function(w){{return '<div>'+w+'</div>';}}).join('')+'</div>';
-      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px" onmouseleave="_dvExclCalLeave()">';
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px">';
       for(var i=0;i<startWd;i++) html+='<div></div>';
+      for(var d=1; d<=daysInMonth; d++){{
+        var ds=y+'-'+('0'+(m+1)).slice(-2)+'-'+('0'+d).slice(-2);
+        var dow=new Date(y,m,d).getDay(), isWeekend=(dow===0||dow===6);
+        html+=dayHtmlFn(ds, d, isWeekend);
+      }}
+      html+='</div>';
+      return html;
+    }}
+    function _dvCalDayCell(ds, d, bg, color, attrs){{
+      return '<div style="text-align:center;padding:4px 0;border-radius:4px;cursor:pointer;'
+        +'user-select:none;background:'+bg+';color:'+color+';font-size:11px" '+attrs+'>'+d+'</div>';
+    }}
+    // 開始日カレンダー
+    function _dvStartCalNav(delta){{ _dvStartCalYMD.m+=delta; if(_dvStartCalYMD.m<0){{_dvStartCalYMD.m=11;_dvStartCalYMD.y--;}}
+      else if(_dvStartCalYMD.m>11){{_dvStartCalYMD.m=0;_dvStartCalYMD.y++;}} dvStartCalRender(); }}
+    function dvStartCalRender(){{
+      var box=document.getElementById('dvStartCal'); if(!box) return;
+      var cur=(document.getElementById('hdrStart')||{{}}).value||'';
+      box.innerHTML=_dvCalBuildHtml(_dvStartCalYMD, '_dvStartCalNav(-1)', '_dvStartCalNav(1)', function(ds,d,isWeekend){{
+        var sel=ds===cur;
+        var bg=sel?'#dbeafe':(isWeekend?'#f8fafc':'#fff'), color=sel?'#1e40af':(isWeekend?'#94a3b8':'#1e293b');
+        return _dvCalDayCell(ds,d,bg,color,'onclick="_dvPickStart(\\''+ds+'\\')"');
+      }});
+    }}
+    function _dvPickStart(ds){{
+      var el=document.getElementById('hdrStart'); if(!el) return;
+      el.value=ds; dvFeeRecalc(); dvCostRecalc();
+      el.dispatchEvent(new Event('change',{{bubbles:true}}));
+    }}
+    // 終了日カレンダー
+    function _dvEndCalNav(delta){{ _dvEndCalYMD.m+=delta; if(_dvEndCalYMD.m<0){{_dvEndCalYMD.m=11;_dvEndCalYMD.y--;}}
+      else if(_dvEndCalYMD.m>11){{_dvEndCalYMD.m=0;_dvEndCalYMD.y++;}} dvEndCalRender(); }}
+    function dvEndCalRender(){{
+      var box=document.getElementById('dvEndCal'); if(!box) return;
+      var cur=(document.getElementById('hdrEnd')||{{}}).value||'';
+      box.innerHTML=_dvCalBuildHtml(_dvEndCalYMD, '_dvEndCalNav(-1)', '_dvEndCalNav(1)', function(ds,d,isWeekend){{
+        var sel=ds===cur;
+        var bg=sel?'#dbeafe':(isWeekend?'#f8fafc':'#fff'), color=sel?'#1e40af':(isWeekend?'#94a3b8':'#1e293b');
+        return _dvCalDayCell(ds,d,bg,color,'onclick="_dvPickEnd(\\''+ds+'\\')"');
+      }});
+    }}
+    function _dvPickEnd(ds){{
+      var el=document.getElementById('hdrEnd'); if(!el) return;
+      el.value=ds; dvFeeRecalc(); dvCostRecalc();
+      el.dispatchEvent(new Event('change',{{bubbles:true}}));
+    }}
+    // 対象外期間カレンダー（ドラッグで範囲選択・クリックのみなら1日選択）。
+    // ドラッグの確定(コミット)はdocument全体のmouseupで行う（日セルはdvExclCalRender()の
+    // 再描画のたびにDOMごと作り直されるため、mousedown元の要素で直接mouseupを拾えるとは限らない
+    // ＝セルの外や日セルの境目でボタンを離すと「なぞっても反映されない」不具合があった。2026-09-22）。
+    var _dvExclDragging=false, _dvExclDragStart=null, _dvExclDragCur=null;
+    function _dvExclCalNav(delta){{ _dvExclCalYMD.m+=delta; if(_dvExclCalYMD.m<0){{_dvExclCalYMD.m=11;_dvExclCalYMD.y--;}}
+      else if(_dvExclCalYMD.m>11){{_dvExclCalYMD.m=0;_dvExclCalYMD.y++;}} dvExclCalRender(); }}
+    function dvExclCalRender(){{
+      var box=document.getElementById('dvExclCal'); if(!box) return;
       var dragLo=null, dragHi=null;
       if(_dvExclDragging && _dvExclDragStart && _dvExclDragCur){{
         dragLo=_dvExclDragStart<_dvExclDragCur?_dvExclDragStart:_dvExclDragCur;
         dragHi=_dvExclDragStart<_dvExclDragCur?_dvExclDragCur:_dvExclDragStart;
       }}
-      for(var d=1; d<=daysInMonth; d++){{
-        var ds=y+'-'+('0'+(m+1)).slice(-2)+'-'+('0'+d).slice(-2);
-        var dow=new Date(y,m,d).getDay(), isWeekend=(dow===0||dow===6);
+      box.innerHTML=_dvCalBuildHtml(_dvExclCalYMD, '_dvExclCalNav(-1)', '_dvExclCalNav(1)', function(ds,d,isWeekend){{
         var inPeriod=_dvExclInAnyPeriod(ds), inDrag=dragLo && ds>=dragLo && ds<=dragHi;
         var bg=inPeriod?'#fecaca':(inDrag?'#bfdbfe':(isWeekend?'#f8fafc':'#fff'));
         var color=inPeriod?'#991b1b':(isWeekend?'#94a3b8':'#1e293b');
-        html+='<div data-date="'+ds+'" style="text-align:center;padding:4px 0;border-radius:4px;cursor:pointer;'
-          +'user-select:none;background:'+bg+';color:'+color+';font-size:11px" '
-          +'onmousedown="_dvExclDayDown(\\''+ds+'\\')" onmouseenter="_dvExclDayEnter(\\''+ds+'\\')" '
-          +'onmouseup="_dvExclDayUp(\\''+ds+'\\')">'+d+'</div>';
-      }}
-      html+='</div>';
-      box.innerHTML=html;
+        return _dvCalDayCell(ds,d,bg,color,
+          'onmousedown="_dvExclDayDown(\\''+ds+'\\')" onmouseenter="_dvExclDayEnter(\\''+ds+'\\')"');
+      }});
     }}
-    function _dvExclDayDown(ds){{ _dvExclDragging=true; _dvExclDragStart=ds; _dvExclDragCur=ds; dvExclCalRender(); }}
-    function _dvExclDayEnter(ds){{ if(!_dvExclDragging) return; _dvExclDragCur=ds; dvExclCalRender(); }}
-    function _dvExclDayUp(ds){{
+    // dvExclCalRender()はグリッドのinnerHTMLを丸ごと作り直す＝mousedown/mouseenterの発生元だった
+    // 日セル自身を同期的に破棄してしまう。ブラウザは「押されたボタンの発生元要素」がイベント処理中に
+    // DOMから消えると、以降のマウス操作の追跡（ドラッグ中の状態）を見失いmouseupが発火しなくなる
+    // ことがある（なぞっても離した時に反映されない不具合の実体・2026-09-22）。再描画は
+    // setTimeout(...,0)で現在のイベント処理が完了した次のティックへ遅らせることで回避する。
+    function _dvExclDayDown(ds){{ _dvExclDragging=true; _dvExclDragStart=ds; _dvExclDragCur=ds; setTimeout(dvExclCalRender,0); }}
+    function _dvExclDayEnter(ds){{ if(!_dvExclDragging) return; _dvExclDragCur=ds; setTimeout(dvExclCalRender,0); }}
+    document.addEventListener('mouseup', function(){{
       if(!_dvExclDragging) return;
-      _dvExclDragging=false;
       var lo=_dvExclDragStart<_dvExclDragCur?_dvExclDragStart:_dvExclDragCur;
       var hi=_dvExclDragStart<_dvExclDragCur?_dvExclDragCur:_dvExclDragStart;
-      _dvExclDragStart=null; _dvExclDragCur=null;
-      _dvExclPeriods.push({{from:lo, to:hi}});
-      dvExclSync();
-    }}
-    function _dvExclCalLeave(){{ /* グリッド外に出てもドラッグ状態は維持（document mouseupで確定/解除） */ }}
-    document.addEventListener('mouseup', function(){{
-      if(_dvExclDragging){{ _dvExclDragging=false; _dvExclDragStart=null; _dvExclDragCur=null; dvExclCalRender(); }}
+      _dvExclDragging=false; _dvExclDragStart=null; _dvExclDragCur=null;
+      if(lo && hi){{ _dvExclPeriods.push({{from:lo, to:hi}}); dvExclSync(); }}
+      else {{ dvExclCalRender(); }}
     }});
     function _dvFeeMonths(){{ var s=document.getElementById('hdrStart').value,
       e=document.getElementById('hdrEnd').value; if(!s||!e) return 0;
@@ -5302,9 +5355,15 @@ def delivery_form(con, delivery_id: int) -> str:
     function dvFeeRecalc(){{
       var modeEl=document.getElementById('dvFeeMode'); if(!modeEl) return;
       var mode=modeEl.value, m=_dvFeeMonths();
+      // 週数表示（対象外期間を除いた有効週数）とカレンダー3枚（開始日/終了日/対象外期間の
+      // ハイライト）は、開始日・終了日・対象外期間のいずれかが変わるたびここで再計算・再描画する
+      // （dvFeeRecalcはそれら全ての変更経路から既に呼ばれているため、フックをここに一本化）。
+      var weeksEl=document.getElementById('hdrWeeks');
+      if(weeksEl) weeksEl.value = m ? (Math.round(m*4*10)/10) : '';
+      if(typeof dvStartCalRender==='function'){{ dvStartCalRender(); dvEndCalRender(); dvExclCalRender(); }}
       var mo=document.getElementById('dvFeeMonthly'), to=document.getElementById('dvFeeTotal');
       var note=document.getElementById('dvFeeMonths');
-      if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（合計週数÷4）') : '開始/終了週を入れると換算';
+      if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（対象外期間を除いた有効週数÷4）') : '開始日・終了日を入れると換算';
       var ro='#f1f5f9';
       if(mode==='total'){{
         to.style.background='';
@@ -5434,6 +5493,8 @@ def delivery_form(con, delivery_id: int) -> str:
       }});
     }}
     dvExclRenderChips();
+    dvStartCalRender();
+    dvEndCalRender();
     dvExclCalRender();
     dvFeeRecalc();
     dvCostRecalc();
@@ -5461,8 +5522,31 @@ def delivery_form(con, delivery_id: int) -> str:
       return {{a:sa/ks.length, b:sb/ks.length, n:ks.length}};
     }}
     function _r1(x){{ return Math.round(x*10)/10; }}
+    // 「＋役割追加」フォーム送信前チェック（サーバ側検証と二重だが、送信前に即気づけるように）。
+    function _dvRoleAddCheck(form){{
+      var sel=form.querySelector('[name=role]'); if(!sel) return true;
+      var v=sel.value.trim(); if(!v) return true;
+      var dup=Array.from(document.querySelectorAll('.roleRow .rRole')).some(function(s){{ return s.value.trim()===v; }});
+      if(dup){{
+        alert('⚠️ 役割「'+v+'」は既に体制に存在します。同じ役割で複数人をアサインしたい場合は、'
+          +'既存の役割行の「複製」ボタンでアサイン行だけ増やしてください。');
+        return false;
+      }}
+      return true;
+    }}
     function checkRoleTotals(){{
       document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing]').forEach(function(i){{i.style.background='';i.style.outline='';}});
+      // 役割名の重複チェック（体制内で役割名は一意でなければならない。#189フォローアップ・
+      // 選択制になり同じ役割を複数行で選びやすくなったため、保存前に気づけるよう赤枠で警告する）。
+      var _roleCounts={{}};
+      document.querySelectorAll('.roleRow .rRole').forEach(function(sel){{
+        var v=sel.value.trim(); if(!v) return; _roleCounts[v]=(_roleCounts[v]||0)+1;
+      }});
+      document.querySelectorAll('.roleRow .rRole').forEach(function(sel){{
+        var dup=sel.value.trim() && _roleCounts[sel.value.trim()]>1;
+        sel.style.outline=dup?'2px solid #dc2626':'';
+        sel.title=dup?'この役割は他の行と重複しています。同じ役割で複数人をアサインしたい場合は、行を1つにまとめてアサイン行だけ複製してください。':'';
+      }});
       document.querySelectorAll('.roleRow').forEach(function(row){{
         var rInp=row.querySelector('.rRole'); var role=rInp?rInp.value.trim():'';
         var tbi=row.querySelector('.rTgtB'), tai=row.querySelector('.rTgtA');
@@ -5486,7 +5570,14 @@ def delivery_form(con, delivery_id: int) -> str:
       var st=form.querySelector('.asgSaved'); if(st){{st.textContent='保存中…';st.style.color='#94a3b8';}}
       var body=new URLSearchParams(new FormData(form)); body.set('ajax','1');
       fetch(form.action,{{method:'POST',headers:{{'Content-Type':'application/x-www-form-urlencoded'}},body:body.toString()}})
-        .then(function(r){{ if(st){{st.textContent=r.ok?'保存済み':'保存失敗';st.style.color=r.ok?'#059669':'#b91c1c';}} }})
+        .then(function(r){{
+          if(st){{st.textContent=r.ok?'保存済み':'保存失敗';st.style.color=r.ok?'#059669':'#b91c1c';}}
+          // 役割名重複など、サーバ側の検証エラー（409）はテキスト本文にエラー内容が入るので
+          // alertで明示する（保存失敗の表示だけだと気づきにくいため。#189フォローアップ）。
+          if(!r.ok && form.classList.contains('roleRow') && r.status===409){{
+            r.text().then(function(t){{ if(t) alert('⚠️ '+t); }});
+          }}
+        }})
         .catch(function(){{ if(st){{st.textContent='保存失敗';st.style.color='#b91c1c';}} }});
     }}
     // 体制の役割をドラッグで並び替え（#168）。#masters_pageの.master-item並び替えと同じ方式。
@@ -5671,21 +5762,12 @@ def delivery_form(con, delivery_id: int) -> str:
       document.addEventListener('change',function(e){{
         var el=e.target;
         if(el.form && el.form.id==='dvBaseForm'){{
-          if(el.id==='hdrWeeks'){{
-            // 週数はDB列を持たない表示専用フィールド（開始週から逆算した終了週を
-            // hdrCalcEnd()が計算するだけ）。開始週が未入力だとhdrCalcEnd()は何もせず
-            // end_weekが空のまま自動保存→即時reloadされ、せっかく入力した週数が
-            // どこにも保存されずに画面から消えてしまっていた（ユーザー報告2026-09-03）。
-            // 開始週が入力済みで実際にend_weekが計算できた時だけ保存・再読込する。
-            if(!(document.getElementById('hdrStart')||{{}}).value) return;
-            dvBaseAutoSave(true);
-            return;
-          }}
-          // 開始/終了週は週数の連動再計算、事業種別L1は事業種別L2の選択肢のサーバ側
-          // 再計算、対象外期間は月額↔総額の保存済み値の再計算のため、保存後に再読込して
-          // 画面を最新化する。それ以外は再読込不要。
+          // 開始/終了週は週数の連動再計算、事業種別L1は事業種別L2の選択肢のサーバ側再計算のため、
+          // 保存後に再読込して画面を最新化する。対象外期間はdvFeeRecalc()/renderPreview()が
+          // 既にクライアント側で即時反映しているため再読込は不要（連続してドラッグ追加する際に
+          // 毎回reloadが割り込んで操作が中断してしまう不具合の修正・2026-09-22）。それ以外は再読込不要。
           var reload=(el.name==='start_week'||el.name==='end_week'
-            ||el.name==='business_type_l1_override'||el.name==='excluded_periods');
+            ||el.name==='business_type_l1_override');
           dvBaseAutoSave(reload);
         }}
       }});
@@ -22519,6 +22601,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 体制に役割を追加＋その役割のアサイン行を自動生成（目標稼働率を初期値に）
                     _dvid = int(path.split("/")[2])
                     _role = (f.get("role", "") or "").strip()
+                    if _role and sfa_db.delivery_role_name_taken(con, _dvid, _role):
+                        # 役割名は体制内で一意でなければならない（複数人を同じ役割に割り当てたい
+                        # 場合は、体制の行は1つのままアサイン行だけ複製する。#189フォローアップ）。
+                        self._send(render(delivery_form(con, _dvid),
+                                          flash=f"⚠️ 役割「{_role}」は既に体制に存在します。同じ役割で"
+                                                "複数人をアサインしたい場合は、既存の役割行を「複製」してください。"))
+                        return
                     if _role:
                         _rb = _to_float(f.get("fte_billing"), None)
                         _ra = _to_float(f.get("fte_pct"), None)
@@ -22536,6 +22625,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _dvid = int(path.split("/")[2])
                     _rid = path.split("/")[4]
                     _role = (f.get("role", "") or "").strip()
+                    if _rid.isdigit() and _role and sfa_db.delivery_role_name_taken(con, _dvid, _role, int(_rid)):
+                        _msg = f"役割「{_role}」は既に体制に存在します（役割名は体制内で一意である必要があります）"
+                        if f.get("ajax"):
+                            self._send(_msg.encode("utf-8"), status=409, ctype="text/plain; charset=utf-8")
+                        else:
+                            self._send(render(delivery_form(con, _dvid), flash=f"⚠️ {_msg}"))
+                        return
                     if _rid.isdigit() and _role:
                         sfa_db.update_delivery_role(
                             con, int(_rid), role=_role,

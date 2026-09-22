@@ -6119,6 +6119,23 @@ def list_delivery_roles(con, delivery_id: int) -> list[dict]:
         "SELECT * FROM delivery_roles WHERE delivery_id=? ORDER BY sort_order, id", (int(delivery_id),))]
 
 
+def delivery_role_name_taken(con, delivery_id: int, role: str, exclude_role_id: int | None = None) -> bool:
+    """体制(delivery_roles)内で同じ役割名が既に使われているか（2026-09-22〜選択制導入に伴う整合性チェック）。
+    体制の各行はアサイン行と役割名の文字列一致で目標値を対応付けているため（role_id等のFKは無い）、
+    同一Delivery内で役割名が重複すると、どちらの目標がどのアサインに対応するか判別できなくなる。
+    そのため役割名は同一Delivery内で一意である必要がある（複数人が同じ役割を担う場合は、
+    体制の役割は1行のみにし、アサイン行を複数作ってその1つの役割に紐づける）。"""
+    role = (role or "").strip()
+    if not role:
+        return False
+    for r in list_delivery_roles(con, delivery_id):
+        if exclude_role_id is not None and r["id"] == exclude_role_id:
+            continue
+        if (r.get("role") or "").strip() == role:
+            return True
+    return False
+
+
 def add_delivery_role(con, *, delivery_id: int, role: str, fte_billing: float | None = None,
                       fte_pct: float | None = None) -> int:
     next_order = (con.execute(

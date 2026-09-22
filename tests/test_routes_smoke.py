@@ -1142,6 +1142,59 @@ def test_delivery_detail_route_renders_wide_main(server, db_path):
     assert '<main class="main-wide">' in body
 
 
+def test_delivery_role_add_route_rejects_duplicate_role_name(server, db_path):
+    """2026-09-22(#189フォローアップ): 役割が選択制になり、同じ役割名を複数の体制行で
+    選びやすくなったため、体制内で役割名が重複する追加はエラーとして拒否し、
+    アサイン行が二重生成されないこと（体制はアサイン行と役割名の文字列一致で
+    目標値を対応付けているため、重複すると整合性チェックが壊れる）。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    con.close()
+
+    code1, _ = _post(server + f"/delivery/{dvid}/role/add",
+                      {"role": "ジュニアコンサルタント", "fte_billing": "100", "fte_pct": "100"},
+                      headers=_auth_header())
+    assert code1 in (200, 303)
+
+    code2, body2 = _post(server + f"/delivery/{dvid}/role/add",
+                          {"role": "ジュニアコンサルタント", "fte_billing": "100", "fte_pct": "100"},
+                          headers=_auth_header())
+    assert code2 == 200  # 重複時はredirectせず、flash付きの同画面を返す
+    assert "既に体制に存在します" in body2.decode("utf-8")
+
+    con2 = sfa_db.connect(db_path)
+    roles = sfa_db.list_delivery_roles(con2, dvid)
+    assignments = sfa_db.list_delivery_assignments(con2, dvid)
+    con2.close()
+    assert len([r for r in roles if r["role"] == "ジュニアコンサルタント"]) == 1
+    assert len([a for a in assignments if a["role"] == "ジュニアコンサルタント"]) == 1
+
+
+def test_delivery_role_update_route_rejects_duplicate_role_name_via_ajax(server, db_path):
+    """役割の選択(<select>)を既存の別行と同じ値に変更した場合、ajax保存は409で拒否され、
+    DB上のrole名も変更されないこと。"""
+    con = sfa_db.connect(db_path)
+    acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    rid_a = sfa_db.add_delivery_role(con, delivery_id=dvid, role="リードコンサルタント")
+    rid_b = sfa_db.add_delivery_role(con, delivery_id=dvid, role="エンジニア")
+    con.close()
+
+    code, body = _post(server + f"/delivery/{dvid}/role/{rid_b}/update",
+                        {"role": "リードコンサルタント", "fte_billing": "100", "fte_pct": "100", "ajax": "1"},
+                        headers=_auth_header())
+    assert code == 409
+    assert "既に体制に存在します" in body.decode("utf-8")
+
+    con2 = sfa_db.connect(db_path)
+    row_b = next(r for r in sfa_db.list_delivery_roles(con2, dvid) if r["id"] == rid_b)
+    con2.close()
+    assert row_b["role"] == "エンジニア"  # 変更されていないこと
+
+
 @pytest.mark.parametrize("path,ctype", [
     ("/static/icons/salesforce.svg", "image/svg+xml"),
     ("/static/icons/salesforce.ico", "image/x-icon"),
