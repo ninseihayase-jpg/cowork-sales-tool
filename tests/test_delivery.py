@@ -6,9 +6,11 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import tempfile
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -1603,3 +1605,123 @@ def test_delivery_form_renders_revenue_and_productivity_rows(con, acc_id):
     assert "週別売上" in html
     assert "累計生産性" in html
     assert "100万" in html  # 週別売上のセル
+
+
+# ---- 対象外期間（盆休み等・#189） ----
+
+def _excl_json(*pairs):
+    return json.dumps([{"from": f, "to": t} for f, t in pairs])
+
+
+def test_delivery_period_weight_full_interior_week_ignores_incidental_holiday():
+    """契約期間に完全に含まれ、対象外期間とも重ならない週は、たまたま祝日（例: 2026-09-21敬老の日）
+    があっても常に1.0のまま（通常週の重みが祝日の有無でぶれないようにする設計）。"""
+    w = sfa_db._delivery_period_weight("2026-09-21", "2026-06-29", "2026-12-31", [])
+    assert w == 1.0
+
+
+def test_delivery_period_weight_boundary_week_excludes_holidays_from_business_days():
+    """境界週（開始日が週の途中）は、対象外期間が無くても営業日ベースで按分される。
+    2026-09-22(火)開始の週は、週内に祝日(9/21成人の日は範囲外、9/23秋分の日)があるため
+    実働可能な営業日は火・木・金の3日=0.6週分になる。"""
+    w = sfa_db._delivery_period_weight("2026-09-21", "2026-09-22", "2026-12-31", [])
+    assert w == 0.6
+
+
+def test_delivery_effective_weeks_matches_60_business_days_example():
+    """ユーザー報告(2026-09-22)の実例: 6/29(月)開始・9/30(水)終了の暦14週のうち、
+    実働は6/29-30(2日)・盆休み明けまで・9/28-30(3日)で、契約上の実質合意は60営業日=12週。
+    対象外期間として7/1〜7/3（境界週の残り3日）と8/10〜8/16（盆休み1週間）を登録すると、
+    有効週数の合計がちょうど12.0になる（0.4+11×1.0+0+0.6=12.0）。"""
+    excl = [(date(2026, 7, 1), date(2026, 7, 3)), (date(2026, 8, 10), date(2026, 8, 16))]
+    eff = sfa_db._delivery_effective_weeks("2026-06-29", "2026-09-30", excl)
+    assert eff == 12.0
+
+
+def test_delivery_month_count_uses_effective_weeks_when_excluded_periods_given():
+    excl = [(date(2026, 7, 1), date(2026, 7, 3)), (date(2026, 8, 10), date(2026, 8, 16))]
+    months = sfa_db.delivery_month_count("2026-06-29", "2026-09-30", excl)
+    assert months == 3.0  # 12.0有効週 / 4 = 3.0ヶ月
+
+
+def test_delivery_month_count_unaffected_when_no_excluded_periods():
+    """対象外期間が無ければ、境界週があっても従来通りの単純な暦週数のまま（後方互換）。"""
+    months = sfa_db.delivery_month_count("2026-06-29", "2026-09-30", None)
+    assert months == 3.5  # 14暦週 / 4 = 3.5ヶ月（従来ロジックのまま）
+
+
+def test_delivery_display_fees_resolves_600_not_700_with_excluded_periods(con, acc_id):
+    """ユーザー報告(2026-09-22): 14暦週(6/29~9/30)のうち盆休み等で実質2週ぶんが対象外なのに、
+    従来は14週まるごとで月数換算されるため月額200万が総額700万にされてしまっていた。
+    対象外期間を登録すると、有効週数=12.0/4=3.0ヶ月で総額600万に正しく換算される。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    excl = _excl_json(("2026-07-01", "2026-07-03"), ("2026-08-10", "2026-08-16"))
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=200,
+                            start_week="2026-06-29", end_week="2026-09-30", excluded_periods=excl)
+    dv = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_display_fees(dv) == (200.0, 600.0)
+
+
+def test_delivery_weekly_productivity_prorates_revenue_and_workload_by_business_day_weight(con, acc_id):
+    """継続的に毎週同じ稼働(40%)が続くケースでも、稼働累計が暦14週ぶん(560)には積み上がらず、
+    有効週数12週ぶん(480)に正しく収まる（ユーザー報告2026-09-22の核心要件）。
+    週別売上の合計は必ず案件総額と一致する。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    excl = _excl_json(("2026-07-01", "2026-07-03"), ("2026-08-10", "2026-08-16"))
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=200,
+                            start_week="2026-06-29", end_week="2026-09-30", excluded_periods=excl)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-29",
+                                    to_week="2026-09-30", fte_pct=40)
+    grid = sfa_db.delivery_grid(con, dvid)
+    prod = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
+    assert prod["fee_total"] == 600.0
+    assert len(grid["weeks"]) == 14
+    # 境界週(6/29)は0.4、盆休み週(8/10)は0.0、境界週(9/28)は0.6、他は1.0で按分。
+    assert prod["weekly_revenue"]["2026-06-29"] == 20.0
+    assert prod["weekly_revenue"]["2026-08-10"] == 0.0
+    assert prod["weekly_revenue"]["2026-09-28"] == 30.0
+    assert prod["weekly_revenue"]["2026-07-06"] == 50.0
+    assert sum(prod["weekly_revenue"].values()) == 600.0  # 分割方法によらず合計は必ず総額に一致
+    final_workload = list(prod["cum_workload"].values())[-1]
+    assert final_workload == 480.0  # 40%×12有効週（14週×40%=560にはならない）
+
+
+def test_delivery_weekly_productivity_flat_split_unchanged_without_excluded_periods(con, acc_id):
+    """対象外期間が無いDeliveryは、従来通りのフラットな均等配分のまま変わらない（後方互換）。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total",
+                            start_week="2026-06-01", end_week="2026-06-15")
+    grid = sfa_db.delivery_grid(con, dvid)
+    # アサイン無しでも契約期間の週は生成されないため、直接weeksを渡して按分だけ検証する。
+    prod = sfa_db.delivery_weekly_productivity(con, dvid, ["2026-06-01", "2026-06-08", "2026-06-15"])
+    assert prod["weekly_revenue"] == {"2026-06-01": 100.0, "2026-06-08": 100.0, "2026-06-15": 100.0}
+
+
+def test_delivery_form_marks_excluded_period_header(con, acc_id):
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    excl = _excl_json(("2026-07-01", "2026-07-03"))
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=200,
+                            start_week="2026-06-29", end_week="2026-07-13", excluded_periods=excl)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-29",
+                                    to_week="2026-07-13", fte_pct=40)
+    html = webapp.delivery_form(con, dvid)
+    assert "対象外期間" in html
+    assert "2026-07-01" in html  # hidden inputの初期値（HTMLエスケープされたJSON配列内）
+    assert "(0.4)" in html  # 6/29週の有効週数マーク（4/5=0.4）
+
+
+def test_compute_delivery_load_deliveries_meta_includes_excluded_periods(con, acc_id):
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    excl = _excl_json(("2026-07-01", "2026-07-03"))
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=200,
+                            start_week="2026-06-29", end_week="2026-07-13", excluded_periods=excl)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-29",
+                                    to_week="2026-07-13", fte_pct=40)
+    load = sfa_db.compute_delivery_load(con, start_week="2026-06-29", n_weeks=4)
+    meta = load["deliveries_meta"][dvid]
+    assert meta["excluded_periods"] == [{"from": "2026-07-01", "to": "2026-07-03"}]

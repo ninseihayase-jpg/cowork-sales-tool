@@ -1057,6 +1057,9 @@ CREATE TABLE IF NOT EXISTS deliveries (
     fee_mode    TEXT DEFAULT 'monthly',    -- 報酬形態: monthly=月額報酬 / total=総額報酬（どちらを入力するか）
     fee_monthly REAL,                      -- 報酬額/月額（万円）
     fee_total   REAL,                      -- 報酬額/総額（万円）。期間の月数で月額と相互換算
+    excluded_periods TEXT,                 -- 対象外期間（JSON配列・各要素{"from":"YYYY-MM-DD","to":"YYYY-MM-DD"}）。
+                                            -- 盆休み等、開始週〜終了週の中で報酬対象外にしたい日付範囲（週の一部でも可）。
+                                            -- 月額↔総額換算の月数と、週別売上・稼働累計の按分の両方から営業日単位で除外する。
     confidence_override TEXT,              -- 確度の手修正。NULL=自動導出。値ありならDELIVERY_CONFIDENCE_LEVELSのいずれか
     cost_mode   TEXT DEFAULT 'monthly',    -- 外注費の入力形態: monthly=月額 / total=総額（fee_modeと同じ仕組み）
     cost_monthly REAL,                     -- 外注費/月額（万円）
@@ -1721,6 +1724,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE deliveries ADD COLUMN fee_monthly REAL")
         if _dv_cols and "fee_total" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN fee_total REAL")
+        # 対象外期間（2026-09-22・#189）: 盆休み等、開始週〜終了週の中で報酬対象外にしたい日付範囲（JSON配列）。
+        if _dv_cols and "excluded_periods" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN excluded_periods TEXT")
         # Delivery確度の手修正（自動導出=商談ステージ連動に対する人間の上書き。NULL=自動）。
         if _dv_cols and "confidence_override" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN confidence_override TEXT")
@@ -5223,6 +5229,83 @@ def _weeks_from(start_monday: str, n: int) -> list[str]:
     return [(d0 + timedelta(days=7 * i)).isoformat() for i in range(max(0, n))]
 
 
+def _delivery_excluded_periods(dv: dict) -> list[tuple[date, date]]:
+    """dv['excluded_periods']（JSON配列文字列。各要素{"from":"YYYY-MM-DD","to":"YYYY-MM-DD"}）を
+    (from_date, to_date)のリストにパースする。壊れたJSON/未設定は空リスト（対象外期間なし）扱い。
+    #189: 盆休み等、開始週〜終了週の中で報酬対象外にしたい日付範囲（週の一部だけでもよい）。"""
+    raw = dv.get("excluded_periods") if dv else None
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    out = []
+    for it in items:
+        try:
+            f = date.fromisoformat(str(it.get("from"))[:10])
+            t = date.fromisoformat(str(it.get("to"))[:10])
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if t < f:
+            f, t = t, f
+        out.append((f, t))
+    return out
+
+
+def _delivery_period_weight(wk: str, start_week: str | None, end_week: str | None,
+                            excluded_periods: list[tuple[date, date]]) -> float:
+    """週wk（月曜）の「有効週数」（0〜1）。#189。
+
+    契約期間[start_week, end_week]と重ならない週（期間前後の実稼働）は常に1.0＝フル計上する
+    （既存方針＝期間外実稼働はそのまま稼働累計に加算し生産性を薄める、を維持）。
+
+    契約期間と重なる週のうち、①開始/終了日が週の途中でその週が部分的にしか含まれない（境界週）、
+    または②excluded_periodsのいずれかと重なる週だけ、営業日（土日・日本の祝日を除く。祝日は
+    is_business_day()で自動判定＝手動の祝日カレンダー更新は不要）ベースで按分する:
+    有効週数 = 契約期間内かつexcluded_periodsに含まれない営業日数 ÷ 5。
+    それ以外の「契約期間に完全に含まれ、対象外期間とも重ならない週」は、たまたまその週に祝日が
+    あっても常に1.0のまま（祝日の有無で通常週の重みがぶれるのを避けるため。#189フォローアップ）。
+    """
+    week_start = date.fromisoformat(wk)
+    week_end = week_start + timedelta(days=6)
+    if not start_week or not end_week:
+        return 1.0
+    try:
+        sd = date.fromisoformat(str(start_week)[:10])
+        ed = date.fromisoformat(str(end_week)[:10])
+    except (TypeError, ValueError):
+        return 1.0
+    active_start = max(week_start, sd)
+    active_end = min(week_end, ed)
+    if active_start > active_end:
+        return 1.0  # 契約期間と重ならない週＝期間外実稼働はフル計上
+    is_boundary = active_start != week_start or active_end != week_end
+    overlaps_excluded = any(not (t < active_start or f > active_end) for f, t in excluded_periods)
+    if not is_boundary and not overlaps_excluded:
+        return 1.0
+    biz = 0
+    d = active_start
+    while d <= active_end:
+        if is_business_day(d) and not any(f <= d <= t for f, t in excluded_periods):
+            biz += 1
+        d += timedelta(days=1)
+    return biz / 5.0
+
+
+def _delivery_effective_weeks(start_week: str | None, end_week: str | None,
+                              excluded_periods: list[tuple[date, date]]) -> float:
+    """契約期間[start_week, end_week]の「有効週数」合計（各週の_delivery_period_weightの総和）。#189。"""
+    weeks = _assignment_weeks(start_week, end_week)
+    if weeks < 1:
+        return 0.0
+    sm = _monday_of(date.fromisoformat(str(start_week)[:10]))
+    return sum(_delivery_period_weight(w, start_week, end_week, excluded_periods)
+               for w in _weeks_from(sm, weeks))
+
+
 def create_delivery(con, *, deal_id: int, title: str = "", start_week: str | None = None,
                     end_week: str | None = None, status: str = "進行中",
                     overview: str = "", confidence_override: str | None = None) -> int:
@@ -5271,22 +5354,31 @@ def list_deliveries(con, *, deal_id: int | None = None) -> list[dict]:
     return [dict(r) for r in con.execute(sql, args)]
 
 
-def delivery_month_count(start_week: str | None, end_week: str | None) -> float:
+def delivery_month_count(start_week: str | None, end_week: str | None,
+                          excluded_periods: list[tuple[date, date]] | None = None) -> float:
     """月額↔総額換算・月額換算に使う『月数』。全て『合計週数 ÷ 4週(≒1ヶ月)』で統一。
     例: 8週 → 2.0ヶ月 / 11週 → 2.75ヶ月。不正/未設定は1。
     週数は_assignment_weeks()に委譲（開始/終了は日ベースの日付を許容し、月曜スナップしてから
-    暦週を数える＝#180: 金曜開始でもその週を1週として単純にカウント）。"""
-    weeks = _assignment_weeks(start_week, end_week)
-    if weeks < 1:
-        return 1.0
-    return round(weeks / 4.0, 4)
+    暦週を数える＝#180: 金曜開始でもその週を1週として単純にカウント）。
+    excluded_periods（盆休み等の対象外期間。#189。from/toの日付範囲リスト）が渡された場合のみ、
+    _delivery_effective_weeks()による営業日ベースの精緻な有効週数（境界週・対象外期間と重なる
+    週だけ営業日数÷5で按分。祝日はis_business_day()で自動除外＝手動の祝日カレンダー更新は不要）
+    を使う。excluded_periods未指定/空のときは従来通りの単純な暦週数のまま（後方互換）。"""
+    if not excluded_periods:
+        weeks = _assignment_weeks(start_week, end_week)
+        if weeks < 1:
+            return 1.0
+        return round(weeks / 4.0, 4)
+    eff = _delivery_effective_weeks(start_week, end_week, excluded_periods)
+    eff = max(eff, 0.25)  # 0除算防止のフォールバック（実運用では起こらない想定）
+    return round(eff / 4.0, 4)
 
 
 def delivery_display_fees(dv: dict) -> tuple:
     """一覧・出力の表示用 (fee_monthly, fee_total)。fee_modeの入力値を正とし、現在の月数
-    （合計週数÷4）でもう一方を都度再計算する。個別編集画面のライブ換算と一致させ、
-    保存済み派生値（旧ロジックや週変更で古くなった値）とのズレを防ぐ。"""
-    months = delivery_month_count(dv.get("start_week"), dv.get("end_week"))
+    （合計週数÷4。対象外期間があれば営業日ベースで除く）でもう一方を都度再計算する。個別編集
+    画面のライブ換算と一致させ、保存済み派生値（旧ロジックや週変更で古くなった値）とのズレを防ぐ。"""
+    months = delivery_month_count(dv.get("start_week"), dv.get("end_week"), _delivery_excluded_periods(dv))
     if (dv.get("fee_mode") or "monthly") == "total":
         return compute_delivery_fee("total", None, dv.get("fee_total"), months)
     return compute_delivery_fee("monthly", dv.get("fee_monthly"), None, months)
@@ -5295,7 +5387,7 @@ def delivery_display_fees(dv: dict) -> tuple:
 def delivery_display_costs(dv: dict) -> tuple:
     """一覧・出力の表示用 (cost_monthly, cost_total)。外注費。delivery_display_feesと同じロジック
     （cost_modeの入力値を正とし、現在の月数でもう一方を都度再計算する）。"""
-    months = delivery_month_count(dv.get("start_week"), dv.get("end_week"))
+    months = delivery_month_count(dv.get("start_week"), dv.get("end_week"), _delivery_excluded_periods(dv))
     if (dv.get("cost_mode") or "monthly") == "total":
         return compute_delivery_fee("total", None, dv.get("cost_total"), months)
     return compute_delivery_fee("monthly", dv.get("cost_monthly"), None, months)
@@ -5353,7 +5445,7 @@ def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
 
 def update_delivery(con, delivery_id: int, **fields) -> None:
     allowed = {"title", "start_week", "end_week", "status", "overview",
-               "fee_mode", "fee_monthly", "fee_total", "confidence_override",
+               "fee_mode", "fee_monthly", "fee_total", "excluded_periods", "confidence_override",
                "cost_mode", "cost_monthly", "cost_total", "cost_vendor",
                "payment_cycle_months", "business_type_l1_override", "business_type_l2_override",
                "responsible_owner", "handling_owner", "billing_method", "billing_due",
@@ -5947,31 +6039,47 @@ def delivery_grid(con, delivery_id: int) -> dict:
 
 
 def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dict:
-    """週別売上・累計生産性（2026-09-21〜）。
+    """週別売上・累計生産性（2026-09-21〜、対象外期間の営業日按分対応は#189〜）。
 
     週別売上＝fee_total（案件総額報酬）を、契約期間（deliveries.start_week〜end_week。未設定なら
-    weeksの全期間＝アサイン実働の最小〜最大）内の週にのみ均等配分（期間外の週は0円。週の途中開始/
-    終了は考慮せず1週=1単位で割る）。
-    累計生産性(その週まで)＝Σ週別売上 ÷ (Σ週別総稼働率(実想定・全メンバー合算)/100)。
+    weeksの全期間＝アサイン実働の最小〜最大）内の週に、各週の「有効週数」（対象外期間なしなら
+    フラットに1週=1単位、対象外期間ありなら営業日ベースで按分。_delivery_period_weight参照）に
+    比例して配分（合計は必ずfee_totalに一致。期間外の週は0円）。
+    累計生産性(その週まで)＝Σ週別売上 ÷ (Σ週別総稼働率(実想定・全メンバー合算×その週の有効週数)/100)。
     Delivery期間の前後に実稼働がある週（weeksが契約期間より広い＝delivery_gridがアサイン実働の
-    範囲で返すため）でも、稼働だけを分母に加算し売上は0のまま＝生産性を薄める（過大評価を防ぐ）。
+    範囲で返すため）は常に有効週数1.0でフル計上＝稼働だけを分母に加算し売上は0のまま
+    （過大評価を防ぐ、既存方針）。
+    対象外期間（盆休み等・#189）と重なる週・契約期間の境界週（開始/終了日が週の途中）は、
+    営業日数（祝日はis_business_day()で自動除外）÷5を有効週数として売上・稼働の両方を按分する。
+    これにより「対象外期間を挟んで毎週同じ稼働が続く」ケースでも、稼働の累計が暦週数（例:14週）
+    分そのまま積み上がることはなく、実質的な有効週数（例:12週）分に正しく収まる。
     productivityはその週までの稼働累計が0なら算出不可としてNoneを返す。
     """
     dv = get_delivery(con, delivery_id) or {}
+    excluded_periods = _delivery_excluded_periods(dv)
+    start_week, end_week = dv.get("start_week"), dv.get("end_week")
     # fee_mode='monthly'（月額入力）の案件はfee_total列が空のことがあるため、表示用と同じ
-    # delivery_display_fees()で解決した総額を使う（月額入力→総額=月額×月数の換算を含む）。
+    # delivery_display_fees()で解決した総額を使う（月額入力→総額=月額×月数の換算を含む。
+    # 対象外期間を除いた月数で換算されるため、ここでも自動的に対象外期間ぶんが反映される）。
     fee_total = float(delivery_display_fees(dv)[1] or 0)
-    if dv.get("start_week") and dv.get("end_week"):
+    if start_week and end_week:
         try:
-            sd, ed = date.fromisoformat(str(dv["start_week"])[:10]), date.fromisoformat(str(dv["end_week"])[:10])
+            sd, ed = date.fromisoformat(str(start_week)[:10]), date.fromisoformat(str(end_week)[:10])
             n = (ed - sd).days // 7 + 1
-            revenue_weeks = set(_weeks_from(_monday_of(sd), n)) if n > 0 else set()
+            revenue_weeks_list = _weeks_from(_monday_of(sd), n) if n > 0 else []
         except (TypeError, ValueError):
-            revenue_weeks = set(weeks)
+            revenue_weeks_list = list(weeks)
     else:
-        revenue_weeks = set(weeks)
-    n_revenue_weeks = len(revenue_weeks)
-    per_week_revenue = (fee_total / n_revenue_weeks) if n_revenue_weeks > 0 else 0.0
+        revenue_weeks_list = list(weeks)
+
+    all_weeks = set(weeks) | set(revenue_weeks_list)
+    if excluded_periods:
+        weights = {wk: _delivery_period_weight(wk, start_week, end_week, excluded_periods) for wk in all_weeks}
+    else:
+        weights = {wk: 1.0 for wk in all_weeks}  # 対象外期間なしは従来通りフラット（後方互換）
+    total_weight = sum(weights.get(wk, 0.0) for wk in revenue_weeks_list)
+    per_weight_revenue = (fee_total / total_weight) if total_weight > 0 else 0.0
+    revenue_weeks_set = set(revenue_weeks_list)
 
     grid = delivery_grid(con, delivery_id)
     weekly_actual_total = {wk: sum((grid["cells"].get(ow, {}).get(wk) or {}).get("actual", 0.0)
@@ -5980,15 +6088,18 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     weekly_revenue, cum_revenue, cum_workload, productivity = {}, {}, {}, {}
     running_rev, running_work = 0.0, 0.0
     for wk in weeks:
-        rev = per_week_revenue if wk in revenue_weeks else 0.0
+        w = weights.get(wk, 1.0)
+        rev = per_weight_revenue * w if wk in revenue_weeks_set else 0.0
         weekly_revenue[wk] = round(rev, 1)
         running_rev += rev
-        running_work += weekly_actual_total.get(wk, 0.0)
+        running_work += weekly_actual_total.get(wk, 0.0) * w
         cum_revenue[wk] = round(running_rev, 1)
         cum_workload[wk] = round(running_work, 1)
         productivity[wk] = round(running_rev / (running_work / 100), 1) if running_work > 0 else None
     return {"weeks": weeks, "fee_total": fee_total, "weekly_revenue": weekly_revenue,
-            "cum_revenue": cum_revenue, "cum_workload": cum_workload, "productivity": productivity}
+            "cum_revenue": cum_revenue, "cum_workload": cum_workload, "productivity": productivity,
+            "excluded_periods": [{"from": f.isoformat(), "to": t.isoformat()} for f, t in excluded_periods],
+            "week_weights": {wk: round(weights.get(wk, 1.0), 4) for wk in weeks}}
 
 
 def list_delivery_roles(con, delivery_id: int) -> list[dict]:
@@ -6302,6 +6413,7 @@ def compute_delivery_load(con, *, start_week: str | None = None,
         "dv.confidence_override AS confidence_override, "
         "dv.start_week AS delivery_start, dv.end_week AS delivery_end, "
         "dv.fee_mode AS fee_mode, dv.fee_monthly AS fee_monthly, dv.fee_total AS fee_total_raw, "
+        "dv.excluded_periods AS excluded_periods, "
         "acc.name AS account_name "
         "FROM delivery_assignments da "
         "JOIN deliveries dv ON dv.id=da.delivery_id "
@@ -6341,13 +6453,17 @@ def compute_delivery_load(con, *, start_week: str | None = None,
                 "role_order": _role_order.get(r["delivery_id"], {}).get(r["role"] or "", 9999),
             })
         if r["delivery_id"] not in deliveries_meta:
-            _fee_total = delivery_display_fees({
+            _dv_fee_like = {
                 "fee_mode": r["fee_mode"], "fee_monthly": r["fee_monthly"], "fee_total": r["fee_total_raw"],
                 "start_week": r["delivery_start"], "end_week": r["delivery_end"],
-            })[1]
+                "excluded_periods": r["excluded_periods"],
+            }
+            _fee_total = delivery_display_fees(_dv_fee_like)[1]
             deliveries_meta[r["delivery_id"]] = {
                 "fee_total": _fee_total or 0.0,
                 "start_week": r["delivery_start"] or "", "end_week": r["delivery_end"] or "",
+                "excluded_periods": [{"from": f.isoformat(), "to": t.isoformat()}
+                                     for f, t in _delivery_excluded_periods(_dv_fee_like)],
             }
     base = base_workload_by_owner(con)
     owners = sorted(set(list(base.keys()) + list(cells.keys())),

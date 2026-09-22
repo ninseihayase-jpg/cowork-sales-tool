@@ -4826,8 +4826,19 @@ def delivery_form(con, delivery_id: int) -> str:
             _own_role_idx[_ow] = _idx
     if grid["weeks"]:
         grid["owners"] = sorted(grid["owners"], key=lambda o: (_own_role_idx.get(o, 10_000), o))
-        head = "".join(f'<th style="font-size:11px;white-space:nowrap">{_fmt_week(w)}</th>' for w in grid["weeks"])
         _prod = sfa_db.delivery_weekly_productivity(con, delivery_id, grid["weeks"])
+        _wk_weights = _prod.get("week_weights") or {}
+
+        def _wk_head_cell(w):
+            wgt = _wk_weights.get(w, 1.0)
+            if wgt >= 1.0:
+                return f'<th style="font-size:11px;white-space:nowrap">{_fmt_week(w)}</th>'
+            style = "background:#fef2f2;color:#b91c1c" if wgt <= 0 else "background:#fff7ed;color:#c2410c"
+            mark = "✕" if wgt <= 0 else f"({_num_pct(wgt)})"
+            title = f' title="対象外期間により有効週数={_num_pct(wgt)}（営業日ベース按分）"'
+            return f'<th style="font-size:11px;white-space:nowrap;{style}"{title}>{_fmt_week(w)}{mark}</th>'
+
+        head = "".join(_wk_head_cell(w) for w in grid["weeks"])
         _rev_cells = ""
         _prod_cells = ""
         for w in grid["weeks"]:
@@ -4866,7 +4877,11 @@ def delivery_form(con, delivery_id: int) -> str:
                      'このグリッドはこのDelivery分のみ。全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。<br>'
                      '「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）。'
                      '「累計生産性」＝その週までの売上累計÷稼働率累計（100%あたり単価・万円）。'
-                     '契約期間の前後に実稼働がある場合も稼働だけを分母に含め、生産性の過大評価を防ぎます。</p>')
+                     '契約期間の前後に実稼働がある場合も稼働だけを分母に含め、生産性の過大評価を防ぎます。'
+                     '週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、'
+                     '<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。'
+                     '有効週数は月額↔総額の自動換算・週別売上の按分・生産性の稼働累計のすべてに反映されます'
+                     '（対象外期間の設定は基礎情報の「対象外期間を追加」から）。</p>')
     else:
         grid_html = '<p class="muted">アサインを追加するとここに週別グリッドが表示されます。</p>'
 
@@ -4969,6 +4984,17 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">終了日<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
             </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+              <label style="font-size:12px">対象外期間を追加（盆休み等）<br>
+                <input type="date" id="dvExclFromDate" style="width:130px">〜<input type="date" id="dvExclToDate" style="width:130px">
+                <button type="button" class="btn sec" style="font-size:11px;padding:3px 8px" onclick="dvExclAdd()">＋追加</button></label>
+            </div>
+            <div id="dvExclChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px"></div>
+            <input type="hidden" id="dvExcludedPeriods" name="excluded_periods"
+                   value="{_esc(_json.dumps([{"from": f.isoformat(), "to": t.isoformat()} for f, t in sfa_db._delivery_excluded_periods(dv)]))}">
+            <p class="muted" style="font-size:10px;margin:2px 0 0">※開始週〜終了週の中で報酬対象外にしたい日付範囲（盆休み等）を指定。週の一部だけでも可（例: 7/1〜7/3）。
+              対象外期間と重なる週・開始/終了日で途中から始まる境界週は、対象外期間を除いた営業日数÷5を「その週の有効週数」として
+              月額↔総額の自動換算・週別売上の按分・生産性の稼働累計のすべてに反映します（日本の祝日は自動で除外・手動更新不要）。</p>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">確度<br><select name="confidence_override">{conf_opts}</select></label>
               <label style="font-size:12px">事業種別L1<br><select name="business_type_l1_override">{_delivery_biz_l1_opts(con, dv)}</select></label>
@@ -5102,12 +5128,97 @@ def delivery_form(con, delivery_id: int) -> str:
         同じ曜日を保つことで、週数どおりの暦週数になる（#180）。 */
       var d=new Date(+p[0], +p[1]-1, +p[2]); d.setDate(d.getDate()+(w-1)*7);
       e.value=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
+    // 日本の祝日（アルゴリズム算出・手動の祝日カレンダー更新は不要）。Hisho側dashboard.htmlの
+    // 同名JSロジック・sfa_db.py _jp_holidays_for_year()のポート。3者は常に同じ結果になるよう保つこと。
+    function _jpEquinoxDay(year,isSpring){{ var base=isSpring?20.8431:23.2488, leap=Math.floor((year-1980)/4);
+      return Math.floor(base+0.242194*(year-1980)-leap); }}
+    function _nthMondayOfMonth(year,month,n){{ var d=new Date(year,month-1,1), count=0;
+      while(true){{ if(d.getDay()===1){{ count++; if(count===n) return d.getDate(); }} d.setDate(d.getDate()+1); }} }}
+    function _jpHolidaysForYear(year){{
+      var set={{}}; var add=function(m,d){{ set[year+'-'+('0'+m).slice(-2)+'-'+('0'+d).slice(-2)]=true; }};
+      add(1,1); add(1,_nthMondayOfMonth(year,1,2)); add(2,11); add(2,23); add(3,_jpEquinoxDay(year,true));
+      add(4,29); add(5,3); add(5,4); add(5,5); add(7,_nthMondayOfMonth(year,7,3)); add(8,11);
+      add(9,_nthMondayOfMonth(year,9,3)); add(9,_jpEquinoxDay(year,false)); add(10,_nthMondayOfMonth(year,10,2));
+      add(11,3); add(11,23);
+      Object.keys(set).forEach(function(s){{ var d=new Date(s+'T00:00:00');
+        if(d.getDay()===0){{ var nd=new Date(d); do{{ nd.setDate(nd.getDate()+1); }}while(set[_mondayOf3(nd)]);
+          set[_mondayOf3(nd)]=true; }} }});
+      return set;
+    }}
+    function _mondayOf3(d){{ return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
+    var _jpHolidayCache={{}};
+    function _isJpHoliday(dateStr){{ var year=parseInt(dateStr.slice(0,4),10);
+      if(!_jpHolidayCache[year]) _jpHolidayCache[year]=_jpHolidaysForYear(year);
+      return !!_jpHolidayCache[year][dateStr]; }}
+    function _isBizDay(dateStr){{ var dow=new Date(dateStr+'T00:00:00').getDay();
+      return dow!==0 && dow!==6 && !_isJpHoliday(dateStr); }}
+    // 対象外期間（盆休み等・#189）: 開始週〜終了週の中で月数換算・週別売上按分・稼働累計の対象から
+    // 除きたい日付範囲（週の一部だけでも可）。サーバ側sfa_db._delivery_excluded_periods()と同じ
+    // {{from,to}}のリストをhidden inputのJSON配列で保持する。
+    var _dvExclPeriods=(function(){{ try{{ var v=document.getElementById('dvExcludedPeriods');
+      var a=v?JSON.parse(v.value||'[]'):[]; return Array.isArray(a)?a:[]; }}catch(e){{ return []; }} }})();
+    // sfa_db._delivery_period_weight()のJS版。週wkの「有効週数」（0〜1）。契約期間と重ならない週は
+    // 常に1.0（期間外実稼働はフル計上、既存方針）。境界週・対象外期間と重なる週だけ、対象外期間を
+    // 除いた営業日数（祝日は_isBizDayで自動除外）÷5で按分する。それ以外の完全な内部週は、祝日が
+    // あっても常に1.0のまま（通常週の重みが祝日の有無でぶれるのを避けるため）。
+    function _dvPeriodWeight(wk, startWeek, endWeek, periods){{
+      var weekStart=new Date(wk+'T00:00:00'); var weekEnd=new Date(weekStart); weekEnd.setDate(weekEnd.getDate()+6);
+      if(!startWeek||!endWeek) return 1.0;
+      var sd=new Date(startWeek+'T00:00:00'), ed=new Date(endWeek+'T00:00:00');
+      var activeStart=weekStart>sd?weekStart:sd, activeEnd=weekEnd<ed?weekEnd:ed;
+      if(activeStart>activeEnd) return 1.0;
+      var isBoundary=(activeStart.getTime()!==weekStart.getTime())||(activeEnd.getTime()!==weekEnd.getTime());
+      var asStr=_mondayOf3(activeStart), aeStr=_mondayOf3(activeEnd);
+      var overlapsExcl=periods.some(function(p){{ return !(p.to<asStr || p.from>aeStr); }});
+      if(!isBoundary && !overlapsExcl) return 1.0;
+      var biz=0, d=new Date(activeStart);
+      while(d<=activeEnd){{ var ds=_mondayOf3(d);
+        if(_isBizDay(ds) && !periods.some(function(p){{ return p.from<=ds && ds<=p.to; }})) biz++;
+        d.setDate(d.getDate()+1); }}
+      return biz/5.0;
+    }}
+    function _wkLabelRange(f,t){{ var pf=f.split('-'), pt=t.split('-');
+      return f===t ? ((+pf[1])+'/'+(+pf[2])) : ((+pf[1])+'/'+(+pf[2])+'〜'+(+pt[1])+'/'+(+pt[2])); }}
+    function dvExclRenderChips(){{
+      var box=document.getElementById('dvExclChips'); if(!box) return;
+      box.innerHTML = _dvExclPeriods.length ? _dvExclPeriods.map(function(p,i){{
+        return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;'
+          +'background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:999px;padding:2px 4px 2px 10px">'
+          +_wkLabelRange(p.from,p.to)+'<button type="button" onclick="dvExclRemove('+i+')" '
+          +'style="border:0;background:none;color:#b91c1c;cursor:pointer;font-size:12px;padding:0 4px">×</button></span>';
+      }}).join('') : '<span class="muted" style="font-size:11px">対象外期間なし</span>';
+    }}
+    function dvExclSync(){{
+      var hid=document.getElementById('dvExcludedPeriods'); if(!hid) return;
+      hid.value=JSON.stringify(_dvExclPeriods);
+      dvExclRenderChips();
+      dvFeeRecalc(); // 月数の変化を報酬額/週別売上プレビューへ即時反映
+      hid.dispatchEvent(new Event('change',{{bubbles:true}})); // dvBaseFormの自動保存(+reload)へ委譲
+    }}
+    function dvExclAdd(){{
+      var fEl=document.getElementById('dvExclFromDate'), tEl=document.getElementById('dvExclToDate');
+      if(!fEl||!fEl.value) return;
+      var f=fEl.value, t=(tEl&&tEl.value)?tEl.value:f;
+      if(t<f){{ var tmp=f; f=t; t=tmp; }}
+      _dvExclPeriods.push({{from:f, to:t}});
+      fEl.value=''; if(tEl) tEl.value='';
+      dvExclSync();
+    }}
+    function dvExclRemove(idx){{
+      _dvExclPeriods.splice(idx,1);
+      dvExclSync();
+    }}
     function _dvFeeMonths(){{ var s=document.getElementById('hdrStart').value,
       e=document.getElementById('hdrEnd').value; if(!s||!e) return 0;
       var sd=new Date(_mondayOf(s)), ed=new Date(_mondayOf(e)); var days=Math.round((ed-sd)/86400000);
       if(isNaN(days)||days<0) return 0;
-      var weeks=Math.floor(days/7)+1; return weeks/4; }}  /* 月数=合計週数÷4(≒1ヶ月)で統一。
-        開始/終了は月曜スナップしてから週数を数える（日ベース入力・週ベース集計、#180）。 */
+      var weeksN=Math.floor(days/7)+1;
+      if(!_dvExclPeriods.length) return weeksN/4;
+      var eff=0, w=_mondayOf(s);
+      for(var i=0;i<weeksN;i++){{ eff+=_dvPeriodWeight(w, s, e, _dvExclPeriods); w=_isoAdd(w,1); }}
+      return Math.max(eff,0.25)/4;
+    }}  /* 月数=有効週数(対象外期間なしなら単純な合計週数、ありなら_dvPeriodWeightの合計)÷4(≒1ヶ月)。
+        開始/終了は月曜スナップしてから週数を数える（日ベース入力・週ベース集計、#180）。#189。 */
     /* 月額/総額の自動換算＋手修正（新規タスク）: 従来はreadOnlyで灰色側を編集不可にしていたが、
        灰色側（自動算出される方）を直接編集した場合はdata-manual='1'を立てて手修正として保持する
        （以後、報酬形態を切り替えるまで自動換算で上書きしない）。 */
@@ -5245,6 +5356,7 @@ def delivery_form(con, delivery_id: int) -> str:
                                               : '<span class="muted">—</span>';
       }});
     }}
+    dvExclRenderChips();
     dvFeeRecalc();
     dvCostRecalc();
     dvPerfFeeChanged();
@@ -5357,16 +5469,25 @@ def delivery_form(con, delivery_id: int) -> str:
       rows.forEach(function(r){{ weeks.forEach(function(k){{ var c=r.cells[k]; if(c) weeklyActual[k]+=(c.a||0); }}); }});
       var feeEl=document.getElementById('dvFeeTotal'), feeTotal=feeEl?(parseFloat(feeEl.value)||0):0;
       var swEl=document.getElementById('hdrStart'), ewEl=document.getElementById('hdrEnd');
-      var sw=swEl?_mondayOf(swEl.value):'', ew=ewEl?_mondayOf(ewEl.value):'';
-      var revenueWeeks={{}};
-      if(sw && ew && sw<=ew){{ var rw=sw, rg=0; while(rw<=ew && rg<520){{ revenueWeeks[rw]=true; rw=_isoAdd(rw,1); rg++; }} }}
-      else {{ weeks.forEach(function(k){{ revenueWeeks[k]=true; }}); }}
-      var nRevWeeks=Object.keys(revenueWeeks).length;
-      var perWeekRevenue = nRevWeeks>0 ? feeTotal/nRevWeeks : 0;
+      var sw=swEl?swEl.value:'', ew=ewEl?ewEl.value:'';
+      // 週別売上・稼働累計の按分（サーバ側delivery_weekly_productivity()と同じ式。#189）:
+      // 対象外期間なしはフラット（各週=1.0）、ありなら境界週・対象外期間と重なる週だけ
+      // 営業日ベースで按分した「有効週数」の比率で配分する。
+      var revWeeksList=[];
+      if(sw && ew){{ var rw=_mondayOf(sw), ewMon=_mondayOf(ew), rg=0;
+        while(rw<=ewMon && rg<520){{ revWeeksList.push(rw); rw=_isoAdd(rw,1); rg++; }} }}
+      else {{ revWeeksList=weeks.slice(); }}
+      var weightOf={{}};
+      weeks.concat(revWeeksList).forEach(function(k){{ if(!(k in weightOf))
+        weightOf[k]=_dvExclPeriods.length ? _dvPeriodWeight(k, sw, ew, _dvExclPeriods) : 1.0; }});
+      var revWeeksSet={{}}; revWeeksList.forEach(function(k){{ revWeeksSet[k]=true; }});
+      var totalWeight=0; revWeeksList.forEach(function(k){{ totalWeight+=(weightOf[k]||0); }});
+      var perWeightRevenue = totalWeight>0 ? feeTotal/totalWeight : 0;
       var runningRev=0, runningWork=0, revRow='', prodRow='';
       weeks.forEach(function(k){{
-        var rev = revenueWeeks[k] ? perWeekRevenue : 0;
-        runningRev+=rev; runningWork+=(weeklyActual[k]||0);
+        var wgt=weightOf[k]!=null?weightOf[k]:1.0;
+        var rev = revWeeksSet[k] ? perWeightRevenue*wgt : 0;
+        runningRev+=rev; runningWork+=(weeklyActual[k]||0)*wgt;
         revRow += '<td style="text-align:center;background:#f0f7ff">'+(rev?_r1(rev)+'万':'·')+'</td>';
         if(runningWork>0){{
           prodRow += '<td style="text-align:center;background:#f5f0ff" title="累計売上'+_r1(runningRev)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%">'
@@ -5374,7 +5495,11 @@ def delivery_form(con, delivery_id: int) -> str:
         }} else {{ prodRow += '<td style="text-align:center;background:#f5f0ff">·</td>'; }}
       }});
       var html='<div style="overflow:auto"><table style="border-collapse:collapse"><tr><th></th>'
-        +weeks.map(function(k){{var p=k.split('-');return '<th style="font-size:11px;white-space:nowrap">'+(+p[1])+'/'+(+p[2])+'</th>';}}).join('')+'</tr>'
+        +weeks.map(function(k){{var p=k.split('-'), wgt=weightOf[k]!=null?weightOf[k]:1.0, partial=wgt<1;
+          var bg = wgt<=0 ? ';background:#fef2f2;color:#b91c1c' : (partial ? ';background:#fff7ed;color:#c2410c' : '');
+          var mark = wgt<=0 ? '✕' : (partial ? ('('+_r1(wgt)+')') : '');
+          return '<th style="font-size:11px;white-space:nowrap'+bg+'"'
+            +(partial?' title="対象外期間により有効週数='+_r1(wgt)+'（営業日ベース按分）"':'')+'>'+(+p[1])+'/'+(+p[2])+mark+'</th>';}}).join('')+'</tr>'
         +'<tr><th style="text-align:left;white-space:nowrap">週別売上</th>'+revRow+'</tr>'
         +'<tr><th style="text-align:left;white-space:nowrap">累計生産性</th>'+prodRow+'</tr>';
       rows.forEach(function(r){{
@@ -5387,7 +5512,8 @@ def delivery_form(con, delivery_id: int) -> str:
       }});
       html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。<br>'
         +'「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）。'
-        +'「累計生産性」＝その週までの売上累計÷稼働率累計（100%あたり単価・万円）。</p>';
+        +'「累計生産性」＝その週までの売上累計÷稼働率累計（100%あたり単価・万円）。'
+        +'週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。</p>';
       box.innerHTML=html;
     }}
     // 責任者・担当者は下の「アサイン」各行のチェックボックスから指定する（2026-08-29改訂。
@@ -5472,9 +5598,10 @@ def delivery_form(con, delivery_id: int) -> str:
             return;
           }}
           // 開始/終了週は週数の連動再計算、事業種別L1は事業種別L2の選択肢のサーバ側
-          // 再計算のため、保存後に再読込して画面を最新化する。それ以外は再読込不要。
+          // 再計算、対象外期間は月額↔総額の保存済み値の再計算のため、保存後に再読込して
+          // 画面を最新化する。それ以外は再読込不要。
           var reload=(el.name==='start_week'||el.name==='end_week'
-            ||el.name==='business_type_l1_override');
+            ||el.name==='business_type_l1_override'||el.name==='excluded_periods');
           dvBaseAutoSave(reload);
         }}
       }});
@@ -22174,9 +22301,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _old_dv = sfa_db.get_delivery(con, _dvid) or {}
                     _sw = _valid_date(f.get("start_week", ""))
                     _ew = _valid_date(f.get("end_week", ""))
-                    # 報酬額: 月数（期間を含む暦月）でサーバ側でも月額↔総額を換算し両方保持
+                    # 対象外期間（盆休み等・#189）: フォームのhidden項目はJSON配列文字列
+                    # （各要素{"from":...,"to":...}）。壊れたJSON/未入力は対象外期間なし扱い。
+                    # 月数・週別売上按分・稼働累計のすべてをこの期間ぶん営業日単位で除いて計算する。
+                    _excl_periods = sfa_db._delivery_excluded_periods({"excluded_periods": f.get("excluded_periods", "")})
+                    _excl_json = (json.dumps([{"from": _f.isoformat(), "to": _t.isoformat()} for _f, _t in _excl_periods],
+                                              ensure_ascii=False) if _excl_periods else None)
+                    # 報酬額: 月数（期間を含む暦月。対象外期間は営業日単位で除く）でサーバ側でも
+                    # 月額↔総額を換算し両方保持
                     _fee_mode = (f.get("fee_mode", "") or "monthly").strip()
-                    _months = sfa_db.delivery_month_count(_sw, _ew)
+                    _months = sfa_db.delivery_month_count(_sw, _ew, _excl_periods)
                     _fee_monthly, _fee_total = sfa_db.compute_delivery_fee(
                         _fee_mode, f.get("fee_monthly", ""), f.get("fee_total", ""), _months)
                     # 外注費: 報酬額と同じ仕組みで月額/総額を相互換算して両方保持。
@@ -22228,6 +22362,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         fee_mode=_fee_mode,
                         fee_monthly=_fee_monthly,
                         fee_total=_fee_total,
+                        excluded_periods=_excl_json,
                         confidence_override=_conf_ov,
                         cost_mode=_cost_mode,
                         cost_monthly=_cost_monthly,
