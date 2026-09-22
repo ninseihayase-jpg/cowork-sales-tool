@@ -5138,6 +5138,7 @@ def delivery_form(con, delivery_id: int) -> str:
           ? (Math.round(mon*10000*100/effP/100000)*10).toLocaleString() : '—';
       }}
       dvProfitRecalc();
+      if(typeof renderPreview==='function') renderPreview(); // 報酬額の変更を週別売上/累計生産性へ即反映
     }}
     function dvFeeFieldInput(el){{
       var modeEl=document.getElementById('dvFeeMode');
@@ -5350,8 +5351,32 @@ def delivery_form(con, delivery_id: int) -> str:
       }});
       if(minW===null){{ box.innerHTML='<p class="muted">アサインを入力するとここに週別グリッドが表示されます。</p>'; return; }}
       var weeks=[], w=minW, g=0; while(w<=maxW && g<520){{ weeks.push(w); w=_isoAdd(w,1); g++; }}
+      // 週別売上・累計生産性（サーバ側delivery_weekly_productivity()と同じ式。#dvPreviewは
+      // このJS関数で丸ごと再構築されるため、サーバ側で算出した行もここに含めないと消える）。
+      var weeklyActual={{}}; weeks.forEach(function(k){{ weeklyActual[k]=0; }});
+      rows.forEach(function(r){{ weeks.forEach(function(k){{ var c=r.cells[k]; if(c) weeklyActual[k]+=(c.a||0); }}); }});
+      var feeEl=document.getElementById('dvFeeTotal'), feeTotal=feeEl?(parseFloat(feeEl.value)||0):0;
+      var swEl=document.getElementById('hdrStart'), ewEl=document.getElementById('hdrEnd');
+      var sw=swEl?_mondayOf(swEl.value):'', ew=ewEl?_mondayOf(ewEl.value):'';
+      var revenueWeeks={{}};
+      if(sw && ew && sw<=ew){{ var rw=sw, rg=0; while(rw<=ew && rg<520){{ revenueWeeks[rw]=true; rw=_isoAdd(rw,1); rg++; }} }}
+      else {{ weeks.forEach(function(k){{ revenueWeeks[k]=true; }}); }}
+      var nRevWeeks=Object.keys(revenueWeeks).length;
+      var perWeekRevenue = nRevWeeks>0 ? feeTotal/nRevWeeks : 0;
+      var runningRev=0, runningWork=0, revRow='', prodRow='';
+      weeks.forEach(function(k){{
+        var rev = revenueWeeks[k] ? perWeekRevenue : 0;
+        runningRev+=rev; runningWork+=(weeklyActual[k]||0);
+        revRow += '<td style="text-align:center;background:#f0f7ff">'+(rev?_r1(rev)+'万':'·')+'</td>';
+        if(runningWork>0){{
+          prodRow += '<td style="text-align:center;background:#f5f0ff" title="累計売上'+_r1(runningRev)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%">'
+            +_r1(runningRev/(runningWork/100))+'万<br><span style="font-size:9px;opacity:.7">/100%</span></td>';
+        }} else {{ prodRow += '<td style="text-align:center;background:#f5f0ff">·</td>'; }}
+      }});
       var html='<div style="overflow:auto"><table style="border-collapse:collapse"><tr><th></th>'
-        +weeks.map(function(k){{var p=k.split('-');return '<th style="font-size:11px;white-space:nowrap">'+(+p[1])+'/'+(+p[2])+'</th>';}}).join('')+'</tr>';
+        +weeks.map(function(k){{var p=k.split('-');return '<th style="font-size:11px;white-space:nowrap">'+(+p[1])+'/'+(+p[2])+'</th>';}}).join('')+'</tr>'
+        +'<tr><th style="text-align:left;white-space:nowrap">週別売上</th>'+revRow+'</tr>'
+        +'<tr><th style="text-align:left;white-space:nowrap">累計生産性</th>'+prodRow+'</tr>';
       rows.forEach(function(r){{
         html+='<tr><th style="text-align:left;white-space:nowrap">'+_esc3(r.label)+'</th>';
         weeks.forEach(function(k){{ var c=r.cells[k];
@@ -5360,7 +5385,9 @@ def delivery_form(con, delivery_id: int) -> str:
           else {{ html+='<td style="text-align:center;color:#cbd5e1">·</td>'; }} }});
         html+='</tr>';
       }});
-      html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。</p>';
+      html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。<br>'
+        +'「週別売上」＝総額報酬を契約期間（開始週〜終了週）の週数で均等配分（期間外の週は0円）。'
+        +'「累計生産性」＝その週までの売上累計÷稼働率累計（100%あたり単価・万円）。</p>';
       box.innerHTML=html;
     }}
     // 責任者・担当者は下の「アサイン」各行のチェックボックスから指定する（2026-08-29改訂。
