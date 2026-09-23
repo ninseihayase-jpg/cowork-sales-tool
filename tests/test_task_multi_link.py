@@ -165,8 +165,8 @@ def test_tasks_save_route_persists_multiple_links_via_links_json(con, deal_issue
     iid2 = sfa_db.upsert_deal_issue(con2, deal_id=did2, issue="論点A")
     con2.close()
 
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", "u")
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", "p")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "u")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "p")
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = srv.server_address[1]
@@ -175,8 +175,7 @@ def test_tasks_save_route_persists_multiple_links_via_links_json(con, deal_issue
     t.start()
     try:
         base = f"http://127.0.0.1:{port}"
-        token = base64.b64encode(b"u:p").decode()
-        headers = {"Authorization": f"Basic {token}", "Content-Type": "application/x-www-form-urlencoded"}
+        headers = {"Cookie": f"sfa_session={webapp._make_session_token()}", "Content-Type": "application/x-www-form-urlencoded"}
         links_json = json.dumps([{"type": "deal", "id": did2}, {"type": "issue", "id": iid2}])
         import urllib.parse
         body = urllib.parse.urlencode({

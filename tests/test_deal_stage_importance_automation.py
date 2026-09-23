@@ -174,8 +174,8 @@ def db_path(tmp_dir):
 
 @pytest.fixture
 def server(db_path, monkeypatch):
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", BASIC_USER)
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", BASIC_PASS)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", BASIC_USER)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", BASIC_PASS)
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = srv.server_address[1]
@@ -191,8 +191,7 @@ def server(db_path, monkeypatch):
 
 
 def _auth_header():
-    token = base64.b64encode(f"{BASIC_USER}:{BASIC_PASS}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
+    return {"Cookie": f"sfa_session={webapp._make_session_token()}"}
 
 
 def _post(url, data, headers=None):

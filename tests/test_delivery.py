@@ -1414,16 +1414,15 @@ def test_role_delete_route_via_http_removes_matching_assignment(monkeypatch, tmp
     con2.close()
 
     user, pw = "u", "p"
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", user)
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", pw)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", user)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", pw)
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     try:
-        token = base64.b64encode(f"{user}:{pw}".encode()).decode()
-        headers = {"Authorization": f"Basic {token}"}
+        headers = {"Cookie": f"sfa_session={webapp._make_session_token()}"}
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/delivery/{dvid}/role/{rid}/delete",
             data=b"", headers=headers, method="POST")
@@ -1462,16 +1461,15 @@ def test_assignment_update_route_saves_owner_even_without_dates(monkeypatch, tmp
     con2.close()
 
     user, pw = "u", "p"
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", user)
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", pw)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", user)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", pw)
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     try:
-        token = base64.b64encode(f"{user}:{pw}".encode()).decode()
-        headers = {"Authorization": f"Basic {token}",
+        headers = {"Cookie": f"sfa_session={webapp._make_session_token()}",
                    "Content-Type": "application/x-www-form-urlencoded"}
         body = urllib.parse.urlencode({
             "role": "PM", "member_kind": "内部", "owner_sel": "早瀬",
@@ -1510,16 +1508,15 @@ def test_roles_reorder_route_via_http(monkeypatch, tmp_path):
     con2.close()
 
     user, pw = "u", "p"
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", user)
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", pw)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", user)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", pw)
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = srv.server_address[1]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     try:
-        token = base64.b64encode(f"{user}:{pw}".encode()).decode()
-        headers = {"Authorization": f"Basic {token}",
+        headers = {"Cookie": f"sfa_session={webapp._make_session_token()}",
                   "Content-Type": "application/x-www-form-urlencoded"}
         body = f"order={r2},{r1}".encode()
         req = urllib.request.Request(

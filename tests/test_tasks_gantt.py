@@ -285,8 +285,8 @@ def test_task_field_route_accepts_gantt_start_date(con, monkeypatch, tmp_path):
     tid = sfa_db.upsert_task(con2, title="X", due_date="2026-09-10", effort_level="軽")
     con2.close()
 
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", "u")
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", "p")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "u")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "p")
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = srv.server_address[1]
@@ -294,11 +294,10 @@ def test_task_field_route_accepts_gantt_start_date(con, monkeypatch, tmp_path):
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     try:
-        token = base64.b64encode(b"u:p").decode()
         body = urllib.parse.urlencode({"field": "gantt_start_date", "value": "2026-09-05"}).encode()
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/task/{tid}/field", data=body,
-            headers={"Authorization": f"Basic {token}",
+            headers={"Cookie": f"sfa_session={webapp._make_session_token()}",
                      "Content-Type": "application/x-www-form-urlencoded"},
             method="POST")
         resp = urllib.request.urlopen(req, timeout=10)

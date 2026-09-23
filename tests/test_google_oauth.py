@@ -1,14 +1,14 @@
 """Googleログイン(2026-09-20〜)の回帰テスト。
 
-ID/PWログインと併存し、@inproc.orgのGoogleアカウントのみを許可する設計（OAuth同意画面の
-「内部」設定＋サーバー側のemailドメイン検証の二重防御）。実際のGoogleへの通信は行わず、
-urllib.request.urlopenをモックしてトークン交換・userinfo取得部分を検証する。
+2026-09-24〜、唯一の認証経路（旧ID/PWログイン・従来のBasic認証は廃止）。@inproc.orgの
+Googleアカウントのみを許可する設計（OAuth同意画面の「内部」設定＋サーバー側のemailドメイン
+検証の二重防御）。実際のGoogleへの通信は行わず、urllib.request.urlopenをモックして
+トークン交換・userinfo取得部分を検証する。
 
 一時DBのみ使用。本番DB(cowork_sfa.db)には一切触れない。
 """
 from __future__ import annotations
 
-import base64
 import json
 import shutil
 import tempfile
@@ -24,8 +24,6 @@ from cowork import sfa_db
 from cowork import webapp
 
 
-BASIC_USER = "test_user"
-BASIC_PASS = "test_pass_1234"
 GOOGLE_CLIENT_ID = "test-client-id.apps.googleusercontent.com"
 GOOGLE_CLIENT_SECRET = "test-client-secret"
 
@@ -45,13 +43,6 @@ def db_path(tmp_dir):
 
 
 @pytest.fixture
-def basic_auth_env(monkeypatch):
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", BASIC_USER)
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", BASIC_PASS)
-    yield
-
-
-@pytest.fixture
 def google_configured(monkeypatch):
     monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", GOOGLE_CLIENT_ID)
     monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", GOOGLE_CLIENT_SECRET)
@@ -59,7 +50,7 @@ def google_configured(monkeypatch):
 
 
 @pytest.fixture
-def server(db_path, basic_auth_env):
+def server(db_path):
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = srv.server_address[1]

@@ -42,15 +42,15 @@ def db_path(tmp_dir):
 
 @pytest.fixture
 def basic_auth_env(monkeypatch):
-    """SFA_BASIC_USER/PASSをwebappモジュールの変数として直接設定する。
+    """GOOGLE_CLIENT_ID/SECRETをwebappモジュールの変数として直接設定する（fail-closed回避用）。
 
-    webapp.SFA_BASIC_USER/SFA_BASIC_PASS はモジュールインポート時にos.environから
+    webapp.GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET はモジュールインポート時にos.environから
     読み込まれるグローバル変数だが、_check_basic_auth() は呼び出しのたびに
     モジュールの現在のグローバル値を参照するため、モジュール属性を直接書き換えれば
     再インポート不要でテストに反映できる。
     """
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", BASIC_USER)
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", BASIC_PASS)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", BASIC_USER)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", BASIC_PASS)
     yield
 
 
@@ -71,8 +71,7 @@ def server(db_path, basic_auth_env):
 
 
 def _auth_header():
-    token = base64.b64encode(f"{BASIC_USER}:{BASIC_PASS}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
+    return {"Cookie": f"sfa_session={webapp._make_session_token()}"}
 
 
 def _get(url, headers=None):
@@ -447,46 +446,20 @@ def test_get_root_without_auth_redirects_to_login(server):
     assert code == 200
     assert resp.geturl().rstrip("/").endswith("/login") or "/login?" in resp.geturl()
     body = resp.read().decode("utf-8")
-    assert 'name="password"' in body and "ログイン" in body
+    assert "Googleでログイン" in body and "ログイン" in body
 
 
-def test_basic_auth_still_works(server):
-    # 従来のBasic認証は併存（PC等の既存運用を壊さない）。
+def test_session_cookie_grants_access(server):
+    # Googleログインで発行されたセッションCookieで保護ページにアクセスできる
+    # （2026-09-24〜: 旧ID/PWフォームログイン・従来のBasic認証は廃止しGoogleログインに一本化）。
     code, resp = _get(server + "/", headers=_auth_header())
     assert code == 200
 
 
-def test_form_login_sets_cookie_and_grants_access(server):
-    import http.cookies
-    # 誤資格情報→401（ログイン画面再表示）
-    code, _ = _post(server + "/login", {"username": BASIC_USER, "password": "wrong", "next": "/"})
-    assert code == 401
-    # 正しい資格情報→303 + Set-Cookie（urllibは303を追うのでHTTPErrorにならずcookieを拾えないため手動）
-    body = urllib.parse.urlencode({"username": BASIC_USER, "password": BASIC_PASS, "next": "/"}).encode()
-    req = urllib.request.Request(server + "/login", data=body,
-                                 headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):
-            return None
-    opener = urllib.request.build_opener(_NoRedirect)
-    try:
-        opener.open(req, timeout=10)
-        setcookie = None
-    except urllib.error.HTTPError as e:
-        assert e.code == 303
-        setcookie = e.headers.get("Set-Cookie")
-    assert setcookie and "sfa_session=" in setcookie
-    ck = http.cookies.SimpleCookie(setcookie)
-    tok = ck["sfa_session"].value
-    # 取得したセッションCookieで保護ページにアクセスできる
-    code, _ = _get(server + "/", headers={"Cookie": f"sfa_session={tok}"})
-    assert code == 200
-
-
 def test_basic_auth_fails_closed_with_503_when_unset(db_path, monkeypatch):
-    """SFA_BASIC_USER/PASSが未設定(空文字)ならfail-closedで503になること。"""
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", "")
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", "")
+    """GOOGLE_CLIENT_ID/SECRETが未設定(空文字)ならfail-closedで503になること。"""
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "")
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = srv.server_address[1]

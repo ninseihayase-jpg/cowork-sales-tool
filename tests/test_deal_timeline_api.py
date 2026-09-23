@@ -156,14 +156,14 @@ def test_deal_timeline_route_returns_data_with_valid_token(monkeypatch, tmp_path
 
 
 def test_deal_timeline_route_no_basic_auth_required(monkeypatch, tmp_path):
-    """/api/* はBasic認証をバイパスする既存仕様（dashboard.htmlからのクロスオリジン
-    フェッチはBasic認証ヘッダを付けられないため）。SFA_BASIC_USER/PASSを設定しても
+    """/api/* はGoogleログイン認証をバイパスする既存仕様（dashboard.htmlからのクロスオリジン
+    フェッチはセッションCookieを付けられないため）。GOOGLE_CLIENT_ID/SECRETを設定しても
     トークンのみでアクセスできることを確認する。"""
     db_path = str(tmp_path / "srv3.db")
     sfa_db.init_db(db_path)
     monkeypatch.setattr(webapp, "SFA_API_TOKEN", "tok")
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", "u")
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", "p")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "u")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "p")
     srv, t = _run_server(db_path)
     try:
         port = srv.server_address[1]

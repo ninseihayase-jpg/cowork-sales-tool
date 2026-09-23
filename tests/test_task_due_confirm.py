@@ -268,8 +268,8 @@ def test_field_route_due_date_edit_marks_non_admin_task_confirmed(monkeypatch, t
 
     db_path = str(tmp_path / "srv.db")
     sfa_db.init_db(db_path)
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", "u")
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", "p")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "u")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "p")
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = srv.server_address[1]
@@ -282,11 +282,10 @@ def test_field_route_due_date_edit_marks_non_admin_task_confirmed(monkeypatch, t
             slack_channel="C1", slack_ts="100.1")
         con2.close()
 
-        tok = base64.b64encode(b"u:p").decode()
         body = urllib.parse.urlencode({"field": "due_date", "value": "2026-09-25"}).encode()
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/task/{tid}/field", data=body,
-            headers={"Authorization": f"Basic {tok}", "Content-Type": "application/x-www-form-urlencoded"},
+            headers={"Cookie": f"sfa_session={webapp._make_session_token()}", "Content-Type": "application/x-www-form-urlencoded"},
             method="POST")
         resp = urllib.request.urlopen(req, timeout=10)
         assert resp.getcode() in (200, 303)

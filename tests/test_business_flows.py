@@ -42,8 +42,8 @@ def con():
 def server(monkeypatch, tmp_path):
     db_path = str(tmp_path / "srv.db")
     sfa_db.init_db(db_path)
-    monkeypatch.setattr(webapp, "SFA_BASIC_USER", BASIC_USER)
-    monkeypatch.setattr(webapp, "SFA_BASIC_PASS", BASIC_PASS)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", BASIC_USER)
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", BASIC_PASS)
     monkeypatch.setattr(webapp, "_call_claude_haiku", lambda *a, **k: "")
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
@@ -59,8 +59,7 @@ def server(monkeypatch, tmp_path):
 
 
 def _auth_header():
-    token = base64.b64encode(f"{BASIC_USER}:{BASIC_PASS}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
+    return {"Cookie": f"sfa_session={webapp._make_session_token()}"}
 
 
 def _get(url):

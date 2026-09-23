@@ -42,15 +42,13 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 JAMIE_WEBHOOK_SECRET = os.environ.get("JAMIE_WEBHOOK_SECRET", "")
 JAMIE_WEBHOOK_API_KEY = os.environ.get("JAMIE_WEBHOOK_API_KEY", "")
 # ブラウザ向け全ページの認証（未設定時はfail-closed=全拒否）。
-# フォームログイン(Cookieセッション)＋従来のBasic認証の両方を受け付ける（#54: モバイルのBasic認証
-# ダイアログでループする問題への対応。ネイティブダイアログを出さずログイン画面へ誘導する）。
-SFA_BASIC_USER = os.environ.get("SFA_BASIC_USER", "")
-SFA_BASIC_PASS = os.environ.get("SFA_BASIC_PASS", "")
+# Googleログイン(Cookieセッション)のみを受け付ける（2026-09-24〜: 旧ID/PWログイン・従来の
+# Basic認証は廃止。@inproc.orgのGoogleアカウントでのSSOに一本化）。
 _SESSION_COOKIE = "sfa_session"
 _SESSION_MAX_AGE = 30 * 86400  # 30日
-# Googleログイン（2026-09-20〜）。ID/PWログインと併存し、@inproc.orgのGoogleアカウントのみ許可
-# （OAuth同意画面を「内部」設定にして Workspace側でも制限、さらにサーバー側でもemailドメインを
-# 検証する二重防御）。未設定（GOOGLE_CLIENT_ID空）ならボタンを出さずID/PWのみで動作する。
+# Googleログイン（2026-09-20〜）。@inproc.orgのGoogleアカウントのみ許可（OAuth同意画面を「内部」
+# 設定にして Workspace側でも制限、さらにサーバー側でもemailドメインを検証する二重防御）。
+# 未設定（GOOGLE_CLIENT_ID空）だと誰もログインできない（fail-closed。2026-09-24〜唯一の認証経路）。
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_ALLOWED_DOMAIN = "inproc.org"
@@ -67,8 +65,9 @@ def _today_jst() -> date:
 
 
 def _session_secret() -> bytes:
-    # 署名鍵はパスワードから派生（パスワード変更で既存セッションは自動失効）。
-    return hashlib.sha256(("sfa-session|" + (SFA_BASIC_PASS or "")).encode("utf-8")).digest()
+    # 署名鍵はGoogle OAuthのクライアントシークレットから派生（2026-09-24〜、ID/PW廃止に伴い
+    # 旧SFA_BASIC_PASS由来から変更。GOOGLE_CLIENT_SECRETのローテーションで既存セッションは自動失効）。
+    return hashlib.sha256(("sfa-session|" + (GOOGLE_CLIENT_SECRET or "")).encode("utf-8")).digest()
 
 
 def _make_session_token() -> str:
@@ -99,14 +98,15 @@ def _oauth_redirect_uri(handler) -> str:
 
 
 def login_page(next_url: str = "/", error: str = "") -> bytes:
-    """ネイティブBasic認証ダイアログの代わりに出すログイン画面（モバイル安定）。"""
+    """ログイン画面（2026-09-24〜: Googleログインのみ。旧ID/PWフォームは廃止）。"""
     nxt = next_url if next_url.startswith("/") else "/"
     err_html = (f'<p style="color:#b91c1c;font-size:13px;margin:0 0 10px">{html.escape(error)}</p>'
                 if error else "")
-    google_html = ""
     if GOOGLE_CLIENT_ID:
         _google_url = "/auth/google/login?next=" + urllib.parse.quote(nxt, safe="")
-        google_html = f"""
+        main_html = f"""
+  <p class="sub">ログインしてください</p>
+  {err_html}
   <a href="{_google_url}" style="display:flex;align-items:center;justify-content:center;gap:8px;
      margin-top:4px;padding:11px;border:1px solid #d4dae4;border-radius:9px;text-decoration:none;
      color:#1d2430;font-size:14px;background:#fff">
@@ -117,10 +117,11 @@ def login_page(next_url: str = "/", error: str = "") -> bytes:
       <path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.1l7.35 5.7c1.73-5.19 6.58-9.05 12.31-9.05z"/>
     </svg>
     Googleでログイン
-  </a>
-  <div style="display:flex;align-items:center;gap:8px;margin:16px 0 6px;color:#b8bfcc;font-size:11px">
-    <div style="flex:1;height:1px;background:#e6e9f0"></div>または<div style="flex:1;height:1px;background:#e6e9f0"></div>
-  </div>"""
+  </a>"""
+    else:
+        main_html = f"""
+  <p class="sub">Googleログインが設定されていません。管理者に連絡してください。</p>
+  {err_html}"""
     body = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">
 <title>ログイン ・ Inproc Salesforce</title>
@@ -130,22 +131,11 @@ def login_page(next_url: str = "/", error: str = "") -> bytes:
    display:flex;min-height:100vh;align-items:center;justify-content:center;color:#1d2430}}
  .box{{background:#fff;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.10);padding:28px 26px;width:340px;max-width:92vw}}
  h1{{font-size:17px;margin:0 0 4px}} .sub{{color:#8893a8;font-size:12px;margin:0 0 18px}}
- label{{display:block;font-size:12px;color:#6b7689;margin:12px 0 4px}}
- input{{width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #d4dae4;border-radius:8px;font-size:16px}}
- button{{width:100%;margin-top:18px;background:#2f6fed;color:#fff;border:0;border-radius:9px;padding:12px;font-size:15px;cursor:pointer}}
 </style></head><body>
-<form class="box" method="post" action="/login">
+<div class="box">
   <h1>{_SFA_LOGO_IMG}Inproc Salesforce</h1>
-  <p class="sub">ログインしてください</p>
-  {err_html}
-  {google_html}
-  <input type="hidden" name="next" value="{html.escape(nxt)}">
-  <label>ユーザー名</label>
-  <input name="username" autocapitalize="off" autocorrect="off" autocomplete="username" spellcheck="false" required>
-  <label>パスワード</label>
-  <input type="password" name="password" autocapitalize="off" autocomplete="current-password" required>
-  <button type="submit">ログイン</button>
-</form></body></html>"""
+  {main_html}
+</div></body></html>"""
     return body.encode("utf-8")
 
 INPROC_MEMBERS = [
@@ -20447,11 +20437,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             return urllib.parse.parse_qs(qs_raw)
 
         def _check_basic_auth(self) -> bool:
-            """ブラウザ向け全ルートの認証（フォームCookieセッション or 従来のBasic認証を許可）。
+            """ブラウザ向け全ルートの認証（Googleログインの署名Cookieセッションのみ、2026-09-24〜）。
 
             除外: /health, /api/*, /slack/*, /login, /logout, /favicon.ico, /static/*,
             /manifest.webmanifest, /auth/google/*（Googleログインの往復自体は未認証で許可する）。
-            SFA_BASIC_USER/SFA_BASIC_PASS 未設定時はfail-closed（503）。
+            GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET 未設定時はfail-closed（503、ログイン手段が
+            存在しなくなるため）。
             未認証: GETは /login へ302誘導（ネイティブBasicダイアログを出さない＝モバイルのループ回避, #54）、
             それ以外は401 JSON。呼び出し側は即returnすること。
             """
@@ -20461,12 +20452,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     or path.startswith("/auth/google/")
                     or path.startswith("/static/")):
                 return True
-            if not SFA_BASIC_USER or not SFA_BASIC_PASS:
-                body = ("<h1>503</h1><p>SFA_BASIC_USER / SFA_BASIC_PASS が未設定のため"
+            if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+                body = ("<h1>503</h1><p>GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET が未設定のため"
                         "アクセスを拒否しています（fail-closed）。環境変数を設定してください。</p>").encode("utf-8")
                 self._send(body, status=503)
                 return False
-            # 1) フォームログインの署名Cookieセッション
+            # Googleログインの署名Cookieセッション（唯一の認証経路）
             try:
                 ck = SimpleCookie(self.headers.get("Cookie", ""))
                 sess = ck[_SESSION_COOKIE].value if _SESSION_COOKIE in ck else ""
@@ -20474,15 +20465,6 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 sess = ""
             if sess and _valid_session_token(sess):
                 return True
-            # 2) 従来のBasic認証（PC等の既存運用を壊さないため併存）
-            header = self.headers.get("Authorization", "")
-            if header.startswith("Basic "):
-                try:
-                    userpass = base64.b64decode(header[6:]).decode("utf-8")
-                except Exception:  # noqa: BLE001
-                    userpass = ""
-                if hmac.compare_digest(userpass, f"{SFA_BASIC_USER}:{SFA_BASIC_PASS}"):
-                    return True
             # 未認証 → ログイン画面へ（ネイティブダイアログは出さない）
             if self.command == "GET":
                 nxt = urllib.parse.quote(self.path, safe="")
@@ -21746,30 +21728,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     f_list = {k: v for k, v in d.items()}
                     f = {k: (v[0] if v else "") for k, v in d.items()}
 
-                # ── ログイン（フォーム認証・Cookieセッション付与, #54） ──
-                if path == "/login":
-                    _u = f.get("username", "")
-                    _p = f.get("password", "")
-                    _nxt = f.get("next", "/") or "/"
-                    if not _nxt.startswith("/"):
-                        _nxt = "/"
-                    if (SFA_BASIC_USER and SFA_BASIC_PASS
-                            and hmac.compare_digest(_u, SFA_BASIC_USER)
-                            and hmac.compare_digest(_p, SFA_BASIC_PASS)):
-                        _secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "") == "https" else ""
-                        self.send_response(303)
-                        self.send_header("Location", _nxt)
-                        self.send_header("Set-Cookie",
-                                         f"{_SESSION_COOKIE}={_make_session_token()}; Path=/; HttpOnly; "
-                                         f"SameSite=Lax; Max-Age={_SESSION_MAX_AGE}{_secure}")
-                        self.send_header("Content-Length", "0")
-                        self.end_headers()
-                    else:
-                        self._send(login_page(_nxt, error="ユーザー名またはパスワードが違います。"),
-                                   status=401, ctype="text/html; charset=utf-8")
-
                 # ── マーケ施策診断ツール（保存・削除） ──
-                elif path == "/mktg-diagnostic/create":
+                if path == "/mktg-diagnostic/create":
                     try:
                         _total_matched = int(f.get("total_matched", "0") or 0)
                     except ValueError:
