@@ -4887,9 +4887,10 @@ def delivery_form(con, delivery_id: int) -> str:
             return (f'<th style="text-align:left;white-space:nowrap;width:{_LABEL_W}px;'
                     f'position:sticky;left:0;z-index:2;background:{bg}"{t}>{text}</th>')
 
-        def _sticky_final(html, bg):
+        def _sticky_final(html, bg, title=""):
+            _t = f' title="{_esc(title)}"' if title else ""
             return (f'<td style="text-align:center;white-space:nowrap;width:{_FINAL_W}px;'
-                    f'position:sticky;left:{_LABEL_W}px;z-index:2;background:{bg}">{html}</td>')
+                    f'position:sticky;left:{_LABEL_W}px;z-index:2;background:{bg}"{_t}>{html}</td>')
 
         _last_wk = grid["weeks"][-1]
         head = (f'<th style="position:sticky;left:0;z-index:3;background:#fff"></th>'
@@ -4928,11 +4929,13 @@ def delivery_form(con, delivery_id: int) -> str:
         _final_w = _prod["cum_workload"].get(_last_wk, 0.0)
         _final_html = (f'{_num0(_final_p)}万<br><span style="font-size:9px;opacity:.7">稼{_num_pct(_final_w)}%</span>'
                        if _final_p is not None else "·")
+        _final_mg = _prod["cum_margin"].get(_last_wk)
+        _final_mg_html = f'{_num_pct(_final_mg)}万' if _final_mg is not None else "·"
         _label_title_rev = "限界利益＝売上－外注費－想定経費。週別＝その週の限界利益、累計＝開始からその週までの累計。"
         _label_title_prod = "累計生産性＝月100%稼働あたりの限界利益単価＝累計限界利益×400÷累計稼働率（%週）÷4ヶ月換算。累計稼働率＝開始からその週までの稼働率(%週)累計。"
         _label_title_work = "週別生産性＝その週単体を月100%稼働に換算した場合の限界利益単価（非累計）。週別稼働率＝その週単体の稼働率。"
         grows = (f'<tr>{_sticky_label("週別限界利益/累計限界利益", "#f0f7ff", _label_title_rev)}'
-                 f'{_sticky_final("·", "#f0f7ff")}{_rev_cells}</tr>'
+                 f'{_sticky_final(_final_mg_html, "#f0f7ff", "最終着地の累計限界利益")}{_rev_cells}</tr>'
                  f'<tr>{_sticky_label("累計生産性/累計稼働率", "#f5f0ff", _label_title_prod)}'
                  f'{_sticky_final(_final_html, "#f5f0ff")}{_prod_cells}</tr>'
                  f'<tr>{_sticky_label("週別生産性/週別稼働率", "#f0fdf4", _label_title_work)}'
@@ -5732,7 +5735,7 @@ def delivery_form(con, delivery_id: int) -> str:
       var perWeightRevenue = totalWeight>0 ? feeTotal/totalWeight : 0;
       var perWeightCost = totalWeight>0 ? costTotal/totalWeight : 0;
       var perWeightExpense = totalWeight>0 ? expenseTotal/totalWeight : 0;
-      var runningMargin=0, runningWork=0, revRow='', prodRow='', workRow='', finalP=null, finalW=0;
+      var runningMargin=0, runningWork=0, revRow='', prodRow='', workRow='', finalP=null, finalW=0, finalMg=0;
       var LABEL_W=150, FINAL_W=90;
       weeks.forEach(function(k,i){{
         var wgt=weightOf[k]!=null?weightOf[k]:1.0;
@@ -5747,7 +5750,7 @@ def delivery_form(con, delivery_id: int) -> str:
         // 不要（ユーザー要望2026-09-23）のため_r0で四捨五入した整数のみ表示する。
         var wp = work>0 ? _r0(margin*400/work) : null;
         var cp = runningWork>0 ? _r0(runningMargin*400/runningWork) : null;
-        if(i===weeks.length-1){{ finalP=cp; finalW=runningWork; }}
+        if(i===weeks.length-1){{ finalP=cp; finalW=runningWork; finalMg=runningMargin; }}
         revRow += '<td style="text-align:center;white-space:nowrap;background:#f0f7ff" title="売上'+_r1(rev)+'万－外注費'+_r1(cost)+'万－経費'+_r1(exp)+'万＝限界利益累計'+_r1(runningMargin)+'万（想定経費（総額）='+_r1(expenseTotal)+'万）">'
           +(margin?_r1(margin)+'万':'·')+'<br><span style="font-size:9px;opacity:.7">累'+_r1(runningMargin)+'万</span></td>';
         prodRow += '<td style="text-align:center;white-space:nowrap;background:#f5f0ff"'
@@ -5757,6 +5760,7 @@ def delivery_form(con, delivery_id: int) -> str:
           +'<br><span style="font-size:9px;opacity:.7">週'+_r1(work)+'%</span></td>';
       }});
       var finalHtml = finalP!==null ? (finalP+'万<br><span style="font-size:9px;opacity:.7">稼'+_r1(finalW)+'%</span>') : '·';
+      var finalMgHtml = _r1(finalMg)+'万';
       var stickyLabel = function(text, bg, title){{
         return '<th style="text-align:left;white-space:nowrap;width:'+LABEL_W+'px;position:sticky;left:0;'
           +'z-index:2;background:'+bg+'"'+(title?' title="'+title+'"':'')+'>'+text+'</th>';
@@ -5774,7 +5778,7 @@ def delivery_form(con, delivery_id: int) -> str:
           return '<th style="font-size:11px;white-space:nowrap'+bg+'"'
             +(partial?' title="対象外期間により有効週数='+_r1(wgt)+'（営業日ベース按分）"':'')+'>'+(+p[1])+'/'+(+p[2])+mark+'</th>';}}).join('')+'</tr>'
         +'<tr>'+stickyLabel('週別限界利益/累計限界利益','#f0f7ff','限界利益＝売上－外注費－想定経費（絶対額）。週別＝その週の限界利益、累計＝開始からその週までの累計。')
-          +stickyFinal('·','#f0f7ff')+revRow+'</tr>'
+          +stickyFinal(finalMgHtml,'#f0f7ff')+revRow+'</tr>'
         +'<tr>'+stickyLabel('累計生産性/累計稼働率','#f5f0ff','累計生産性＝月100%稼働あたりの限界利益単価＝累計限界利益×400÷累計稼働率（%週）÷4ヶ月換算。累計稼働率＝開始からその週までの稼働率(%週)累計。')
           +stickyFinal(finalHtml,'#f5f0ff')+prodRow+'</tr>'
         +'<tr>'+stickyLabel('週別生産性/週別稼働率','#f0fdf4','週別生産性＝その週単体を月100%稼働に換算した場合の限界利益単価（非累計）。週別稼働率＝その週単体の稼働率。')
