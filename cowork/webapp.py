@@ -5042,7 +5042,7 @@ def delivery_form(con, delivery_id: int) -> str:
     <div class="card">
 
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch;margin-bottom:14px">
-        <div style="flex:1 1 380px;min-width:340px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+        <div style="flex:1 1 380px;min-width:340px;max-width:700px;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
           <h3 style="margin:0 0 4px;font-size:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">基礎情報
             <button class="btn" form="dvBaseForm" style="font-size:12px">保存</button>
             <span id="dvBaseSaveStatus" class="muted" style="font-size:11px;font-weight:normal">入力すると自動保存されます</span>
@@ -5052,7 +5052,7 @@ def delivery_form(con, delivery_id: int) -> str:
           <form id="dvBaseForm" method="post" action="/delivery/{delivery_id}/save" style="display:flex;flex-direction:column;flex:1">
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
               <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:130px"></label>
-              <label style="font-size:12px">週数<span class="muted" style="display:inline-block;width:60px;font-size:10px;white-space:normal;vertical-align:top">（対象外期間を除いた有効週数・自動計算）</span><br><input type="text" id="hdrWeeks" value="{_weeks_val}" readonly style="width:60px;background:#f8fafc;color:#64748b"></label>
+              <label style="font-size:12px" title="対象外期間を除いた有効週数・自動計算">週数<br><input type="text" id="hdrWeeks" value="{_weeks_val}" readonly style="width:60px;background:#f8fafc;color:#64748b;cursor:help"></label>
               <label style="font-size:12px">開始日<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" style="width:125px" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">終了日<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" style="width:125px" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status" style="width:74px">{status_opts}</select></label>
@@ -5062,11 +5062,11 @@ def delivery_form(con, delivery_id: int) -> str:
                 <span class="muted" style="font-size:10px">　開始日・終了日はクリック、対象外期間はドラッグしてなぞる（クリックのみなら1日だけ）</span></div>
               <div style="display:flex;gap:10px;flex-wrap:wrap">
                 <div><div class="muted" style="font-size:11px;margin-bottom:2px">開始日</div>
-                  <div id="dvStartCal" style="width:220px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div></div>
+                  <div id="dvStartCal" style="width:200px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div></div>
                 <div><div class="muted" style="font-size:11px;margin-bottom:2px">終了日</div>
-                  <div id="dvEndCal" style="width:220px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div></div>
+                  <div id="dvEndCal" style="width:200px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div></div>
                 <div><div class="muted" style="font-size:11px;margin-bottom:2px">対象外期間（盆休み等）</div>
-                  <div id="dvExclCal" style="width:220px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div></div>
+                  <div id="dvExclCal" style="width:200px;border:1px solid #e6e9f0;border-radius:8px;padding:8px"></div></div>
               </div>
             </div>
             <div id="dvExclChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>
@@ -5099,11 +5099,11 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">成果報酬比率(%)<br>
                 <input type="number" step="0.1" min="0" max="100" id="dvPerfFeeRatio" name="performance_fee_ratio" style="width:90px"
                        value="{"" if dv.get("performance_fee_ratio") is None else dv.get("performance_fee_ratio")}" oninput="dvPerfFeeChanged()"></label>
-              <label style="font-size:12px">想定インパクト(万)<span class="muted" style="font-size:10px">×比率=報酬額/総額</span><br>
-                <input type="number" step="0.1" min="0" id="dvExpectedImpact" name="expected_impact" style="width:100px"
+              <label style="font-size:12px" title="想定インパクト×成果報酬比率＝報酬額/総額">想定インパクト(万)<br>
+                <input type="number" step="0.1" min="0" id="dvExpectedImpact" name="expected_impact" style="width:90px"
                        value="{"" if dv.get("expected_impact") is None else dv.get("expected_impact")}" oninput="dvPerfFeeChanged()"></label>
+              <span class="muted" style="font-size:11px;align-self:center;cursor:help" id="dvFeeMonths" title="">ⓘ</span>
             </div>
-            <p class="muted" style="font-size:11px;margin:2px 0 0" id="dvFeeMonths"></p>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">外注先<br>
                 <input type="text" id="dvCostVendor" name="cost_vendor" style="width:140px"
@@ -5123,7 +5123,7 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">想定経費(万)<span class="muted" style="font-size:10px">絶対額</span><br>
                 <input type="number" step="0.1" min="0" id="dvExpectedExpense" name="expected_expense_total" style="width:80px"
                        value="{_num_pct(sfa_db.delivery_expected_expense_total(dv))}" oninput="dvFeeRecalc()"></label>
-              <span class="muted" style="font-size:11px;align-self:center" id="dvCostMonths"></span>
+              <span class="muted" style="font-size:11px;align-self:center;cursor:help" id="dvCostMonths" title="">ⓘ</span>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">請求方法<br><select name="billing_method">{_delivery_billing_method_opts(con, dv.get("billing_method"))}</select></label>
@@ -5431,7 +5431,7 @@ def delivery_form(con, delivery_id: int) -> str:
       if(typeof dvStartCalRender==='function'){{ dvStartCalRender(); dvEndCalRender(); dvExclCalRender(); }}
       var mo=document.getElementById('dvFeeMonthly'), to=document.getElementById('dvFeeTotal');
       var note=document.getElementById('dvFeeMonths');
-      if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（対象外期間を除いた有効週数÷4）') : '開始日・終了日を入れると換算';
+      if(note) note.title = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（対象外期間を除いた有効週数÷4）') : '開始日・終了日を入れると換算';
       // 手修正フラグはDBに永続化される隠しフィールドが単一の情報源（ページ再読込後も保持するため。
       // ユーザー要望2026-09-24: 手修正した総額/月額が別フィールドの変更で自動計算に上書きされる
       // 不具合の修正）。dataset.manualは既存の判定ロジックをそのまま使うためのミラー。
@@ -5480,7 +5480,7 @@ def delivery_form(con, delivery_id: int) -> str:
       var mode=modeEl.value, m=_dvFeeMonths();
       var mo=document.getElementById('dvCostMonthly'), to=document.getElementById('dvCostTotal');
       var note=document.getElementById('dvCostMonths');
-      if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（対象外期間を除いた有効週数÷4）') : '開始/終了週を入れると換算';
+      if(note) note.title = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（対象外期間を除いた有効週数÷4）') : '開始/終了週を入れると換算';
       // 手修正フラグはDBに永続化される隠しフィールドが単一の情報源（報酬額と同じ仕組み。#dvFeeRecalc参照）。
       var manualFlagEl=document.getElementById('dvCostManualFlag'), manualOn=manualFlagEl&&manualFlagEl.value==='1';
       if(mode==='total'){{ mo.dataset.manual = manualOn?'1':''; }} else {{ to.dataset.manual = manualOn?'1':''; }}
