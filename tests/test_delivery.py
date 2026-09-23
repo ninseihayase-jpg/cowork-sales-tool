@@ -1546,7 +1546,7 @@ def test_delivery_weekly_productivity_dilutes_when_actual_extends_past_contract_
     一致する自己整合性チェックのため×4した。従来は%週のままで割っており月額報酬の1/4だった）。"""
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
-    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total", expected_expense_pct=0,
+    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total", expected_expense_total=0,
                             start_week="2026-06-01", end_week="2026-06-15")
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
                                     to_week="2026-06-22", fte_pct=50)
@@ -1597,7 +1597,7 @@ def test_delivery_weekly_productivity_resolves_monthly_fee_mode(con, acc_id):
 def test_delivery_form_renders_revenue_and_productivity_rows(con, acc_id):
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
-    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total", expected_expense_pct=0,
+    sfa_db.update_delivery(con, dvid, fee_total=300, fee_mode="total", expected_expense_total=0,
                             start_week="2026-06-01", end_week="2026-06-15")
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
                                     to_week="2026-06-15", fte_pct=50)
@@ -1612,7 +1612,7 @@ def test_delivery_weekly_productivity_returns_non_cumulative_weekly_figures(con,
     非累計（その週単体）のweekly_workload/weekly_productivityも返す。"""
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
-    sfa_db.update_delivery(con, dvid, fee_total=200, fee_mode="total", expected_expense_pct=0,
+    sfa_db.update_delivery(con, dvid, fee_total=200, fee_mode="total", expected_expense_total=0,
                             start_week="2026-06-01", end_week="2026-06-08")
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
                                     to_week="2026-06-08", fte_pct=50)

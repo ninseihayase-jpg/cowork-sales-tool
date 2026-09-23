@@ -119,7 +119,7 @@ DELIVERY_ROLES = ["プロジェクトマネジャー", "リードコンサルタ
                   "リードエンジニア", "エンジニア", "内部アドバイザー", "外部アドバイザー"]
 DELIVERY_BILLING_DUE_DEFAULT = "当月末日"
 DELIVERY_EXPENSE_BILLING_OPTIONS = ["有", "無", "不明(要確認)"]
-DELIVERY_DEFAULT_EXPENSE_PCT = 5.0  # 想定経費のデフォルト（売上に対する%）。#189フォローアップ。
+DELIVERY_DEFAULT_EXPENSE_PCT = 5.0  # 想定経費の初期値算出に使う既定%（絶対額=総額×この%。#189フォローアップ）。
 DELIVERY_PERFORMANCE_FEE_OPTIONS = ["有", "無"]  # 成果報酬有無（2026-08-30）。「有」の場合のみ比率入力が必須。
 # 社内PJ(deal_issues)の会社機能（#147）。商談に紐づかない社内PJ（deal_id IS NULL＝商談共通）の
 # 場合に、社内のどの機能に紐づくかを選択する。マスタ画面で編集可能。
@@ -1071,7 +1071,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
     cost_monthly REAL,                     -- 外注費/月額（万円）
     cost_total   REAL,                     -- 外注費/総額（万円）。期間の月数でcost_monthlyと相互換算
     cost_vendor  TEXT,                     -- 外注先名（自由記述）
-    expected_expense_pct REAL,             -- 想定経費（売上に対する%）。NULL=既定値5%として扱う（表示・計算とも）。
+    expected_expense_total REAL,           -- 想定経費（絶対額・万円）。NULL=総額×5%を既定値として扱う（表示・計算とも）。
                                             -- 限界利益＝売上－外注費－想定経費（売上×この%）の算出に使う（#189フォローアップ）。
     payment_cycle_months INTEGER DEFAULT 1, -- 支払いサイクル: 検収月から何ヶ月後に入金されるか（既定=翌月）
     business_type_l1_override TEXT,        -- 事業種別L1の手修正。NULL=紐づく商談のL1を継承
@@ -1748,8 +1748,12 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         if _dv_cols and "cost_vendor" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN cost_vendor TEXT")
         # 想定経費（2026-09-23・#189フォローアップ）: 限界利益＝売上－外注費－想定経費の算出に使う。
+        # 絶対額(万円)で入力する方式に変更（2026-09-23）。旧expected_expense_pct列は未使用のまま残す
+        # （本番投入直後で実データが無いため、DROP TABLEを伴う作り直しはせず単純追加のみ）。
         if _dv_cols and "expected_expense_pct" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN expected_expense_pct REAL")
+        if _dv_cols and "expected_expense_total" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN expected_expense_total REAL")
         # 月別入金計画（2026-08）: 検収月から何ヶ月後に入金されるか。
         if _dv_cols and "payment_cycle_months" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN payment_cycle_months INTEGER DEFAULT 1")
@@ -5404,13 +5408,19 @@ def delivery_display_costs(dv: dict) -> tuple:
     return compute_delivery_fee("monthly", dv.get("cost_monthly"), None, months)
 
 
-def delivery_expected_expense_pct(dv: dict) -> float:
-    """想定経費（売上に対する%）。未設定（NULL）は既定値5%として扱う（#189フォローアップ）。"""
-    v = dv.get("expected_expense_pct") if dv else None
+def delivery_expected_expense_total(dv: dict, fee_total: float | None = None) -> float:
+    """想定経費（絶対額・万円）。未設定（NULL）は総額×既定5%を初期値として返す（絶対額で入力する
+    方式に変更。ユーザー要望2026-09-23）。一度保存されればfee_totalが変わっても追従しない
+    （外注費と同じ「絶対額」の性質）。fee_total省略時はdvから delivery_display_fees() で解決する。"""
+    v = dv.get("expected_expense_total") if dv else None
     try:
-        return float(v) if v is not None and v != "" else DELIVERY_DEFAULT_EXPENSE_PCT
+        if v is not None and v != "":
+            return float(v)
     except (TypeError, ValueError):
-        return DELIVERY_DEFAULT_EXPENSE_PCT
+        pass
+    if fee_total is None:
+        fee_total = float(delivery_display_fees(dv)[1] or 0) if dv else 0.0
+    return round(fee_total * DELIVERY_DEFAULT_EXPENSE_PCT / 100.0, 1)
 
 
 def delivery_profit(dv: dict) -> tuple:
@@ -5466,7 +5476,7 @@ def compute_delivery_fee(mode: str | None, monthly, total, months) -> tuple:
 def update_delivery(con, delivery_id: int, **fields) -> None:
     allowed = {"title", "start_week", "end_week", "status", "overview",
                "fee_mode", "fee_monthly", "fee_total", "excluded_periods", "confidence_override",
-               "cost_mode", "cost_monthly", "cost_total", "cost_vendor", "expected_expense_pct",
+               "cost_mode", "cost_monthly", "cost_total", "cost_vendor", "expected_expense_total",
                "payment_cycle_months", "business_type_l1_override", "business_type_l2_override",
                "responsible_owner", "handling_owner", "billing_method", "billing_due",
                "billing_recipient", "expense_billing", "expense_billing_note",
@@ -6065,9 +6075,9 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     週別売上＝fee_total（案件総額報酬）を、契約期間（deliveries.start_week〜end_week。未設定なら
     weeksの全期間＝アサイン実働の最小〜最大）内の週に、各週の「有効週数」（対象外期間なしなら
     フラットに1週=1単位、対象外期間ありなら営業日ベースで按分。_delivery_period_weight参照）に
-    比例して配分（合計は必ずfee_totalに一致。期間外の週は0円）。外注費(cost_total)も同じ配分で
-    週別に按分する。想定経費は売上に対する%（delivery_expected_expense_pct）で、その週の売上に
-    直接乗じて算出する（按分不要・売上に比例するため）。
+    比例して配分（合計は必ずfee_totalに一致。期間外の週は0円）。外注費(cost_total)・想定経費
+    (expected_expense_total)も同じ配分（有効週数の比率）で週別に按分する（絶対額で入力する
+    方式に変更。ユーザー要望2026-09-23）。
     週別限界利益＝週別売上－週別外注費－週別想定経費。以降の生産性・累計は全てこの限界利益を
     基準に算出する（従来の売上ベースから変更。ユーザー要望2026-09-23）。
     累計生産性(その週まで)＝「月100%稼働あたりの限界利益単価（万円）」。Σ週別総稼働率(実想定・
@@ -6093,7 +6103,7 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     # 対象外期間を除いた月数で換算されるため、ここでも自動的に対象外期間ぶんが反映される）。
     fee_total = float(delivery_display_fees(dv)[1] or 0)
     cost_total = float(delivery_display_costs(dv)[1] or 0)
-    expense_pct = delivery_expected_expense_pct(dv)
+    expense_total = delivery_expected_expense_total(dv, fee_total)
     if start_week and end_week:
         try:
             sd, ed = date.fromisoformat(str(start_week)[:10]), date.fromisoformat(str(end_week)[:10])
@@ -6112,6 +6122,7 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     total_weight = sum(weights.get(wk, 0.0) for wk in revenue_weeks_list)
     per_weight_revenue = (fee_total / total_weight) if total_weight > 0 else 0.0
     per_weight_cost = (cost_total / total_weight) if total_weight > 0 else 0.0
+    per_weight_expense = (expense_total / total_weight) if total_weight > 0 else 0.0
     revenue_weeks_set = set(revenue_weeks_list)
 
     grid = delivery_grid(con, delivery_id)
@@ -6126,7 +6137,7 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
         w = weights.get(wk, 1.0)
         rev = per_weight_revenue * w if wk in revenue_weeks_set else 0.0
         cost = per_weight_cost * w if wk in revenue_weeks_set else 0.0
-        exp = rev * (expense_pct / 100.0)
+        exp = per_weight_expense * w if wk in revenue_weeks_set else 0.0
         margin = rev - cost - exp
         work = weekly_actual_total.get(wk, 0.0) * w
         weekly_revenue[wk] = round(rev, 1)
@@ -6148,7 +6159,7 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
         cum_margin[wk] = round(running_margin, 1)
         cum_workload[wk] = round(running_work, 1)
         productivity[wk] = round(running_margin * 400 / running_work, 1) if running_work > 0 else None
-    return {"weeks": weeks, "fee_total": fee_total, "cost_total": cost_total, "expense_pct": expense_pct,
+    return {"weeks": weeks, "fee_total": fee_total, "cost_total": cost_total, "expense_total": expense_total,
             "weekly_revenue": weekly_revenue, "cum_revenue": cum_revenue,
             "weekly_cost": weekly_cost, "cum_cost": cum_cost,
             "weekly_expense": weekly_expense, "cum_expense": cum_expense,
@@ -6488,8 +6499,11 @@ def compute_delivery_load(con, *, start_week: str | None = None,
         "dv.start_week AS delivery_start, dv.end_week AS delivery_end, "
         "dv.fee_mode AS fee_mode, dv.fee_monthly AS fee_monthly, dv.fee_total AS fee_total_raw, "
         "dv.cost_mode AS cost_mode, dv.cost_monthly AS cost_monthly, dv.cost_total AS cost_total_raw, "
-        "dv.expected_expense_pct AS expected_expense_pct, "
+        "dv.expected_expense_total AS expected_expense_total, "
         "dv.excluded_periods AS excluded_periods, "
+        "dv.business_type_l1_override AS business_type_l1_override, "
+        "dv.business_type_l2_override AS business_type_l2_override, "
+        "d.business_type_l1 AS deal_business_type_l1, d.business_type_l2 AS deal_business_type_l2, "
         "acc.name AS account_name "
         "FROM delivery_assignments da "
         "JOIN deliveries dv ON dv.id=da.delivery_id "
@@ -6503,6 +6517,12 @@ def compute_delivery_load(con, *, start_week: str | None = None,
             continue
         confidence = delivery_confidence_effective(_dv_like)
         key = _DELIVERY_CONFIDENCE_BUCKET[confidence]
+        _biz_l1, _biz_l2 = delivery_business_type_effective({
+            "business_type_l1_override": r["business_type_l1_override"],
+            "business_type_l2_override": r["business_type_l2_override"],
+            "deal_business_type_l1": r["deal_business_type_l1"],
+            "deal_business_type_l2": r["deal_business_type_l2"],
+        })
         actual = r["fte_pct"] or 0
         billing = float(r["fte_billing"]) if r["fte_billing"] is not None else actual
         # from_week/to_weekは日ベースの任意の日付（#180）。週バケットへの割当は月曜スナップ後に
@@ -6527,12 +6547,13 @@ def compute_delivery_load(con, *, start_week: str | None = None,
                 "account_name": r["account_name"] or "",
                 "delivery_id": r["delivery_id"], "delivery_start": r["delivery_start"] or "",
                 "role_order": _role_order.get(r["delivery_id"], {}).get(r["role"] or "", 9999),
+                "business_type_l1": _biz_l1 or "", "business_type_l2": _biz_l2 or "",
             })
         if r["delivery_id"] not in deliveries_meta:
             _dv_fee_like = {
                 "fee_mode": r["fee_mode"], "fee_monthly": r["fee_monthly"], "fee_total": r["fee_total_raw"],
                 "cost_mode": r["cost_mode"], "cost_monthly": r["cost_monthly"], "cost_total": r["cost_total_raw"],
-                "expected_expense_pct": r["expected_expense_pct"],
+                "expected_expense_total": r["expected_expense_total"],
                 "start_week": r["delivery_start"], "end_week": r["delivery_end"],
                 "excluded_periods": r["excluded_periods"],
             }
@@ -6541,10 +6562,11 @@ def compute_delivery_load(con, *, start_week: str | None = None,
             deliveries_meta[r["delivery_id"]] = {
                 "fee_total": _fee_total or 0.0,
                 "cost_total": _cost_total or 0.0,
-                "expense_pct": delivery_expected_expense_pct(_dv_fee_like),
+                "expense_total": delivery_expected_expense_total(_dv_fee_like, _fee_total or 0.0),
                 "start_week": r["delivery_start"] or "", "end_week": r["delivery_end"] or "",
                 "excluded_periods": [{"from": f.isoformat(), "to": t.isoformat()}
                                      for f, t in _delivery_excluded_periods(_dv_fee_like)],
+                "business_type_l1": _biz_l1 or "", "business_type_l2": _biz_l2 or "",
             }
     base = base_workload_by_owner(con)
     owners = sorted(set(list(base.keys()) + list(cells.keys())),

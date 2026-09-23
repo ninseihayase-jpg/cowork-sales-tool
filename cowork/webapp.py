@@ -4906,7 +4906,7 @@ def delivery_form(con, delivery_id: int) -> str:
             _cc = _prod["cum_cost"].get(w, 0.0)
             _ce = _prod["cum_expense"].get(w, 0.0)
             _mg_title = (f' title="売上{_num_pct(_cr)}万－外注費{_num_pct(_cc)}万－経費{_num_pct(_ce)}万'
-                         f'＝限界利益累計{_num_pct(_cmg)}万（累計値。想定経費={_num_pct(_prod["expense_pct"])}%）"')
+                         f'＝限界利益累計{_num_pct(_cmg)}万（累計値。想定経費（総額）={_num_pct(_prod["expense_total"])}万）"')
             _rev_cells += (f'<td style="text-align:center;white-space:nowrap;background:#f0f7ff"{_mg_title}>'
                             f'{(_num_pct(_mg) + "万") if _mg else "·"}'
                             f'<br><span style="font-size:9px;opacity:.7">累{_num_pct(_cmg)}万</span></td>')
@@ -4956,7 +4956,7 @@ def delivery_form(con, delivery_id: int) -> str:
                      '<p class="muted" style="font-size:11px;margin:6px 0 0">※色は<b>実想定</b>基準。請求が実想定と異なる週は小さく「請◯」を併記。'
                      'このグリッドはこのDelivery分のみ。全社の総工数（デモ開発＋Delivery＋ベース）と負荷色はHishoダッシュボードで見ます。'
                      '項目欄・最終列は固定表示、項目欄にカーソルを合わせると定義が出ます。<br>'
-                     '「限界利益」＝売上－外注費－想定経費（想定経費は売上に対する%。基礎情報「想定経費(%)」で設定）。'
+                     '「限界利益」＝売上－外注費－想定経費（想定経費は絶対額。基礎情報「想定経費(万)」で設定、未設定時は総額×5%）。'
                      '契約期間の前後に実稼働がある場合も稼働だけを分母に含め、生産性の過大評価を防ぎます。'
                      '週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、'
                      '<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。'
@@ -5122,9 +5122,9 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">外注費/総額(万)<br>
                 <input type="number" step="0.1" min="0" id="dvCostTotal" name="cost_total" style="width:110px"
                        value="{"" if dv.get("cost_total") is None else dv.get("cost_total")}" oninput="dvCostFieldInput(this)"></label>
-              <label style="font-size:12px">想定経費(%)<span class="muted" style="font-size:10px">売上比</span><br>
-                <input type="number" step="0.1" min="0" max="100" id="dvExpensePct" name="expected_expense_pct" style="width:80px"
-                       value="{_num_pct(sfa_db.delivery_expected_expense_pct(dv))}" oninput="dvFeeRecalc()"></label>
+              <label style="font-size:12px">想定経費(万)<span class="muted" style="font-size:10px">絶対額</span><br>
+                <input type="number" step="0.1" min="0" id="dvExpectedExpense" name="expected_expense_total" style="width:80px"
+                       value="{_num_pct(sfa_db.delivery_expected_expense_total(dv))}" oninput="dvFeeRecalc()"></label>
               <span class="muted" style="font-size:11px;align-self:center" id="dvCostMonths"></span>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
@@ -5713,13 +5713,13 @@ def delivery_form(con, delivery_id: int) -> str:
       rows.forEach(function(r){{ weeks.forEach(function(k){{ var c=r.cells[k]; if(c) weeklyActual[k]+=(c.a||0); }}); }});
       var feeEl=document.getElementById('dvFeeTotal'), feeTotal=feeEl?(parseFloat(feeEl.value)||0):0;
       var costEl=document.getElementById('dvCostTotal'), costTotal=costEl?(parseFloat(costEl.value)||0):0;
-      var expEl=document.getElementById('dvExpensePct'), expensePct=expEl&&expEl.value!==''?parseFloat(expEl.value):5;
+      var expEl=document.getElementById('dvExpectedExpense'), expenseTotal=expEl&&expEl.value!==''?parseFloat(expEl.value):(feeTotal*0.05);
       var swEl=document.getElementById('hdrStart'), ewEl=document.getElementById('hdrEnd');
       var sw=swEl?swEl.value:'', ew=ewEl?ewEl.value:'';
       // 週別限界利益・稼働累計の按分（サーバ側delivery_weekly_productivity()と同じ式。#189）:
       // 対象外期間なしはフラット（各週=1.0）、ありなら境界週・対象外期間と重なる週だけ
-      // 営業日ベースで按分した「有効週数」の比率で配分する。外注費も売上と同じ比率で按分し、
-      // 想定経費はその週の売上に直接%を掛ける（限界利益＝売上－外注費－想定経費）。
+      // 営業日ベースで按分した「有効週数」の比率で配分する。外注費・想定経費（絶対額）とも
+      // 売上と同じ比率で按分する（限界利益＝売上－外注費－想定経費。絶対額入力方式・2026-09-23）。
       var revWeeksList=[];
       if(sw && ew){{ var rw=_mondayOf(sw), ewMon=_mondayOf(ew), rg=0;
         while(rw<=ewMon && rg<520){{ revWeeksList.push(rw); rw=_isoAdd(rw,1); rg++; }} }}
@@ -5731,13 +5731,14 @@ def delivery_form(con, delivery_id: int) -> str:
       var totalWeight=0; revWeeksList.forEach(function(k){{ totalWeight+=(weightOf[k]||0); }});
       var perWeightRevenue = totalWeight>0 ? feeTotal/totalWeight : 0;
       var perWeightCost = totalWeight>0 ? costTotal/totalWeight : 0;
+      var perWeightExpense = totalWeight>0 ? expenseTotal/totalWeight : 0;
       var runningMargin=0, runningWork=0, revRow='', prodRow='', workRow='', finalP=null, finalW=0;
       var LABEL_W=150, FINAL_W=90;
       weeks.forEach(function(k,i){{
         var wgt=weightOf[k]!=null?weightOf[k]:1.0;
         var rev = revWeeksSet[k] ? perWeightRevenue*wgt : 0;
         var cost = revWeeksSet[k] ? perWeightCost*wgt : 0;
-        var exp = rev*(expensePct/100);
+        var exp = revWeeksSet[k] ? perWeightExpense*wgt : 0;
         var margin = rev - cost - exp;
         var work = (weeklyActual[k]||0)*wgt;
         runningMargin+=margin; runningWork+=work;
@@ -5747,7 +5748,7 @@ def delivery_form(con, delivery_id: int) -> str:
         var wp = work>0 ? _r0(margin*400/work) : null;
         var cp = runningWork>0 ? _r0(runningMargin*400/runningWork) : null;
         if(i===weeks.length-1){{ finalP=cp; finalW=runningWork; }}
-        revRow += '<td style="text-align:center;white-space:nowrap;background:#f0f7ff" title="売上'+_r1(rev)+'万－外注費'+_r1(cost)+'万－経費'+_r1(exp)+'万＝限界利益累計'+_r1(runningMargin)+'万（想定経費='+_r1(expensePct)+'%）">'
+        revRow += '<td style="text-align:center;white-space:nowrap;background:#f0f7ff" title="売上'+_r1(rev)+'万－外注費'+_r1(cost)+'万－経費'+_r1(exp)+'万＝限界利益累計'+_r1(runningMargin)+'万（想定経費（総額）='+_r1(expenseTotal)+'万）">'
           +(margin?_r1(margin)+'万':'·')+'<br><span style="font-size:9px;opacity:.7">累'+_r1(runningMargin)+'万</span></td>';
         prodRow += '<td style="text-align:center;white-space:nowrap;background:#f5f0ff"'
           +(cp!==null?' title="累計限界利益'+_r1(runningMargin)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%（月換算）"':'')+'>'
@@ -5772,7 +5773,7 @@ def delivery_form(con, delivery_id: int) -> str:
           var mark = wgt<=0 ? '✕' : (partial ? ('('+_r1(wgt)+')') : '');
           return '<th style="font-size:11px;white-space:nowrap'+bg+'"'
             +(partial?' title="対象外期間により有効週数='+_r1(wgt)+'（営業日ベース按分）"':'')+'>'+(+p[1])+'/'+(+p[2])+mark+'</th>';}}).join('')+'</tr>'
-        +'<tr>'+stickyLabel('週別限界利益/累計限界利益','#f0f7ff','限界利益＝売上－外注費－想定経費。週別＝その週の限界利益、累計＝開始からその週までの累計。')
+        +'<tr>'+stickyLabel('週別限界利益/累計限界利益','#f0f7ff','限界利益＝売上－外注費－想定経費（絶対額）。週別＝その週の限界利益、累計＝開始からその週までの累計。')
           +stickyFinal('·','#f0f7ff')+revRow+'</tr>'
         +'<tr>'+stickyLabel('累計生産性/累計稼働率','#f5f0ff','累計生産性＝月100%稼働あたりの限界利益単価＝累計限界利益×400÷累計稼働率（%週）÷4ヶ月換算。累計稼働率＝開始からその週までの稼働率(%週)累計。')
           +stickyFinal(finalHtml,'#f5f0ff')+prodRow+'</tr>'
@@ -5788,7 +5789,7 @@ def delivery_form(con, delivery_id: int) -> str:
       }});
       html+='</table></div><p class="muted" style="font-size:11px;margin:6px 0 0">※色は実想定基準。請求が異なる週は「請◯」併記。編集に追従（行＝メンバー、未選択は役割）。全社の総工数はHishoで。'
         +'項目欄・最終列は固定表示、項目欄にカーソルを合わせると定義が出ます。<br>'
-        +'「限界利益」＝売上－外注費－想定経費（想定経費は売上に対する%。基礎情報「想定経費(%)」で設定）。'
+        +'「限界利益」＝売上－外注費－想定経費（想定経費は絶対額。基礎情報「想定経費(万)」で設定、未設定時は総額×5%）。'
         +'週ヘッダの<b style="color:#b91c1c">✕（赤字）</b>は対象外期間で有効週数=0、<b style="color:#c2410c">(0.4)等（オレンジ）</b>は境界週・対象外期間と重なる週の有効週数（営業日ベース）。</p>';
       box.innerHTML=html;
     }}
@@ -20797,6 +20798,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _load["thresholds"] = sfa_db.DELIVERY_HEAT_THRESHOLDS
                         _load["points_per_fte"] = sfa_db.POINTS_PER_FTE
                         _load["owner_order"] = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
+                        # 事業種別L1/L2フィルタ用マスタ（Hishoダッシュボード稼働予定3タブ共通・2026-09-23）
+                        _load["business_type_l1"] = sfa_db.BUSINESS_TYPE_L1
+                        _load["business_type_l2_by_l1"] = sfa_db.BUSINESS_TYPE_L2_BY_L1
                         _load["base_items"] = sfa_db.list_base_workload(con)  # 明細(人×機能×%)
                         _load["base_max"] = sfa_db.get_owner_base_max(con)    # 人→最大稼働率%（未設定は100扱い・互換）
                         _load["base_max_periods"] = sfa_db.list_base_max_periods(con)  # 人→期間別最大稼働率（#75）
@@ -22635,7 +22639,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         cost_monthly=_cost_monthly,
                         cost_total=_cost_total,
                         cost_vendor=(f.get("cost_vendor", "") or "").strip(),
-                        expected_expense_pct=_to_float(f.get("expected_expense_pct"), None),
+                        expected_expense_total=_to_float(f.get("expected_expense_total"), None),
                         business_type_l1_override=_biz_l1_ov,
                         business_type_l2_override=_biz_l2_ov,
                         billing_method=_billing_method,
