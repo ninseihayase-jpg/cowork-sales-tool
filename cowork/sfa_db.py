@@ -1073,6 +1073,10 @@ CREATE TABLE IF NOT EXISTS deliveries (
     cost_vendor  TEXT,                     -- 外注先名（自由記述）
     expected_expense_total REAL,           -- 想定経費（絶対額・万円）。NULL=総額×5%を既定値として扱う（表示・計算とも）。
                                             -- 限界利益＝売上－外注費－想定経費（売上×この%）の算出に使う（#189フォローアップ）。
+    fee_manual   INTEGER DEFAULT 0,        -- 報酬額: 現在のfee_modeで自動算出される側（非マスタ側）を
+                                            -- 手修正済みかどうか。1なら開始/終了日・月額等が変わっても
+                                            -- 自動再計算で上書きしない（ユーザー要望2026-09-24）。
+    cost_manual  INTEGER DEFAULT 0,        -- 外注費: 同上（cost_modeの非マスタ側の手修正フラグ）。
     payment_cycle_months INTEGER DEFAULT 1, -- 支払いサイクル: 検収月から何ヶ月後に入金されるか（既定=翌月）
     business_type_l1_override TEXT,        -- 事業種別L1の手修正。NULL=紐づく商談のL1を継承
     business_type_l2_override TEXT,        -- 事業種別L2の手修正。NULL=紐づく商談のL2を継承
@@ -1754,6 +1758,11 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE deliveries ADD COLUMN expected_expense_pct REAL")
         if _dv_cols and "expected_expense_total" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN expected_expense_total REAL")
+        # 報酬額/外注費の手修正フラグ（2026-09-24）: 自動再計算で上書きしないための永続フラグ。
+        if _dv_cols and "fee_manual" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN fee_manual INTEGER DEFAULT 0")
+        if _dv_cols and "cost_manual" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN cost_manual INTEGER DEFAULT 0")
         # 月別入金計画（2026-08）: 検収月から何ヶ月後に入金されるか。
         if _dv_cols and "payment_cycle_months" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN payment_cycle_months INTEGER DEFAULT 1")
@@ -5477,6 +5486,7 @@ def update_delivery(con, delivery_id: int, **fields) -> None:
     allowed = {"title", "start_week", "end_week", "status", "overview",
                "fee_mode", "fee_monthly", "fee_total", "excluded_periods", "confidence_override",
                "cost_mode", "cost_monthly", "cost_total", "cost_vendor", "expected_expense_total",
+               "fee_manual", "cost_manual",
                "payment_cycle_months", "business_type_l1_override", "business_type_l2_override",
                "responsible_owner", "handling_owner", "billing_method", "billing_due",
                "billing_recipient", "expense_billing", "expense_billing_note",

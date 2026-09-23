@@ -5051,11 +5051,11 @@ def delivery_form(con, delivery_id: int) -> str:
             ⚠️ 他の項目（体制・アサイン等）より先に、まず基礎情報を入力してください（必須）。自動保存されますが、押し忘れが不安な場合はこの「保存」を押してください。</p>
           <form id="dvBaseForm" method="post" action="/delivery/{delivery_id}/save" style="display:flex;flex-direction:column;flex:1">
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
-              <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:200px"></label>
-              <label style="font-size:12px">週数<span class="muted" style="font-size:10px">（対象外期間を除いた有効週数・自動計算）</span><br><input type="text" id="hdrWeeks" value="{_weeks_val}" readonly style="width:60px;background:#f8fafc;color:#64748b"></label>
-              <label style="font-size:12px">開始日<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
-              <label style="font-size:12px">終了日<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" onchange="dvFeeRecalc();dvCostRecalc()"></label>
-              <label style="font-size:12px">状態<br><select name="status">{status_opts}</select></label>
+              <label style="font-size:12px">案件名<br><input type="text" name="title" value="{_esc(dv.get("title") or "")}" style="width:130px"></label>
+              <label style="font-size:12px">週数<span class="muted" style="display:inline-block;width:60px;font-size:10px;white-space:normal;vertical-align:top">（対象外期間を除いた有効週数・自動計算）</span><br><input type="text" id="hdrWeeks" value="{_weeks_val}" readonly style="width:60px;background:#f8fafc;color:#64748b"></label>
+              <label style="font-size:12px">開始日<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" style="width:125px" onchange="dvFeeRecalc();dvCostRecalc()"></label>
+              <label style="font-size:12px">終了日<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" style="width:125px" onchange="dvFeeRecalc();dvCostRecalc()"></label>
+              <label style="font-size:12px">状態<br><select name="status" style="width:74px">{status_opts}</select></label>
             </div>
             <div style="margin-top:8px">
               <div style="font-size:12px;margin-bottom:4px">開始日・終了日・対象外期間をカレンダーで選択
@@ -5093,6 +5093,7 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">報酬額/総額(万)<br>
                 <input type="number" step="0.1" min="0" id="dvFeeTotal" name="fee_total" style="width:110px"
                        value="{"" if dv.get("fee_total") is None else dv.get("fee_total")}" oninput="dvFeeFieldInput(this)"></label>
+              <input type="hidden" id="dvFeeManualFlag" name="fee_manual" value="{1 if dv.get("fee_manual") else 0}">
               <label style="font-size:12px">成果報酬有無<br>
                 <select id="dvPerfFee" name="performance_fee" onchange="dvPerfFeeChanged()">{_delivery_performance_fee_opts(dv.get("performance_fee"))}</select></label>
               <label style="font-size:12px">成果報酬比率(%)<br>
@@ -5115,6 +5116,7 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">外注費/総額(万)<br>
                 <input type="number" step="0.1" min="0" id="dvCostTotal" name="cost_total" style="width:110px"
                        value="{"" if dv.get("cost_total") is None else dv.get("cost_total")}" oninput="dvCostFieldInput(this)"></label>
+              <input type="hidden" id="dvCostManualFlag" name="cost_manual" value="{1 if dv.get("cost_manual") else 0}">
               <label style="font-size:12px">想定経費(万)<span class="muted" style="font-size:10px">絶対額</span><br>
                 <input type="number" step="0.1" min="0" id="dvExpectedExpense" name="expected_expense_total" style="width:80px"
                        value="{_num_pct(sfa_db.delivery_expected_expense_total(dv))}" oninput="dvFeeRecalc()"></label>
@@ -5311,7 +5313,10 @@ def delivery_form(con, delivery_id: int) -> str:
         +'<button type="button" onclick="'+nextFn+'" style="border:0;background:none;cursor:pointer;font-size:13px;color:#64748b">▶</button></div>';
       html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font-size:10px;color:#94a3b8;text-align:center;margin-bottom:2px">'
         +['月','火','水','木','金','土','日'].map(function(w){{return '<div>'+w+'</div>';}}).join('')+'</div>';
-      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px">';
+      // 日グリッドの高さは常に5週(113px≒23px×5行)に固定し、6週必要な月だけその中でスクロール
+      // させる（3つ並べた時の縦幅を常に揃えるため。ユーザー要望2026-09-24: 5週側に常にあわせる、
+      // 4週等の短い月は下にスキマができてよい）。
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;height:113px;overflow-y:auto">';
       for(var i=0;i<startWd;i++) html+='<div></div>';
       for(var d=1; d<=daysInMonth; d++){{
         var ds=y+'-'+('0'+(m+1)).slice(-2)+'-'+('0'+d).slice(-2);
@@ -5424,6 +5429,11 @@ def delivery_form(con, delivery_id: int) -> str:
       var mo=document.getElementById('dvFeeMonthly'), to=document.getElementById('dvFeeTotal');
       var note=document.getElementById('dvFeeMonths');
       if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（対象外期間を除いた有効週数÷4）') : '開始日・終了日を入れると換算';
+      // 手修正フラグはDBに永続化される隠しフィールドが単一の情報源（ページ再読込後も保持するため。
+      // ユーザー要望2026-09-24: 手修正した総額/月額が別フィールドの変更で自動計算に上書きされる
+      // 不具合の修正）。dataset.manualは既存の判定ロジックをそのまま使うためのミラー。
+      var manualFlagEl=document.getElementById('dvFeeManualFlag'), manualOn=manualFlagEl&&manualFlagEl.value==='1';
+      if(mode==='total'){{ mo.dataset.manual = manualOn?'1':''; }} else {{ to.dataset.manual = manualOn?'1':''; }}
       var ro='#f1f5f9';
       if(mode==='total'){{
         to.style.background='';
@@ -5451,12 +5461,14 @@ def delivery_form(con, delivery_id: int) -> str:
       var modeEl=document.getElementById('dvFeeMode');
       var mode=modeEl?modeEl.value:'monthly';
       var isMaster=(mode==='monthly' && el.id==='dvFeeMonthly')||(mode==='total' && el.id==='dvFeeTotal');
-      if(!isMaster){{ el.dataset.manual='1'; }}
+      if(!isMaster){{ el.dataset.manual='1';
+        var flagEl=document.getElementById('dvFeeManualFlag'); if(flagEl) flagEl.value='1'; }}
       dvFeeRecalc();
     }}
     function dvFeeModeChanged(){{
       var mo=document.getElementById('dvFeeMonthly'), to=document.getElementById('dvFeeTotal');
       mo.dataset.manual=''; to.dataset.manual='';
+      var flagEl=document.getElementById('dvFeeManualFlag'); if(flagEl) flagEl.value='0';
       dvFeeRecalc();
     }}
     /* 外注費（報酬額と同じ月額/総額の自動換算＋手修正の仕組み）。 */
@@ -5465,7 +5477,10 @@ def delivery_form(con, delivery_id: int) -> str:
       var mode=modeEl.value, m=_dvFeeMonths();
       var mo=document.getElementById('dvCostMonthly'), to=document.getElementById('dvCostTotal');
       var note=document.getElementById('dvCostMonths');
-      if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（合計週数÷4）') : '開始/終了週を入れると換算';
+      if(note) note.textContent = m ? ('期間 '+(+m.toFixed(2))+'ヶ月で換算（対象外期間を除いた有効週数÷4）') : '開始/終了週を入れると換算';
+      // 手修正フラグはDBに永続化される隠しフィールドが単一の情報源（報酬額と同じ仕組み。#dvFeeRecalc参照）。
+      var manualFlagEl=document.getElementById('dvCostManualFlag'), manualOn=manualFlagEl&&manualFlagEl.value==='1';
+      if(mode==='total'){{ mo.dataset.manual = manualOn?'1':''; }} else {{ to.dataset.manual = manualOn?'1':''; }}
       var ro='#f1f5f9';
       if(mode==='total'){{
         to.style.background='';
@@ -5483,12 +5498,14 @@ def delivery_form(con, delivery_id: int) -> str:
       var modeEl=document.getElementById('dvCostMode');
       var mode=modeEl?modeEl.value:'monthly';
       var isMaster=(mode==='monthly' && el.id==='dvCostMonthly')||(mode==='total' && el.id==='dvCostTotal');
-      if(!isMaster){{ el.dataset.manual='1'; }}
+      if(!isMaster){{ el.dataset.manual='1';
+        var flagEl=document.getElementById('dvCostManualFlag'); if(flagEl) flagEl.value='1'; }}
       dvCostRecalc();
     }}
     function dvCostModeChanged(){{
       var mo=document.getElementById('dvCostMonthly'), to=document.getElementById('dvCostTotal');
       mo.dataset.manual=''; to.dataset.manual='';
+      var flagEl=document.getElementById('dvCostManualFlag'); if(flagEl) flagEl.value='0';
       dvCostRecalc();
     }}
     // 請求期日:「他」を選ぶと自由入力欄を出す（ユーザー要望2026-08-28）。
@@ -22604,6 +22621,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         cost_total=_cost_total,
                         cost_vendor=(f.get("cost_vendor", "") or "").strip(),
                         expected_expense_total=_to_float(f.get("expected_expense_total"), None),
+                        fee_manual=1 if f.get("fee_manual") == "1" else 0,
+                        cost_manual=1 if f.get("cost_manual") == "1" else 0,
                         business_type_l1_override=_biz_l1_ov,
                         business_type_l2_override=_biz_l2_ov,
                         billing_method=_billing_method,
