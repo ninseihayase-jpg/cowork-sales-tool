@@ -158,14 +158,37 @@ def test_confidence_auto_shows_pre_proposal_when_deal_regresses(con, acc_id):
     assert sfa_db.delivery_confidence_effective(sfa_db.get_delivery(con, dv_id)) == "見込み(提案前)"
 
 
-def test_pre_proposal_confidence_bucket_and_sort_rank_unchanged_from_proposal(con, acc_id):
-    """新区分はバッジ表示のみを区別する設計。集計バケット（_DELIVERY_CONFIDENCE_BUCKET）・
-    一覧の並び順ランク（webapp._DELIVERY_ACTIVE_CONF_RANK）は"見込み(提案中)"と同じであること。"""
+def test_pre_proposal_confidence_bucket_unchanged_but_sort_rank_below_proposal(con, acc_id):
+    """集計バケット（_DELIVERY_CONFIDENCE_BUCKET、稼働集計除外に影響）は"見込み(提案中)"と
+    同じままだが、一覧の並び順ランク（webapp._DELIVERY_ACTIVE_CONF_RANK）は"見込み(提案前)"の
+    案件が"見込み(提案中)"の案件より一覧で必ず下に来るよう分離されている（2026-09-24〜。
+    以前は同ランクで開始週のみに依存しており、提案前の案件が提案中より上に来る不具合があった）。"""
     from cowork import webapp
     assert (sfa_db._DELIVERY_CONFIDENCE_BUCKET["見込み(提案前)"]
             == sfa_db._DELIVERY_CONFIDENCE_BUCKET["見込み(提案中)"])
     assert (webapp._DELIVERY_ACTIVE_CONF_RANK["見込み(提案前)"]
-            == webapp._DELIVERY_ACTIVE_CONF_RANK["見込み(提案中)"])
+            > webapp._DELIVERY_ACTIVE_CONF_RANK["見込み(提案中)"])
+
+
+def test_delivery_list_sorts_reverted_pre_proposal_below_still_in_proposal(con, acc_id):
+    """ユーザー報告2026-09-24: 提案中→提案前に差し戻した案件が、開始週が早いだけで一覧上
+    提案中の案件より上に来てしまう不具合の回帰テスト。開始週を意図的に「提案前の方が早い」
+    ように設定し、それでも並び順では提案中が上に来ることを確認する。"""
+    from cowork import webapp
+    d_back = _deal(con, acc_id, "要件詰め", name="差し戻し案件")  # 見込み(提案前)を自動導出
+    dv_back = sfa_db.create_delivery(con, deal_id=d_back, status="進行中", start_week="2026-06-01")
+    d_prop = _deal(con, acc_id, "提案", name="提案中案件")  # 見込み(提案中)
+    dv_prop = sfa_db.create_delivery(con, deal_id=d_prop, status="進行中", start_week="2026-09-01")
+    dv_back_full = sfa_db.get_delivery(con, dv_back)
+    dv_prop_full = sfa_db.get_delivery(con, dv_prop)
+    lbl_back, _ = webapp._delivery_confidence(dv_back_full["deal_stage"], dv_back_full["deal_status"],
+                                              dv_back_full.get("confidence_override"))
+    lbl_prop, _ = webapp._delivery_confidence(dv_prop_full["deal_stage"], dv_prop_full["deal_status"],
+                                              dv_prop_full.get("confidence_override"))
+    assert lbl_back == "見込み(提案前)" and lbl_prop == "見込み(提案中)"
+    key_back = webapp._delivery_sort_key(dv_back_full, lbl_back)
+    key_prop = webapp._delivery_sort_key(dv_prop_full, lbl_prop)
+    assert key_prop < key_back  # 提案中が提案前より必ず上（開始週が逆でも）
 
 
 def test_compute_load_still_counts_pre_proposal_delivery_same_as_proposal(con, acc_id):

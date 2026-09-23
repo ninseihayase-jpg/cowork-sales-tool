@@ -3031,23 +3031,25 @@ def _delivery_owner_roles_box_html(dv: dict) -> str:
     )
 
 
-_DELIVERY_ACTIVE_CONF_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2, "見込み(提案前)": 2}
+_DELIVERY_ACTIVE_CONF_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2, "見込み(提案前)": 3}
 
 
 def _delivery_sort_key(dv: dict, lbl: str) -> tuple:
     """Delivery一覧の並び順（確度×開始週の早い順。確定から始まり、完了系は下に沈める）。
     確度=無効(終了)が最優先で最下位（状態に関わらず）。それ以外は状態で分岐:
-    進行中=確度順(確定→見込み(クロージング)→見込み(提案中))が最上位グループ、
-    以下、状態=保留→完了→中止の順に下段へ。同グループ内は開始週の早い順（未設定は最後）。"""
+    進行中=確度順(確定→見込み(クロージング)→見込み(提案中)→見込み(提案前))が最上位グループ、
+    以下、状態=保留→完了→中止の順に下段へ。同グループ内は開始週の早い順（未設定は最後）。
+    見込み(提案前)は見込み(提案中)より必ず下（2026-09-24〜。以前は同ランクで開始週のみで
+    並んでいたため、提案前の案件が提案中の案件より上に来てしまう不具合があった）。"""
     status = dv.get("status") or "進行中"
     if lbl == "無効(終了)":
-        bucket = 6
+        bucket = 7
     elif status == "保留":
-        bucket = 3
-    elif status == "完了":
         bucket = 4
-    elif status == "中止":
+    elif status == "完了":
         bucket = 5
+    elif status == "中止":
+        bucket = 6
     else:  # 進行中
         bucket = _DELIVERY_ACTIVE_CONF_RANK.get(lbl, 2)
     start = dv.get("start_week") or "9999-99-99"   # 未設定は同グループ内で最後
