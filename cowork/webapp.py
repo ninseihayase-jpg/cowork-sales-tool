@@ -212,11 +212,24 @@ def _opt_l2(con, l1: str | None, selected: str | None) -> str:
     return "".join(opts)
 
 
-def _delivery_role_opts(con, current: str | None) -> str:
+def _delivery_role_opts(con, current: str | None, delivery_id: int | None = None) -> str:
     """Delivery体制・アサインの役割<select>選択肢（マスタ"delivery_roles"を参照。2026-09-22〜選択制）。
     現在値がマスタに無い旧データ（自由記述時代の値）は、選択済みの追加選択肢として残す
-    （黙って空欄化/別の値に化けさせない。役割の張り替えは利用者が明示的に選び直す）。"""
-    values = sfa_db.get_master_list(con, "delivery_roles")
+    （黙って空欄化/別の値に化けさせない。役割の張り替えは利用者が明示的に選び直す）。
+    delivery_id指定時は、そのDeliveryの体制に実在する連番役割（「ジュニアコンサルタント2」等、
+    resolve_delivery_role_name_for_save()による自動採番）も通常の選択肢として追加する
+    （マスタに無いというだけで「旧値・要見直し」と誤表示させないため。ユーザー要望2026-09-24）。"""
+    values = list(sfa_db.get_master_list(con, "delivery_roles"))
+    if delivery_id is not None:
+        base_set = set(values)
+        numbered = []
+        for r in sfa_db.list_delivery_roles(con, delivery_id):
+            name = (r.get("role") or "").strip()
+            base, num = sfa_db.delivery_role_base_and_num(name)
+            if num is not None and base in base_set and name not in values:
+                numbered.append((base, num, name))
+        for _b, _n, name in sorted(numbered):
+            values.append(name)
     cur = (current or "").strip()
     opts = f'<option value=""{"" if cur else " selected"}></option>'
     matched = False
@@ -4727,7 +4740,7 @@ def _delivery_row_fields(con, owners: list, b: dict, dv: dict) -> str:
     _resp_checked = " checked" if owner and owner == (dv.get("responsible_owner") or "") else ""
     _handle_checked = " checked" if owner and owner == (dv.get("handling_owner") or "") else ""
     return (
-        f'<label style="font-size:11px">役割<br><select name="role" style="width:130px;font-size:12px">{_delivery_role_opts(con, b.get("role"))}</select></label>'
+        f'<label style="font-size:11px">役割<br><select name="role" style="width:130px;font-size:12px">{_delivery_role_opts(con, b.get("role"), dv.get("id"))}</select></label>'
         f'<label style="font-size:11px">区分<br><select name="member_kind" class="mkind" onchange="tglMember(this)" style="font-size:12px">{kind_opts}</select></label>'
         f'<label style="font-size:11px">メンバー<br>'
         f'<select name="owner_sel" class="mint" style="font-size:12px;{sel_disp}">{_opt(owners, owner if kind != "外部" else None)}</select>'
@@ -4972,7 +4985,7 @@ def delivery_form(con, delivery_id: int) -> str:
               data-role-id="{r['id']}"
               style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;border:1px solid #eef1f6;border-radius:6px;padding:6px;margin-bottom:5px;background:#fff">
           <span class="drag-handle" draggable="true" title="ドラッグで並び替え" style="cursor:grab;color:#aab;font-size:15px;line-height:1;align-self:center">⠿</span>
-          <label style="font-size:11px">役割<br><select name="role" class="rRole" style="width:130px;font-size:12px">{_delivery_role_opts(con, r['role'])}</select></label>
+          <label style="font-size:11px">役割<br><select name="role" class="rRole" style="width:130px;font-size:12px">{_delivery_role_opts(con, r['role'], delivery_id)}</select></label>
           <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" class="rTgtB" min="0" max="300" step="5" value="{_num_pct(_rb) if _rb is not None else ''}" style="width:74px"></label>
           <label style="font-size:11px">目標(実想定)%<br><input type="number" name="fte_pct" class="rTgtA" min="0" max="300" step="5" value="{_num_pct(_ra) if _ra is not None else ''}" style="width:74px"></label>
           <span style="font-size:11px;color:#64748b">現在(期間平均) 請<b class="curB">-</b>% / 実<b class="curA">-</b>%</span>
@@ -5171,8 +5184,10 @@ def delivery_form(con, delivery_id: int) -> str:
           <div style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
             <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
             <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。削除すると、対応するアサイン行も削除されます。
-              各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。⠿をドラッグすると並び替えられます。</p>
-            <form method="post" action="/delivery/{delivery_id}/role/add" onsubmit="return _dvRoleAddCheck(this)"
+              各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。⠿をドラッグすると並び替えられます。
+              同じ役割をもう一度追加すると「ジュニアコンサルタント1」「2」のように自動で連番が振られ、個別に目標を設定できます
+              （目標を共有したいだけなら、既存行の「複製」でアサイン行だけ増やす方法もあります）。</p>
+            <form method="post" action="/delivery/{delivery_id}/role/add"
                   style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#f8fafc;border-radius:8px;padding:8px;margin-bottom:8px">
               <label style="font-size:11px">役割<br><select name="role" required style="width:150px;font-size:12px">{_delivery_role_opts(con, None)}</select></label>
               <label style="font-size:11px">目標(請求)%<br><input type="number" name="fte_billing" min="0" max="300" step="5" value="100" style="width:76px"></label>
@@ -5629,31 +5644,8 @@ def delivery_form(con, delivery_id: int) -> str:
     }}
     function _r1(x){{ return Math.round(x*10)/10; }}
     function _r0(x){{ return Math.round(x); }}
-    // 「＋役割追加」フォーム送信前チェック（サーバ側検証と二重だが、送信前に即気づけるように）。
-    function _dvRoleAddCheck(form){{
-      var sel=form.querySelector('[name=role]'); if(!sel) return true;
-      var v=sel.value.trim(); if(!v) return true;
-      var dup=Array.from(document.querySelectorAll('.roleRow .rRole')).some(function(s){{ return s.value.trim()===v; }});
-      if(dup){{
-        alert('⚠️ 役割「'+v+'」は既に体制に存在します。同じ役割で複数人をアサインしたい場合は、'
-          +'既存の役割行の「複製」ボタンでアサイン行だけ増やしてください。');
-        return false;
-      }}
-      return true;
-    }}
     function checkRoleTotals(){{
       document.querySelectorAll('.asgForm [name=fte_pct],.asgForm [name=fte_billing]').forEach(function(i){{i.style.background='';i.style.outline='';}});
-      // 役割名の重複チェック（体制内で役割名は一意でなければならない。#189フォローアップ・
-      // 選択制になり同じ役割を複数行で選びやすくなったため、保存前に気づけるよう赤枠で警告する）。
-      var _roleCounts={{}};
-      document.querySelectorAll('.roleRow .rRole').forEach(function(sel){{
-        var v=sel.value.trim(); if(!v) return; _roleCounts[v]=(_roleCounts[v]||0)+1;
-      }});
-      document.querySelectorAll('.roleRow .rRole').forEach(function(sel){{
-        var dup=sel.value.trim() && _roleCounts[sel.value.trim()]>1;
-        sel.style.outline=dup?'2px solid #dc2626':'';
-        sel.title=dup?'この役割は他の行と重複しています。同じ役割で複数人をアサインしたい場合は、行を1つにまとめてアサイン行だけ複製してください。':'';
-      }});
       document.querySelectorAll('.roleRow').forEach(function(row){{
         var rInp=row.querySelector('.rRole'); var role=rInp?rInp.value.trim():'';
         var tbi=row.querySelector('.rTgtB'), tai=row.querySelector('.rTgtA');
@@ -22740,14 +22732,13 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 体制に役割を追加＋その役割のアサイン行を自動生成（目標稼働率を初期値に）
                     _dvid = int(path.split("/")[2])
                     _role = (f.get("role", "") or "").strip()
-                    if _role and sfa_db.delivery_role_name_taken(con, _dvid, _role):
-                        # 役割名は体制内で一意でなければならない（複数人を同じ役割に割り当てたい
-                        # 場合は、体制の行は1つのままアサイン行だけ複製する。#189フォローアップ）。
-                        self._send(render(delivery_form(con, _dvid),
-                                          flash=f"⚠️ 役割「{_role}」は既に体制に存在します。同じ役割で"
-                                                "複数人をアサインしたい場合は、既存の役割行を「複製」してください。"))
-                        return
                     if _role:
+                        # 同じ役割名が既に体制にあれば自動採番する（例: 「ジュニアコンサルタント」を
+                        # 2件目追加すると1件目が自動で「ジュニアコンサルタント1」にリネームされ、
+                        # 今回は「ジュニアコンサルタント2」になる。ユーザー要望2026-09-24: 複数
+                        # ジュニアコンサルタント等、個別に目標稼働率を持たせたいケースへの対応。
+                        # 以前はここで完全ブロックしていた）。
+                        _role = sfa_db.resolve_delivery_role_name_for_save(con, _dvid, _role)
                         _rb = _to_float(f.get("fte_billing"), None)
                         _ra = _to_float(f.get("fte_pct"), None)
                         sfa_db.add_delivery_role(con, delivery_id=_dvid, role=_role,
@@ -22764,14 +22755,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _dvid = int(path.split("/")[2])
                     _rid = path.split("/")[4]
                     _role = (f.get("role", "") or "").strip()
-                    if _rid.isdigit() and _role and sfa_db.delivery_role_name_taken(con, _dvid, _role, int(_rid)):
-                        _msg = f"役割「{_role}」は既に体制に存在します（役割名は体制内で一意である必要があります）"
-                        if f.get("ajax"):
-                            self._send(_msg.encode("utf-8"), status=409, ctype="text/plain; charset=utf-8")
-                        else:
-                            self._send(render(delivery_form(con, _dvid), flash=f"⚠️ {_msg}"))
-                        return
                     if _rid.isdigit() and _role:
+                        # 役割リネームでも追加と同じく自動採番で重複を解消する（ブロックしない）。
+                        _role = sfa_db.resolve_delivery_role_name_for_save(con, _dvid, _role, int(_rid))
                         sfa_db.update_delivery_role(
                             con, int(_rid), role=_role,
                             fte_billing=_to_float(f.get("fte_billing"), None),

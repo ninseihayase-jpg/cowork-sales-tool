@@ -1976,3 +1976,125 @@ def test_delivery_role_name_taken_scoped_per_delivery(con, acc_id):
     dvid2 = sfa_db.create_delivery(con, deal_id=did, title="Y")
     sfa_db.add_delivery_role(con, delivery_id=dvid1, role="ジュニアコンサルタント")
     assert sfa_db.delivery_role_name_taken(con, dvid2, "ジュニアコンサルタント") is False
+
+
+def test_resolve_delivery_role_name_auto_numbers_duplicates_instead_of_blocking(con, acc_id):
+    """ユーザー要望2026-09-24: 複数ジュニアコンサルタント等、同じ役割を複数人に個別の目標稼働率
+    付きで割り当てたいケースに対応するため、重複追加はブロックせず自動採番する。1件目は無番号の
+    まま、2件目を追加した時点で1件目が「役割1」へ自動リネームされ、今回は「役割2」になる。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+
+    r1 = sfa_db.resolve_delivery_role_name_for_save(con, dvid, "ジュニアコンサルタント")
+    assert r1 == "ジュニアコンサルタント"  # 1件目は無番号のまま
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role=r1)
+
+    r2 = sfa_db.resolve_delivery_role_name_for_save(con, dvid, "ジュニアコンサルタント")
+    assert r2 == "ジュニアコンサルタント2"
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role=r2)
+    assert sorted(r["role"] for r in sfa_db.list_delivery_roles(con, dvid)) == [
+        "ジュニアコンサルタント1", "ジュニアコンサルタント2"]  # 1件目は自動でリネームされた
+
+    r3 = sfa_db.resolve_delivery_role_name_for_save(con, dvid, "ジュニアコンサルタント")
+    assert r3 == "ジュニアコンサルタント3"
+
+    # 他の役割は無関係に無番号のまま
+    assert sfa_db.resolve_delivery_role_name_for_save(con, dvid, "PM") == "PM"
+
+
+def test_resolve_delivery_role_name_renames_linked_assignments_too(con, acc_id):
+    """役割↔アサインは役割名の文字列一致で対応付ける設計のため、自動採番で既存役割行を
+    リネームする際は、紐づくアサイン行のroleも一緒に追従させないとリンクが切れる。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="ジュニアコンサルタント")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", role="ジュニアコンサルタント",
+                                   from_week="2026-01-05", to_week="2026-01-11", fte_pct=100)
+
+    sfa_db.resolve_delivery_role_name_for_save(con, dvid, "ジュニアコンサルタント")  # 2件目追加相当
+
+    assert [r["role"] for r in sfa_db.list_delivery_roles(con, dvid)] == ["ジュニアコンサルタント1"]
+    assert [a["role"] for a in sfa_db.list_delivery_assignments(con, dvid)] == ["ジュニアコンサルタント1"]
+
+
+def test_resolve_delivery_role_name_does_not_reuse_gap_after_delete(con, acc_id):
+    """欠番（例: 「役割1」を削除）があっても番号を詰めない。過去の週次レポート等が文字列で
+    役割を参照している可能性があり、番号の使い回しは事故のもと。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    for _ in range(3):
+        role = sfa_db.resolve_delivery_role_name_for_save(con, dvid, "ジュニアコンサルタント")
+        sfa_db.add_delivery_role(con, delivery_id=dvid, role=role)
+    rid1 = next(r["id"] for r in sfa_db.list_delivery_roles(con, dvid) if r["role"] == "ジュニアコンサルタント1")
+    sfa_db.delete_delivery_role(con, rid1)
+
+    r4 = sfa_db.resolve_delivery_role_name_for_save(con, dvid, "ジュニアコンサルタント")
+    assert r4 == "ジュニアコンサルタント4"
+
+
+def test_resolve_delivery_role_name_bumps_on_explicit_numbered_collision(con, acc_id):
+    """役割リネーム欄で既存の連番役割そのものを選び直した場合（例: PMを「ジュニアコンサルタント2」
+    にリネーム）も、文字通り重複するならブロックせず次の番号へずらす。自分自身への無変更保存
+    （リネームなし）では採番し直さない。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="ジュニアコンサルタント1")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="ジュニアコンサルタント2")
+    rpm = sfa_db.add_delivery_role(con, delivery_id=dvid, role="PM")
+
+    resolved = sfa_db.resolve_delivery_role_name_for_save(con, dvid, "ジュニアコンサルタント2", exclude_role_id=rpm)
+    assert resolved == "ジュニアコンサルタント3"
+
+    r1 = next(r["id"] for r in sfa_db.list_delivery_roles(con, dvid) if r["role"] == "ジュニアコンサルタント1")
+    noop = sfa_db.resolve_delivery_role_name_for_save(con, dvid, "ジュニアコンサルタント1", exclude_role_id=r1)
+    assert noop == "ジュニアコンサルタント1"
+
+
+def test_delivery_role_add_route_auto_numbers_instead_of_blocking(monkeypatch, tmp_path):
+    """/delivery/{id}/role/add へ同じ役割名を2回POSTしても、以前のような409/flashブロックではなく
+    自動採番で2件とも保存されることをHTTPルート経由で確認する（画面のフォームが実際に送る形）。"""
+    import threading
+    import urllib.parse
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    db_path = str(tmp_path / "srv_role.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con2, name="テスト社")
+    did = sfa_db.upsert_deal(con2, account_id=aid, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con2, deal_id=did, title="D")
+    con2.close()
+
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "u")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "p")
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+
+    def _post_role_add():
+        headers = {"Cookie": f"sfa_session={webapp._make_session_token()}",
+                   "Content-Type": "application/x-www-form-urlencoded"}
+        body = urllib.parse.urlencode({"role": "ジュニアコンサルタント", "fte_billing": "100", "fte_pct": "100"}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/delivery/{dvid}/role/add",
+            data=body, headers=headers, method="POST")
+        urllib.request.urlopen(req, timeout=10)
+
+    try:
+        _post_role_add()
+        _post_role_add()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+    con3 = sfa_db.connect(db_path)
+    roles = sorted(r["role"] for r in sfa_db.list_delivery_roles(con3, dvid))
+    assignments = sorted(a["role"] for a in sfa_db.list_delivery_assignments(con3, dvid))
+    con3.close()
+    assert roles == ["ジュニアコンサルタント1", "ジュニアコンサルタント2"], "ブロックされず自動採番で2件とも保存されるべき"
+    assert assignments == ["ジュニアコンサルタント1", "ジュニアコンサルタント2"], \
+        "役割追加時に自動生成されるアサイン行のroleも採番後の名前と一致するべき"

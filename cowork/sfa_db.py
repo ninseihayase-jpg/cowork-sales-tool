@@ -6247,6 +6247,77 @@ def delivery_role_name_taken(con, delivery_id: int, role: str, exclude_role_id: 
     return False
 
 
+_DELIVERY_ROLE_NUM_RE = re.compile(r"^(.+?)(\d+)$")
+
+
+def delivery_role_base_and_num(role: str) -> tuple[str, int | None]:
+    """役割名の末尾の連番を分離する。「ジュニアコンサルタント2」→("ジュニアコンサルタント", 2)。
+    連番が無ければ (role, None)。"""
+    m = _DELIVERY_ROLE_NUM_RE.match(role or "")
+    if m:
+        return m.group(1), int(m.group(2))
+    return role, None
+
+
+def rename_delivery_role(con, delivery_id: int, old_name: str, new_name: str) -> None:
+    """体制の役割名と、それに文字列一致で紐づくアサイン行のroleを一括リネームする
+    （役割↔アサインは文字列一致で対応付ける設計のため、片方だけ変えるとリンクが切れる。
+    resolve_delivery_role_name_for_save()の重複解消リネームで使用）。"""
+    con.execute("UPDATE delivery_roles SET role=? WHERE delivery_id=? AND role=?",
+                (new_name, int(delivery_id), old_name))
+    con.execute("UPDATE delivery_assignments SET role=? WHERE delivery_id=? AND role=?",
+                (new_name, int(delivery_id), old_name))
+    con.commit()
+
+
+def resolve_delivery_role_name_for_save(con, delivery_id: int, role: str,
+                                        exclude_role_id: int | None = None) -> str:
+    """体制へ役割を追加/リネームする際、同じ役割名が既に存在すれば自動で連番を振って返す
+    （ユーザー要望2026-09-24: 複数ジュニアコンサルタント等、同じ役割の複数人を体制上も別行に分け、
+    個別に目標稼働率を設定したり人数を可視化したいケースに対応。以前は完全ブロックしていたが、
+    「体制の役割は1行のみにしてアサイン行だけ複製する」運用では個別の目標が持てず、ブロックが
+    実害になっていた）。
+
+    重複が無ければroleをそのまま返す（通常の単一役割はいつまでも無番号のまま）。
+    重複がある場合、既存の無番号行があればまずそれを「role+1」へ自動リネームし（紐づくアサイン行
+    のroleも追従させる）、新規/リネーム対象は既存の最大番号+1を返す（欠番があっても詰めない。
+    番号の使い回しは過去の週次レポート等が文字列で役割を参照している可能性があり事故のもと）。
+
+    入力roleが無番号（通常の「＋役割追加」フォームで毎回マスタの素の役割名を選ぶ運用）か、
+    末尾に連番が付いている（体制の役割リネーム欄で既存の連番役割を選び直した場合）かで
+    判定基準が異なる：無番号入力は「同じfamily（無番号 or 同baseの連番）が1件でも既にあれば
+    連番化」、連番入力は「文字通り同名の行が既にあれば、そのfamily内の次の番号へずらす」。"""
+    role = (role or "").strip()
+    if not role:
+        return role
+    req_base, req_num = delivery_role_base_and_num(role)
+    rows = [r for r in list_delivery_roles(con, delivery_id)
+            if exclude_role_id is None or r["id"] != exclude_role_id]
+
+    if req_num is None:
+        bare_row = next((r for r in rows if (r.get("role") or "").strip() == role), None)
+        max_n = 0
+        for r in rows:
+            base, num = delivery_role_base_and_num((r.get("role") or "").strip())
+            if base == role and num is not None:
+                max_n = max(max_n, num)
+        if bare_row is None and max_n == 0:
+            return role
+        if bare_row is not None:
+            rename_delivery_role(con, delivery_id, role, f"{role}1")
+            max_n = max(max_n, 1)
+        return f"{role}{max_n + 1}"
+
+    if not any((r.get("role") or "").strip() == role for r in rows):
+        return role
+    max_n = req_num
+    for r in rows:
+        base, num = delivery_role_base_and_num((r.get("role") or "").strip())
+        if base == req_base and num is not None:
+            max_n = max(max_n, num)
+    return f"{req_base}{max_n + 1}"
+
+
 def add_delivery_role(con, *, delivery_id: int, role: str, fte_billing: float | None = None,
                       fte_pct: float | None = None) -> int:
     next_order = (con.execute(

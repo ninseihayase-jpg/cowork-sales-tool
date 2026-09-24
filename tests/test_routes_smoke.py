@@ -1115,11 +1115,11 @@ def test_delivery_detail_route_renders_wide_main(server, db_path):
     assert '<main class="main-wide">' in body
 
 
-def test_delivery_role_add_route_rejects_duplicate_role_name(server, db_path):
-    """2026-09-22(#189フォローアップ): 役割が選択制になり、同じ役割名を複数の体制行で
-    選びやすくなったため、体制内で役割名が重複する追加はエラーとして拒否し、
-    アサイン行が二重生成されないこと（体制はアサイン行と役割名の文字列一致で
-    目標値を対応付けているため、重複すると整合性チェックが壊れる）。"""
+def test_delivery_role_add_route_auto_numbers_duplicate_role_name(server, db_path):
+    """2026-09-24: 複数ジュニアコンサルタント等、同じ役割を複数人に個別の目標稼働率で
+    割り当てたいケースに対応するため、体制内で役割名が重複する追加はもうエラーで拒否せず、
+    自動で連番を振って両方保存する（#189フォローアップの旧ブロック仕様から変更。旧仕様では
+    「体制の役割は1行のみにしてアサイン行だけ複製する」しかできず、個別目標が持てなかった）。"""
     con = sfa_db.connect(db_path)
     acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
     did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
@@ -1131,23 +1131,24 @@ def test_delivery_role_add_route_rejects_duplicate_role_name(server, db_path):
                       headers=_auth_header())
     assert code1 in (200, 303)
 
-    code2, body2 = _post(server + f"/delivery/{dvid}/role/add",
-                          {"role": "ジュニアコンサルタント", "fte_billing": "100", "fte_pct": "100"},
-                          headers=_auth_header())
-    assert code2 == 200  # 重複時はredirectせず、flash付きの同画面を返す
-    assert "既に体制に存在します" in body2.decode("utf-8")
+    code2, _ = _post(server + f"/delivery/{dvid}/role/add",
+                      {"role": "ジュニアコンサルタント", "fte_billing": "100", "fte_pct": "100"},
+                      headers=_auth_header())
+    assert code2 in (200, 303)  # ブロックされずredirectで正常保存される
 
     con2 = sfa_db.connect(db_path)
     roles = sfa_db.list_delivery_roles(con2, dvid)
     assignments = sfa_db.list_delivery_assignments(con2, dvid)
     con2.close()
-    assert len([r for r in roles if r["role"] == "ジュニアコンサルタント"]) == 1
-    assert len([a for a in assignments if a["role"] == "ジュニアコンサルタント"]) == 1
+    assert sorted(r["role"] for r in roles) == ["ジュニアコンサルタント1", "ジュニアコンサルタント2"]
+    assert sorted(a["role"] for a in assignments) == ["ジュニアコンサルタント1", "ジュニアコンサルタント2"]
 
 
-def test_delivery_role_update_route_rejects_duplicate_role_name_via_ajax(server, db_path):
-    """役割の選択(<select>)を既存の別行と同じ値に変更した場合、ajax保存は409で拒否され、
-    DB上のrole名も変更されないこと。"""
+def test_delivery_role_update_route_auto_numbers_duplicate_role_name_via_ajax(server, db_path):
+    """2026-09-24: 役割の選択(<select>)を既存の別行と同じ値に変更した場合、ajax保存はもう409で
+    拒否せず、自動で連番を振って保存する。衝突先（無番号の既存行）はまず「役割1」へリネームされ
+    （紐づくアサイン行のroleも追従）、変更対象は「役割2」になる（追加フォームで同じ役割名を
+    2回選んだ場合と同じ解決ロジック）。"""
     con = sfa_db.connect(db_path)
     acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
     did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
@@ -1156,16 +1157,17 @@ def test_delivery_role_update_route_rejects_duplicate_role_name_via_ajax(server,
     rid_b = sfa_db.add_delivery_role(con, delivery_id=dvid, role="エンジニア")
     con.close()
 
-    code, body = _post(server + f"/delivery/{dvid}/role/{rid_b}/update",
-                        {"role": "リードコンサルタント", "fte_billing": "100", "fte_pct": "100", "ajax": "1"},
-                        headers=_auth_header())
-    assert code == 409
-    assert "既に体制に存在します" in body.decode("utf-8")
+    code, _ = _post(server + f"/delivery/{dvid}/role/{rid_b}/update",
+                     {"role": "リードコンサルタント", "fte_billing": "100", "fte_pct": "100", "ajax": "1"},
+                     headers=_auth_header())
+    assert code == 204
 
     con2 = sfa_db.connect(db_path)
+    row_a = next(r for r in sfa_db.list_delivery_roles(con2, dvid) if r["id"] == rid_a)
     row_b = next(r for r in sfa_db.list_delivery_roles(con2, dvid) if r["id"] == rid_b)
     con2.close()
-    assert row_b["role"] == "エンジニア"  # 変更されていないこと
+    assert row_a["role"] == "リードコンサルタント1"  # 衝突先の既存行が自動リネームされる
+    assert row_b["role"] == "リードコンサルタント2"  # 変更対象が連番で採番される
 
 
 @pytest.mark.parametrize("path,ctype", [
