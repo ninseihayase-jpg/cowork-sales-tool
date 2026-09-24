@@ -1079,6 +1079,11 @@ CREATE TABLE IF NOT EXISTS deliveries (
                                             -- 手修正済みかどうか。1なら開始/終了日・月額等が変わっても
                                             -- 自動再計算で上書きしない（ユーザー要望2026-09-24）。
     cost_manual  INTEGER DEFAULT 0,        -- 外注費: 同上（cost_modeの非マスタ側の手修正フラグ）。
+    expense_manual INTEGER DEFAULT 0,      -- 想定経費: 手修正済みかどうか。0なら保存時も常にNULLを
+                                            -- 書き込み、表示は総額×5%を追従させ続ける（ユーザー
+                                            -- 報告2026-09-24: 自動保存のたびに当時の5%計算値が
+                                            -- そのまま確定保存されてしまい、後で総額を変えても
+                                            -- 追従しなくなる不具合の修正）。
     payment_cycle_months INTEGER DEFAULT 1, -- 支払いサイクル: 検収月から何ヶ月後に入金されるか（既定=翌月）
     business_type_l1_override TEXT,        -- 事業種別L1の手修正。NULL=紐づく商談のL1を継承
     business_type_l2_override TEXT,        -- 事業種別L2の手修正。NULL=紐づく商談のL2を継承
@@ -1765,6 +1770,8 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             con.execute("ALTER TABLE deliveries ADD COLUMN fee_manual INTEGER DEFAULT 0")
         if _dv_cols and "cost_manual" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN cost_manual INTEGER DEFAULT 0")
+        if _dv_cols and "expense_manual" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN expense_manual INTEGER DEFAULT 0")
         # 月別入金計画（2026-08）: 検収月から何ヶ月後に入金されるか。
         if _dv_cols and "payment_cycle_months" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN payment_cycle_months INTEGER DEFAULT 1")
@@ -5509,7 +5516,7 @@ def update_delivery(con, delivery_id: int, **fields) -> None:
     allowed = {"title", "start_week", "end_week", "status", "overview",
                "fee_mode", "fee_monthly", "fee_total", "excluded_periods", "confidence_override",
                "cost_mode", "cost_monthly", "cost_total", "cost_vendor", "expected_expense_total",
-               "fee_manual", "cost_manual",
+               "fee_manual", "cost_manual", "expense_manual",
                "payment_cycle_months", "business_type_l1_override", "business_type_l2_override",
                "responsible_owner", "handling_owner", "billing_method", "billing_due",
                "billing_recipient", "expense_billing", "expense_billing_note",

@@ -1332,6 +1332,92 @@ def test_delivery_weekly_productivity_adds_performance_fee_to_fixed_fee_at_last_
     assert prod["cum_margin"]["2026-06-22"] == 240.0  # 200(固定) + 40(成果報酬)
 
 
+def test_delivery_save_route_keeps_expected_expense_auto_tracking_unless_expense_manual_flag_set(
+        monkeypatch, tmp_path):
+    """ユーザー報告(2026-09-24):「総額1500で5%なら経費75のはずが157.5のまま」。原因は
+    想定経費(expected_expense_total)がNULL=自動5%というパターンなのに、フォーム全体の
+    自動保存が毎回その時点の表示値をそのまま永続化してしまい、一度でも保存されると
+    以後は総額が変わっても追従しなくなっていたこと（fee_manual/cost_manualと同じ不具合の型）。
+    expense_manualフラグが立っていない限り、送信された想定経費の値に関わらずNULL保存され、
+    総額側の変更に追従し続けることを確認する。"""
+    import threading
+    import urllib.parse
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    db_path = str(tmp_path / "srv_exp.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con2, name="テスト社")
+    did = sfa_db.upsert_deal(con2, account_id=aid, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con2, deal_id=did, title="D")
+    con2.close()
+
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "u")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "p")
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+
+    def _post(extra):
+        base = {
+            "title": "D", "start_week": "2026-10-01", "end_week": "2026-12-25",
+            "status": "進行中", "overview": "", "fee_mode": "total", "fee_monthly": "",
+            "fee_total": "1500", "cost_mode": "total", "cost_monthly": "", "cost_total": "0",
+            "cost_vendor": "", "confidence_override": "", "business_type_l1_override": "",
+            "business_type_l2_override": "", "billing_method": "", "billing_due_sel": "",
+            "billing_due_other": "", "billing_recipient": "", "expense_billing": "",
+            "expense_billing_note": "", "performance_fee": "無", "performance_fee_ratio": "",
+            "expected_impact": "", "excluded_periods": "", "fee_manual": "0", "cost_manual": "0",
+        }
+        base.update(extra)
+        headers = {"Cookie": f"sfa_session={webapp._make_session_token()}",
+                   "Content-Type": "application/x-www-form-urlencoded"}
+        body = urllib.parse.urlencode(base).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/delivery/{dvid}/save",
+            data=body, headers=headers, method="POST")
+        urllib.request.urlopen(req, timeout=10)
+
+    try:
+        # 1回目保存: 想定経費は未修正（expense_manual=0）。フォーム側が計算した157.5等の
+        # 値をたとえ一緒に送っても、サーバはNULLとして保存し自動5%追従を維持するべき。
+        _post({"expected_expense_total": "157.5", "expense_manual": "0"})
+        con3 = sfa_db.connect(db_path)
+        dv = sfa_db.get_delivery(con3, dvid)
+        con3.close()
+        assert dv.get("expected_expense_total") is None, "自動追従のはずがNULLでなく固定保存された"
+        assert sfa_db.delivery_expected_expense_total(dv) == 75.0  # 1500×5%
+
+        # 総額を変えても追従し続ける（手修正していないため）。
+        _post({"fee_total": "1000", "expected_expense_total": "75.0", "expense_manual": "0"})
+        con4 = sfa_db.connect(db_path)
+        dv2 = sfa_db.get_delivery(con4, dvid)
+        con4.close()
+        assert dv2.get("expected_expense_total") is None
+        assert sfa_db.delivery_expected_expense_total(dv2) == 50.0  # 1000×5%
+
+        # ユーザーが想定経費を直接手修正(expense_manual=1)した場合は、その値をそのまま保持する。
+        _post({"fee_total": "1000", "expected_expense_total": "30.0", "expense_manual": "1"})
+        con5 = sfa_db.connect(db_path)
+        dv3 = sfa_db.get_delivery(con5, dvid)
+        con5.close()
+        assert dv3.get("expected_expense_total") == 30.0
+        assert dv3.get("expense_manual") == 1
+        # 手修正後は、無関係な他フィールドの保存でも上書きされない。
+        _post({"fee_total": "2000", "expected_expense_total": "30.0", "expense_manual": "1"})
+        con6 = sfa_db.connect(db_path)
+        dv4 = sfa_db.get_delivery(con6, dvid)
+        con6.close()
+        assert dv4.get("expected_expense_total") == 30.0
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+
 def test_delivery_missing_requirements_flags_performance_fee_ratio_regardless_of_stage(con, acc_id):
     """#138: 成果報酬有無=有なのに比率が未入力の場合、商談の段階（見込みでも）に関わらず
     必須項目として警告する（他の#134項目とは異なりクロージング以降縛りなし）。"""

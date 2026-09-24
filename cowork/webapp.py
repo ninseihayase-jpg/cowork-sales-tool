@@ -5124,7 +5124,8 @@ def delivery_form(con, delivery_id: int) -> str:
               <input type="hidden" id="dvCostManualFlag" name="cost_manual" value="{1 if dv.get("cost_manual") else 0}">
               <label style="font-size:12px">想定経費(万)<span class="muted" style="font-size:10px">絶対額</span><br>
                 <input type="number" step="0.1" min="0" id="dvExpectedExpense" name="expected_expense_total" style="width:80px"
-                       value="{_num_pct(sfa_db.delivery_expected_expense_total(dv))}" oninput="dvFeeRecalc()"></label>
+                       value="{_num_pct(sfa_db.delivery_expected_expense_total(dv))}" oninput="dvExpenseFieldInput(this)"></label>
+              <input type="hidden" id="dvExpenseManualFlag" name="expense_manual" value="{1 if dv.get("expense_manual") else 0}">
               <span class="muted" style="font-size:11px;align-self:center;cursor:help" id="dvCostMonths" title="">ⓘ</span>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
@@ -5449,6 +5450,18 @@ def delivery_form(con, delivery_id: int) -> str:
         to.style.background = (to.dataset.manual==='1') ? '' : ro;
         if(m && mo.value!=='' && to.dataset.manual!=='1') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
       }}
+      // 想定経費＝報酬額/総額×5%のデフォルトを、報酬額側の変更にあわせて追従させる（手修正済み
+      // （expense_manual=1）でなければ、開始日/終了日・報酬額等が変わるたびここで再計算する。
+      // 以前はページ表示時点の値が自動保存でそのまま固定保存され、後で総額を変えても追従しなく
+      // なる不具合があった（ユーザー報告2026-09-24）。
+      var expEl=document.getElementById('dvExpectedExpense'), expManualFlagEl=document.getElementById('dvExpenseManualFlag');
+      if(expEl && expManualFlagEl){{
+        expEl.dataset.manual = (expManualFlagEl.value==='1') ? '1' : '';
+        if(expEl.dataset.manual!=='1'){{
+          var _curFeeTotal=parseFloat(to.value)||0;
+          expEl.value = Math.round(_curFeeTotal*5/100*10)/10;
+        }}
+      }}
       // 平均単価(月額)＝月額報酬(円)÷(工数÷100)。工数は請求ベース優先、請求0%(成果物ベース)なら実想定。
       // 表示は万円単位・10万円未満を四捨五入（例: 月額244万・請求120%/月→200万／請求0%は実想定80で試算）。
       var effAEl=document.getElementById('dvEffort'), effBEl=document.getElementById('dvEffortBill'),
@@ -5474,6 +5487,12 @@ def delivery_form(con, delivery_id: int) -> str:
       var mo=document.getElementById('dvFeeMonthly'), to=document.getElementById('dvFeeTotal');
       mo.dataset.manual=''; to.dataset.manual='';
       var flagEl=document.getElementById('dvFeeManualFlag'); if(flagEl) flagEl.value='0';
+      dvFeeRecalc();
+    }}
+    function dvExpenseFieldInput(el){{
+      var flagEl=document.getElementById('dvExpenseManualFlag');
+      if(flagEl) flagEl.value='1';
+      el.dataset.manual='1';
       dvFeeRecalc();
     }}
     /* 外注費（報酬額と同じ月額/総額の自動換算＋手修正の仕組み）。 */
@@ -22648,9 +22667,11 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         cost_monthly=_cost_monthly,
                         cost_total=_cost_total,
                         cost_vendor=(f.get("cost_vendor", "") or "").strip(),
-                        expected_expense_total=_to_float(f.get("expected_expense_total"), None),
+                        expected_expense_total=(_to_float(f.get("expected_expense_total"), None)
+                                                if f.get("expense_manual") == "1" else None),
                         fee_manual=1 if f.get("fee_manual") == "1" else 0,
                         cost_manual=1 if f.get("cost_manual") == "1" else 0,
+                        expense_manual=1 if f.get("expense_manual") == "1" else 0,
                         business_type_l1_override=_biz_l1_ov,
                         business_type_l2_override=_biz_l2_ov,
                         billing_method=_billing_method,
