@@ -1298,6 +1298,40 @@ def test_delivery_form_renders_performance_fee_fields_next_to_fee(con, acc_id):
     assert "function dvPerfFeeChanged" in html
 
 
+def test_delivery_performance_fee_total_is_impact_times_ratio(con, acc_id):
+    """delivery_performance_fee_total()＝想定インパクト×成果報酬比率÷100。
+    成果報酬有無≠有、または想定インパクト・比率のどちらか未入力なら0。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    sfa_db.update_delivery(con, dvid, performance_fee="有", performance_fee_ratio=10, expected_impact=400)
+    dv = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_performance_fee_total(dv) == 40.0
+    sfa_db.update_delivery(con, dvid, performance_fee="無")
+    dv = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_performance_fee_total(dv) == 0.0
+
+
+def test_delivery_weekly_productivity_adds_performance_fee_to_fixed_fee_at_last_staffed_week(con, acc_id):
+    """ユーザー要望2026-09-24: 固定報酬(報酬額/月額・総額)は従来通り契約期間へ週按分し、
+    成果報酬(想定インパクト×比率)はそれとは別建てで稼働最終週にだけ全額を上乗せする
+    （置き換えではなく加算）。"""
+    d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d)
+    sfa_db.update_delivery(con, dvid, fee_mode="total", fee_total=200, cost_mode="total", cost_total=0,
+                            expected_expense_total=0, performance_fee="有", performance_fee_ratio=10,
+                            expected_impact=400, start_week="2026-06-01", end_week="2026-06-22")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
+                                   to_week="2026-06-15", fte_pct=100)
+    weeks = ["2026-06-01", "2026-06-08", "2026-06-15", "2026-06-22"]
+    prod = sfa_db.delivery_weekly_productivity(con, dvid, weeks)
+    # 固定報酬200を4週で均等按分＝週50、成果報酬(400×10%=40)は稼働最終週(6/15)にだけ加算。
+    assert prod["weekly_margin"]["2026-06-01"] == 50.0
+    assert prod["weekly_margin"]["2026-06-08"] == 50.0
+    assert prod["weekly_margin"]["2026-06-15"] == 90.0  # 50(固定按分) + 40(成果報酬)
+    assert prod["weekly_margin"]["2026-06-22"] == 50.0  # 稼働は6/15までだが契約は6/22まで按分対象
+    assert prod["cum_margin"]["2026-06-22"] == 240.0  # 200(固定) + 40(成果報酬)
+
+
 def test_delivery_missing_requirements_flags_performance_fee_ratio_regardless_of_stage(con, acc_id):
     """#138: 成果報酬有無=有なのに比率が未入力の場合、商談の段階（見込みでも）に関わらず
     必須項目として警告する（他の#134項目とは異なりクロージング以降縛りなし）。"""

@@ -5438,6 +5438,23 @@ def delivery_expected_expense_total(dv: dict, fee_total: float | None = None) ->
     return round(fee_total * DELIVERY_DEFAULT_EXPENSE_PCT / 100.0, 1)
 
 
+def delivery_performance_fee_total(dv: dict) -> float:
+    """成果報酬の総額（想定インパクト×成果報酬比率÷100）。成果報酬有無='有'かつ想定インパクト・
+    比率が両方設定されている場合のみ非ゼロ。固定報酬(fee_total/fee_monthly)とは別建てで、
+    Delivery全体の報酬は固定報酬＋この値の合算になる（ユーザー要望2026-09-24: 固定報酬は
+    従来通り入力し、そこに成果報酬を足し算する仕様。以前の「想定インパクト×比率が報酬額を
+    置き換える」仕様から変更）。"""
+    if not dv or dv.get("performance_fee") != "有":
+        return 0.0
+    impact, ratio = dv.get("expected_impact"), dv.get("performance_fee_ratio")
+    try:
+        if impact in (None, "") or ratio in (None, ""):
+            return 0.0
+        return round(float(impact) * float(ratio) / 100.0, 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def delivery_profit(dv: dict) -> tuple:
     """(profit_monthly, profit_total) = 報酬額 − 外注費。両方未入力ならNone、片方だけ未入力は
     0扱いで差額を出す（外注費未入力＝外注費0として利益=報酬額、が直感に合う）。"""
@@ -6111,8 +6128,9 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     こちらもその週の稼働が0ならweekly_productivityはNoneを返す。
     weekly_revenue/cum_revenue・weekly_cost/cum_cost・weekly_expense/cum_expenseは内訳表示用
     （限界利益＝売上－外注費－経費の内訳をツールチップ等で見せるため）。
-    成果報酬(performance_fee=='有')の案件は、売上・外注費・想定経費を週按分せず稼働のある
-    最後の週にまとめて計上する（コスト削減案件等、成果報酬は稼働最終週に確定するため。
+    成果報酬(performance_fee=='有'、想定インパクト×比率)は固定報酬(fee_total)とは別建てで、
+    稼働のある最後の週(稼働最終週)にだけ全額を上乗せする（コスト削減案件等、成果報酬は稼働
+    最終週に確定するため。固定報酬は従来通り週按分し、そこに成果報酬を足し算する仕様。
     ユーザー要望2026-09-24）。稼働（work）自体は従来通り毎週積み上げる。
     """
     dv = get_delivery(con, delivery_id) or {}
@@ -6140,34 +6158,22 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     else:
         weights = {wk: 1.0 for wk in all_weeks}  # 対象外期間なしは従来通りフラット（後方互換）
     total_weight = sum(weights.get(wk, 0.0) for wk in revenue_weeks_list)
+    per_weight_revenue = (fee_total / total_weight) if total_weight > 0 else 0.0
+    per_weight_cost = (cost_total / total_weight) if total_weight > 0 else 0.0
+    per_weight_expense = (expense_total / total_weight) if total_weight > 0 else 0.0
+    revenue_weeks_set = set(revenue_weeks_list)
 
     grid = delivery_grid(con, delivery_id)
     weekly_actual_total = {wk: sum((grid["cells"].get(ow, {}).get(wk) or {}).get("actual", 0.0)
                                     for ow in grid["owners"]) for wk in weeks}
 
-    # 成果報酬（コスト削減等）は按分せず稼働最終週にまとめて計上する（ユーザー要望2026-09-24）。
-    # 稼働（work、weights基準）は従来通り毎週積み上げるが、売上・外注費・想定経費（revenue_weights
-    # 基準）だけ稼働のある最後の週に全額を寄せる。fee_total自体は想定インパクト×成果報酬比率で
-    # 算出済みの値（クライアント側dvPerfFeeChanged()経由でfee_total/fee_monthlyへ反映）。
-    is_perf_fee = (dv.get("performance_fee") == "有")
-    if is_perf_fee:
-        _staffed_weeks = [wk for wk in weeks if weekly_actual_total.get(wk, 0.0) > 0]
-        if _staffed_weeks:
-            _last_staffed_wk = max(_staffed_weeks)
-            revenue_weights = {wk: (1.0 if wk == _last_staffed_wk else 0.0) for wk in all_weeks}
-            revenue_total_weight = 1.0
-            revenue_weeks_set = {_last_staffed_wk}
-        else:
-            revenue_weights = {wk: 0.0 for wk in all_weeks}
-            revenue_total_weight = 0.0
-            revenue_weeks_set = set()
-    else:
-        revenue_weights = weights
-        revenue_total_weight = total_weight
-        revenue_weeks_set = set(revenue_weeks_list)
-    per_weight_revenue = (fee_total / revenue_total_weight) if revenue_total_weight > 0 else 0.0
-    per_weight_cost = (cost_total / revenue_total_weight) if revenue_total_weight > 0 else 0.0
-    per_weight_expense = (expense_total / revenue_total_weight) if revenue_total_weight > 0 else 0.0
+    # 成果報酬（想定インパクト×比率）は固定報酬(fee_total、上で既に週按分済み)とは別建てで、
+    # 稼働のある最後の週(稼働最終週)にだけ全額を上乗せする（按分せず、固定報酬との加算）。
+    # 固定報酬は従来通り入力し、そこに成果報酬を足し算する仕様（ユーザー要望2026-09-24。
+    # 以前の「想定インパクト×比率が報酬額を置き換える」仕様から変更）。
+    performance_fee_total = delivery_performance_fee_total(dv)
+    _staffed_weeks = [wk for wk in weeks if weekly_actual_total.get(wk, 0.0) > 0]
+    _last_staffed_wk = max(_staffed_weeks) if _staffed_weeks else None
 
     (weekly_revenue, cum_revenue, weekly_cost, cum_cost, weekly_expense, cum_expense,
      weekly_margin, cum_margin, cum_workload, productivity,
@@ -6175,10 +6181,11 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     running_rev, running_cost, running_exp, running_margin, running_work = 0.0, 0.0, 0.0, 0.0, 0.0
     for wk in weeks:
         w = weights.get(wk, 1.0)
-        rw = revenue_weights.get(wk, 1.0)
-        rev = per_weight_revenue * rw if wk in revenue_weeks_set else 0.0
-        cost = per_weight_cost * rw if wk in revenue_weeks_set else 0.0
-        exp = per_weight_expense * rw if wk in revenue_weeks_set else 0.0
+        rev = per_weight_revenue * w if wk in revenue_weeks_set else 0.0
+        if performance_fee_total and wk == _last_staffed_wk:
+            rev += performance_fee_total
+        cost = per_weight_cost * w if wk in revenue_weeks_set else 0.0
+        exp = per_weight_expense * w if wk in revenue_weeks_set else 0.0
         margin = rev - cost - exp
         work = weekly_actual_total.get(wk, 0.0) * w
         weekly_revenue[wk] = round(rev, 1)
@@ -6542,6 +6549,7 @@ def compute_delivery_load(con, *, start_week: str | None = None,
         "dv.cost_mode AS cost_mode, dv.cost_monthly AS cost_monthly, dv.cost_total AS cost_total_raw, "
         "dv.expected_expense_total AS expected_expense_total, "
         "dv.performance_fee AS performance_fee, "
+        "dv.expected_impact AS expected_impact, dv.performance_fee_ratio AS performance_fee_ratio, "
         "dv.excluded_periods AS excluded_periods, "
         "dv.business_type_l1_override AS business_type_l1_override, "
         "dv.business_type_l2_override AS business_type_l2_override, "
@@ -6596,6 +6604,8 @@ def compute_delivery_load(con, *, start_week: str | None = None,
                 "fee_mode": r["fee_mode"], "fee_monthly": r["fee_monthly"], "fee_total": r["fee_total_raw"],
                 "cost_mode": r["cost_mode"], "cost_monthly": r["cost_monthly"], "cost_total": r["cost_total_raw"],
                 "expected_expense_total": r["expected_expense_total"],
+                "performance_fee": r["performance_fee"],
+                "expected_impact": r["expected_impact"], "performance_fee_ratio": r["performance_fee_ratio"],
                 "start_week": r["delivery_start"], "end_week": r["delivery_end"],
                 "excluded_periods": r["excluded_periods"],
             }
@@ -6609,7 +6619,7 @@ def compute_delivery_load(con, *, start_week: str | None = None,
                 "excluded_periods": [{"from": f.isoformat(), "to": t.isoformat()}
                                      for f, t in _delivery_excluded_periods(_dv_fee_like)],
                 "business_type_l1": _biz_l1 or "", "business_type_l2": _biz_l2 or "",
-                "performance_fee": (r["performance_fee"] == "有"),
+                "performance_fee_total": delivery_performance_fee_total(_dv_fee_like),
             }
     base = base_workload_by_owner(con)
     owners = sorted(set(list(base.keys()) + list(cells.keys())),

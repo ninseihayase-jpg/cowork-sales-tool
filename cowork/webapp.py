@@ -5101,7 +5101,7 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">成果報酬比率(%)<br>
                 <input type="number" step="0.1" min="0" max="100" id="dvPerfFeeRatio" name="performance_fee_ratio" style="width:90px"
                        value="{"" if dv.get("performance_fee_ratio") is None else dv.get("performance_fee_ratio")}" oninput="dvPerfFeeChanged()"></label>
-              <label style="font-size:12px" title="想定インパクト×成果報酬比率＝報酬額/総額">想定インパクト(万)<br>
+              <label style="font-size:12px" title="想定インパクト×成果報酬比率＝成果報酬額。報酬額/月額・総額（固定報酬）に加算されます">想定インパクト(万)<br>
                 <input type="number" step="0.1" min="0" id="dvExpectedImpact" name="expected_impact" style="width:90px"
                        value="{"" if dv.get("expected_impact") is None else dv.get("expected_impact")}" oninput="dvPerfFeeChanged()"></label>
               <span class="muted" style="font-size:11px;align-self:center;cursor:help" id="dvFeeMonths" title="">ⓘ</span>
@@ -5318,10 +5318,10 @@ def delivery_form(con, delivery_id: int) -> str:
         +'<button type="button" onclick="'+nextFn+'" style="border:0;background:none;cursor:pointer;font-size:13px;color:#64748b">▶</button></div>';
       html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font-size:10px;color:#94a3b8;text-align:center;margin-bottom:2px">'
         +['月','火','水','木','金','土','日'].map(function(w){{return '<div>'+w+'</div>';}}).join('')+'</div>';
-      // 日グリッドの高さは常に5週(113px≒23px×5行)に固定し、6週必要な月だけその中でスクロール
-      // させる（3つ並べた時の縦幅を常に揃えるため。ユーザー要望2026-09-24: 5週側に常にあわせる、
-      // 4週等の短い月は下にスキマができてよい）。
-      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;height:113px;overflow-y:auto">';
+      // 日グリッドの高さは常に6週分(136px≒23px×6行、月に必要な最大週数)に固定する（3つ並べた
+      // 時の縦幅を常に揃えるため。ユーザー要望2026-09-24: スクロールが必要になると不便なので、
+      // スクロールなしで全日程が常に収まる高さに変更。4〜5週の短い月は下にスキマができてよい）。
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;height:136px">';
       for(var i=0;i<startWd;i++) html+='<div></div>';
       for(var d=1; d<=daysInMonth; d++){{
         var ds=y+'-'+('0'+(m+1)).slice(-2)+'-'+('0'+d).slice(-2);
@@ -5528,15 +5528,9 @@ def delivery_form(con, delivery_id: int) -> str:
       var need = sel.value==='有';
       ratio.required = need;
       ratio.style.background = (need && ratio.value==='') ? '#fef3c7' : '';
-      // 成果報酬=有かつ想定インパクト・比率が両方入力されていれば、報酬額/総額＝想定インパクト×
-      // 比率(%)を自動算出する（コスト削減案件等、報酬額が未入力のままだと生産性が常に0になって
-      // しまう問題への対応。ユーザー要望2026-09-24）。手修正済み（fee_manual=1）の総額は
-      // 他の自動計算と同じ規約で上書きしない。
-      var impactEl=document.getElementById('dvExpectedImpact'), to=document.getElementById('dvFeeTotal');
-      if(need && impactEl && to && to.dataset.manual!=='1' && impactEl.value!=='' && ratio.value!==''){{
-        var impact=parseFloat(impactEl.value), r=parseFloat(ratio.value);
-        if(!isNaN(impact) && !isNaN(r)) to.value=Math.round(impact*r)/100;
-      }}
+      // 成果報酬(想定インパクト×比率)は固定報酬(報酬額/月額・総額)とは別建てで加算する仕様
+      // （ユーザー要望2026-09-24）。固定報酬フィールド自体はここでは一切書き換えず、
+      // renderPreview()側で固定報酬＋成果報酬を合算して週別限界利益を再計算する。
       if(typeof dvFeeRecalc==='function') dvFeeRecalc();
     }}
     // 想定利益(月額/総額) = 報酬額－外注費。どちらも未入力なら「—」、片方だけ未入力は0扱い。
@@ -5754,31 +5748,29 @@ def delivery_form(con, delivery_id: int) -> str:
         weightOf[k]=_dvExclPeriods.length ? _dvPeriodWeight(k, sw, ew, _dvExclPeriods) : 1.0; }});
       var revWeeksSet={{}}; revWeeksList.forEach(function(k){{ revWeeksSet[k]=true; }});
       var totalWeight=0; revWeeksList.forEach(function(k){{ totalWeight+=(weightOf[k]||0); }});
-      // 成果報酬（コスト削減等）は按分せず稼働最終週にまとめて計上する（サーバ側
-      // delivery_weekly_productivity()と同じ式。ユーザー要望2026-09-24）。稼働(weightOf)自体は
-      // 変えず、売上・外注費・想定経費の配分（revWeightOf）だけ稼働最終週に寄せる。
+      var perWeightRevenue = totalWeight>0 ? feeTotal/totalWeight : 0;
+      var perWeightCost = totalWeight>0 ? costTotal/totalWeight : 0;
+      var perWeightExpense = totalWeight>0 ? expenseTotal/totalWeight : 0;
+      // 成果報酬（想定インパクト×比率）は固定報酬(feeTotal、上で既に週按分済み)とは別建てで、
+      // 稼働のある最後の週(稼働最終週)にだけ全額を上乗せする（サーバ側delivery_weekly_productivity()
+      // と同じ式。固定報酬は従来通り入力し、そこに成果報酬を足し算する仕様。ユーザー要望2026-09-24）。
       var isPerfFee = ((document.getElementById('dvPerfFee')||{{}}).value)==='有';
-      var revWeightOf=weightOf, revTotalWeight=totalWeight, revWeeksSetFinal=revWeeksSet;
-      if(isPerfFee){{
-        var lastStaffedWk=null;
-        weeks.forEach(function(k){{ if((weeklyActual[k]||0)>0) lastStaffedWk=k; }});
-        if(lastStaffedWk){{
-          revWeightOf={{}}; weeks.concat(revWeeksList).forEach(function(k){{ revWeightOf[k]=(k===lastStaffedWk)?1.0:0.0; }});
-          revTotalWeight=1.0;
-          revWeeksSetFinal={{}}; revWeeksSetFinal[lastStaffedWk]=true;
-        }} else {{ revWeightOf={{}}; revTotalWeight=0; revWeeksSetFinal={{}}; }}
+      var perfImpactEl=document.getElementById('dvExpectedImpact'), perfRatioEl=document.getElementById('dvPerfFeeRatio');
+      var performanceFeeTotal=0;
+      if(isPerfFee && perfImpactEl && perfRatioEl && perfImpactEl.value!=='' && perfRatioEl.value!==''){{
+        var _pImpact=parseFloat(perfImpactEl.value), _pRatio=parseFloat(perfRatioEl.value);
+        if(!isNaN(_pImpact) && !isNaN(_pRatio)) performanceFeeTotal=Math.round(_pImpact*_pRatio)/100;
       }}
-      var perWeightRevenue = revTotalWeight>0 ? feeTotal/revTotalWeight : 0;
-      var perWeightCost = revTotalWeight>0 ? costTotal/revTotalWeight : 0;
-      var perWeightExpense = revTotalWeight>0 ? expenseTotal/revTotalWeight : 0;
+      var lastStaffedWk=null;
+      weeks.forEach(function(k){{ if((weeklyActual[k]||0)>0) lastStaffedWk=k; }});
       var runningMargin=0, runningWork=0, revRow='', prodRow='', workRow='', finalP=null, finalW=0, finalMg=0;
       var LABEL_W=150, FINAL_W=90;
       weeks.forEach(function(k,i){{
         var wgt=weightOf[k]!=null?weightOf[k]:1.0;
-        var rwgt=revWeightOf[k]!=null?revWeightOf[k]:wgt;
-        var rev = revWeeksSetFinal[k] ? perWeightRevenue*rwgt : 0;
-        var cost = revWeeksSetFinal[k] ? perWeightCost*rwgt : 0;
-        var exp = revWeeksSetFinal[k] ? perWeightExpense*rwgt : 0;
+        var rev = revWeeksSet[k] ? perWeightRevenue*wgt : 0;
+        if(performanceFeeTotal && k===lastStaffedWk) rev+=performanceFeeTotal;
+        var cost = revWeeksSet[k] ? perWeightCost*wgt : 0;
+        var exp = revWeeksSet[k] ? perWeightExpense*wgt : 0;
         var margin = rev - cost - exp;
         var work = (weeklyActual[k]||0)*wgt;
         runningMargin+=margin; runningWork+=work;
@@ -22599,17 +22591,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     _perf_fee = _perf_fee if _perf_fee in sfa_db.DELIVERY_PERFORMANCE_FEE_OPTIONS else None
                     _perf_ratio = _to_float(f.get("performance_fee_ratio"), None) if _perf_fee == "有" else None
                     _expected_impact = _to_float(f.get("expected_impact"), None) if _perf_fee == "有" else None
-                    if _perf_fee == "有" and _expected_impact is not None and _perf_ratio is not None:
-                        # 成果報酬: 報酬額＝想定インパクト×比率をサーバ側でも独立に算出する
-                        # （クライアントJSが未送信の報酬額/月額を空のまま送るため、compute_delivery_fee()の
-                        # 「両方揃っていなければ算出不可」ロジックに任せると報酬額が消えてしまうため。
-                        # ユーザー要望2026-09-24）。
-                        _fee_total = round(_expected_impact * _perf_ratio / 100.0, 2)
-                        _fee_monthly = None
-                        _fee_mode = "total"
-                    else:
-                        _fee_monthly, _fee_total = sfa_db.compute_delivery_fee(
-                            _fee_mode, f.get("fee_monthly", ""), f.get("fee_total", ""), _months)
+                    # 報酬額/月額・総額は固定報酬のみ（成果報酬は別建て。ユーザー要望2026-09-24:
+                    # 固定報酬は従来通り入力し、そこに成果報酬(想定インパクト×比率)を足し算する仕様。
+                    # 固定報酬の月額/総額の相互換算はcompute_delivery_fee()に一本化（以前ここで
+                    # 成果報酬用に特別扱いしていたロジックは廃止）。
+                    _fee_monthly, _fee_total = sfa_db.compute_delivery_fee(
+                        _fee_mode, f.get("fee_monthly", ""), f.get("fee_total", ""), _months)
                     # 外注費: 報酬額と同じ仕組みで月額/総額を相互換算して両方保持。
                     _cost_mode = (f.get("cost_mode", "") or "monthly").strip()
                     _cost_monthly, _cost_total = sfa_db.compute_delivery_fee(
