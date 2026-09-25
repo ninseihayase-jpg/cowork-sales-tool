@@ -2797,19 +2797,27 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-modal-lg-body{flex:1 1 auto;overflow:auto;min-height:0}
 /* シナリオカード内のメンバー別週別Delivery稼働率テーブル（ユーザー要望2026-09-27: 本画面は
    各シナリオの結果として、メンバー別・週別の稼働率だけを見せる）。同一メンバーが複数の
-   アサイン(複数PJ)を持つ場合は週ごとに実%を合算し、100%を超えたら赤で警告表示する。 */
+   アサイン(複数PJ)を持つ場合は週ごとに実%を合算する。外部メンバーは対象外
+   （ユーザー要望2026-09-27「稼働率に外部は不要」）。列幅を44pxに固定し、初期表示は
+   当週が左端に来るようスクロール位置を合わせる(apScrollUtilToToday)ことで、横スクロール
+   可能なまま直近3ヶ月程度が画面に収まる（ユーザー要望2026-09-27）。 */
 .ap-util-wrap{overflow:auto;max-height:280px;border:1px solid #e6e9f0;border-radius:8px}
-.ap-util-wrap table{border-collapse:collapse;font-size:11px;width:100%}
+.ap-util-wrap table{border-collapse:collapse;font-size:11px}
 .ap-util-wrap th,.ap-util-wrap td{padding:3px 6px;border-bottom:1px solid #f1f3f7;white-space:nowrap;
   height:22px;box-sizing:border-box}
 .ap-util-name{position:sticky;left:0;width:130px;min-width:130px;max-width:130px;background:#fff;
   z-index:2;border-right:1px solid #e6e9f0;font-size:11px;font-weight:600;color:#3a4760}
 .ap-util-corner{position:sticky;left:0;top:0;width:130px;min-width:130px;max-width:130px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0;font-size:10px;color:#8893a8;text-align:left}
-.ap-util-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px;color:#8893a8}
-.ap-util-cell{text-align:center;font-size:10px;color:#5b6478}
-.ap-util-cell.ap-util-on{background:#dbeafe}
-.ap-util-cell.ap-util-over{background:#fecaca;color:#991b1b;font-weight:700}
+.ap-util-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px;
+  color:#8893a8;width:44px;min-width:44px}
+.ap-util-cell{text-align:center;font-size:10px;color:#5b6478;width:44px;min-width:44px}
+/* 稼働率の段階表示（ユーザー要望2026-09-27: 50%/70%/100%/150%で色を変える。数値が大きいほど
+   濃い暖色にして危険度が一目でわかるようにする）。 */
+.ap-util-cell.ap-util-l50{background:#dbeafe}
+.ap-util-cell.ap-util-l70{background:#fef08a}
+.ap-util-cell.ap-util-l100{background:#fdba74;font-weight:700}
+.ap-util-cell.ap-util-l150{background:#f87171;color:#fff;font-weight:700}
 .ap-asg-fields{display:flex;flex-wrap:nowrap;gap:4px;align-items:center;padding:2px 0}
 .ap-asg-fields select,.ap-asg-fields input{font-size:11px;padding:2px 3px;box-sizing:border-box;flex:none}
 /* ＋ボタンは最終行以外もvisibility:hiddenで同じ幅の場所を確保する（表示/非表示に関わらず
@@ -2890,6 +2898,8 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 <script>
 var AP_DELIVERIES = __INITIAL_DELIVERIES_JSON__;
 var AP_OWNERS = __INITIAL_OWNERS_JSON__;
+var AP_OWNER_DOMAIN_MAP = __INITIAL_OWNER_DOMAIN_MAP_JSON__;
+var AP_DOMAIN_ORDER = __INITIAL_DOMAIN_ORDER_JSON__;
 var AP_PLANS = __INITIAL_PLANS_JSON__;
 var AP_BY_ID = {};
 AP_DELIVERIES.forEach(function(d){ AP_BY_ID[d.id] = d; });
@@ -3070,14 +3080,16 @@ function apGlobalWeeks(visibleIds){
   return Object.keys(all).sort();
 }
 
-// あるシナリオ内の全アサインを、メンバー(owner)×週で合算する（未アサイン=owner空欄は除外）。
-// 同一メンバーが複数PJを掛け持ちする場合は週ごとに実%を単純合算する
-// （ユーザー要望2026-09-27: 本画面はメンバー別・週別のDelivery稼働率を見せる）。
+// あるシナリオ内の全アサインを、メンバー(owner)×週で合算する（未アサイン=owner空欄・外部メンバーは
+// 除外。ユーザー要望2026-09-27「稼働率に外部は不要」）。同一メンバーが複数PJを掛け持ちする場合は
+// 週ごとに実%を単純合算する（ユーザー要望2026-09-27: 本画面はメンバー別・週別のDelivery稼働率を
+// 見せる）。
 function apComputeMemberWeekly(scenario, visibleIds){
   var byOwner = {};
   visibleIds.forEach(function(id){
     var snap = scenario.data[id]; if(!snap) return;
     (snap.assignments||[]).forEach(function(a){
+      if(a.member_kind === '外部') return;
       var owner = (a.owner||'').trim(); if(!owner) return;
       var pct = parseFloat(a.fte_pct); if(!pct || isNaN(pct)) return;
       if(!byOwner[owner]) byOwner[owner] = {};
@@ -3088,8 +3100,31 @@ function apComputeMemberWeekly(scenario, visibleIds){
   });
   return byOwner;
 }
-function apRenderMemberUtilTable(byOwner, weeks){
-  var owners = Object.keys(byOwner).sort(function(a,b){ return a.localeCompare(b,'ja'); });
+// メンバーの並び順キー: 役職順(「担当者の担当領域」マスタの並び順)→マスタの名前順(AP_OWNERSの並び順)
+// （ユーザー要望2026-09-27「役職順、マスタの名前順にして」）。担当領域未設定・AP_OWNERS未掲載の
+// メンバーは各段階の最後にまとめ、最終的に名前の五十音順で安定させる。
+function apOwnerSortKey(name){
+  var domain = AP_OWNER_DOMAIN_MAP[name] || '';
+  var dRank = AP_DOMAIN_ORDER.indexOf(domain);
+  if(dRank < 0) dRank = AP_DOMAIN_ORDER.length;
+  var oRank = AP_OWNERS.indexOf(name);
+  if(oRank < 0) oRank = AP_OWNERS.length;
+  return [dRank, oRank, name];
+}
+function apUtilCellClass(v){
+  if(v>=150) return ' ap-util-l150';
+  if(v>=100) return ' ap-util-l100';
+  if(v>=70) return ' ap-util-l70';
+  if(v>=50) return ' ap-util-l50';
+  return '';
+}
+function apRenderMemberUtilTable(byOwner, weeks, wrapId){
+  var owners = Object.keys(byOwner).sort(function(a,b){
+    var ka = apOwnerSortKey(a), kb = apOwnerSortKey(b);
+    if(ka[0]!==kb[0]) return ka[0]-kb[0];
+    if(ka[1]!==kb[1]) return ka[1]-kb[1];
+    return ka[2].localeCompare(kb[2],'ja');
+  });
   if(!owners.length){ return '<p class="ap-empty" style="margin:4px 0 0">アサイン済みメンバーがいません</p>'; }
   var headHtml = '<tr><th class="ap-util-corner">メンバー</th>'
     + weeks.map(function(w){ return '<th class="ap-util-wk-head">'+w.slice(5)+'</th>'; }).join('') + '</tr>';
@@ -3097,12 +3132,25 @@ function apRenderMemberUtilTable(byOwner, weeks){
     return '<tr><td class="ap-util-name">'+_apEsc(o)+'</td>'
       + weeks.map(function(w){
           var v = byOwner[o][w]||0;
-          var cls = v>100 ? ' ap-util-over' : (v>0 ? ' ap-util-on' : '');
-          return '<td class="ap-util-cell'+cls+'">'+(v?v:'')+'</td>';
+          return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+(v?v:'')+'</td>';
         }).join('')
       + '</tr>';
   }).join('');
-  return '<div class="ap-util-wrap"><table><thead>'+headHtml+'</thead><tbody>'+bodyHtml+'</tbody></table></div>';
+  return '<div class="ap-util-wrap" id="'+wrapId+'"><table><thead>'+headHtml+'</thead><tbody>'+bodyHtml+'</tbody></table></div>';
+}
+// 初期表示で当週(AP_TODAY_MONDAY)を左端に揃える（ユーザー要望2026-09-27「当週を一番左に、
+// 直近3ヶ月が画面に上手く収まるように」）。全体の週軸(weeks)はそのまま保持するので、左に
+// スクロールすれば過去週も見える。
+function apScrollUtilToToday(wrapId, weeks){
+  var wrap = document.getElementById(wrapId);
+  if(!wrap) return;
+  var idx = -1;
+  for(var i=0;i<weeks.length;i++){ if(weeks[i] >= AP_TODAY_MONDAY){ idx = i; break; } }
+  if(idx < 0) return;
+  var heads = wrap.querySelectorAll('.ap-util-wk-head');
+  var th = heads[idx];
+  if(!th) return;
+  wrap.scrollLeft = Math.max(0, th.offsetLeft - 130);
 }
 
 function apRenderScenarios(){
@@ -3126,10 +3174,11 @@ function apRenderScenarios(){
       + '<span class="ap-sc-name-label">'+_apEsc(scenario.name)+'</span>'
       + '<span class="muted" style="font-size:11px">クリックしてアサインを編集 ▸</span>'
       + '</div>'
-      + apRenderMemberUtilTable(byOwner, weeks)
+      + apRenderMemberUtilTable(byOwner, weeks, 'apUtilWrap'+idx)
       + '</div>';
   });
   box.innerHTML = outerHtml;
+  AP_STATE.scenarios.forEach(function(scenario, idx){ apScrollUtilToToday('apUtilWrap'+idx, weeks); });
 
   // 編集用フローティングモーダルが開いていれば、そのシナリオのPJ×アサイン詳細表も
   // 同じタイミングで再描画する（編集すると本画面の稼働率も即時Updateされる、
@@ -3327,10 +3376,16 @@ def assign_planning_page(con) -> str:
         })
     owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
     plans = sfa_db.list_assign_planning_plans(con)
+    # メンバー別稼働率の並び順（役職順→マスタの名前順、ユーザー要望2026-09-27）に使う。
+    # 「担当者の担当領域」マスタ（/masters）と同じデータをそのまま流用する。
+    owner_domain_map = sfa_db.get_owner_domain_map(con)
+    domain_order = sfa_db.get_master_list(con, "owner_domains") or list(sfa_db.OWNER_DOMAINS)
 
     html = _ASSIGN_PLANNING_PAGE_TEMPLATE.replace("__FAVICON_LINK__", _SFA_FAVICON)
     html = html.replace("__INITIAL_DELIVERIES_JSON__", json.dumps(deliveries, ensure_ascii=False))
     html = html.replace("__INITIAL_OWNERS_JSON__", json.dumps(owners, ensure_ascii=False))
+    html = html.replace("__INITIAL_OWNER_DOMAIN_MAP_JSON__", json.dumps(owner_domain_map, ensure_ascii=False))
+    html = html.replace("__INITIAL_DOMAIN_ORDER_JSON__", json.dumps(domain_order, ensure_ascii=False))
     return html.replace("__INITIAL_PLANS_JSON__", json.dumps(plans, ensure_ascii=False))
 
 
