@@ -812,6 +812,10 @@ CREATE TABLE IF NOT EXISTS deal_issue_subitems (
     parent_id   INTEGER REFERENCES deal_issue_subitems(id) ON DELETE CASCADE,
                 -- タスクの2階層化（2026-09-11）。NULL=メインタスク、値あり=そのidのメインタスクに
                 -- 紐づくサブタスク。3階層以上は想定しない（サブタスクはさらに子を持たない）。
+    done          INTEGER NOT NULL DEFAULT 0,  -- 完了チェック（2026-09-26）。ガントでグレーアウト表示。
+    is_milestone  INTEGER NOT NULL DEFAULT 0,  -- MS（マイルストーン）指定（2026-09-26）。ガントでハイライト表示。
+                                                -- doneとは独立の別フラグ（両方trueもありうる）。
+    owner         TEXT,                        -- 担当（2026-09-26、主にサブタスク向け）。ownersマスタの値。
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now'))
 );
@@ -1913,6 +1917,48 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
                         "REFERENCES deal_issue_subitems(id) ON DELETE CASCADE")
             con.execute("CREATE INDEX IF NOT EXISTS idx_deal_issue_subitems_parent "
                         "ON deal_issue_subitems(parent_id)")
+        # 完了チェック／MS(マイルストーン)指定（2026-09-26、社内PJガント）。
+        if "done" not in _subitem_cols:
+            con.execute("ALTER TABLE deal_issue_subitems ADD COLUMN done INTEGER NOT NULL DEFAULT 0")
+        if "is_milestone" not in _subitem_cols:
+            con.execute("ALTER TABLE deal_issue_subitems ADD COLUMN is_milestone INTEGER NOT NULL DEFAULT 0")
+        if "owner" not in _subitem_cols:
+            con.execute("ALTER TABLE deal_issue_subitems ADD COLUMN owner TEXT")
+        # 社内PJガントの表示順ドラッグ並び替え（2026-09-26）。従来は常にsort_orderを無視して
+        # (start_date, end_date)の日付順で表示していたため、sort_orderの値は表示に無関係だった
+        # （挿入順のまま）。ドラッグ並び替え運用に切り替えるにあたり、初回だけ現状の日付表示順を
+        # sort_orderへ書き写してから切り替える（既存PJの見た目を変えないため）。masters テーブルに
+        # 完了フラグ行を1つ立てて冪等化する（以後は再実行しない）。
+        if con.execute(
+                "SELECT COUNT(*) FROM masters WHERE key='deal_issue_subitems_sort_migrated'"
+        ).fetchone()[0] == 0:
+            _rows = con.execute(
+                "SELECT id, issue_id, parent_id, start_date, end_date FROM deal_issue_subitems").fetchall()
+            # メインタスク(parent_id無し)は自身の日付ではなく、配下サブタスクの最早開始〜最遅終了を
+            # 並び替えキーに使う（2026-09-26〜、メインタスクの期間表示自体が配下から算出される
+            # 方式へ変わったため、初回移行時の並び順もそれに揃える）。
+            _children_of: dict[int, list] = {}
+            for _r in _rows:
+                if _r["parent_id"]:
+                    _children_of.setdefault(_r["parent_id"], []).append(_r)
+
+            def _sort_key_for(_r):
+                if _r["parent_id"]:
+                    return (_r["start_date"] or "", _r["end_date"] or "", _r["id"])
+                _kids = _children_of.get(_r["id"], [])
+                _starts = [k["start_date"] for k in _kids if k["start_date"]]
+                _ends = [k["end_date"] for k in _kids if k["end_date"]]
+                return (min(_starts) if _starts else "", max(_ends) if _ends else "", _r["id"])
+
+            _groups: dict[tuple, list] = {}
+            for _r in _rows:
+                _groups.setdefault((_r["issue_id"], _r["parent_id"]), []).append(_r)
+            for _items in _groups.values():
+                _items.sort(key=_sort_key_for)
+                for _i, _r in enumerate(_items):
+                    con.execute("UPDATE deal_issue_subitems SET sort_order=? WHERE id=?", (_i, _r["id"]))
+            con.execute(
+                "INSERT INTO masters(key, values_json) VALUES ('deal_issue_subitems_sort_migrated', '[]')")
         # 取り込み原本テーブルに自動連携(インボックス)用カラムを後方互換で追加。
         _it_cols = {c[1] for c in con.execute("PRAGMA table_info(intake_transcripts)")}
         for _col, _decl in (
@@ -4143,12 +4189,17 @@ def get_deal_issue_subitem(con, id: int) -> dict | None:
 
 def update_deal_issue_subitem(con, id: int, *, title: str | None = None,
                               start_date: str | None = None, end_date: str | None = None,
-                              overview: str | None = None, clear_dates: bool = False) -> None:
+                              overview: str | None = None, clear_dates: bool = False,
+                              done: int | None = None, is_milestone: int | None = None,
+                              owner: str | None = None) -> None:
     """部分更新（渡したフィールドだけ更新。upsert系のfootgunを避ける専用ヘルパー）。
     clear_dates=Trueの時だけ start_date/end_date を明示的にNULLへ戻せる
     （通常はstart_date/end_dateにNoneを渡しても「変更しない」の意味で無視する）。
     overview は空文字での「クリア」を許すため、Noneのみ「変更しない」として扱う
     （空文字はフィールドを空にする明示的な更新）。
+    done/is_milestone（2026-09-26）は完了チェック／MS指定の独立した2つのフラグ（0/1）。
+    owner（2026-09-26）は担当（主にサブタスク向け）。他の文字列フィールドと同じくNoneは
+    「変更しない」の意味（呼び出し側=webapp.pyが空文字→NULL変換してから渡す）。
     start_date/end_dateを変更した場合、このサブタスクに親(parent_id)があれば
     sync_subitem_parent_range()で親の日程を自動延伸する（2026-09-11）。"""
     sets, args = [], []
@@ -4156,6 +4207,12 @@ def update_deal_issue_subitem(con, id: int, *, title: str | None = None,
         sets.append("title=?"); args.append(title)
     if overview is not None:
         sets.append("overview=?"); args.append(overview)
+    if owner is not None:
+        sets.append("owner=?"); args.append(owner)
+    if done is not None:
+        sets.append("done=?"); args.append(int(done))
+    if is_milestone is not None:
+        sets.append("is_milestone=?"); args.append(int(is_milestone))
     _dates_changed = False
     if clear_dates:
         sets.append("start_date=NULL"); sets.append("end_date=NULL")
@@ -4171,6 +4228,18 @@ def update_deal_issue_subitem(con, id: int, *, title: str | None = None,
     con.commit()
     if _dates_changed:
         sync_subitem_parent_range(con, id)
+
+
+def reorder_deal_issue_subitems(con, ordered_ids: list[int]) -> None:
+    """社内PJガントのタスク（メインタスク／サブタスク共通）のドラッグ並び替え（2026-09-26）。
+    delivery_rolesのreorder_delivery_rolesと同じ方式: 渡されたidのうち実在するものだけを対象に
+    sort_order=enumerate順で振り直す。メインタスク一式・特定メインタスク配下のサブタスク一式、
+    どちらの並び替えもこの1関数で共通に扱う（呼び出し側が同じ親を持つ兄弟だけを渡す前提）。"""
+    valid_ids = {r["id"] for r in con.execute("SELECT id FROM deal_issue_subitems")}
+    for i, sid in enumerate(ordered_ids):
+        if sid in valid_ids:
+            con.execute("UPDATE deal_issue_subitems SET sort_order=? WHERE id=?", (i, sid))
+    con.commit()
 
 
 def sync_subitem_parent_range(con, subitem_id: int) -> None:

@@ -205,11 +205,13 @@ def test_main_task_and_child_rows_tagged_with_parent_issue(con):
     sfa_db.create_deal_issue_subitem(con, iid, "サブタスク1", "2026-09-12", "2026-09-15",
                                      parent_id=main_id)
     html = webapp.deal_issues_gantt_page(con)
+    # 2026-09-26: 完了/MS表示用クラス・data-iid属性が追加されたため、属性の並び自体には
+    # こだわらずdata-parent-issue（と、サブタスクはdata-parent-taskも）の存在だけを確認する。
     assert re.search(
-        r'<div class="gantt-lbl" data-parent-issue="' + str(iid) + r'" '
+        r'<div class="gantt-lbl[^"]*" data-parent-issue="' + str(iid) + r'"[^>]*'
         r'style="grid-row:\d+;grid-column:1;display:flex;', html), "メインタスク行にdata-parent-issueが無い"
     assert re.search(
-        r'<div class="gantt-lbl" data-parent-task="' + str(main_id) + r'" data-parent-issue="' + str(iid) + r'" ',
+        r'<div class="gantt-lbl[^"]*" data-parent-task="' + str(main_id) + r'" data-parent-issue="' + str(iid) + r'"',
         html), "サブタスク行にdata-parent-issueが無い"
 
 

@@ -1641,3 +1641,19 @@ def test_route_access_hides_assign_planning_from_external_role(server, db_path):
     # メンバーは通常通りアクセスできる
     code, _ = _get(server + "/assign-planning", headers=_auth_header())
     assert code == 200
+
+
+def test_route_access_covers_singular_item_routes_not_just_list_pages(server, db_path):
+    """レビュー時に発見した抜け穴の回帰テスト: 一覧ページ(/tasks, /accounts, /hearings, /docs)と
+    個別アイテムのルート(/task/, /account/, /hearing/, /doc/, /deal-issue-subitem/)が単数/複数で
+    別prefixになっており、一覧側だけROUTE_ACCESSに登録されていると個別ルートが無制限(full)に
+    なってしまっていた。事務は/tasksが非表示のはずなので/task/配下も非表示、/deal-issuesがview
+    のはずなので/deal-issue-subitem配下もview（POSTは403）になることを確認する。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.set_user_role(con, "clerk2@inproc.org", "事務")
+    con.close()
+    clerk_header = {"Cookie": f"sfa_session={webapp._make_session_token('clerk2@inproc.org')}"}
+    code, _ = _get(server + "/task/1/notes", headers=clerk_header)
+    assert code == 403, "/tasksが事務に非表示なら/task/配下も非表示のはず"
+    code, _ = _post(server + "/deal-issue-subitem/reorder", {"order": "1,2"}, headers=clerk_header)
+    assert code == 403, "/deal-issuesが事務にview(閲覧のみ)なら/deal-issue-subitem配下への書き込みは403のはず"

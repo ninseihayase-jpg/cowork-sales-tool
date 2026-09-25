@@ -289,8 +289,11 @@ def test_gantt_grid_has_explicit_min_width_to_prevent_sticky_label_bug(con):
 
 
 def test_gantt_page_lists_missing_items_separately(con):
+    """2026-09-26〜: メインタスクは自身の日付を持たない（配下から自動算出）ため、この
+    「要確認」枠はサブタスクのみが対象になる。"""
     iid = _issue(con, issue="論点B")
-    sid = sfa_db.create_deal_issue_subitem(con, iid, "日程未定")
+    mid = sfa_db.create_deal_issue_subitem(con, iid, "メイン", start_date="2026-09-01", end_date="2026-09-30")
+    sid = sfa_db.create_deal_issue_subitem(con, iid, "日程未定", parent_id=mid)
     html = webapp.deal_issues_gantt_page(con)
     assert "期間を解釈できなかった" in html
     assert "日程未定" in html
@@ -355,7 +358,8 @@ def test_gantt_page_add_step_button_present_per_issue(con):
 def test_gantt_page_no_toplevel_terminology_of_old_subitem_name(con):
     """UI文言は「サブ社内PJ」から「ステップ」へ全面改名済みであること。"""
     iid = _issue(con)
-    sfa_db.create_deal_issue_subitem(con, iid, "日程未定")  # 要確認枠も描画させる
+    mid = sfa_db.create_deal_issue_subitem(con, iid, "メイン", start_date="2026-09-01", end_date="2026-09-30")
+    sfa_db.create_deal_issue_subitem(con, iid, "日程未定", parent_id=mid)  # 要確認枠も描画させる
     html = webapp.deal_issues_gantt_page(con)
     assert "サブ社内PJ" not in html
     assert "期間を解釈できなかったステップ" in html
@@ -562,3 +566,243 @@ def test_fix_date_route_preserves_existing_end_date(server, tmp_path):
     row = sfa_db.get_deal_issue_subitem(con3, sid)
     assert row["start_date"] == "2026-10-01"
     assert row["end_date"] == "2026-11-01"  # 既存の終了日は上書きしない
+
+
+# ── ドラッグ並び替え・実施期間ラベル・完了/MS（2026-09-26） ──────────────
+
+def test_reorder_deal_issue_subitems_persists_sort_order(con):
+    iid = _issue(con, issue="論点並び替え")
+    s1 = sfa_db.create_deal_issue_subitem(con, iid, "A", start_date="2026-10-01", end_date="2026-10-07")
+    s2 = sfa_db.create_deal_issue_subitem(con, iid, "B", start_date="2026-10-08", end_date="2026-10-14")
+    s3 = sfa_db.create_deal_issue_subitem(con, iid, "C", start_date="2026-10-15", end_date="2026-10-21")
+
+    sfa_db.reorder_deal_issue_subitems(con, [s3, s1, s2])
+
+    rows = {r["id"]: r["sort_order"] for r in sfa_db.list_deal_issue_subitems(con, iid)}
+    assert rows[s3] < rows[s1] < rows[s2]
+
+
+def test_reorder_deal_issue_subitems_ignores_unknown_ids(con):
+    """delivery体制のreorder_delivery_rolesと同じ信頼モデル: 実在しないidは無視するだけで
+    例外にならない（実在するidの行は書き換えられる）。"""
+    iid = _issue(con, issue="論点X2")
+    s1 = sfa_db.create_deal_issue_subitem(con, iid, "A", start_date="2026-10-01", end_date="2026-10-07")
+    sfa_db.reorder_deal_issue_subitems(con, [999999, s1])  # 例外にならないことを確認
+    assert sfa_db.get_deal_issue_subitem(con, s1) is not None
+
+
+def test_reorder_route_via_http_changes_render_order(server, tmp_path):
+    db_path = str(tmp_path / "srv.db")
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点並び替えHTTP")
+    s1 = sfa_db.create_deal_issue_subitem(con2, iid, "先頭タスク", start_date="2026-10-01", end_date="2026-10-07")
+    s2 = sfa_db.create_deal_issue_subitem(con2, iid, "後続タスク", start_date="2026-10-08", end_date="2026-10-14")
+    con2.close()
+
+    # 初期表示は日付順（s1が先）。
+    code, body = _get(f"{server}/deal-issues/gantt")
+    html = body.decode("utf-8")
+    assert html.index("先頭タスク") < html.index("後続タスク")
+
+    # ドラッグで逆順にしたと仮定してreorderを叩く。
+    code, _, _ = _post(f"{server}/deal-issue-subitem/reorder", {"order": f"{s2},{s1}"})
+    assert code == 204
+
+    code, body = _get(f"{server}/deal-issues/gantt")
+    html = body.decode("utf-8")
+    assert html.index("後続タスク") < html.index("先頭タスク"), "並び替え後の順番がレンダリングに反映されていない"
+
+
+def test_period_label_rendered_next_to_task_title(server, tmp_path):
+    """サブタスクは自身の日付をそのままラベル表示。メインタスクは自身の日付を持たず、
+    配下サブタスクの最早開始〜最遅終了を自動算出してラベル表示する（2026-09-26〜）。"""
+    db_path = str(tmp_path / "srv.db")
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点期間ラベル")
+    mid = sfa_db.create_deal_issue_subitem(con2, iid, "期間表示メイン")
+    sfa_db.create_deal_issue_subitem(con2, iid, "期間表示サブ", start_date="2026-10-05", end_date="2026-12-25",
+                                     parent_id=mid)
+    con2.close()
+
+    code, body = _get(f"{server}/deal-issues/gantt")
+    html = body.decode("utf-8")
+    assert '<span class="ig-period-lbl">10/5〜12/25</span>' in html
+
+
+def test_done_field_toggle_persists_as_int_and_grays_out_row(server, tmp_path):
+    db_path = str(tmp_path / "srv.db")
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点完了")
+    mid = sfa_db.create_deal_issue_subitem(con2, iid, "メイン")
+    sid = sfa_db.create_deal_issue_subitem(con2, iid, "完了予定タスク", start_date="2026-10-05", end_date="2026-10-11",
+                                           parent_id=mid)
+    con2.close()
+
+    code, _, body = _post(f"{server}/deal-issue-subitem/{sid}/field", {"field": "done", "value": "1"})
+    assert code == 200
+    con3 = sfa_db.connect(db_path)
+    row = sfa_db.get_deal_issue_subitem(con3, sid)
+    assert row["done"] == 1
+    con3.close()
+
+    code, body = _get(f"{server}/deal-issues/gantt")
+    html = body.decode("utf-8")
+    assert 'class="gantt-lbl ig-done"' in html
+    assert 'class="gantt-bar ig-done"' in html
+
+    # 0を送ると解除される（文字列ではなくint 0で保存されること）。
+    _post(f"{server}/deal-issue-subitem/{sid}/field", {"field": "done", "value": "0"})
+    con4 = sfa_db.connect(db_path)
+    row2 = sfa_db.get_deal_issue_subitem(con4, sid)
+    assert row2["done"] == 0
+
+
+def test_is_milestone_field_toggle_persists_and_highlights_independent_of_done(server, tmp_path):
+    db_path = str(tmp_path / "srv.db")
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点MS")
+    mid = sfa_db.create_deal_issue_subitem(con2, iid, "メイン")
+    sid = sfa_db.create_deal_issue_subitem(con2, iid, "MSタスク", start_date="2026-10-05", end_date="2026-10-11",
+                                           parent_id=mid)
+    con2.close()
+
+    _post(f"{server}/deal-issue-subitem/{sid}/field", {"field": "is_milestone", "value": "1"})
+    _post(f"{server}/deal-issue-subitem/{sid}/field", {"field": "done", "value": "1"})
+
+    con3 = sfa_db.connect(db_path)
+    row = sfa_db.get_deal_issue_subitem(con3, sid)
+    assert row["is_milestone"] == 1
+    assert row["done"] == 1  # 完了とMSは独立フラグで両方立てられる
+
+    code, body = _get(f"{server}/deal-issues/gantt")
+    html = body.decode("utf-8")
+    assert 'class="gantt-lbl ig-done ig-ms"' in html
+    assert 'class="gantt-bar ig-done ig-ms"' in html
+
+
+def test_deal_issue_subitem_sort_order_migration_preserves_date_order(tmp_path):
+    """init_db()の一回限りの移行: 本機能より前からあったデータはsort_order=挿入順のままだったが、
+    移行後は現状の(start_date,end_date)順がsort_orderへ書き写され、表示順が変わらない。
+    移行フラグは通常DB作成時点(0件)で即座に立つため、ここでは「本機能追加前からデータがある
+    DBに新コードをデプロイした」状況を、移行フラグを一度削除して再現する。"""
+    db_path = str(tmp_path / "migrate.db")
+    sfa_db.init_db(db_path)
+    con = sfa_db.connect(db_path)
+    iid = _issue(con, issue="論点移行")
+    # 日付順とid順をわざと逆にする(後からできたタスクの方が先に始まる)。
+    s_late_id_early_date = sfa_db.create_deal_issue_subitem(con, iid, "先に始まる", start_date="2026-09-01", end_date="2026-09-07")
+    s_early_id_late_date = sfa_db.create_deal_issue_subitem(con, iid, "後で始まる", start_date="2026-09-08", end_date="2026-09-14")
+    con.execute("DELETE FROM masters WHERE key='deal_issue_subitems_sort_migrated'")
+    con.commit()
+    con.close()
+
+    sfa_db.init_db(db_path)  # 移行フラグが無い状態なので、ここで移行が実行される
+    con2 = sfa_db.connect(db_path)
+    rows = {r["id"]: r["sort_order"] for r in sfa_db.list_deal_issue_subitems(con2, iid)}
+    assert rows[s_late_id_early_date] < rows[s_early_id_late_date]
+
+
+# ── サブタスクの担当・担当フィルタ（2026-09-26） ──────────────────────────
+
+def test_owner_field_toggle_persists_via_field_route(server, tmp_path):
+    db_path = str(tmp_path / "srv.db")
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点担当")
+    sid = sfa_db.create_deal_issue_subitem(con2, iid, "担当割当タスク", start_date="2026-10-05", end_date="2026-10-11")
+    con2.close()
+
+    owner = sfa_db.OWNERS[0]
+    code, _, body = _post(f"{server}/deal-issue-subitem/{sid}/field", {"field": "owner", "value": owner})
+    assert code == 200
+    con3 = sfa_db.connect(db_path)
+    row = sfa_db.get_deal_issue_subitem(con3, sid)
+    assert row["owner"] == owner
+
+
+def test_owner_label_rendered_next_to_subtask_title(server, tmp_path):
+    db_path = str(tmp_path / "srv.db")
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点担当表示")
+    mid = sfa_db.create_deal_issue_subitem(con2, iid, "メイン", start_date="2026-10-05", end_date="2026-12-25")
+    owner = sfa_db.OWNERS[0]
+    sub_id = sfa_db.create_deal_issue_subitem(con2, iid, "担当付きサブ", start_date="2026-10-05", end_date="2026-10-11",
+                                              parent_id=mid)
+    sfa_db.update_deal_issue_subitem(con2, sub_id, owner=owner)
+    con2.close()
+
+    code, body = _get(f"{server}/deal-issues/gantt")
+    html = body.decode("utf-8")
+    assert f"👤{owner}" in html
+
+
+def test_owner_filter_query_param_shows_only_matching_subtasks_but_keeps_main_task(server, tmp_path):
+    db_path = str(tmp_path / "srv.db")
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点担当フィルタ")
+    mid = sfa_db.create_deal_issue_subitem(con2, iid, "メインタスク", start_date="2026-10-05", end_date="2026-12-25")
+    owner_a, owner_b = sfa_db.OWNERS[0], sfa_db.OWNERS[1]
+    sub_a = sfa_db.create_deal_issue_subitem(con2, iid, "Aさんのタスク", start_date="2026-10-05", end_date="2026-10-11",
+                                             parent_id=mid)
+    sub_b = sfa_db.create_deal_issue_subitem(con2, iid, "Bさんのタスク", start_date="2026-10-12", end_date="2026-10-18",
+                                             parent_id=mid)
+    sfa_db.update_deal_issue_subitem(con2, sub_a, owner=owner_a)
+    sfa_db.update_deal_issue_subitem(con2, sub_b, owner=owner_b)
+    con2.close()
+
+    code, body = _get(f"{server}/deal-issues/gantt?owner={urllib.parse.quote(owner_a)}")
+    html = body.decode("utf-8")
+    assert "メインタスク" in html, "担当フィルタ中でもメインタスクは常に表示されるはず"
+    assert "Aさんのタスク" in html
+    assert "Bさんのタスク" not in html, "担当が一致しないサブタスクはフィルタで除外されるはず"
+
+
+# ── メインタスクは期間を持たず配下から自動算出（2026-09-26） ────────────
+
+def test_main_task_period_derived_from_children_ignores_own_stale_dates(con):
+    """メインタスクに古い/自身の日付が入っていても（過去の仕様の名残や手違いで残っていても）、
+    描画時は一切参照せず、配下サブタスクの最早開始〜最遅終了だけを使う。"""
+    iid = _issue(con, issue="論点自動算出")
+    # メイン自身の日付は明らかに違う値をわざと入れておく（読まれないことを確認するため）。
+    mid = sfa_db.create_deal_issue_subitem(con, iid, "メイン", start_date="2020-01-01", end_date="2020-01-07")
+    sfa_db.create_deal_issue_subitem(con, iid, "早いサブ", start_date="2026-10-05", end_date="2026-10-11", parent_id=mid)
+    sfa_db.create_deal_issue_subitem(con, iid, "遅いサブ", start_date="2026-11-01", end_date="2026-12-25", parent_id=mid)
+
+    html = webapp.deal_issues_gantt_page(con)
+    assert '<span class="ig-period-lbl">10/5〜12/25</span>' in html, \
+        "メインタスクの期間ラベルは配下の最早開始(10/5)〜最遅終了(12/25)になるはず"
+    assert "2020" not in html, "メイン自身の古い日付が使われてしまっている"
+    m = re.search(r'<div class="gantt-bar[^"]*ig-readonly-bar" data-iid="' + str(mid) + r'"', html)
+    assert m is not None, "メインタスクの読み取り専用バーが描画されていない"
+
+
+def test_main_task_with_no_dated_children_renders_label_only_no_bar(con):
+    """配下に日付を持つサブタスクが1件も無いメインタスクは、バー・日付背景セルを描画せず
+    ラベル行のみになる（「（期間未定）」表示）。missing_items（要確認枠）にも積まれない
+    （メインタスクは自身の日付を必須としないため）。"""
+    iid = _issue(con, issue="論点期間未定")
+    sfa_db.create_deal_issue_subitem(con, iid, "空のメイン")
+    html = webapp.deal_issues_gantt_page(con)
+    assert "空のメイン" in html
+    assert "（期間未定）" in html
+    assert "期間を解釈できなかった" not in html
+    assert '<div class="gantt-bar' not in html, "配下に日付が無いメインタスクにバーが描画されている"
+
+
+def test_main_task_edit_popup_has_no_date_inputs(server, tmp_path):
+    """メインタスクの編集ポップアップ(igPopHtml)は日付inputを持たない（サブタスクのみ持つ）。
+    JS関数自体はテストできないため、サーバ側で埋め込まれるIG_ITEMSのis_mainフラグと、
+    igPopHtml内の分岐ロジック（it.is_main ? ... : 日付input）が両方存在することを、
+    レンダリングされたJSソースから確認する。"""
+    db_path = str(tmp_path / "srv.db")
+    con2 = sfa_db.connect(db_path)
+    iid = _issue(con2, issue="論点ポップアップ")
+    mid = sfa_db.create_deal_issue_subitem(con2, iid, "メイン")
+    sfa_db.create_deal_issue_subitem(con2, iid, "サブ", start_date="2026-10-05", end_date="2026-10-11", parent_id=mid)
+    con2.close()
+
+    code, body = _get(f"{server}/deal-issues/gantt")
+    html = body.decode("utf-8")
+    assert re.search(r'"is_main":\s*(true|false)', html), "IG_ITEMSにis_mainフラグが埋め込まれていない"
+    assert "it.is_main" in html, "igPopHtmlがis_mainで日付inputの出し分けをしていない"
+    assert re.search(r'"' + str(mid) + r'":\s*\{[^}]*"is_main":\s*true', html), \
+        "メインタスクのIG_ITEMSエントリでis_main=trueになっていない"

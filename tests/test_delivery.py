@@ -2184,6 +2184,29 @@ def test_assign_planning_page_route_lists_deliveries_by_stage_scope(monkeypatch,
     assert "期間未設定D" not in titles, "開始/終了週が無いDeliveryは対象外のはず"
 
 
+def test_assign_planning_page_sorts_assignments_by_role_order(con, acc_id):
+    """アサインプランニング（2026-09-26改修）: アサインの並び順は体制の役割順に合わせる
+    （delivery_form()の既存ソート方式と同じ）。DB上のアサイン挿入順が体制と逆でも、
+    埋め込みJSONでは体制の役割順に並び替わっていること。"""
+    did = _deal(con, acc_id, "クロージング", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, start_week="2026-10-05", end_week="2026-12-28")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="プロジェクトマネジャー")
+    sfa_db.add_delivery_role(con, delivery_id=dvid, role="リードコンサルタント")
+    # わざと体制と逆順でアサインを追加する
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, role="リードコンサルタント", owner="山端",
+                                   from_week="2026-10-05", to_week="2026-12-28", fte_pct=50)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, role="プロジェクトマネジャー", owner="早瀬",
+                                   from_week="2026-10-05", to_week="2026-12-28", fte_pct=10)
+
+    html = webapp.assign_planning_page(con)
+    m = re.search(r"var AP_DELIVERIES = (\[.*?\]);\n", html)
+    deliveries = json.loads(m.group(1))
+    dv_json = next(d for d in deliveries if d["id"] == dvid)
+    assert [a["role"] for a in dv_json["assignments"]] == ["プロジェクトマネジャー", "リードコンサルタント"], \
+        "アサインの並び順が体制の役割順になっていない"
+
+
 def test_assign_planning_plan_routes_create_and_delete_do_not_touch_real_assignments(monkeypatch, tmp_path):
     """/assign-planning-plan/create・/delete が実DBのdelivery_roles/delivery_assignmentsに
     一切書き込まない（シミュレーション専用）ことをHTTPルート経由で確認する。"""
@@ -2242,3 +2265,26 @@ def test_assign_planning_plan_routes_create_and_delete_do_not_touch_real_assignm
     assert len(real_roles) == 1
     assert real_roles[0]["role"] == "PM", "実際のdelivery_rolesは書き換わっていないはず"
     assert sfa_db.list_assign_planning_plans(con3) == [], "delete後はプランテーブルも空のはず"
+
+
+def test_required_field_highlight_respects_stage_gate_client_side_too(con, acc_id):
+    """ユーザー報告(2026-09-25):「優先入力が機能していない」。原因はサーバ側の初回描画では
+    #134と同じ段階ゲート（クロージング/受注になるまでは報酬形態・報酬額/経費請求有無は対象外）を
+    正しく適用していたのに、クライアント側のdvFeeRecalc()/dvExpenseBillingChanged()が段階を見ずに
+    「トグルON＋未入力」だけでハイライトしてしまい、見込み段階のDeliveryでもページ読み込み直後の
+    再計算で誤って黄色くなっていた。DV_STAGE_GATE_OKフラグでJS側も段階を判定するよう修正。"""
+    did = _deal(con, acc_id, "提案", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    # fee_monthly/fee_total/expense_billingは未入力のまま（=対象になり得る状態）
+    html_early = webapp.delivery_form(con, dvid)
+    assert "var DV_STAGE_GATE_OK = false;" in html_early
+    assert 'id="dvFeeMonthly" name="fee_monthly"\n                       style="width:110px"' in html_early, \
+        "見込み段階では#fef3c7がinlineで付いてはいけない"
+
+    sfa_db.upsert_deal(con, account_id=acc_id, deal_name="Y", stage="受注")
+    did2 = _deal(con, acc_id, "受注", status="open")
+    dvid2 = sfa_db.create_delivery(con, deal_id=did2, title="Y")
+    html_closing = webapp.delivery_form(con, dvid2)
+    assert "var DV_STAGE_GATE_OK = true;" in html_closing
+    assert "background:#fef3c7" in html_closing.split('id="dvFeeMonthly"')[1][:200], \
+        "クロージング/受注段階で未入力なら#fef3c7がinlineで付くはず"

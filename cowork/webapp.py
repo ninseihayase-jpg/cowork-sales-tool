@@ -70,9 +70,20 @@ ROUTE_ACCESS: dict[str, dict[str, str]] = {
     "/dev-requirements": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
     "/dev-project": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
     "/deal-issues": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
+    # タスク(サブアイテム)のCRUD/並び替えは"/deal-issue-subitem/"というplural形が異なる別prefixで
+    # ルーティングされているため、上の"/deal-issues"キーの前方一致には掛からない。同じ権限方針を
+    # 明示的にも適用する（無指定だと"full"扱いになり事務のview制限が素通りしてしまうため）。
+    "/deal-issue-subitem": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
     "/business-flows": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
     "/business-flow": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
     "/tasks": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    # 以下、一覧ページと個別アイテムのルートが単数/複数で別prefixになっているものをレビューで発見し
+    # 明示追加（無指定だと"full"扱いで一覧側の制限が素通りしてしまうため）。
+    "/task": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    "/account": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
+    "/hearing": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    "/doc": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
+    "/intake-transcript": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
     "/desk-tasks": {"経営": "full", "マネージャー": "full", "メンバー": "view", "事務": "full", "外部": "hidden"},
     "/accounts": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
     "/leads": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
@@ -2721,25 +2732,39 @@ def mktg_sim_page(con) -> str:
 
 _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 <style>
-.ap-wrap{display:flex;gap:16px;align-items:flex-start}
-.ap-checklist-col{flex:0 0 300px}
-.ap-checklist-row{display:flex;align-items:center;gap:6px;padding:5px 6px;border:1px solid #eef1f6;border-radius:6px;margin-bottom:4px;background:#fff}
-.ap-checklist-row .ap-drag{cursor:grab;color:#aab;font-size:15px;line-height:1}
+.ap-summary-bar{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.ap-modal-overlay{position:fixed;inset:0;background:rgba(20,30,50,.45);display:flex;align-items:flex-start;
+  justify-content:center;padding:40px 20px;z-index:500}
+.ap-modal-overlay.ap-hidden{display:none}
+.ap-modal{background:#fff;border-radius:10px;max-width:1200px;width:100%;max-height:85vh;overflow-y:auto;
+  padding:16px 20px;box-shadow:0 10px 40px rgba(0,0,0,.25)}
+.ap-modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.ap-checklist-row{display:flex;align-items:center;gap:10px;padding:7px 8px;border-bottom:1px solid #f1f3f7}
+.ap-checklist-row .ap-drag{cursor:grab;color:#aab;font-size:16px;line-height:1;flex:0 0 auto}
 .ap-checklist-row.ap-collapsed{opacity:.5}
-.ap-checklist-row .ap-conf{font-size:10px;padding:1px 6px;border-radius:999px;background:#eef1f6;color:#5b6478}
+.ap-checklist-row .ap-title{font-size:13px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ap-checklist-row .ap-conf{font-size:10px;padding:2px 8px;border-radius:999px;background:#eef1f6;color:#5b6478;flex:0 0 auto}
+.ap-checklist-row .ap-dates{font-size:11px;color:#8893a8;flex:0 0 150px}
 .ap-scenario-card{border:1px solid #e2e5eb;border-radius:10px;padding:12px;margin-bottom:16px;background:#fbfcfe}
 .ap-scenario-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .ap-scenario-head input.ap-sc-name{font-size:13px;font-weight:600;padding:4px 8px;width:240px}
-.ap-block{display:flex;border:1px solid #e6e9f0;border-radius:8px;margin-bottom:10px;overflow:hidden;background:#fff}
-.ap-block-title{padding:6px 10px;font-size:12px;font-weight:600;color:#3a4760;background:#f8fafc;border-bottom:1px solid #eef1f5}
-.ap-staff{flex:0 0 620px;border-right:1px solid #e6e9f0;overflow-x:auto}
+.ap-block{border:1px solid #e6e9f0;border-radius:8px;margin-bottom:10px;overflow:hidden;background:#fff}
+.ap-block-head{padding:6px 10px;background:#f8fafc;border-bottom:1px solid #eef1f5;display:flex;
+  flex-wrap:wrap;align-items:center;gap:6px 8px}
+.ap-block-head .ap-block-title{font-size:12px;font-weight:600;color:#3a4760;white-space:nowrap}
+.ap-block-head .ap-block-meta{font-size:11px;color:#8893a8;white-space:nowrap}
+.ap-role-chip{display:inline-flex;align-items:center;gap:5px;background:#eef2ff;border-radius:999px;
+  padding:3px 10px;font-size:10.5px;color:#3a4760;white-space:nowrap}
+.ap-block-body{display:flex}
+.ap-staff{flex:0 0 620px;border-right:1px solid #e6e9f0;min-width:0}
 .ap-gantt-wrap{flex:1;min-width:0;overflow-x:auto}
-.ap-roles-tbl,.ap-asg-tbl,.ap-gantt-tbl{border-collapse:collapse;font-size:11px;width:100%}
-.ap-roles-tbl th,.ap-roles-tbl td,.ap-asg-tbl th,.ap-asg-tbl td{padding:3px 5px;border-bottom:1px solid #f1f3f7;white-space:nowrap}
-.ap-gantt-tbl th,.ap-gantt-tbl td{padding:3px 4px;border-bottom:1px solid #f1f3f7;text-align:center;white-space:nowrap;font-size:10px}
+.ap-asg-tbl,.ap-gantt-tbl{border-collapse:collapse;font-size:11px;width:100%}
+.ap-asg-tbl th,.ap-asg-tbl td,.ap-gantt-tbl th,.ap-gantt-tbl td{padding:3px 5px;border-bottom:1px solid #f1f3f7;
+  white-space:nowrap;height:24px;box-sizing:border-box}
+.ap-gantt-tbl th,.ap-gantt-tbl td{text-align:center;font-size:10px}
 .ap-gantt-tbl td.ap-filled{background:#bbf7d0}
-.ap-asg-tbl input[type=text],.ap-asg-tbl input[type=date],.ap-asg-tbl input[type=number],.ap-asg-tbl select,
-.ap-roles-tbl input[type=number],.ap-roles-tbl select{font-size:11px;padding:2px 3px}
+.ap-asg-tbl input[type=text],.ap-asg-tbl input[type=date],.ap-asg-tbl input[type=number],
+.ap-asg-tbl select{font-size:11px;padding:2px 3px}
 .ap-empty{color:#8893a8;font-size:12px;padding:10px}
 </style>
 <div class="card" style="max-width:100%">
@@ -2769,20 +2794,28 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
       </select></label>
   </div>
 
-  <div class="ap-wrap">
-    <div class="ap-checklist-col">
-      <h3 style="font-size:13px;margin:0 0 6px">対象Delivery（チェックで表示・⠿でドラッグ並び替え）</h3>
-      <div id="apChecklist"></div>
+  <div class="ap-summary-bar">
+    <button class="btn sec" onclick="apOpenModal()" style="font-size:12px">🗂 対象Delivery選択</button>
+    <span id="apSummaryText" class="muted" style="font-size:12px"></span>
+  </div>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <h3 style="font-size:13px;margin:0">シナリオ</h3>
+    <button class="btn sec" onclick="apAddScenario()" style="font-size:12px">＋シナリオ複製</button>
+  </div>
+  <div id="apScenarios"></div>
+</div>
+
+<div class="ap-modal-overlay ap-hidden" id="apModalOverlay">
+  <div class="ap-modal">
+    <div class="ap-modal-head">
+      <h3 style="font-size:14px;margin:0">対象Delivery選択（チェックで表示・⠿でドラッグ並び替え）</h3>
+      <button class="btn sec" onclick="apCloseModal()" style="font-size:12px">閉じる</button>
     </div>
-    <div style="flex:1;min-width:0">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <h3 style="font-size:13px;margin:0">シナリオ</h3>
-        <button class="btn sec" onclick="apAddScenario()" style="font-size:12px">＋シナリオ複製</button>
-      </div>
-      <div id="apScenarios"></div>
-    </div>
+    <div id="apChecklist"></div>
   </div>
 </div>
+
 <script>
 var AP_DELIVERIES = __INITIAL_DELIVERIES_JSON__;
 var AP_OWNERS = __INITIAL_OWNERS_JSON__;
@@ -2802,7 +2835,12 @@ function apWeeksBetween(fromWeek,toWeek){
   while(w<=end && guard<400){ out.push(w); w=apIsoAddWeeks(w,1); guard++; }
   return out;
 }
-function apDeliveryWeeks(d){ return apWeeksBetween(d.startWeek, d.endWeek); }
+function apTodayMonday(){
+  var d=new Date();
+  var iso=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+  return apMondayOf(iso);
+}
+var AP_TODAY_MONDAY = apTodayMonday();
 function apCloneDeliverySnapshot(d){
   return {
     roles: (d.roles||[]).map(function(r){ return {role:r.role, fte_billing:r.fte_billing, fte_pct:r.fte_pct, sort_order:r.sort_order||0}; }),
@@ -2819,7 +2857,11 @@ var AP_STATE = {
   included: {},
   scenarios: [{no:1, name:'シナリオ1', data:{}}]
 };
-AP_DELIVERIES.forEach(function(d){ AP_STATE.included[d.id] = true; });
+AP_DELIVERIES.forEach(function(d){
+  // 既定で「今週以前に完了する案件」は対象外にする（ユーザー要望2026-09-26）。
+  var endMonday = d.endWeek ? apMondayOf(d.endWeek) : '';
+  AP_STATE.included[d.id] = !(endMonday && endMonday <= AP_TODAY_MONDAY);
+});
 
 function apScopeVal(){ return parseInt(document.getElementById('apScope').value, 10); }
 function apEligible(d){ return d.scopeRank <= apScopeVal(); }
@@ -2830,7 +2872,14 @@ function apEnsureScenarioHasDelivery(scenario, deliveryId){
   }
 }
 
-// ── チェックリスト（対象Delivery・ドラッグ並び替え） ──
+// ── 対象Delivery選択モーダル（ユーザー要望2026-09-26: フローティング画面・全幅・1案件1段） ──
+function apOpenModal(){ document.getElementById('apModalOverlay').classList.remove('ap-hidden'); apRenderChecklist(); }
+function apCloseModal(){ document.getElementById('apModalOverlay').classList.add('ap-hidden'); }
+function apUpdateSummary(){
+  var visible = AP_STATE.deliveryOrder.filter(function(id){
+    var d = AP_BY_ID[id]; return d && apEligible(d) && AP_STATE.included[id] !== false; });
+  var el = document.getElementById('apSummaryText'); if(el) el.textContent = visible.length + '件選択中';
+}
 function apRenderChecklist(){
   var box = document.getElementById('apChecklist');
   var html = '';
@@ -2840,17 +2889,20 @@ function apRenderChecklist(){
     html += '<div class="ap-checklist-row'+(checked?'':' ap-collapsed')+'" data-id="'+id+'">'
       + '<span class="ap-drag" draggable="true" title="ドラッグで並び替え">⠿</span>'
       + '<input type="checkbox" '+(checked?'checked':'')+' onclick="apToggleIncluded('+id+',this.checked)">'
-      + '<span style="font-size:12px;flex:1" title="'+_apEsc(d.title)+'">'+_apEsc(d.title)+'</span>'
+      + '<span class="ap-title" title="'+_apEsc(d.title)+'">'+_apEsc(d.title)+'</span>'
+      + '<span class="ap-dates">'+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span>'
       + '<span class="ap-conf">'+_apEsc(d.confidence)+'</span>'
       + '</div>';
   });
   box.innerHTML = html || '<p class="ap-empty">対象ステージに一致するDeliveryがありません</p>';
   apInitChecklistDrag();
+  apUpdateSummary();
 }
 function apToggleIncluded(id, checked){
   AP_STATE.included[id] = checked;
   var row = document.querySelector('.ap-checklist-row[data-id="'+id+'"]');
   if(row) row.classList.toggle('ap-collapsed', !checked);
+  apUpdateSummary();
   apRenderScenarios();
 }
 function apInitChecklistDrag(){
@@ -2898,12 +2950,32 @@ function _apOwnerOpts(owners, current){
   return '<option value=""></option>' + list.map(function(o){
     return '<option value="'+_apEsc(o)+'"'+(o===current?' selected':'')+'>'+_apEsc(o)+'</option>'; }).join('');
 }
+function _apRoleOpts(roles, current){
+  // アサイン行の役割は体制で定義済みの役割名からのみ選ぶ（ユーザー要望2026-09-26: 「ジュニア
+  // コンサルタント1」を期間ごとに使い分ける等、自由記述にすると体制との対応が崩れるため）。
+  var names = (roles||[]).map(function(r){ return r.role; }).filter(function(r){ return r; });
+  if(current && names.indexOf(current)===-1) names.push(current);
+  return '<option value=""></option>' + names.map(function(r){
+    return '<option value="'+_apEsc(r)+'"'+(r===current?' selected':'')+'>'+_apEsc(r)+'</option>'; }).join('');
+}
+
+// 週の縦を全案件で揃えるため、表示中の全Deliveryの期間を合算した共通の週軸を1つだけ作る
+// （ユーザー要望2026-09-26）。各ブロックのガントは全てこの同じweeks配列を使う。
+function apGlobalWeeks(visibleIds){
+  var all = {};
+  visibleIds.forEach(function(id){
+    var d = AP_BY_ID[id];
+    apWeeksBetween(d.startWeek, d.endWeek).forEach(function(w){ all[w]=true; });
+  });
+  return Object.keys(all).sort();
+}
 
 function apRenderScenarios(){
   var box = document.getElementById('apScenarios');
   var visibleIds = AP_STATE.deliveryOrder.filter(function(id){
     var d = AP_BY_ID[id]; return d && apEligible(d) && AP_STATE.included[id] !== false;
   });
+  var weeks = apGlobalWeeks(visibleIds);
   var html = '';
   AP_STATE.scenarios.forEach(function(scenario, idx){
     visibleIds.forEach(function(id){ apEnsureScenarioHasDelivery(scenario, id); });
@@ -2917,29 +2989,24 @@ function apRenderScenarios(){
       html += '<p class="ap-empty">対象Deliveryにチェックが入っていません</p>';
     }
     visibleIds.forEach(function(id){
-      html += apRenderDeliveryBlock(idx, id);
+      html += apRenderDeliveryBlock(idx, id, weeks);
     });
     html += '</div>';
   });
   box.innerHTML = html;
 }
 
-function apRenderDeliveryBlock(scenarioIdx, deliveryId){
+function apRenderDeliveryBlock(scenarioIdx, deliveryId, weeks){
   var d = AP_BY_ID[deliveryId];
   var snap = AP_STATE.scenarios[scenarioIdx].data[deliveryId];
-  var weeks = apDeliveryWeeks(d);
-  var rolesHtml = '<table class="ap-roles-tbl"><tr><th>役割</th><th>請求%</th><th>実%</th></tr>';
-  (snap.roles||[]).forEach(function(r, ri){
-    rolesHtml += '<tr>'
-      + '<td><input type="text" style="width:110px" value="'+_apEsc(r.role)+'" '
-      + 'onchange="apEditRole('+scenarioIdx+','+deliveryId+','+ri+',\\'role\\',this.value)"></td>'
-      + '<td><input type="number" step="1" min="0" style="width:48px" value="'+(r.fte_billing==null?'':r.fte_billing)+'" '
-      + 'onchange="apEditRole('+scenarioIdx+','+deliveryId+','+ri+',\\'fte_billing\\',this.value)"></td>'
-      + '<td><input type="number" step="1" min="0" style="width:48px" value="'+(r.fte_pct==null?'':r.fte_pct)+'" '
-      + 'onchange="apEditRole('+scenarioIdx+','+deliveryId+','+ri+',\\'fte_pct\\',this.value)"></td>'
-      + '</tr>';
-  });
-  rolesHtml += '</table>';
+
+  // 体制(役割)は案件名の段に固定表示（変更不可）。役割・請求%・実%のセットを横並びのチップで表示
+  // （ユーザー要望2026-09-26）。
+  var rolesChips = (snap.roles||[]).map(function(r){
+    return '<span class="ap-role-chip">'+_apEsc(r.role)
+      + ' 請'+(r.fte_billing==null?'-':r.fte_billing)+'%'
+      + ' 実'+(r.fte_pct==null?'-':r.fte_pct)+'%</span>';
+  }).join('');
 
   var asgHtml = '<table class="ap-asg-tbl"><tr><th>役割</th><th>区分</th><th>メンバー</th><th>開始</th><th>終了</th><th>請求%</th><th>実%</th></tr>';
   var ganttHtml = '<table class="ap-gantt-tbl"><tr><th style="min-width:60px">&nbsp;</th>'
@@ -2947,8 +3014,8 @@ function apRenderDeliveryBlock(scenarioIdx, deliveryId){
   (snap.assignments||[]).forEach(function(a, ai){
     var rowWeeks = {}; apWeeksBetween(a.from_week, a.to_week).forEach(function(w){ rowWeeks[w]=true; });
     asgHtml += '<tr>'
-      + '<td><input type="text" style="width:90px" value="'+_apEsc(a.role)+'" '
-      + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)"></td>'
+      + '<td><select onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)">'
+      + _apRoleOpts(snap.roles, a.role) + '</select></td>'
       + '<td><select onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'member_kind\\',this.value)">'
       + ['内部','外部'].map(function(k){ return '<option value="'+k+'"'+(k===a.member_kind?' selected':'')+'>'+k+'</option>'; }).join('')
       + '</select></td>'
@@ -2974,17 +3041,29 @@ function apRenderDeliveryBlock(scenarioIdx, deliveryId){
   ganttHtml += '</table>';
 
   return '<div class="ap-block">'
-    + '<div class="ap-staff">'
-    + '<div class="ap-block-title">'+_apEsc(d.title)+'　<span style="font-weight:400;color:#8893a8">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span></div>'
-    + '<div style="padding:6px 8px">'+rolesHtml+asgHtml+'</div>'
+    + '<div class="ap-block-head">'
+    + '<span class="ap-block-title">'+_apEsc(d.title)+'</span>'
+    + '<span class="ap-block-meta">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span>'
+    + rolesChips
     + '</div>'
-    + '<div class="ap-gantt-wrap"><div class="ap-block-title">&nbsp;</div><div style="padding:6px 8px">'+ganttHtml+'</div></div>'
+    + '<div class="ap-block-body">'
+    + '<div class="ap-staff"><div style="padding:6px 8px">'+asgHtml
+    + '<button class="btn sec" style="font-size:11px;margin-top:4px" '
+    + 'onclick="apAddAssignmentRow('+scenarioIdx+','+deliveryId+')">＋アサイン追加</button></div></div>'
+    + '<div class="ap-gantt-wrap"><div style="padding:6px 8px">'+ganttHtml+'</div></div>'
+    + '</div>'
     + '</div>';
 }
 
-function apEditRole(scenarioIdx, deliveryId, ri, field, value){
-  var row = AP_STATE.scenarios[scenarioIdx].data[deliveryId].roles[ri];
-  row[field] = (field==='role') ? value : (value===''? null : parseFloat(value));
+function apAddAssignmentRow(scenarioIdx, deliveryId){
+  // プランニング上だけでアサイン行を増やせる（体制で定義済みの役割から選ぶ。例:
+  // 「ジュニアコンサルタント1」を期間で使い分けたい場合等。ユーザー要望2026-09-26）。
+  var snap = AP_STATE.scenarios[scenarioIdx].data[deliveryId];
+  var d = AP_BY_ID[deliveryId];
+  var defaultRole = (snap.roles && snap.roles[0] && snap.roles[0].role) || '';
+  snap.assignments.push({role:defaultRole, member_kind:'内部', owner:'',
+    from_week:d.startWeek||'', to_week:d.endWeek||'', fte_billing:null, fte_pct:null, note:''});
+  apRenderScenarios();
 }
 function apEditAsg(scenarioIdx, deliveryId, ai, field, value){
   var row = AP_STATE.scenarios[scenarioIdx].data[deliveryId].assignments[ai];
@@ -3027,6 +3106,7 @@ function apLoadPlan(id){
   AP_STATE.included = plan.plan.included;
   AP_STATE.scenarios = plan.plan.scenarios;
   apRenderChecklist();
+  apUpdateSummary();
   apRenderScenarios();
 }
 function apDeletePlan(){
@@ -3064,17 +3144,25 @@ def assign_planning_page(con) -> str:
         rank = _ASSIGN_PLANNING_SCOPE_RANK.get(conf)
         if rank is None:
             continue  # 見込み(提案前)・無効(終了)は対象外
+        role_rows = sfa_db.list_delivery_roles(con, dv["id"])
         roles = [
             {"role": r.get("role") or "", "fte_billing": r.get("fte_billing"),
              "fte_pct": r.get("fte_pct"), "sort_order": r.get("sort_order") or 0}
-            for r in sfa_db.list_delivery_roles(con, dv["id"])
+            for r in role_rows
         ]
+        # アサインの並び順は体制の役割順に合わせる（delivery_form()と同じソート方式。
+        # ユーザー要望2026-09-26）。
+        _role_order = {r.get("role") or "": i for i, r in enumerate(role_rows)}
+        assignment_rows = sorted(
+            sfa_db.list_delivery_assignments(con, dv["id"]),
+            key=lambda a: (_role_order.get(a.get("role") or "", 10_000),
+                           a.get("role") or "￿", a.get("id") or 0))
         assignments = [
             {"role": a.get("role") or "", "member_kind": a.get("member_kind") or "内部",
              "owner": a.get("owner") or "", "from_week": a.get("from_week") or "",
              "to_week": a.get("to_week") or "", "fte_billing": a.get("fte_billing"),
              "fte_pct": a.get("fte_pct"), "note": a.get("note") or ""}
-            for a in sfa_db.list_delivery_assignments(con, dv["id"])
+            for a in assignment_rows
         ]
         deliveries.append({
             "id": dv["id"], "title": dv.get("title") or dv.get("deal_name") or f"Delivery#{dv['id']}",
@@ -5714,6 +5802,11 @@ def delivery_form(con, delivery_id: int) -> str:
     // 優先入力項目設定（/settings）で有効な項目キーの一覧。未入力ハイライトの各関数がこれを見て
     // 有効/無効を判定する（ユーザー要望2026-09-24「権限設定とあわせて」〜2026-09-25実装）。
     var REQUIRED_FIELD_HIGHLIGHTS = {json.dumps(sorted(_hl_keys), ensure_ascii=False)};
+    // #134と同じ段階ゲート: 報酬形態・報酬額/経費請求有無は商談がクロージング以降になってから
+    // ハイライト対象にする（成果報酬比率だけは段階を問わず常に対象＝dvPerfFeeChangedは既存通り
+    // このフラグを見ない）。バグ修正(2026-09-25): このゲートが無いとJS側の再計算のたびに
+    // 見込み段階のDeliveryでも黄色くハイライトされてしまっていた。
+    var DV_STAGE_GATE_OK = {json.dumps((dv.get("deal_stage") or "") in ("クロージング", "受注"))};
     // 日ベースの日付をその週の月曜へ変換（#180）。集計用の変換にのみ使う。入力欄の値自体は
     // 丸めない（金曜開始等の日ベース入力をそのまま保持する）。
     function _mondayOf(s){{ if(!s) return ''; var p=String(s).split('-'); if(p.length!==3) return s;
@@ -5958,7 +6051,7 @@ def delivery_form(con, delivery_id: int) -> str:
       }}
       // 優先入力項目設定「報酬形態・報酬額」: 月額/総額とも未入力ならグレー(自動算出待ち)より
       // 優先して黄色でハイライトする（#134の「報酬形態・報酬額」チェックと対応）。
-      if(REQUIRED_FIELD_HIGHLIGHTS.indexOf('fee_amount')>=0 && mo.value==='' && to.value===''){{
+      if(DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('fee_amount')>=0 && mo.value==='' && to.value===''){{
         mo.style.background='#fef3c7'; to.style.background='#fef3c7';
       }}
       // 想定経費＝報酬額/総額×5%のデフォルトを、報酬額側の変更にあわせて追従させる（手修正済み
@@ -6068,7 +6161,7 @@ def delivery_form(con, delivery_id: int) -> str:
     // 「不明(要確認)」は有効な回答として扱うため空文字のみ対象）。
     function dvExpenseBillingChanged(){{
       var sel=document.getElementById('dvExpenseBilling'); if(!sel) return;
-      var _hlExp = REQUIRED_FIELD_HIGHLIGHTS.indexOf('expense_billing')>=0;
+      var _hlExp = DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('expense_billing')>=0;
       sel.style.background = (_hlExp && sel.value==='') ? '#fef3c7' : '';
     }}
     // 想定利益(月額/総額) = 報酬額－外注費。どちらも未入力なら「—」、片方だけ未入力は0扱い。
@@ -9514,6 +9607,16 @@ _GANTT_CSS = """<style>
 .gantt-wrap[data-zoom="week"] .gantt-daylabel:not([data-dow="0"]){color:transparent}
 .gantt-wrap[data-zoom="week"] .gantt-daylabel[data-dow="0"],
 .gantt-wrap[data-zoom="week"] .gantt-daycell[data-dow="0"]{border-left:2px solid #94a3b8}
+/* 順番ドラッグ並び替え・実施期間ラベル・完了/MS表示（2026-09-26、社内PJガントのみ）。 */
+.ig-period-lbl{flex:none;color:#94a3b8;font-size:9px;white-space:nowrap;margin:0 2px}
+.ms-badge{display:none;flex:none;color:#b45309;font-size:9px;font-weight:700;
+  border:1px solid #b45309;border-radius:3px;padding:0 3px;line-height:1.4;margin-right:2px}
+.gantt-lbl.ig-ms .ms-badge{display:inline-block}
+.ig-owner-lbl{flex:none;color:#64748b;font-size:9px;white-space:nowrap;margin-left:2px}
+.gantt-lbl.ig-done a{opacity:.55;text-decoration:line-through}
+.gantt-bar.ig-done{opacity:.4 !important}
+.gantt-bar.ig-ms{background:#f59e0b !important;box-shadow:inset 0 0 0 2px #b45309}
+.gantt-bar.ig-readonly-bar{cursor:default !important}
 </style>"""
 
 
@@ -9575,7 +9678,7 @@ def _parse_issue_period_text(text: str) -> tuple[str | None, str | None]:
         return None, None
 
 
-def deal_issues_gantt_page(con) -> str:
+def deal_issues_gantt_page(con, owner_filter: str | None = None) -> str:
     """社内PJ管理（#163、2026-09-06。以後の追加要望で構成変更）。
     社内PJを「商談/会社機能」の分類別に常時全件一覧表示する。タスク（旧ステップ／サブ社内PJ。
     deal_issue_subitems）は2階層（メインタスク／サブタスク、parent_idで自己参照）。
@@ -9624,10 +9727,17 @@ def deal_issues_gantt_page(con) -> str:
         cat["issues"].append(issue)
     cat_list = list(cats.values())
 
-    missing_items = []  # (issue, subitem) — 期間が未解決でガント化できない
+    # メインタスク(parent_id無し)は自身のstart_date/end_dateをもう使わない（2026-09-26〜。
+    # 配下のサブタスクの最早開始〜最遅終了を毎描画時に自動算出して使う。ユーザー要望
+    # 「メインタスクは、期間の入力は不要。サブタスクの一番古い開始日～一番新しい終了日、を
+    # 自動反映」）。そのためmissing_items（要確認枠）・all_ready（ガント全体の日付レンジ算出）
+    # ともサブタスクのみを対象にする。メインタスク自身のDB列は残すが、ここでは一切読まない。
+    missing_items = []  # (issue, subitem) — 期間が未解決でガント化できない（サブタスクのみ）
     all_ready: list[dict] = []
     for issue in all_issues:
         for s in by_issue.get(issue["id"], []):
+            if not s.get("parent_id"):
+                continue  # メインタスクはここでは扱わない
             if s.get("start_date") and s.get("end_date"):
                 all_ready.append(s)
             else:
@@ -9747,17 +9857,24 @@ def deal_issues_gantt_page(con) -> str:
             f'🗂 {_esc(cat["label"])}（{len(cat["issues"])}件）</div>')
         row += 1
         for issue in cat["issues"]:
-            ready_all = [s for s in by_issue.get(issue["id"], []) if s.get("start_date") and s.get("end_date")]
-            ready_by_id = {s["id"]: s for s in ready_all}
-            main_tasks = sorted((s for s in ready_all if not s.get("parent_id")),
-                                key=lambda x: (x["start_date"], x["end_date"]))
+            # メインタスクは自身の日付の有無を問わず全件対象（2026-09-26〜、期間は配下から自動算出）。
+            # サブタスクは従来通り自身のstart_date/end_date両方が揃っている行のみ対象
+            # （揃っていない行はmissing_itemsの「要確認」枠で手直しする）。
+            _all_for_issue = by_issue.get(issue["id"], [])
+            main_rows_all = [s for s in _all_for_issue if not s.get("parent_id")]
+            sub_ready = [s for s in _all_for_issue if s.get("parent_id") and s.get("start_date") and s.get("end_date")]
+            # 表示順はドラッグ並び替え可能なsort_order（2026-09-26〜。以前は常に(start_date,end_date)の
+            # 日付順で固定表示だったが、ユーザー要望によりドラッグで手動並び替えできるようにした。
+            # 既存PJの見た目を変えないよう、init_db()の一回限りの移行で旧・日付順（メインタスクは
+            # 配下から算出した日付順）をsort_orderへ書き写し済み）。
+            main_tasks = sorted(main_rows_all, key=lambda x: (x.get("sort_order") or 0, x["id"]))
             children_by_parent: dict[int, list] = {}
-            for s in ready_all:
+            for s in sub_ready:
                 _pid = s.get("parent_id")
-                if _pid and _pid in ready_by_id:
+                if _pid:
                     children_by_parent.setdefault(_pid, []).append(s)
             for _pid in children_by_parent:
-                children_by_parent[_pid].sort(key=lambda x: (x["start_date"], x["end_date"]))
+                children_by_parent[_pid].sort(key=lambda x: (x.get("sort_order") or 0, x["id"]))
 
             issue_label = _esc(sfa_db.task_link_label(con, "issue", issue["id"]) or issue.get("issue") or "")
             main_add_wrap_id = f"ig-mainadd-{issue['id']}"
@@ -9794,15 +9911,35 @@ def deal_issues_gantt_page(con) -> str:
             row += 1
 
             for s in main_tasks:
-                _item_data[s["id"]] = {"title": s["title"], "start_date": s["start_date"],
-                                       "end_date": s["end_date"], "issue_id": issue["id"],
-                                       "overview": s.get("overview") or ""}
-                cells.append(_day_bg_cells(row, issue_id=issue["id"]))
-                sd = date.fromisoformat(s["start_date"])
-                ed = date.fromisoformat(s["end_date"])
-                ucolor, _ = _task_urgency(s["end_date"], today_iso, d3, weekend_end)
-                _children = children_by_parent.get(s["id"], [])
+                _s_done, _s_ms = bool(s.get("done")), bool(s.get("is_milestone"))
+                _s_owner = s.get("owner") or ""
+                # メインタスクの期間は自身のstart_date/end_dateを使わず、配下の全サブタスク
+                # （担当フィルタの影響を受けない実データ）の最早開始〜最遅終了を自動算出する
+                # （2026-09-26〜。ユーザー要望「メインタスクは、期間の入力は不要。サブタスクの
+                # 一番古い開始日～一番新しい終了日、を自動反映」）。配下に日付を持つサブタスクが
+                # 1件も無い場合はバー・日付背景セルを描画せず、ラベル行のみ表示する。
+                _all_children = children_by_parent.get(s["id"], [])
+                _starts = [c["start_date"] for c in _all_children if c.get("start_date")]
+                _ends = [c["end_date"] for c in _all_children if c.get("end_date")]
+                _eff_start = min(_starts) if _starts else None
+                _eff_end = max(_ends) if _ends else None
+                _item_data[s["id"]] = {"title": s["title"], "start_date": _eff_start,
+                                       "end_date": _eff_end, "issue_id": issue["id"],
+                                       "overview": s.get("overview") or "",
+                                       "done": _s_done, "is_milestone": _s_ms, "owner": _s_owner,
+                                       "is_main": True}
+                # 担当フィルタ（2026-09-26、owner_filter指定時はサブタスクのみ絞り込む。
+                # メインタスクは常に表示し文脈として残す。gridは行を丸ごと省く方式で安全に絞れる
+                # ——このページはラベル/日付背景/バーの独立divがgrid-row一致だけで紐づく構造のため、
+                # 含めない行はcellsに一切追加しない＝rowカウンタも進めないことで整合を保つ。
+                # 期間の自動算出自体はフィルタの影響を受けない実データ(_all_children)から行う）。
+                _children = [c for c in _all_children
+                            if not owner_filter or (c.get("owner") or "") == owner_filter]
                 sub_add_wrap_id = f"ig-subadd-{s['id']}"
+                # 完了(グレーアウト)／MS(ハイライト)の初期表示クラス（2026-09-26。JS側は
+                # igToggleFlagがdata-iid一致の全要素へ同じクラスをトグルする）。
+                _lbl_cls = "gantt-lbl" + (" ig-done" if _s_done else "") + (" ig-ms" if _s_ms else "")
+                _bar_cls = "gantt-bar" + (" ig-done" if _s_done else "") + (" ig-ms" if _s_ms else "")
                 # メインタスクの右側に「＋」（サブタスク追加）。子を持つ場合は折りたたみ▼/▶も表示
                 # （2026-09-11要望: 「サブタスクの追加はメインタスクの右側にくっつける」
                 # 「サブタスクとして追加したら、メインタスクに紐づいて、折りたたんだりできる」）。
@@ -9814,50 +9951,79 @@ def deal_issues_gantt_page(con) -> str:
                     f'title="サブタスクの表示/折りたたみ" style="cursor:pointer;color:#64748b;'
                     f'font-size:9px;flex:none">▼</span>' if _children else ""
                 )
+                _period_html = (f'<span class="ig-period-lbl">'
+                                f'{date.fromisoformat(_eff_start).month}/{date.fromisoformat(_eff_start).day}〜'
+                                f'{date.fromisoformat(_eff_end).month}/{date.fromisoformat(_eff_end).day}</span>'
+                                if _eff_start and _eff_end else
+                                '<span class="ig-period-lbl">（期間未定）</span>')
                 cells.append(
-                    f'<div class="gantt-lbl" data-parent-issue="{issue["id"]}" '
+                    f'<div class="{_lbl_cls}" data-parent-issue="{issue["id"]}" data-iid="{s["id"]}" '
                     f'style="grid-row:{row};grid-column:1;display:flex;'
                     f'align-items:center;gap:3px">'
+                    f'<span class="drag-handle" draggable="true" data-iid="{s["id"]}" '
+                    f'data-scope="main-{issue["id"]}" title="ドラッグで並び替え" '
+                    f'style="cursor:grab;color:#aab;font-size:12px;flex:none">⠿</span>'
                     f'{_toggle_html}'
                     f'<a href="#" onclick="return igOpenItem({s["id"]})" style="color:inherit;'
                     f'text-decoration:none;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0" '
                     f'title="{_esc(s["title"])}">{_esc(s["title"])}</a>'
+                    f'{_period_html}'
+                    f'<span class="ms-badge">MS</span>'
                     f'<span onclick="return igShowInlineAdd(\'{sub_add_wrap_id}\')" title="サブタスクを追加" '
                     f'style="cursor:pointer;flex:none;color:#94a3b8;font-size:12px">＋</span>'
                     f'</div>')
-                c1, c2 = _col_of(sd), _col_of(ed) + 1
-                cells.append(
-                    f'<div class="gantt-bar" draggable="true" data-iid="{s["id"]}" '
-                    f'data-parent-issue="{issue["id"]}" '
-                    f'data-start="{s["start_date"]}" data-end="{s["end_date"]}" '
-                    f'style="grid-row:{row};grid-column:{c1} / {c2};background:{ucolor}" '
-                    f'onclick="return igBarClick(event,{s["id"]})" '
-                    f'title="{_esc(s["title"])}｜{_esc(s["start_date"])}〜{_esc(s["end_date"])}">'
-                    f'<span class="gt-grip gt-grip-l"></span>'
-                    f'<span class="gt-bar-label">{_esc(s["title"])}</span>'
-                    f'<span class="gt-grip gt-grip-r"></span></div>')
+                if _eff_start and _eff_end:
+                    cells.append(_day_bg_cells(row, issue_id=issue["id"]))
+                    sd = date.fromisoformat(_eff_start)
+                    ed = date.fromisoformat(_eff_end)
+                    ucolor, _ = _task_urgency(_eff_end, today_iso, d3, weekend_end)
+                    c1, c2 = _col_of(sd), _col_of(ed) + 1
+                    # メインタスクのバーは配下から自動算出した期間の表示専用（読み取り専用）。
+                    # 自身の日付を持たないため、ドラッグでの日程移動/リサイズは対象外
+                    # （draggable指定・グリップを持たせない。クリックでの編集ポップアップは維持）。
+                    cells.append(
+                        f'<div class="{_bar_cls} ig-readonly-bar" data-iid="{s["id"]}" '
+                        f'data-parent-issue="{issue["id"]}" '
+                        f'style="grid-row:{row};grid-column:{c1} / {c2};background:{ucolor}" '
+                        f'onclick="return igBarClick(event,{s["id"]})" '
+                        f'title="{_esc(s["title"])}｜{_esc(_eff_start)}〜{_esc(_eff_end)}（配下のサブタスクから自動算出）">'
+                        f'<span class="gt-bar-label">{_esc(s["title"])}</span></div>')
                 row += 1
                 _spacer_rows.add(row)
                 cells.append(_ig_add_row_html(row, sub_add_wrap_id, issue["id"], s["id"]))
                 row += 1
 
                 for child in _children:
+                    _c_done, _c_ms = bool(child.get("done")), bool(child.get("is_milestone"))
+                    _c_owner = child.get("owner") or ""
                     _item_data[child["id"]] = {"title": child["title"], "start_date": child["start_date"],
                                                "end_date": child["end_date"], "issue_id": issue["id"],
-                                               "overview": child.get("overview") or ""}
+                                               "overview": child.get("overview") or "",
+                                               "done": _c_done, "is_milestone": _c_ms, "owner": _c_owner,
+                                               "is_main": False}
                     cells.append(_day_bg_cells(row, parent_task_id=s["id"], issue_id=issue["id"]))
                     csd = date.fromisoformat(child["start_date"])
                     ced = date.fromisoformat(child["end_date"])
                     cucolor, _ = _task_urgency(child["end_date"], today_iso, d3, weekend_end)
+                    _clbl_cls = "gantt-lbl" + (" ig-done" if _c_done else "") + (" ig-ms" if _c_ms else "")
+                    _cbar_cls = "gantt-bar" + (" ig-done" if _c_done else "") + (" ig-ms" if _c_ms else "")
                     cells.append(
-                        f'<div class="gantt-lbl" data-parent-task="{s["id"]}" data-parent-issue="{issue["id"]}" '
+                        f'<div class="{_clbl_cls}" data-parent-task="{s["id"]}" data-parent-issue="{issue["id"]}" '
+                        f'data-iid="{child["id"]}" '
                         f'style="grid-row:{row};grid-column:1;padding-left:16px">'
+                        f'<span class="drag-handle" draggable="true" data-iid="{child["id"]}" '
+                        f'data-scope="sub-{s["id"]}" title="ドラッグで並び替え" '
+                        f'style="cursor:grab;color:#aab;font-size:12px;flex:none">⠿</span>'
                         f'<a href="#" onclick="return igOpenItem({child["id"]})" style="color:inherit;'
                         f'text-decoration:none;overflow:hidden;text-overflow:ellipsis" '
-                        f'title="{_esc(child["title"])}">└ {_esc(child["title"])}</a></div>')
+                        f'title="{_esc(child["title"])}">└ {_esc(child["title"])}</a>'
+                        f'<span class="ig-period-lbl">{csd.month}/{csd.day}〜{ced.month}/{ced.day}</span>'
+                        f'<span class="ms-badge">MS</span>'
+                        f'<span class="ig-owner-lbl" data-iid="{child["id"]}" '
+                        f'style="{"" if _c_owner else "display:none"}">👤{_esc(_c_owner)}</span></div>')
                     cc1, cc2 = _col_of(csd), _col_of(ced) + 1
                     cells.append(
-                        f'<div class="gantt-bar" draggable="true" data-iid="{child["id"]}" '
+                        f'<div class="{_cbar_cls}" draggable="true" data-iid="{child["id"]}" '
                         f'data-parent-task="{s["id"]}" data-parent-issue="{issue["id"]}" '
                         f'data-start="{child["start_date"]}" data-end="{child["end_date"]}" '
                         f'style="grid-row:{row};grid-column:{cc1} / {cc2};background:{cucolor};opacity:.8" '
@@ -9912,6 +10078,11 @@ def deal_issues_gantt_page(con) -> str:
 
     import json as _json_mod
     items_json = _json_mod.dumps(_item_data, ensure_ascii=False)
+    _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
+    owners_json = _json_mod.dumps(_owners, ensure_ascii=False)
+    _owner_filter_opts = "".join(
+        f'<option value="{_esc(o)}"{" selected" if o == owner_filter else ""}>{_esc(o)}</option>'
+        for o in _owners)
 
     return f"""
     <div class="card">
@@ -9935,6 +10106,11 @@ def deal_issues_gantt_page(con) -> str:
             <button type="button" class="ig-zoom-btn active" data-zoom="day" onclick="setIgGanttZoom('day')">日次</button>
             <button type="button" class="ig-zoom-btn" data-zoom="week" onclick="setIgGanttZoom('week')">週次</button>
           </div>
+          <label style="font-size:12px;flex:none">担当で絞り込み（サブタスク）<br>
+            <select onchange="location.href='/deal-issues/gantt'+(this.value?('?owner='+encodeURIComponent(this.value)):'')" style="font-size:12px">
+              <option value="">全員</option>
+              {_owner_filter_opts}
+            </select></label>
         </div>
       </div>
     </div>
@@ -9947,6 +10123,7 @@ def deal_issues_gantt_page(con) -> str:
       padding:14px;width:360px;max-width:92vw"></div>
     <script>
     var IG_ITEMS = {items_json};
+    var IG_OWNERS = {owners_json};
     var IG_MIN_DATE = {json.dumps(_ig_min_date_iso)};
     var IG_NUM_DAYS = {json.dumps(_ig_n_days)};
     // 初期表示位置＝当日の1週間前を一番左に（ユーザー要望2026-09-18）。従来は常に最古の
@@ -9967,7 +10144,32 @@ def deal_issues_gantt_page(con) -> str:
       if (document.readyState === 'complete') run(); else window.addEventListener('load', run);
     }})();
     function _igEsc(s){{ return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }}
+    function _igOwnerOpts(current){{
+      var opts='<option value=""'+(current?'':' selected')+'></option>';
+      IG_OWNERS.forEach(function(o){{ opts+='<option value="'+_igEsc(o)+'"'+(o===current?' selected':'')+'>'+_igEsc(o)+'</option>'; }});
+      return opts;
+    }}
+    // 担当の切替（2026-09-26）。ポップアップ内のselectから呼ばれ、行の固定ラベル(.ig-owner-lbl)を
+    // 即時更新する（サーバ側はfetchのみでリロードしない）。
+    function igSetOwner(id,value){{
+      if(IG_ITEMS[id]) IG_ITEMS[id].owner=value;
+      igField(id,'owner',value);
+      document.querySelectorAll('.ig-owner-lbl[data-iid="'+id+'"]').forEach(function(el){{
+        el.textContent = value ? '👤'+value : '';
+        el.style.display = value ? '' : 'none';
+      }});
+    }}
     function igPopHtml(id,it){{
+      // メインタスクは期間の手入力欄を持たない（2026-09-26〜、配下のサブタスクから自動算出する
+      // ため）。日付inputはサブタスクのみ表示し、メインタスクは算出済み期間を参考表示するだけ。
+      var dateHtml = it.is_main
+        ? ('<p style="font-size:10px;color:#94a3b8;margin:8px 0 0">期間はサブタスクの日程から自動算出されます'
+           +(it.start_date&&it.end_date ? '（'+_igEsc(it.start_date)+'〜'+_igEsc(it.end_date)+'）' : '（サブタスク未設定）')+'</p>')
+        : ('<div style="display:flex;gap:8px">'
+           +'<label style="font-size:11px;flex:1">開始日<br><input type="date" style="width:100%;box-sizing:border-box" '
+           +'value="'+_igEsc(it.start_date)+'" onchange="igField('+id+',\\'start_date\\',this.value)"></label>'
+           +'<label style="font-size:11px;flex:1">終了日<br><input type="date" style="width:100%;box-sizing:border-box" '
+           +'value="'+_igEsc(it.end_date)+'" onchange="igField('+id+',\\'end_date\\',this.value)"></label></div>');
       // 概要はガント一覧・バー上には出さず、ステップをクリックして開くこのポップアップ内でのみ
       // 表示・編集する（2026-09-05ユーザー確定: 「概要はデフォルトでは非表示、クリックで表示」）。
       return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:8px">'
@@ -9977,11 +10179,19 @@ def deal_issues_gantt_page(con) -> str:
         +'<label style="font-size:11px;display:block;margin-bottom:8px">概要<br>'
         +'<textarea rows="2" style="width:100%;box-sizing:border-box;font-size:12px;font-family:inherit" '
         +'placeholder="（任意）" onchange="igField('+id+',\\'overview\\',this.value)">'+_igEsc(it.overview)+'</textarea></label>'
-        +'<div style="display:flex;gap:8px">'
-        +'<label style="font-size:11px;flex:1">開始日<br><input type="date" style="width:100%;box-sizing:border-box" '
-        +'value="'+_igEsc(it.start_date)+'" onchange="igField('+id+',\\'start_date\\',this.value)"></label>'
-        +'<label style="font-size:11px;flex:1">終了日<br><input type="date" style="width:100%;box-sizing:border-box" '
-        +'value="'+_igEsc(it.end_date)+'" onchange="igField('+id+',\\'end_date\\',this.value)"></label></div>'
+        +dateHtml
+        // 担当（主にサブタスク向け、2026-09-26）。ownersマスタから選択。
+        +'<label style="font-size:11px;display:block;margin-top:8px">担当<br>'
+        +'<select style="width:100%;box-sizing:border-box" onchange="igSetOwner('+id+',this.value)">'
+        +_igOwnerOpts(it.owner)+'</select></label>'
+        // 完了／MS(マイルストーン)は独立した2つのフラグ。行のチェックボックスではなく、
+        // このポップアップから切り替える（ユーザー要望2026-09-26）。
+        +'<div style="display:flex;gap:14px;margin-top:8px;font-size:11px">'
+        +'<label style="cursor:pointer"><input type="checkbox" '+(it.done?'checked':'')+' '
+        +'onchange="igToggleFlag('+id+',\\'done\\',this.checked)"> 完了</label>'
+        +'<label style="cursor:pointer"><input type="checkbox" '+(it.is_milestone?'checked':'')+' '
+        +'onchange="igToggleFlag('+id+',\\'is_milestone\\',this.checked)"> MS（マイルストーン）</label>'
+        +'</div>'
         +'<div style="margin-top:12px;text-align:right;display:flex;justify-content:space-between">'
         +'<button type="button" class="btn sec" style="color:#c53030" onclick="igDeleteItem('+id+')">削除</button>'
         +'<button type="button" class="btn" onclick="closeIgItem()">保存して閉じる</button></div>';
@@ -10139,6 +10349,15 @@ def deal_issues_gantt_page(con) -> str:
          if(!d.ok) alert('更新エラー: '+(d.error||''));
        }}).catch(function(){{ alert('通信エラー'); }});
     }}
+    // 完了／MS(マイルストーン)の切替（2026-09-26）。ポップアップ内のチェックボックスから呼ばれる。
+    // ラベル行・ガントバーはグリッド上の独立したdivのため、同じdata-iidを持つ全要素へ
+    // まとめてクラスを付け外しする（リロードせず即時反映）。
+    function igToggleFlag(id,field,checked){{
+      if(IG_ITEMS[id]) IG_ITEMS[id][field]=checked;
+      igField(id,field,checked?'1':'0');
+      var cls = field==='done' ? 'ig-done' : 'ig-ms';
+      document.querySelectorAll('[data-iid="'+id+'"]').forEach(function(el){{ el.classList.toggle(cls,checked); }});
+    }}
     function igDeleteItem(id){{
       if(!confirm('このステップを削除しますか？')) return;
       fetch('/deal-issue-subitem/'+id+'/delete',{{method:'POST'}}).then(function(){{ location.reload(); }});
@@ -10246,6 +10465,49 @@ def deal_issues_gantt_page(con) -> str:
       }}
       document.querySelectorAll('.gt-grip-l').forEach(function(g){{ wireGrip(g,'l'); }});
       document.querySelectorAll('.gt-grip-r').forEach(function(g){{ wireGrip(g,'r'); }});
+    }})();
+    // タスクの並び替え（ドラッグ、2026-09-26）。行はラベル・日付背景セル・バーの独立したdivが
+    // grid-row一致だけで紐づく構造のため（#deal_issues_gantt_page docstring参照）、ドラッグ中に
+    // それらを同時に動かそうとすると表示がズレる。そのため見た目のライブ並び替えはせず、
+    // ドロップ時に新しい順番をサーバへ送って画面をリロードする方式にする（このページの他の
+    // ドラッグ操作＝バーの日程移動/リサイズと同じ「保存後リロード」の作法に合わせる）。
+    (function(){{
+      var dragId=null, dragScope=null;
+      document.querySelectorAll('.drag-handle').forEach(function(h){{
+        h.addEventListener('dragstart', function(e){{
+          dragId = parseInt(h.dataset.iid,10);
+          dragScope = h.dataset.scope;
+          if (e.dataTransfer) {{ e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain', String(dragId)); }}
+        }});
+      }});
+      document.querySelectorAll('.gantt-lbl[data-iid]').forEach(function(lbl){{
+        lbl.addEventListener('dragover', function(e){{
+          var handle = lbl.querySelector('.drag-handle');
+          if (!handle || handle.dataset.scope !== dragScope) return;
+          e.preventDefault();
+          lbl.style.borderTop = '2px solid #6366f1';
+        }});
+        lbl.addEventListener('dragleave', function(){{ lbl.style.borderTop=''; }});
+        lbl.addEventListener('drop', function(e){{
+          lbl.style.borderTop='';
+          var handle = lbl.querySelector('.drag-handle');
+          if (!handle || handle.dataset.scope !== dragScope || dragId==null) return;
+          e.preventDefault();
+          var dropId = parseInt(handle.dataset.iid,10);
+          if (dropId === dragId) return;
+          var siblings = Array.prototype.slice.call(
+            document.querySelectorAll('.drag-handle[data-scope="'+dragScope+'"]'));
+          var ids = siblings.map(function(s){{ return parseInt(s.dataset.iid,10); }});
+          ids.splice(ids.indexOf(dragId), 1);
+          var dropIdx = ids.indexOf(dropId);
+          var rect = lbl.getBoundingClientRect();
+          var before = (e.clientY - rect.top) < rect.height/2;
+          ids.splice(before ? dropIdx : dropIdx+1, 0, dragId);
+          fetch('/deal-issue-subitem/reorder', {{method:'POST',
+            headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+            body:'order='+ids.join(',')}}).then(function(){{ location.reload(); }});
+        }});
+      }});
     }})();
     </script>"""
 
@@ -21785,7 +22047,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(tasks_gantt_page(con, group_by=_group if _group == "type" else "link"),
                                       wide=True))
                 elif path == "/deal-issues/gantt":
-                    self._send(render(deal_issues_gantt_page(con), wide=True))
+                    _ig_owner = (self._qs().get("owner", [""])[0] or "").strip()
+                    self._send(render(deal_issues_gantt_page(con, owner_filter=_ig_owner or None), wide=True))
                 elif path == "/tasks/capacity":
                     self._send(render(tasks_capacity_page(con)))
                 elif path == "/tasks/daily-plan":
@@ -24906,7 +25169,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._redirect("/deal-issues/gantt")
 
                 elif path.startswith("/deal-issue-subitem/") and path.endswith("/field"):
-                    _DEAL_ISSUE_SUBITEM_ALLOWED_FIELDS = {"title", "start_date", "end_date", "overview"}
+                    # done/is_milestone（2026-09-26）: 完了チェック・MS指定。他フィールドと違い
+                    # 文字列/NULLではなくint 0/1として保存する。
+                    _DEAL_ISSUE_SUBITEM_ALLOWED_FIELDS = {"title", "start_date", "end_date", "overview",
+                                                          "done", "is_milestone", "owner"}
                     parts = path.split("/")
                     if len(parts) == 4 and parts[2].isdigit():
                         _sid = int(parts[2])
@@ -24916,13 +25182,27 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             self._send(json.dumps({"ok": False, "error": "不正なフィールド"}).encode(),
                                       ctype="application/json")
                         else:
-                            # overviewは空文字を「クリア」として許す（他フィールドは空文字→NULL扱い）。
-                            _update_value = _value if _field == "overview" else (_value or None)
+                            if _field in ("done", "is_milestone"):
+                                _update_value = 1 if _value in ("1", "true", "True") else 0
+                            elif _field == "overview":
+                                # overviewは空文字を「クリア」として許す（他フィールドは空文字→NULL扱い）。
+                                _update_value = _value
+                            else:
+                                _update_value = _value or None
                             sfa_db.update_deal_issue_subitem(con, _sid, **{_field: _update_value})
                             self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
                     else:
                         self._send(json.dumps({"ok": False, "error": "不正なリクエスト"}).encode(),
                                   ctype="application/json")
+
+                elif path == "/deal-issue-subitem/reorder":
+                    # 社内PJガントのタスク並び替え（2026-09-26）。ドラッグで組んだ新しい順番
+                    # （メインタスク一式、または特定メインタスク配下のサブタスク一式のいずれか）を
+                    # そのままsort_orderへ反映する。クライアントは常に真の兄弟だけを送る前提
+                    # （delivery体制のreorder_delivery_rolesと同じ信頼モデル）。
+                    _order = [int(x) for x in (f.get("order", "") or "").split(",") if x.isdigit()]
+                    sfa_db.reorder_deal_issue_subitems(con, _order)
+                    self._send(b"", status=204)
 
                 elif path.startswith("/deal-issue-subitem/") and path.endswith("/fix-date"):
                     # 「要確認」枠（自由記述の解釈に失敗した行）の手直し。開始日だけ人間が入れ、
