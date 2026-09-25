@@ -2759,6 +2759,11 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-scenario-head:hover .ap-sc-name-label{text-decoration:underline}
 .ap-sc-name-label{font-size:13px;font-weight:700;color:#1f2937}
 .ap-sc-name{font-size:14px;font-weight:600;padding:5px 10px;width:280px}
+/* シナリオの折りたたみトリガー（ユーザー要望2026-09-27）。見出しクリック(モーダルを開く)とは
+   独立した操作にするため、押下時はevent.stopPropagation()でモーダルを開かないようにする。 */
+.ap-fold-toggle{cursor:pointer;color:#8893a8;font-size:11px;width:14px;flex:0 0 auto;
+  display:inline-flex;justify-content:center}
+.ap-fold-toggle:hover{color:#2f6fed}
 /* 週の縦を全案件で揃え・週ヘッダを1段だけ固定表示・横スクロールをこの表全体で1つにする
    （ユーザー要望2026-09-26）。delivery_form()の週別グリッド（_sticky_label/_sticky_final）と
    同じ「1つのoverflow:autoラッパー＋sticky列/sticky見出し行」の作法をそのまま踏襲する。 */
@@ -2801,8 +2806,11 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
    アサイン(複数PJ)を持つ場合は週ごとに実%を合算する。外部メンバーは対象外
    （ユーザー要望2026-09-27「稼働率に外部は不要」）。列幅を44pxに固定し、初期表示は
    当週が左端に来るようスクロール位置を合わせる(apScrollUtilToToday)ことで、横スクロール
-   可能なまま直近3ヶ月程度が画面に収まる（ユーザー要望2026-09-27）。 */
-.ap-util-wrap{overflow:auto;max-height:280px;border:1px solid #e6e9f0;border-radius:8px}
+   可能なまま直近3ヶ月程度が画面に収まる（ユーザー要望2026-09-27）。
+   縦スクロールは廃止し（ユーザー要望2026-09-27「シナリオの縦はスクロールなし、代わりに
+   畳むことができる仕様に」）、代わりにシナリオ見出しの▼/▶で丸ごと折りたたみできるようにする
+   （apToggleScenarioFold）。横スクロールのみ残す。 */
+.ap-util-wrap{overflow-x:auto;border:1px solid #e6e9f0;border-radius:8px}
 .ap-util-wrap table{border-collapse:collapse;font-size:11px}
 .ap-util-wrap th,.ap-util-wrap td{padding:3px 6px;border-bottom:1px solid #f1f3f7;white-space:nowrap;
   height:22px;box-sizing:border-box}
@@ -2940,10 +2948,11 @@ function apDefaultIncluded(d){
   var endMonday = d.endWeek ? apMondayOf(d.endWeek) : '';
   return !(endMonday && endMonday <= AP_TODAY_MONDAY);
 }
-// 対象Delivery選択の既定並び順: 事業種別L1→L2順 × 終了日の早い順 × 確度順
-// （ユーザー要望2026-09-27）。事業種別の順位はAP_BIZ_TYPE_ORDER（事業種別マスタのL1→L2登録順）
-// を使い、マスタに無いL1/L2は末尾に回す。確度順は既にscopeRank(確定=0 < 見込み(クロージング)=1
-// < 見込み(提案中)=2)としてサーバーから渡されているのでそのまま使う。
+// 対象Delivery選択の既定並び順: 当週時点で完了済みの案件を強制的に最下段へ（ユーザー要望
+// 2026-09-27）→ 事業種別L1→L2順 × 終了日の早い順 × 確度順（ユーザー要望2026-09-27）。
+// 事業種別の順位はAP_BIZ_TYPE_ORDER（事業種別マスタのL1→L2登録順）を使い、マスタに無い
+// L1/L2は末尾に回す。確度順は既にscopeRank(確定=0 < 見込み(クロージング)=1 <
+// 見込み(提案中)=2)としてサーバーから渡されているのでそのまま使う。
 function apBizRank(d){
   var l1Keys = Object.keys(AP_BIZ_TYPE_ORDER);
   var l1Idx = l1Keys.indexOf(d.bizL1||''); if(l1Idx<0) l1Idx = l1Keys.length;
@@ -2952,6 +2961,8 @@ function apBizRank(d){
   return [l1Idx, l2Idx];
 }
 function apCompareDeliveries(a, b){
+  var pa = apDefaultIncluded(a) ? 0 : 1, pb = apDefaultIncluded(b) ? 0 : 1;
+  if(pa !== pb) return pa - pb;
   var ba = apBizRank(a), bb = apBizRank(b);
   if(ba[0] !== bb[0]) return ba[0]-bb[0];
   if(ba[1] !== bb[1]) return ba[1]-bb[1];
@@ -3053,6 +3064,13 @@ function apDeleteOpenScenario(){
   apCloseScenarioModal();
 }
 function apRenameScenario(idx, val){ AP_STATE.scenarios[idx].name = val; apRenderScenarios(); }
+// シナリオカードの折りたたみ（ユーザー要望2026-09-27）。
+function apToggleScenarioFold(idx){
+  var scenario = AP_STATE.scenarios[idx];
+  if(!scenario) return;
+  scenario.collapsed = !scenario.collapsed;
+  apRenderScenarios();
+}
 // シナリオ名（本画面のカード見出し）をクリックすると、そのシナリオのPJ×アサイン編集を
 // 画面いっぱいのフローティングモーダルで開く（ユーザー要望2026-09-27）。
 function apOpenScenarioModal(idx){
@@ -3153,11 +3171,13 @@ function apRenderMemberUtilTable(byOwner, weeks, wrapId){
 }
 // 実データ(apGlobalWeeks)が当週から近い週までしか無いと、当週を左端に揃えるだけのスクロール量が
 // 確保できず「右端までスクロールしても当週を左端にできない」現象が起きる（ユーザー指摘
-// 2026-09-27）。当週から半年(26週)先までは常に列を確保しておき、実データが無い週は空欄のまま
-// スクロール用の余白として使う（体制・アサインには一切影響しない）。
+// 2026-09-27）。当週から39週(約9ヶ月)先までは常に列を確保しておき、実データが無い週は空欄の
+// まま右スクロール用の余白として使う（体制・アサインには一切影響しない）。26週(半年)で一度
+// 対応したが、まだ右へ伸ばせる幅が足りないという指摘（2026-09-27続き「もっと+3ヶ月くらい
+// 行けるように」）を受けて39週へ再拡張。
 function apPadWeeksForScroll(weeks){
   var set = {}; weeks.forEach(function(w){ set[w] = true; });
-  var target = apIsoAddWeeks(AP_TODAY_MONDAY, 26);
+  var target = apIsoAddWeeks(AP_TODAY_MONDAY, 39);
   var w = AP_TODAY_MONDAY;
   while (w <= target){ set[w] = true; w = apIsoAddWeeks(w, 1); }
   return Object.keys(set).sort();
@@ -3192,13 +3212,18 @@ function apRenderScenarios(){
   AP_STATE.scenarios.forEach(function(scenario, idx){
     visibleIds.forEach(function(id){ apEnsureScenarioHasDelivery(scenario, id); });
     var byOwner = apComputeMemberWeekly(scenario, visibleIds);
+    // シナリオごとの折りたたみ（ユーザー要望2026-09-27「シナリオの縦はスクロールなし、
+    // 代わりに畳むことができる仕様に」）。折りたたみ▼/▶のクリックはstopPropagationで
+    // 見出しクリック(モーダルを開く)と独立させる。
     outerHtml += '<div class="ap-scenario-card" data-idx="'+idx+'">'
       + '<div class="ap-scenario-head" onclick="apOpenScenarioModal('+idx+')">'
+      + '<span class="ap-fold-toggle" onclick="event.stopPropagation();apToggleScenarioFold('+idx+')">'
+      + (scenario.collapsed ? '▶' : '▼') + '</span>'
       + '<span style="font-size:12px;color:#8893a8">#'+scenario.no+'</span>'
       + '<span class="ap-sc-name-label">'+_apEsc(scenario.name)+'</span>'
       + '<span class="muted" style="font-size:11px">クリックしてアサインを編集 ▸</span>'
       + '</div>'
-      + apRenderMemberUtilTable(byOwner, weeks, 'apUtilWrap'+idx)
+      + (scenario.collapsed ? '' : apRenderMemberUtilTable(byOwner, weeks, 'apUtilWrap'+idx))
       + '</div>';
   });
   box.innerHTML = outerHtml;

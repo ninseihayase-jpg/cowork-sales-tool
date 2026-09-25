@@ -2339,3 +2339,14 @@ def test_assign_planning_default_order_sorts_by_biz_end_confidence(con, acc_id):
                         d["endWeek"]))]
     assert ordered_ids == [id_ai_early, id_ai_late, id_cost], \
         "AI導入グループ(L1が先)がまとまり、その中でL2順→終了日順になっているはず"
+
+
+def test_assign_planning_default_order_pushes_completed_items_to_bottom_first(con, acc_id):
+    """ユーザー要望(2026-09-27):「当週時点で完了している案件は強制的に順番を一番下に」。
+    事業種別L1L2×終了日×確度の3段階ソートより前に、apDefaultIncluded()（=当週時点で完了して
+    いないか）で完了済み/未完了をまず二分していることを確認する（キーの優先順位の回帰テスト）。"""
+    html = webapp.assign_planning_page(con)
+    fn = html.split("function apCompareDeliveries(a, b){")[1].split("\n}")[0]
+    assert "apDefaultIncluded(a)" in fn and "apDefaultIncluded(b)" in fn
+    assert fn.index("apDefaultIncluded(a)") < fn.index("apBizRank(a)"), \
+        "完了済み判定が事業種別判定より先（最優先キー）になっていないといけない"
