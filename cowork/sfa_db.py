@@ -68,6 +68,12 @@ ACTIVITY_TYPES = ["面談", "電話", "メール", "メモ"]
 # "Closed"はクローズ済み商談に自動付与される値（#181）。手動でも選び直せる（例: 誤クローズの訂正）。
 IMPORTANCE_OPTIONS = ["高", "中", "低", "Closed"]
 OWNERS = ["吉江", "中島", "早瀬", "岩崎", "高橋", "土屋", "戸田", "片山", "杉山", "山端", "堀籠", "Shreyas"]
+# ユーザー権限（2026-09-25〜）。多階層ロール（姉妹ツールdelivery-hubのRBACに準拠した粒度）。
+# 未登録メールはUSER_ROLE_DEFAULT（メンバー）扱い（安全側デフォルト。自動で管理者にはしない）。
+USER_ROLES = ["経営", "マネージャー", "メンバー", "事務", "外部"]
+USER_ROLE_DEFAULT = "メンバー"
+# ロックアウト防止のシード（init_db()で1回だけ投入。既にuser_rolesに行があれば触らない）。
+_USER_ROLES_SEED = [("ninsei.hayase@inproc.org", "経営", "早瀬")]
 INDUSTRIES = [
     "製造業(自動車・モビリティ)", "製造業(電機・電子・精密)", "製造業(重工・鉄鋼)",
     "製造業(化学・素材)", "製造業(食品・消費財)", "製造業(医療機器)", "製造業(その他)",
@@ -611,6 +617,15 @@ CREATE INDEX IF NOT EXISTS idx_lead_activities_lead ON lead_activities(lead_id);
 CREATE TABLE IF NOT EXISTS masters (
     key   TEXT PRIMARY KEY,
     values_json TEXT NOT NULL
+);
+
+-- ユーザー権限（2026-09-25〜）。Googleログインのメール→ロール。未登録メールは既定でメンバー扱い
+-- （webapp.py側でNoneの場合のフォールバックとして処理。安全側デフォルト＝自動で管理者にはしない）。
+CREATE TABLE IF NOT EXISTS user_roles (
+    email        TEXT PRIMARY KEY,
+    role         TEXT NOT NULL,
+    display_name TEXT,
+    updated_at   TEXT
 );
 
 -- メールパターン（一斉ドラフト用テンプレート）
@@ -1337,6 +1352,18 @@ CREATE TABLE IF NOT EXISTS mktg_strategy_plans (
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Deliveryアサインプランニング（2026-09-25）。複数Deliveryの体制・アサインを横断で見ながら
+-- スタッフの入れ替えを「シナリオ」として複数並行検討し、名前を付けて丸ごと保存する。
+-- plan_jsonは対象ステージ・対象Delivery一覧（並び順・表示/非表示）・各シナリオの体制/アサイン
+-- スナップショットをまとめて持つ（v1はシミュレーション用途のみで、保存内容が実際の
+-- delivery_roles/delivery_assignmentsへ書き戻ることは無い）。
+CREATE TABLE IF NOT EXISTS assign_planning_plans (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    plan_json   TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 社内PJ 進捗報告（2026-09-13）。既存の「社内PJメモ」(rich_notes, kind='issue')とは別建てで、
 -- 編集した日付でver管理される「A4 1枚」構成の定型レポート。①ヘッダー相当(ステータス信号/
 -- 目的タグ)は構造化列として持つ。②〜⑥の本文はセクションごとに個別の列（*_html）として
@@ -1924,6 +1951,13 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
                      json.dumps(_row["sel2"], ensure_ascii=False),
                      json.dumps(_row["top_methods"], ensure_ascii=False),
                      _row["total_matched"]))
+        # user_rolesのロックアウト防止シード（初回のみ・冪等）。既に1行でもあれば何もしない
+        # （運用者が/settings/rolesから編集済みの状態を上書きしないため）。
+        if con.execute("SELECT COUNT(*) FROM user_roles").fetchone()[0] == 0:
+            for _email, _role, _name in _USER_ROLES_SEED:
+                con.execute(
+                    "INSERT INTO user_roles (email, role, display_name, updated_at) VALUES (?,?,?,datetime('now'))",
+                    (_email, _role, _name))
         con.commit()
     finally:
         con.close()
@@ -2053,6 +2087,32 @@ def set_master_list(con, key: str, values: list[str]) -> None:
         "INSERT INTO masters(key,values_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET values_json=excluded.values_json",
         (key, _json.dumps(values, ensure_ascii=False)),
     )
+    con.commit()
+
+
+# ---- ユーザー権限（2026-09-25〜） ----
+
+def get_user_role(con, email: str) -> str | None:
+    """未登録メールはNone（呼び出し側でUSER_ROLE_DEFAULTにフォールバックする）。"""
+    row = con.execute("SELECT role FROM user_roles WHERE email=?", (email,)).fetchone()
+    return row[0] if row else None
+
+
+def set_user_role(con, email: str, role: str, display_name: str | None = None) -> None:
+    con.execute(
+        "INSERT INTO user_roles (email, role, display_name, updated_at) VALUES (?,?,?,datetime('now')) "
+        "ON CONFLICT(email) DO UPDATE SET role=excluded.role, display_name=excluded.display_name, "
+        "updated_at=excluded.updated_at",
+        (email, role, display_name))
+    con.commit()
+
+
+def list_user_roles(con) -> list[dict]:
+    return [dict(r) for r in con.execute("SELECT * FROM user_roles ORDER BY email")]
+
+
+def delete_user_role(con, email: str) -> None:
+    con.execute("DELETE FROM user_roles WHERE email=?", (email,))
     con.commit()
 
 
@@ -7140,6 +7200,35 @@ def create_mktg_strategy_plan(con, *, name: str, selections: list) -> dict:
 
 def delete_mktg_strategy_plan(con, plan_id: int) -> None:
     con.execute("DELETE FROM mktg_strategy_plans WHERE id=?", (plan_id,))
+    con.commit()
+
+
+def _assign_planning_plan_row_to_dict(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "plan": json.loads(row["plan_json"]),
+        "savedAt": (row["created_at"] or "")[:10].replace("-", "/"),
+    }
+
+
+def list_assign_planning_plans(con) -> list[dict]:
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM assign_planning_plans ORDER BY id DESC")]
+    return [_assign_planning_plan_row_to_dict(r) for r in rows]
+
+
+def create_assign_planning_plan(con, *, name: str, plan: dict) -> dict:
+    cur = con.execute(
+        "INSERT INTO assign_planning_plans (name, plan_json) VALUES (?,?)",
+        (name, json.dumps(plan, ensure_ascii=False)))
+    con.commit()
+    row = dict(con.execute("SELECT * FROM assign_planning_plans WHERE id=?", (cur.lastrowid,)).fetchone())
+    return _assign_planning_plan_row_to_dict(row)
+
+
+def delete_assign_planning_plan(con, plan_id: int) -> None:
+    con.execute("DELETE FROM assign_planning_plans WHERE id=?", (plan_id,))
     con.commit()
 
 

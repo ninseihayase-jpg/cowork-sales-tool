@@ -54,6 +54,66 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_ALLOWED_DOMAIN = "inproc.org"
 _OAUTH_STATE_COOKIE = "sfa_oauth_state"
 
+# ユーザー権限（RBAC、2026-09-25〜）。ThreadingHTTPServer=1リクエスト1スレッドの前提で、
+# render()等の深い呼び出し先からも現在のロールを参照できるようthreading.localに置く
+# （render()は200箇所超から呼ばれておりシグネチャ変更は侵襲的なため、これを避ける）。
+_request_ctx = threading.local()
+
+# 画面/機能ごとのロール別アクセスレベル（ユーザー承認済みの権限マトリクスをそのままコード化）。
+# "full"=フル操作可, "view"=閲覧のみ（POST/書き込みは403）, "hidden"=非表示（ナビにも出さずGET/POSTとも403）。
+# ここに無いパスは従来通り全ロールに開放（ダッシュボード・レポート・API等、既存ワークフローを
+# 壊さないため明示的にリストしたものだけを絞る）。キーはパスの前方一致（"/delivery"は"/delivery/123"等も含む）。
+ROUTE_ACCESS: dict[str, dict[str, str]] = {
+    "/deals": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "full", "外部": "hidden"},
+    "/deliveries": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "full", "外部": "hidden"},
+    "/delivery": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "full", "外部": "hidden"},
+    "/dev-requirements": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    "/dev-project": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    "/deal-issues": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
+    "/business-flows": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
+    "/business-flow": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
+    "/tasks": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    "/desk-tasks": {"経営": "full", "マネージャー": "full", "メンバー": "view", "事務": "full", "外部": "hidden"},
+    "/accounts": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
+    "/leads": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    "/hearings": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    "/mktg-sim": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    "/email-draft": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
+    "/docs": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "view", "外部": "hidden"},
+    "/intake-inbox": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "hidden", "外部": "hidden"},
+    "/weekly-numbers/audit": {"経営": "full", "マネージャー": "full", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/deal-hygiene": {"経営": "full", "マネージャー": "full", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/sync-health": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/masters": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/dev-point-master": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/base-workload": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/tech-seed-master": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/document-numbers": {"経営": "full", "マネージャー": "view", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/data-tagging": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/exhibition-tagging": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/tech-seed-tagging": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/account-aliases": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/slack-memo-backfill": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/backups": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    "/settings": {"経営": "full", "マネージャー": "hidden", "メンバー": "hidden", "事務": "hidden", "外部": "hidden"},
+    # アサインプランニング（2026-09-25）はDeliveryの体制/アサイン（金額に紐づく稼働情報）を
+    # 横断表示するため、/deliveriesと同じ権限方針にする（外部のみ非表示）。
+    "/assign-planning": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "full", "外部": "hidden"},
+    "/assign-planning-plan": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "full", "外部": "hidden"},
+}
+
+
+def _route_access_level(path: str, role: str) -> str:
+    """pathに前方一致する最長のROUTE_ACCESSキーを探し、そのロールのアクセスレベルを返す
+    （未登録パスは"full"＝従来通り全ロールに開放）。"""
+    best_key, best_len = None, -1
+    for key in ROUTE_ACCESS:
+        if (path == key or path.startswith(key + "/")) and len(key) > best_len:
+            best_key, best_len = key, len(key)
+    if best_key is None:
+        return "full"
+    return ROUTE_ACCESS[best_key].get(role, "hidden")
+
 
 _JST = timezone(timedelta(hours=9))
 
@@ -70,22 +130,36 @@ def _session_secret() -> bytes:
     return hashlib.sha256(("sfa-session|" + (GOOGLE_CLIENT_SECRET or "")).encode("utf-8")).digest()
 
 
-def _make_session_token() -> str:
+# 権限判定の土台（2026-09-25〜）: セッションにメールアドレスを乗せ、「誰がログインしたか」を
+# 判定できるようにする。ロール自体はセッションに乗せず毎リクエストDB参照する（管理者がロールを
+# 変更したら再ログイン待ちせず即反映されるようにするため）。既存テストの多くがidentity不問で
+# 引数無しに`_make_session_token()`を呼んでいるため、既定値は最初にシードされる経営ロールの
+# メールにしておく（後方互換。以前は誰でも全権限だったので、既定=フル権限のほうが実態に近い）。
+_DEFAULT_SESSION_EMAIL = "ninsei.hayase@inproc.org"
+
+
+def _make_session_token(email: str = _DEFAULT_SESSION_EMAIL) -> str:
     exp = int(time.time()) + _SESSION_MAX_AGE
-    sig = hmac.new(_session_secret(), str(exp).encode(), hashlib.sha256).hexdigest()
-    return f"{exp}.{sig}"
+    payload = f"{exp}.{email}"
+    sig = hmac.new(_session_secret(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
 
 
-def _valid_session_token(tok: str) -> bool:
+def _valid_session_token(tok: str) -> str | None:
+    """有効なら認証済みメールアドレスを返す。無効/期限切れ/旧フォーマットはNone
+    （2026-09-25〜: 戻り値がbool→emailに変更。旧フォーマット「exp.sig」の2パートトークンは
+    このパーサでは`split(".",1)`が失敗しNoneになる＝デプロイ時に既存セッションは全て無効化
+    され、ユーザーは再度Googleログインを1回押すだけで復帰する）。"""
     try:
-        exp_s, sig = (tok or "").split(".", 1)
+        payload, sig = (tok or "").rsplit(".", 1)   # 右から1回だけ（sigはhex文字列でドットなし）
+        exp_s, email = payload.split(".", 1)         # 左から1回だけ（expは数値でドットなし）
         exp = int(exp_s)
     except (ValueError, AttributeError):
-        return False
+        return None
     if exp < int(time.time()):
-        return False
-    good = hmac.new(_session_secret(), str(exp).encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, good)
+        return None
+    good = hmac.new(_session_secret(), payload.encode(), hashlib.sha256).hexdigest()
+    return email if hmac.compare_digest(sig, good) else None
 
 
 def _oauth_redirect_uri(handler) -> str:
@@ -888,53 +962,7 @@ document.addEventListener('DOMContentLoaded', markActiveFilters);
 </head><body>
 <header>
   <h1>{logo}Inproc Salesforce</h1>
-  <!-- 日常（2026-09-05メニュー再編: デモ開発(旧/dev-projects)は/dev-requirements内のタブへ統合） -->
-  <a href="/deals">商談</a>
-  <a href="/deliveries" style="opacity:.85;font-size:13px">Delivery</a>
-  <a href="/dev-requirements">開発</a>
-  <span class="nav-sep"></span>
-  <!-- 社内（社内PJガントは/deal-issues内のタブへ統合） -->
-  <a href="/deal-issues" style="opacity:.85;font-size:13px">社内PJ</a>
-  <a href="/business-flows" style="opacity:.85;font-size:13px">業務フロー</a>
-  <span class="nav-sep"></span>
-  <!-- タスク -->
-  <a href="/tasks">コンサルタスク</a>
-  <a href="/desk-tasks" style="opacity:.85;font-size:13px">事務タスク</a>
-  <span class="nav-sep"></span>
-  <!-- クライアント -->
-  <a href="/accounts" style="opacity:.85;font-size:13px">アカウント</a>
-  <a href="/leads" style="opacity:.85;font-size:13px">リード</a>
-  <a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>
-  <a href="/mktg-sim" style="opacity:.85;font-size:13px">マーケ診断</a>
-  <span class="nav-sep"></span>
-  <!-- 他 -->
-  <a href="/email-draft" style="opacity:.85;font-size:13px">メール</a>
-  <a href="/docs" style="opacity:.85;font-size:13px">資料庫</a>
-  <a href="/intake-inbox" style="opacity:.85;font-size:13px" title="Jamie/Zoom等から自動受信した会議の取り込み">取り込み</a>
-  <!-- 管理（まとめ） -->
-  <details class="nav-menu">
-    <summary>管理 ▾</summary>
-    <div class="nav-menu-panel">
-      <div class="grp">数字・品質チェック</div>
-      <a href="/weekly-numbers/audit">🔍 数字パック集計監査</a>
-      <a href="/deal-hygiene">🩺 商談データ整備</a>
-      <a href="/sync-health">🔄 SFA↔Hisho同期チェック</a>
-      <div class="grp">マスタ設定</div>
-      <a href="/masters">⚙ マスタ編集</a>
-      <a href="/dev-point-master">🎯 開発点数マスタ</a>
-      <a href="/base-workload">🧑‍💼 ベース工数（恒常稼働）</a>
-      <a href="/tech-seed-master">🌱 技術シードマスタ</a>
-      <a href="/document-numbers">🔢 見積書/請求書/契約書 採番一覧</a>
-      <div class="grp">一括タグ付け・取込（単発運用）</div>
-      <a href="/data-tagging">🏷 データ整備（終了理由・活動）</a>
-      <a href="/exhibition-tagging">🎪 展示会名タグ付け</a>
-      <a href="/tech-seed-tagging">🌱 技術シード一括付け</a>
-      <a href="/account-aliases">🏢 アカウント略称一括登録</a>
-      <a href="/slack-memo-backfill">🩹 Slack追記メモ復旧</a>
-      <div class="grp">システム</div>
-      <a href="/backups">🗄 バックアップ</a>
-    </div>
-  </details>
+  {nav}
   <a href="https://hisho-ohxe.onrender.com/dashboard" target="_blank" style="margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#e0e8ff;text-decoration:none">InProc dashboard ↗</a>
   <a href="/dashboard" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#cdd7ff;text-decoration:none">📊 SFA dashboard</a>
   <a href="/reports" style="background:rgba(224,178,122,.16);border:1px solid rgba(224,178,122,.4);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:#f0d9be;text-decoration:none">📰 週次レポート</a>
@@ -1119,6 +1147,77 @@ _TOOL_MODAL_HTML = (
 )
 
 
+# ナビ本体（メイン日常グループ）と「管理 ▾」ドロップダウンの中身。ROUTE_ACCESSでhiddenと判定
+# されたロールにはリンク自体を出さない（2026-09-25〜）。グループ内が全部hiddenならセパレータ/
+# グループごと省略する（空グループ・連続セパレータが残らないように）。
+_NAV_MAIN_GROUPS = [
+    [("/deals", '<a href="/deals">商談</a>'),
+     ("/deliveries", '<a href="/deliveries" style="opacity:.85;font-size:13px">Delivery</a>'),
+     ("/dev-requirements", '<a href="/dev-requirements">開発</a>')],
+    [("/deal-issues", '<a href="/deal-issues" style="opacity:.85;font-size:13px">社内PJ</a>'),
+     ("/business-flows", '<a href="/business-flows" style="opacity:.85;font-size:13px">業務フロー</a>')],
+    [("/tasks", '<a href="/tasks">コンサルタスク</a>'),
+     ("/desk-tasks", '<a href="/desk-tasks" style="opacity:.85;font-size:13px">事務タスク</a>')],
+    [("/accounts", '<a href="/accounts" style="opacity:.85;font-size:13px">アカウント</a>'),
+     ("/leads", '<a href="/leads" style="opacity:.85;font-size:13px">リード</a>'),
+     ("/hearings", '<a href="/hearings" style="opacity:.85;font-size:13px">ヒアリング</a>'),
+     ("/mktg-sim", '<a href="/mktg-sim" style="opacity:.85;font-size:13px">マーケ診断</a>')],
+    [("/email-draft", '<a href="/email-draft" style="opacity:.85;font-size:13px">メール</a>'),
+     ("/docs", '<a href="/docs" style="opacity:.85;font-size:13px">資料庫</a>'),
+     ("/intake-inbox", '<a href="/intake-inbox" style="opacity:.85;font-size:13px" '
+      'title="Jamie/Zoom等から自動受信した会議の取り込み">取り込み</a>')],
+]
+_NAV_ADMIN_GROUPS = [
+    ("数字・品質チェック", [
+        ("/weekly-numbers/audit", '<a href="/weekly-numbers/audit">🔍 数字パック集計監査</a>'),
+        ("/deal-hygiene", '<a href="/deal-hygiene">🩺 商談データ整備</a>'),
+        ("/sync-health", '<a href="/sync-health">🔄 SFA↔Hisho同期チェック</a>')]),
+    ("マスタ設定", [
+        ("/masters", '<a href="/masters">⚙ マスタ編集</a>'),
+        ("/dev-point-master", '<a href="/dev-point-master">🎯 開発点数マスタ</a>'),
+        ("/base-workload", '<a href="/base-workload">🧑‍💼 ベース工数（恒常稼働）</a>'),
+        ("/tech-seed-master", '<a href="/tech-seed-master">🌱 技術シードマスタ</a>'),
+        ("/document-numbers", '<a href="/document-numbers">🔢 見積書/請求書/契約書 採番一覧</a>')]),
+    ("一括タグ付け・取込（単発運用）", [
+        ("/data-tagging", '<a href="/data-tagging">🏷 データ整備（終了理由・活動）</a>'),
+        ("/exhibition-tagging", '<a href="/exhibition-tagging">🎪 展示会名タグ付け</a>'),
+        ("/tech-seed-tagging", '<a href="/tech-seed-tagging">🌱 技術シード一括付け</a>'),
+        ("/account-aliases", '<a href="/account-aliases">🏢 アカウント略称一括登録</a>'),
+        ("/slack-memo-backfill", '<a href="/slack-memo-backfill">🩹 Slack追記メモ復旧</a>')]),
+    ("システム", [
+        ("/backups", '<a href="/backups">🗄 バックアップ</a>')]),
+    ("設定", [
+        ("/settings", '<a href="/settings">⚙ 設定（優先入力項目・権限管理）</a>')]),
+]
+
+
+def _nav_html(role: str | None) -> str:
+    role = role or sfa_db.USER_ROLE_DEFAULT
+
+    def _vis(p: str) -> bool:
+        return _route_access_level(p, role) != "hidden"
+
+    main_parts: list[str] = []
+    for group in _NAV_MAIN_GROUPS:
+        visible = [h for p, h in group if _vis(p)]
+        if visible:
+            if main_parts:
+                main_parts.append('<span class="nav-sep"></span>')
+            main_parts.extend(visible)
+    admin_parts: list[str] = []
+    for label, items in _NAV_ADMIN_GROUPS:
+        visible = [h for p, h in items if _vis(p)]
+        if visible:
+            admin_parts.append(f'<div class="grp">{label}</div>')
+            admin_parts.extend(visible)
+    admin_html = ""
+    if admin_parts:
+        admin_html = (
+            '<details class="nav-menu"><summary>管理 ▾</summary><div class="nav-menu-panel">'
+            + "".join(admin_parts) + '</div></details>')
+    return "".join(main_parts) + admin_html
+
+
 def render(body: str, flash: str = "", wide: bool = False) -> bytes:
     """wide=True で<main>のmax-width制限(1440px)を外し、画面幅いっぱいに表示する
     （列数の多いテーブル等、可視性のため広く使いたいページ向け。ユーザー要望2026-08-28）。"""
@@ -1128,6 +1227,7 @@ def render(body: str, flash: str = "", wide: bool = False) -> bytes:
     return PAGE.format(
         body=body + _CLOSE_MODAL_HTML + _TOOL_MODAL_HTML + _RICH_NOTE_ASSETS,
         flash=flash_html,
+        nav=_nav_html(getattr(_request_ctx, "role", None)),
         delivery_url=delivery_url,
         main_class="main-wide" if wide else "",
         favicon=_SFA_FAVICON,
@@ -2617,6 +2717,378 @@ def mktg_sim_page(con) -> str:
     html = html.replace("__BIZ_L1_OPTIONS_HTML__", biz_l1_options)
     html = html.replace("__BIZ_L2_OPTIONS_HTML__", biz_l2_options)
     return html.replace("__STRATEGY_BIZ_L1_OPTIONS_HTML__", strategy_biz_l1_options)
+
+
+_ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
+<style>
+.ap-wrap{display:flex;gap:16px;align-items:flex-start}
+.ap-checklist-col{flex:0 0 300px}
+.ap-checklist-row{display:flex;align-items:center;gap:6px;padding:5px 6px;border:1px solid #eef1f6;border-radius:6px;margin-bottom:4px;background:#fff}
+.ap-checklist-row .ap-drag{cursor:grab;color:#aab;font-size:15px;line-height:1}
+.ap-checklist-row.ap-collapsed{opacity:.5}
+.ap-checklist-row .ap-conf{font-size:10px;padding:1px 6px;border-radius:999px;background:#eef1f6;color:#5b6478}
+.ap-scenario-card{border:1px solid #e2e5eb;border-radius:10px;padding:12px;margin-bottom:16px;background:#fbfcfe}
+.ap-scenario-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.ap-scenario-head input.ap-sc-name{font-size:13px;font-weight:600;padding:4px 8px;width:240px}
+.ap-block{display:flex;border:1px solid #e6e9f0;border-radius:8px;margin-bottom:10px;overflow:hidden;background:#fff}
+.ap-block-title{padding:6px 10px;font-size:12px;font-weight:600;color:#3a4760;background:#f8fafc;border-bottom:1px solid #eef1f5}
+.ap-staff{flex:0 0 620px;border-right:1px solid #e6e9f0;overflow-x:auto}
+.ap-gantt-wrap{flex:1;min-width:0;overflow-x:auto}
+.ap-roles-tbl,.ap-asg-tbl,.ap-gantt-tbl{border-collapse:collapse;font-size:11px;width:100%}
+.ap-roles-tbl th,.ap-roles-tbl td,.ap-asg-tbl th,.ap-asg-tbl td{padding:3px 5px;border-bottom:1px solid #f1f3f7;white-space:nowrap}
+.ap-gantt-tbl th,.ap-gantt-tbl td{padding:3px 4px;border-bottom:1px solid #f1f3f7;text-align:center;white-space:nowrap;font-size:10px}
+.ap-gantt-tbl td.ap-filled{background:#bbf7d0}
+.ap-asg-tbl input[type=text],.ap-asg-tbl input[type=date],.ap-asg-tbl input[type=number],.ap-asg-tbl select,
+.ap-roles-tbl input[type=number],.ap-roles-tbl select{font-size:11px;padding:2px 3px}
+.ap-empty{color:#8893a8;font-size:12px;padding:10px}
+</style>
+<div class="card" style="max-width:100%">
+  <h2 style="margin:0 0 4px">🗓 アサインプランニング</h2>
+  <p class="muted" style="margin:0 0 10px">複数Deliveryの体制・アサインを横断で見ながら、スタッフの入れ替えを「シナリオ」として並行検討できます。
+    <b>ここでの変更は実際のDeliveryの体制/アサインには反映されません（シミュレーション専用）。</b>
+    実際に反映する場合は、各DeliveryのDelivery詳細画面から手動で入力してください。</p>
+
+  <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;background:#f8fafc;border-radius:8px;padding:10px">
+    <label style="font-size:12px">プラン名<br>
+      <input type="text" id="apPlanName" value="新規プラン" style="width:220px;font-size:12px"></label>
+    <button class="btn sec" onclick="apSavePlan()" style="font-size:12px">💾 プランを保存</button>
+    <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
+      <select id="apPlanSelect" onchange="apLoadPlan(this.value)" style="font-size:12px">
+        <option value="">－ 保存済みプランを読み込む －</option>
+      </select>
+      <button class="btn sec" onclick="apDeletePlan()" style="font-size:11px;color:#c53030" title="選択中のプランを削除">🗑</button>
+    </span>
+  </div>
+
+  <div style="margin-bottom:14px">
+    <label style="font-size:12px">対象ステージ<br>
+      <select id="apScope" onchange="apScopeChanged()" style="font-size:12px">
+        <option value="0">受注のみ</option>
+        <option value="1" selected>クロージングまで</option>
+        <option value="2">提案まで</option>
+      </select></label>
+  </div>
+
+  <div class="ap-wrap">
+    <div class="ap-checklist-col">
+      <h3 style="font-size:13px;margin:0 0 6px">対象Delivery（チェックで表示・⠿でドラッグ並び替え）</h3>
+      <div id="apChecklist"></div>
+    </div>
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="font-size:13px;margin:0">シナリオ</h3>
+        <button class="btn sec" onclick="apAddScenario()" style="font-size:12px">＋シナリオ複製</button>
+      </div>
+      <div id="apScenarios"></div>
+    </div>
+  </div>
+</div>
+<script>
+var AP_DELIVERIES = __INITIAL_DELIVERIES_JSON__;
+var AP_OWNERS = __INITIAL_OWNERS_JSON__;
+var AP_PLANS = __INITIAL_PLANS_JSON__;
+var AP_BY_ID = {};
+AP_DELIVERIES.forEach(function(d){ AP_BY_ID[d.id] = d; });
+
+function apMondayOf(s){ if(!s) return ''; var p=String(s).split('-'); if(p.length!==3) return s;
+  var d=new Date(+p[0], +p[1]-1, +p[2]); if(isNaN(d)) return s;
+  var wd=(d.getDay()+6)%7; d.setDate(d.getDate()-wd);
+  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+function apIsoAddWeeks(iso,wks){ var p=iso.split('-'); var d=new Date(+p[0],+p[1]-1,+p[2]); d.setDate(d.getDate()+wks*7);
+  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+function apWeeksBetween(fromWeek,toWeek){
+  var out=[]; if(!fromWeek||!toWeek) return out;
+  var w=apMondayOf(fromWeek), end=apMondayOf(toWeek), guard=0;
+  while(w<=end && guard<400){ out.push(w); w=apIsoAddWeeks(w,1); guard++; }
+  return out;
+}
+function apDeliveryWeeks(d){ return apWeeksBetween(d.startWeek, d.endWeek); }
+function apCloneDeliverySnapshot(d){
+  return {
+    roles: (d.roles||[]).map(function(r){ return {role:r.role, fte_billing:r.fte_billing, fte_pct:r.fte_pct, sort_order:r.sort_order||0}; }),
+    assignments: (d.assignments||[]).map(function(a){ return {role:a.role, member_kind:a.member_kind||'内部',
+      owner:a.owner||'', from_week:a.from_week||'', to_week:a.to_week||'', fte_billing:a.fte_billing,
+      fte_pct:a.fte_pct, note:a.note||''}; })
+  };
+}
+function apDeepClone(o){ return JSON.parse(JSON.stringify(o)); }
+
+// ── 状態 ──
+var AP_STATE = {
+  deliveryOrder: AP_DELIVERIES.map(function(d){return d.id;}),
+  included: {},
+  scenarios: [{no:1, name:'シナリオ1', data:{}}]
+};
+AP_DELIVERIES.forEach(function(d){ AP_STATE.included[d.id] = true; });
+
+function apScopeVal(){ return parseInt(document.getElementById('apScope').value, 10); }
+function apEligible(d){ return d.scopeRank <= apScopeVal(); }
+function apEnsureScenarioHasDelivery(scenario, deliveryId){
+  if(!scenario.data[deliveryId]){
+    var d = AP_BY_ID[deliveryId];
+    scenario.data[deliveryId] = d ? apCloneDeliverySnapshot(d) : {roles:[],assignments:[]};
+  }
+}
+
+// ── チェックリスト（対象Delivery・ドラッグ並び替え） ──
+function apRenderChecklist(){
+  var box = document.getElementById('apChecklist');
+  var html = '';
+  AP_STATE.deliveryOrder.forEach(function(id){
+    var d = AP_BY_ID[id]; if(!d || !apEligible(d)) return;
+    var checked = AP_STATE.included[id] !== false;
+    html += '<div class="ap-checklist-row'+(checked?'':' ap-collapsed')+'" data-id="'+id+'">'
+      + '<span class="ap-drag" draggable="true" title="ドラッグで並び替え">⠿</span>'
+      + '<input type="checkbox" '+(checked?'checked':'')+' onclick="apToggleIncluded('+id+',this.checked)">'
+      + '<span style="font-size:12px;flex:1" title="'+_apEsc(d.title)+'">'+_apEsc(d.title)+'</span>'
+      + '<span class="ap-conf">'+_apEsc(d.confidence)+'</span>'
+      + '</div>';
+  });
+  box.innerHTML = html || '<p class="ap-empty">対象ステージに一致するDeliveryがありません</p>';
+  apInitChecklistDrag();
+}
+function apToggleIncluded(id, checked){
+  AP_STATE.included[id] = checked;
+  var row = document.querySelector('.ap-checklist-row[data-id="'+id+'"]');
+  if(row) row.classList.toggle('ap-collapsed', !checked);
+  apRenderScenarios();
+}
+function apInitChecklistDrag(){
+  var container = document.getElementById('apChecklist');
+  container.querySelectorAll('.ap-checklist-row').forEach(function(row){
+    var handle = row.querySelector('.ap-drag'); if(!handle) return;
+    handle.addEventListener('dragstart', function(e){ e.dataTransfer.effectAllowed='move'; container._dragging=row; });
+    row.addEventListener('dragover', function(e){
+      e.preventDefault();
+      var dragging = container._dragging; if(!dragging||dragging===row) return;
+      var rect = row.getBoundingClientRect();
+      if(e.clientY < rect.top+rect.height/2) container.insertBefore(dragging,row);
+      else container.insertBefore(dragging,row.nextSibling);
+    });
+    handle.addEventListener('dragend', function(){
+      container._dragging = null;
+      var ids = Array.from(container.querySelectorAll('.ap-checklist-row')).map(function(r){ return parseInt(r.dataset.id,10); });
+      // 表示外(対象ステージ外)のDeliveryは並び順の末尾に維持したまま、表示中の順序だけ差し替える。
+      var shown = {}; ids.forEach(function(id){ shown[id]=true; });
+      var rest = AP_STATE.deliveryOrder.filter(function(id){ return !shown[id]; });
+      AP_STATE.deliveryOrder = ids.concat(rest);
+      apRenderScenarios();
+    });
+  });
+}
+
+// ── シナリオ・体制/アサイン/ガント ──
+function apAddScenario(){
+  var last = AP_STATE.scenarios[AP_STATE.scenarios.length-1];
+  var nextNo = AP_STATE.scenarios.reduce(function(m,s){ return Math.max(m,s.no); },0)+1;
+  AP_STATE.scenarios.push({no:nextNo, name:'シナリオ'+nextNo, data:apDeepClone(last.data)});
+  apRenderScenarios();
+}
+function apDeleteScenario(idx){
+  if(AP_STATE.scenarios.length<=1){ alert('シナリオは最低1つ必要です'); return; }
+  AP_STATE.scenarios.splice(idx,1);
+  apRenderScenarios();
+}
+function apRenameScenario(idx, val){ AP_STATE.scenarios[idx].name = val; }
+
+function _apEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function _apOwnerOpts(owners, current){
+  var list = owners.slice(); if(current && list.indexOf(current)===-1) list.push(current);
+  return '<option value=""></option>' + list.map(function(o){
+    return '<option value="'+_apEsc(o)+'"'+(o===current?' selected':'')+'>'+_apEsc(o)+'</option>'; }).join('');
+}
+
+function apRenderScenarios(){
+  var box = document.getElementById('apScenarios');
+  var visibleIds = AP_STATE.deliveryOrder.filter(function(id){
+    var d = AP_BY_ID[id]; return d && apEligible(d) && AP_STATE.included[id] !== false;
+  });
+  var html = '';
+  AP_STATE.scenarios.forEach(function(scenario, idx){
+    visibleIds.forEach(function(id){ apEnsureScenarioHasDelivery(scenario, id); });
+    html += '<div class="ap-scenario-card" data-idx="'+idx+'">'
+      + '<div class="ap-scenario-head">'
+      + '<span style="font-size:12px;color:#8893a8">#'+scenario.no+'</span>'
+      + '<input class="ap-sc-name" value="'+_apEsc(scenario.name)+'" onchange="apRenameScenario('+idx+',this.value)">'
+      + (AP_STATE.scenarios.length>1 ? '<button class="btn sec" style="font-size:11px;color:#c53030" onclick="apDeleteScenario('+idx+')">×削除</button>' : '')
+      + '</div>';
+    if(!visibleIds.length){
+      html += '<p class="ap-empty">対象Deliveryにチェックが入っていません</p>';
+    }
+    visibleIds.forEach(function(id){
+      html += apRenderDeliveryBlock(idx, id);
+    });
+    html += '</div>';
+  });
+  box.innerHTML = html;
+}
+
+function apRenderDeliveryBlock(scenarioIdx, deliveryId){
+  var d = AP_BY_ID[deliveryId];
+  var snap = AP_STATE.scenarios[scenarioIdx].data[deliveryId];
+  var weeks = apDeliveryWeeks(d);
+  var rolesHtml = '<table class="ap-roles-tbl"><tr><th>役割</th><th>請求%</th><th>実%</th></tr>';
+  (snap.roles||[]).forEach(function(r, ri){
+    rolesHtml += '<tr>'
+      + '<td><input type="text" style="width:110px" value="'+_apEsc(r.role)+'" '
+      + 'onchange="apEditRole('+scenarioIdx+','+deliveryId+','+ri+',\\'role\\',this.value)"></td>'
+      + '<td><input type="number" step="1" min="0" style="width:48px" value="'+(r.fte_billing==null?'':r.fte_billing)+'" '
+      + 'onchange="apEditRole('+scenarioIdx+','+deliveryId+','+ri+',\\'fte_billing\\',this.value)"></td>'
+      + '<td><input type="number" step="1" min="0" style="width:48px" value="'+(r.fte_pct==null?'':r.fte_pct)+'" '
+      + 'onchange="apEditRole('+scenarioIdx+','+deliveryId+','+ri+',\\'fte_pct\\',this.value)"></td>'
+      + '</tr>';
+  });
+  rolesHtml += '</table>';
+
+  var asgHtml = '<table class="ap-asg-tbl"><tr><th>役割</th><th>区分</th><th>メンバー</th><th>開始</th><th>終了</th><th>請求%</th><th>実%</th></tr>';
+  var ganttHtml = '<table class="ap-gantt-tbl"><tr><th style="min-width:60px">&nbsp;</th>'
+    + weeks.map(function(w){ return '<th>'+w.slice(5)+'</th>'; }).join('') + '</tr>';
+  (snap.assignments||[]).forEach(function(a, ai){
+    var rowWeeks = {}; apWeeksBetween(a.from_week, a.to_week).forEach(function(w){ rowWeeks[w]=true; });
+    asgHtml += '<tr>'
+      + '<td><input type="text" style="width:90px" value="'+_apEsc(a.role)+'" '
+      + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)"></td>'
+      + '<td><select onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'member_kind\\',this.value)">'
+      + ['内部','外部'].map(function(k){ return '<option value="'+k+'"'+(k===a.member_kind?' selected':'')+'>'+k+'</option>'; }).join('')
+      + '</select></td>'
+      + '<td>'+(a.member_kind==='外部'
+          ? '<input type="text" style="width:90px" value="'+_apEsc(a.owner)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'
+          : '<select onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'+_apOwnerOpts(AP_OWNERS, a.owner)+'</select>')
+      + '</td>'
+      + '<td><input type="date" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)"></td>'
+      + '<td><input type="date" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)"></td>'
+      + '<td><input type="number" step="1" min="0" style="width:48px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
+      + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_billing\\',this.value)"></td>'
+      + '<td><input type="number" step="1" min="0" style="width:48px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
+      + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_pct\\',this.value)"></td>'
+      + '</tr>';
+    ganttHtml += '<tr><td style="text-align:left">'+_apEsc(a.owner||'(未定)')+'</td>'
+      + weeks.map(function(w){
+          var filled = rowWeeks[w] && parseFloat(a.fte_pct)>0;
+          return '<td class="'+(filled?'ap-filled':'')+'"></td>';
+        }).join('')
+      + '</tr>';
+  });
+  asgHtml += '</table>';
+  ganttHtml += '</table>';
+
+  return '<div class="ap-block">'
+    + '<div class="ap-staff">'
+    + '<div class="ap-block-title">'+_apEsc(d.title)+'　<span style="font-weight:400;color:#8893a8">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span></div>'
+    + '<div style="padding:6px 8px">'+rolesHtml+asgHtml+'</div>'
+    + '</div>'
+    + '<div class="ap-gantt-wrap"><div class="ap-block-title">&nbsp;</div><div style="padding:6px 8px">'+ganttHtml+'</div></div>'
+    + '</div>';
+}
+
+function apEditRole(scenarioIdx, deliveryId, ri, field, value){
+  var row = AP_STATE.scenarios[scenarioIdx].data[deliveryId].roles[ri];
+  row[field] = (field==='role') ? value : (value===''? null : parseFloat(value));
+}
+function apEditAsg(scenarioIdx, deliveryId, ai, field, value){
+  var row = AP_STATE.scenarios[scenarioIdx].data[deliveryId].assignments[ai];
+  if(field==='fte_billing' || field==='fte_pct'){ row[field] = value===''? null : parseFloat(value); }
+  else { row[field] = value; }
+  apRenderScenarios();
+}
+
+function apScopeChanged(){ apRenderChecklist(); apRenderScenarios(); }
+
+// ── 保存/読み込み/削除（マーケ診断ツールの戦略マップと同じ、クライアント状態+fetch方式） ──
+function apRefreshPlanSelect(){
+  var sel = document.getElementById('apPlanSelect');
+  var cur = sel.value;
+  sel.innerHTML = '<option value="">－ 保存済みプランを読み込む －</option>' + AP_PLANS.map(function(p){
+    return '<option value="'+p.id+'">'+_apEsc(p.name)+'（'+p.savedAt+'）</option>'; }).join('');
+  sel.value = cur;
+}
+function apSavePlan(){
+  var name = document.getElementById('apPlanName').value.trim() || '(無題プラン)';
+  var plan = {
+    stageScope: apScopeVal(),
+    deliveryOrder: AP_STATE.deliveryOrder,
+    included: AP_STATE.included,
+    scenarios: AP_STATE.scenarios
+  };
+  fetch('/assign-planning-plan/create', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body: 'name='+encodeURIComponent(name)+'&plan_json='+encodeURIComponent(JSON.stringify(plan))})
+    .then(function(r){ return r.json(); })
+    .then(function(saved){ AP_PLANS.unshift(saved); apRefreshPlanSelect();
+      document.getElementById('apPlanSelect').value = saved.id; });
+}
+function apLoadPlan(id){
+  if(!id) return;
+  var plan = AP_PLANS.filter(function(p){ return String(p.id)===String(id); })[0];
+  if(!plan) return;
+  document.getElementById('apPlanName').value = plan.name;
+  document.getElementById('apScope').value = plan.plan.stageScope;
+  AP_STATE.deliveryOrder = plan.plan.deliveryOrder;
+  AP_STATE.included = plan.plan.included;
+  AP_STATE.scenarios = plan.plan.scenarios;
+  apRenderChecklist();
+  apRenderScenarios();
+}
+function apDeletePlan(){
+  var sel = document.getElementById('apPlanSelect');
+  var id = sel.value; if(!id){ alert('削除するプランを選んでください'); return; }
+  if(!confirm('このプランを削除しますか？')) return;
+  fetch('/assign-planning-plan/'+id+'/delete', {method:'POST'})
+    .then(function(){ AP_PLANS = AP_PLANS.filter(function(p){ return String(p.id)!==String(id); });
+      apRefreshPlanSelect(); });
+}
+
+apRefreshPlanSelect();
+apRenderChecklist();
+apRenderScenarios();
+</script>
+"""
+
+
+_ASSIGN_PLANNING_SCOPE_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2}
+
+
+def assign_planning_page(con) -> str:
+    """Deliveryアサインプランニング（2026-09-25）。複数Deliveryの体制・アサインを横断で見ながら
+    スタッフの入れ替えを「シナリオ」として複数並行検討し、名前を付けて保存できるシミュレーション
+    ツール。マーケ診断ツールの戦略マップ(保存済みプラン)と同じ「保存/読み込みはクライアント側で
+    完結、サーバは丸ごとJSONを受け取って保存するだけ」という設計を踏襲する（sfa_db.py
+    assign_planning_plans）。v1は体制/アサインへの書き戻しは一切行わない（読み取り専用で
+    スナップショットするだけのシミュレーション専用ツール）。"""
+    deliveries = []
+    for dv in sfa_db.list_deliveries(con):
+        sw, ew = dv.get("start_week"), dv.get("end_week")
+        if not sw or not ew:
+            continue  # 期間未設定はガント表示できないため対象外
+        conf = sfa_db.delivery_confidence_effective(dv)
+        rank = _ASSIGN_PLANNING_SCOPE_RANK.get(conf)
+        if rank is None:
+            continue  # 見込み(提案前)・無効(終了)は対象外
+        roles = [
+            {"role": r.get("role") or "", "fte_billing": r.get("fte_billing"),
+             "fte_pct": r.get("fte_pct"), "sort_order": r.get("sort_order") or 0}
+            for r in sfa_db.list_delivery_roles(con, dv["id"])
+        ]
+        assignments = [
+            {"role": a.get("role") or "", "member_kind": a.get("member_kind") or "内部",
+             "owner": a.get("owner") or "", "from_week": a.get("from_week") or "",
+             "to_week": a.get("to_week") or "", "fte_billing": a.get("fte_billing"),
+             "fte_pct": a.get("fte_pct"), "note": a.get("note") or ""}
+            for a in sfa_db.list_delivery_assignments(con, dv["id"])
+        ]
+        deliveries.append({
+            "id": dv["id"], "title": dv.get("title") or dv.get("deal_name") or f"Delivery#{dv['id']}",
+            "confidence": conf, "scopeRank": rank,
+            "startWeek": sw, "endWeek": ew,
+            "roles": roles, "assignments": assignments,
+        })
+    owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
+    plans = sfa_db.list_assign_planning_plans(con)
+
+    html = _ASSIGN_PLANNING_PAGE_TEMPLATE.replace("__FAVICON_LINK__", _SFA_FAVICON)
+    html = html.replace("__INITIAL_DELIVERIES_JSON__", json.dumps(deliveries, ensure_ascii=False))
+    html = html.replace("__INITIAL_OWNERS_JSON__", json.dumps(owners, ensure_ascii=False))
+    return html.replace("__INITIAL_PLANS_JSON__", json.dumps(plans, ensure_ascii=False))
 
 
 # 記事(号)の読み物デザイン。artifactの2カラム・マガジン設計をアプリ側が保持し、
@@ -4663,6 +5135,8 @@ def deliveries_page(con) -> str:
           <a class="btn sec" href="/deliveries/payment-schedule.xlsx" style="font-size:12px"
              title="案件×月の一覧表。先頭列「検収/入金」でExcel側から絞り込み可">📥 入金予定表</a>
           <a class="btn sec" href="/deliveries/export.xlsx" style="font-size:12px">📥 xlsx出力（全件・全テーブル）</a>
+          <a class="btn sec" href="/assign-planning" style="font-size:12px"
+             title="複数Deliveryの体制/アサインを横断で見ながら、スタッフの入れ替えをシナリオとして検討・保存できます（シミュレーション用途。実際のアサインは変更されません）">🗓 アサインプランニング</a>
         </span>
       </div>
       <form id="dv_bulk" method="post" action="/deliveries/bulk_delete"
@@ -4825,6 +5299,15 @@ def delivery_form(con, delivery_id: int) -> str:
                                b.get("role") or "￿", b.get("id") or 0))
     # #134: 必須項目チェック（商談がクロージング以降になってから注意喚起。個別画面はここ、一覧はdeliveries_page）。
     _missing = _delivery_missing_requirements(con, dv, assignments=blocks)
+    # 優先入力項目設定（2026-09-25〜、/settings）: #134の未入力項目のうち単一の入力要素に対応する
+    # 3つだけ、管理者がON/OFFできる（他は行・集合レベルのチェックのためv1では対象外）。ONかつ
+    # 未入力の間だけ、初回描画時からinlineで#fef3c7ハイライトを付ける（JS側は既存のdvPerfFeeChanged
+    # 等がREQUIRED_FIELD_HIGHLIGHTSを見て以後も再判定する）。
+    _hl_keys = set(sfa_db.get_master_list(con, "required_field_highlights_delivery")
+                    or _SETTINGS_REQUIRED_FIELD_CANDIDATES)
+    _hl_perf_ratio = "performance_fee_ratio" in _hl_keys and "成果報酬比率" in _missing
+    _hl_fee_amount = "fee_amount" in _hl_keys and "報酬形態・報酬額" in _missing
+    _hl_expense_billing = "expense_billing" in _hl_keys and "経費請求有無" in _missing
     _missing_banner = ""
     if _missing:
         _missing_items = "".join(f"<li>{_esc(m)}</li>" for m in _missing)
@@ -5103,16 +5586,19 @@ def delivery_form(con, delivery_id: int) -> str:
                   <option value="total"{" selected" if (dv.get("fee_mode") or "monthly") == "total" else ""}>総額報酬</option>
                 </select></label>
               <label style="font-size:12px">報酬額/月額(万)<br>
-                <input type="number" step="0.1" min="0" id="dvFeeMonthly" name="fee_monthly" style="width:110px"
+                <input type="number" step="0.1" min="0" id="dvFeeMonthly" name="fee_monthly"
+                       style="width:110px{';background:#fef3c7' if _hl_fee_amount else ''}"
                        value="{"" if dv.get("fee_monthly") is None else dv.get("fee_monthly")}" oninput="dvFeeFieldInput(this)"></label>
               <label style="font-size:12px">報酬額/総額(万)<br>
-                <input type="number" step="0.1" min="0" id="dvFeeTotal" name="fee_total" style="width:110px"
+                <input type="number" step="0.1" min="0" id="dvFeeTotal" name="fee_total"
+                       style="width:110px{';background:#fef3c7' if _hl_fee_amount else ''}"
                        value="{"" if dv.get("fee_total") is None else dv.get("fee_total")}" oninput="dvFeeFieldInput(this)"></label>
               <input type="hidden" id="dvFeeManualFlag" name="fee_manual" value="{1 if dv.get("fee_manual") else 0}">
               <label style="font-size:12px">成果報酬有無<br>
                 <select id="dvPerfFee" name="performance_fee" onchange="dvPerfFeeChanged()">{_delivery_performance_fee_opts(dv.get("performance_fee"))}</select></label>
               <label style="font-size:12px">成果報酬比率(%)<br>
-                <input type="number" step="0.1" min="0" max="100" id="dvPerfFeeRatio" name="performance_fee_ratio" style="width:90px"
+                <input type="number" step="0.1" min="0" max="100" id="dvPerfFeeRatio" name="performance_fee_ratio"
+                       style="width:90px{';background:#fef3c7' if _hl_perf_ratio else ''}"
                        value="{"" if dv.get("performance_fee_ratio") is None else dv.get("performance_fee_ratio")}" oninput="dvPerfFeeChanged()"></label>
               <label style="font-size:12px" title="想定インパクト×成果報酬比率＝成果報酬額。報酬額/月額・総額（固定報酬）に加算されます">想定インパクト(万)<br>
                 <input type="number" step="0.1" min="0" id="dvExpectedImpact" name="expected_impact" style="width:90px"
@@ -5149,7 +5635,9 @@ def delivery_form(con, delivery_id: int) -> str:
                        value="{_esc(dv.get("billing_recipient") or "")}"></label>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
-              <label style="font-size:12px">経費請求有無<br><select name="expense_billing">{_delivery_expense_billing_opts(dv.get("expense_billing"))}</select></label>
+              <label style="font-size:12px">経費請求有無<br><select id="dvExpenseBilling" name="expense_billing"
+                       style="{'background:#fef3c7' if _hl_expense_billing else ''}"
+                       onchange="dvExpenseBillingChanged()">{_delivery_expense_billing_opts(dv.get("expense_billing"))}</select></label>
               <label style="font-size:12px">経費請求メモ<br>
                 <input type="text" name="expense_billing_note" style="width:220px"
                        value="{_esc(dv.get("expense_billing_note") or "")}"></label>
@@ -5223,6 +5711,9 @@ def delivery_form(con, delivery_id: int) -> str:
       </div>
     </div>
     <script>
+    // 優先入力項目設定（/settings）で有効な項目キーの一覧。未入力ハイライトの各関数がこれを見て
+    // 有効/無効を判定する（ユーザー要望2026-09-24「権限設定とあわせて」〜2026-09-25実装）。
+    var REQUIRED_FIELD_HIGHLIGHTS = {json.dumps(sorted(_hl_keys), ensure_ascii=False)};
     // 日ベースの日付をその週の月曜へ変換（#180）。集計用の変換にのみ使う。入力欄の値自体は
     // 丸めない（金曜開始等の日ベース入力をそのまま保持する）。
     function _mondayOf(s){{ if(!s) return ''; var p=String(s).split('-'); if(p.length!==3) return s;
@@ -5465,6 +5956,11 @@ def delivery_form(con, delivery_id: int) -> str:
         to.style.background = (to.dataset.manual==='1') ? '' : ro;
         if(m && mo.value!=='' && to.dataset.manual!=='1') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
       }}
+      // 優先入力項目設定「報酬形態・報酬額」: 月額/総額とも未入力ならグレー(自動算出待ち)より
+      // 優先して黄色でハイライトする（#134の「報酬形態・報酬額」チェックと対応）。
+      if(REQUIRED_FIELD_HIGHLIGHTS.indexOf('fee_amount')>=0 && mo.value==='' && to.value===''){{
+        mo.style.background='#fef3c7'; to.style.background='#fef3c7';
+      }}
       // 想定経費＝報酬額/総額×5%のデフォルトを、報酬額側の変更にあわせて追従させる（手修正済み
       // （expense_manual=1）でなければ、開始日/終了日・報酬額等が変わるたびここで再計算する。
       // 以前はページ表示時点の値が自動保存でそのまま固定保存され、後で総額を変えても追従しなく
@@ -5561,11 +6057,19 @@ def delivery_form(con, delivery_id: int) -> str:
       if(!sel||!ratio) return;
       var need = sel.value==='有';
       ratio.required = need;
-      ratio.style.background = (need && ratio.value==='') ? '#fef3c7' : '';
+      var _hlPerf = REQUIRED_FIELD_HIGHLIGHTS.indexOf('performance_fee_ratio')>=0;
+      ratio.style.background = (_hlPerf && need && ratio.value==='') ? '#fef3c7' : '';
       // 成果報酬(想定インパクト×比率)は固定報酬(報酬額/月額・総額)とは別建てで加算する仕様
       // （ユーザー要望2026-09-24）。固定報酬フィールド自体はここでは一切書き換えず、
       // renderPreview()側で固定報酬＋成果報酬を合算して週別限界利益を再計算する。
       if(typeof dvFeeRecalc==='function') dvFeeRecalc();
+    }}
+    // 優先入力項目設定「経費請求有無」: 未選択の間だけ黄色ハイライト（#134と同じ判定。
+    // 「不明(要確認)」は有効な回答として扱うため空文字のみ対象）。
+    function dvExpenseBillingChanged(){{
+      var sel=document.getElementById('dvExpenseBilling'); if(!sel) return;
+      var _hlExp = REQUIRED_FIELD_HIGHLIGHTS.indexOf('expense_billing')>=0;
+      sel.style.background = (_hlExp && sel.value==='') ? '#fef3c7' : '';
     }}
     // 想定利益(月額/総額) = 報酬額－外注費。どちらも未入力なら「—」、片方だけ未入力は0扱い。
     function dvProfitRecalc(){{
@@ -11937,6 +12441,89 @@ def masters_page(con) -> str:
       {'; '.join(f"initDrag('{html.escape(key)}')" for key in sfa_db.MASTER_LABELS if key != 'business_type_l1')}
     }});
     </script>"""
+
+
+# ── 設定（優先入力項目・権限管理、2026-09-25〜。/settings系はROUTE_ACCESSで経営限定） ──
+
+# v1はDelivery画面の#134(_delivery_missing_requirements)由来3項目のみ対象（単一の入力要素に
+# 対応するもの限定。責任者/体制/アサイン/検収額は行・集合レベルのチェックで単一要素に対応しない
+# ためv1では対象外・バナー表示のまま。商談/開発案件は次段階、ユーザーの視覚レビュー待ち）。
+_SETTINGS_REQUIRED_FIELD_CANDIDATES = ["performance_fee_ratio", "fee_amount", "expense_billing"]
+_SETTINGS_REQUIRED_FIELD_LABELS = {
+    "performance_fee_ratio": "成果報酬比率（成果報酬有無=有なのに比率未入力）",
+    "fee_amount": "報酬形態・報酬額（月額/総額とも未入力）",
+    "expense_billing": "経費請求有無（未選択）",
+}
+
+
+def settings_page(con) -> str:
+    _enabled = set(sfa_db.get_master_list(con, "required_field_highlights_delivery")
+                    or _SETTINGS_REQUIRED_FIELD_CANDIDATES)
+    _rows = "".join(
+        f'<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">'
+        f'<input type="checkbox" name="hl_{k}" value="1"{" checked" if k in _enabled else ""}>'
+        f'{_esc(_SETTINGS_REQUIRED_FIELD_LABELS[k])}</label>'
+        for k in _SETTINGS_REQUIRED_FIELD_CANDIDATES)
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 6px">⚙ 設定</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 12px">
+        <a href="/settings/roles">権限管理（ロール割当）はこちら →</a></p>
+      <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（Delivery）</h3>
+      <p class="muted" style="font-size:12px;margin:0 0 10px">
+        ONにした項目は、Delivery詳細画面で未入力の間だけ入力欄の背景を黄色くハイライトします
+        （保存はブロックしません。あくまで視覚的な注意喚起）。v1はDeliveryのみ対象で、
+        行・集合レベルのチェック（責任者/体制/アサイン/検収額）は対象外です（バナー表示は従来通り）。</p>
+      <form method="post" action="/settings/save">
+        {_rows}
+        <div style="margin-top:12px"><button class="btn" type="submit">保存</button></div>
+      </form>
+    </div>"""
+
+
+def _settings_role_select(current: str, name: str = "role_value[]") -> str:
+    opts = "".join(
+        f'<option value="{_esc(v)}"{" selected" if v == current else ""}>{_esc(v)}</option>'
+        for v in sfa_db.USER_ROLES)
+    return f'<select name="{name}">{opts}</select>'
+
+
+def settings_roles_page(con) -> str:
+    _roles = sfa_db.list_user_roles(con)
+    _role_opts = "".join(f'<option value="{_esc(v)}">{_esc(v)}</option>' for v in sfa_db.USER_ROLES)
+    _row_parts = []
+    for r in _roles:
+        _row_parts.append(
+            '<tr>'
+            f'<td>{_esc(r["email"])}<input type="hidden" name="role_email[]" value="{_esc(r["email"])}"></td>'
+            f'<td><input type="text" name="role_name[]" value="{_esc(r.get("display_name") or "")}" style="width:100px"></td>'
+            f'<td>{_settings_role_select(r["role"])}</td>'
+            f'<td><button class="btn sec" formaction="/settings/roles/{urllib.parse.quote(r["email"])}/delete" '
+            'formnovalidate style="font-size:11px;color:#c53030" '
+            "onclick=\"return confirm('このメールの権限設定を削除しますか？（未登録メール扱いに戻り、既定のメンバー権限になります）')\">×</button></td>"
+            '</tr>')
+    _rows = "".join(_row_parts)
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 6px">⚙ 権限管理</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 12px">
+        <a href="/settings">← 優先入力項目設定に戻る</a></p>
+      <form method="post" action="/settings/roles/save">
+        <table style="border-collapse:collapse;font-size:13px">
+          <thead><tr><th style="text-align:left;padding:4px 8px">メール</th>
+            <th style="text-align:left;padding:4px 8px">表示名</th>
+            <th style="text-align:left;padding:4px 8px">ロール</th><th></th></tr></thead>
+          <tbody>{_rows}</tbody>
+          <tfoot><tr>
+            <td style="padding:4px 8px"><input type="text" name="new_email" placeholder="new@inproc.org" style="width:180px"></td>
+            <td style="padding:4px 8px"><input type="text" name="new_name" placeholder="表示名" style="width:100px"></td>
+            <td style="padding:4px 8px"><select name="new_role"><option value=""></option>{_role_opts}</select></td>
+            <td></td>
+          </tr></tfoot>
+        </table>
+        <div style="margin-top:12px"><button class="btn" type="submit">保存</button></div>
+      </form>
+    </div>"""
 
 
 def activity_deal_picker(con) -> str:
@@ -20513,7 +21100,9 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 sess = ck[_SESSION_COOKIE].value if _SESSION_COOKIE in ck else ""
             except Exception:  # noqa: BLE001 — 壊れたCookieヘッダは未認証扱い
                 sess = ""
-            if sess and _valid_session_token(sess):
+            _email = _valid_session_token(sess) if sess else None
+            if _email:
+                self._user_email = _email  # ロール判定の土台（2026-09-25〜）。do_GET/do_POSTで使う
                 return True
             # 未認証 → ログイン画面へ（ネイティブダイアログは出さない）
             if self.command == "GET":
@@ -20527,12 +21116,32 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                            ctype="application/json")
             return False
 
+        def _apply_route_access(self, con, path: str, *, write: bool) -> bool:
+            """ROUTE_ACCESSに基づく画面/機能ガード（2026-09-25〜）。hiddenは403、viewへの書き込み
+            (write=True)も403。_check_basic_auth()で除外された経路（/api/等）はself._user_emailが
+            未設定のためここもスキップする（RBAC対象外の既存経路を壊さないため）。
+            呼び出し側は早期returnすること（同じイディオム）。"""
+            email = getattr(self, "_user_email", None)
+            if not email:
+                return True
+            role = sfa_db.get_user_role(con, email) or sfa_db.USER_ROLE_DEFAULT
+            _request_ctx.email = email
+            _request_ctx.role = role
+            level = _route_access_level(path, role)
+            if level == "hidden" or (write and level == "view"):
+                self._send(render('<div class="card">この画面へのアクセス権限がありません。</div>'),
+                           status=403)
+                return False
+            return True
+
         def do_GET(self):
             if not self._check_basic_auth():
                 return
             path = self.path.split("?")[0].rstrip("/") or "/"
             con = sfa_db.connect(db_path)
             try:
+                if not self._apply_route_access(con, path, write=False):
+                    return
                 if path == "/health":
                     self._send(b'{"status":"ok"}', ctype="application/json")
                 elif path == "/manifest.webmanifest":
@@ -20628,7 +21237,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             self.send_response(303)
                             self.send_header("Location", _g_next)
                             self.send_header("Set-Cookie",
-                                              f"{_SESSION_COOKIE}={_make_session_token()}; Path=/; HttpOnly; "
+                                              f"{_SESSION_COOKIE}={_make_session_token(_g_email)}; Path=/; HttpOnly; "
                                               f"SameSite=Lax; Max-Age={_SESSION_MAX_AGE}{_secure}")
                             self.send_header("Set-Cookie",
                                               f"{_OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
@@ -21144,6 +21753,10 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self.wfile.write(body)
                 elif path == "/masters":
                     self._send(render(masters_page(con)))
+                elif path == "/settings":
+                    self._send(render(settings_page(con)))
+                elif path == "/settings/roles":
+                    self._send(render(settings_roles_page(con)))
                 elif path == "/dev-point-master":
                     self._send(render(dev_point_master_page(con)))
                 elif path == "/tech-seed-master":
@@ -21384,6 +21997,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         con, int(path[len("/business-flow/"):]))))
                 elif path == "/mktg-sim":
                     self._send(mktg_sim_page(con).encode("utf-8"))
+                elif path == "/assign-planning":
+                    self._send(render(assign_planning_page(con), wide=True))
                 elif path == "/reports":
                     self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":
@@ -21761,6 +22376,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
             con = sfa_db.connect(db_path)
             ctype = self.headers.get("Content-Type", "")
             try:
+                if not self._apply_route_access(con, path, write=True):
+                    return
                 # 自動連携Webhookは生ボディで署名検証するため、汎用パースより前に処理する（#29 P3）。
                 if path == "/api/jamie/webhook":
                     _n = int(self.headers.get("Content-Length", 0) or 0)
@@ -21837,6 +22454,24 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     sfa_db.delete_mktg_strategy_plan(con, int(path.split("/")[2]))
                     self._send(b'{"ok":true}', ctype="application/json")
 
+                # ── Deliveryアサインプランニング（体制/アサインのシミュレーション保存。2026-09-25） ──
+                # v1はシミュレーション・保存のみ。実際のdelivery_roles/delivery_assignmentsへは
+                # 一切書き戻さない（読み取り専用でplan_jsonへスナップショットするだけ）。
+                elif path == "/assign-planning-plan/create":
+                    try:
+                        _ap_plan = json.loads(f.get("plan_json", "{}") or "{}")
+                    except (ValueError, TypeError):
+                        _ap_plan = {}
+                    _ap_saved = sfa_db.create_assign_planning_plan(
+                        con,
+                        name=(f.get("name", "") or "").strip() or "(無題プラン)",
+                        plan=_ap_plan)
+                    self._send(json.dumps(_ap_saved, ensure_ascii=False).encode(), ctype="application/json")
+                elif (path.startswith("/assign-planning-plan/") and path.endswith("/delete")
+                      and path.split("/")[2].isdigit()):
+                    sfa_db.delete_assign_planning_plan(con, int(path.split("/")[2]))
+                    self._send(b'{"ok":true}', ctype="application/json")
+
                 # ── マスタ ──
                 elif path == "/masters/save":
                     for key in sfa_db.MASTER_KEYS:
@@ -21884,6 +22519,32 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                             _tgt_map[_ind.strip()] = _v
                     sfa_db.set_industry_target_map(con, _tgt_map)
                     self._redirect("/")
+
+                # ── 設定（優先入力項目・権限管理、2026-09-25〜。/settingsはROUTE_ACCESSで経営限定） ──
+                elif path == "/settings/save":
+                    _hl = [k for k in _SETTINGS_REQUIRED_FIELD_CANDIDATES if f.get(f"hl_{k}") == "1"]
+                    sfa_db.set_master_list(con, "required_field_highlights_delivery", _hl)
+                    self._redirect("/settings")
+                elif path == "/settings/roles/save":
+                    _emails = f_list.get("role_email[]", [])
+                    _roles = f_list.get("role_value[]", [])
+                    _names = f_list.get("role_name[]", [])
+                    for _i, _em in enumerate(_emails):
+                        _em = (_em or "").strip().lower()
+                        _rv = (_roles[_i] if _i < len(_roles) else "").strip()
+                        _nm = (_names[_i] if _i < len(_names) else "").strip() or None
+                        if _em and _rv in sfa_db.USER_ROLES:
+                            sfa_db.set_user_role(con, _em, _rv, _nm)
+                    _new_email = (f.get("new_email", "") or "").strip().lower()
+                    _new_role = (f.get("new_role", "") or "").strip()
+                    _new_name = (f.get("new_name", "") or "").strip() or None
+                    if _new_email and _new_role in sfa_db.USER_ROLES:
+                        sfa_db.set_user_role(con, _new_email, _new_role, _new_name)
+                    self._redirect("/settings/roles")
+                elif (path.startswith("/settings/roles/") and path.endswith("/delete")):
+                    _del_email = urllib.parse.unquote(path[len("/settings/roles/"):-len("/delete")])
+                    sfa_db.delete_user_role(con, _del_email)
+                    self._redirect("/settings/roles")
 
                 # ── 技術シード マスタ（ツリー L1→L2, #60） ──
                 elif path == "/tech-seed-master/save":

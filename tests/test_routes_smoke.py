@@ -1516,3 +1516,128 @@ def test_mobile_media_query_neutralizes_inline_min_width(server):
     html = resp.read().decode("utf-8", "ignore")
     assert '@media(max-width:640px)' in html
     assert '[style*="min-width"]{min-width:0 !important}' in html
+
+
+# ── ユーザー権限(RBAC)・優先入力項目設定（2026-09-25〜） ────────────────────────
+
+def test_session_token_round_trips_email_and_rejects_old_two_part_format():
+    """セッショントークンはメールアドレスを内包し、_valid_session_tokenはそれを返す。
+    旧フォーマット「exp.sig」の2パートトークンは新パーサでは無効(None)になる
+    （デプロイ時に既存セッションが全員ログアウトされる仕様。許容範囲としてユーザー合意済み）。"""
+    tok = webapp._make_session_token("someone@inproc.org")
+    assert webapp._valid_session_token(tok) == "someone@inproc.org"
+    # メールにドットが複数含まれても正しく分離できること（firstname.lastname@sub.example.com型）
+    tok2 = webapp._make_session_token("first.last@mail.inproc.org")
+    assert webapp._valid_session_token(tok2) == "first.last@mail.inproc.org"
+    # 旧フォーマット（expとhmacの2パートのみ）は無効
+    import hashlib
+    import hmac as _hmac
+    import time as _time
+    exp = int(_time.time()) + 1000
+    old_sig = _hmac.new(webapp._session_secret(), str(exp).encode(), hashlib.sha256).hexdigest()
+    assert webapp._valid_session_token(f"{exp}.{old_sig}") is None
+    # 期限切れは無効（署名自体は正しいが、exp=1(過去)のため拒否される）
+    expired_payload = "1.x@inproc.org"
+    expired_sig = _hmac.new(webapp._session_secret(), expired_payload.encode(), hashlib.sha256).hexdigest()
+    assert webapp._valid_session_token(f"{expired_payload}.{expired_sig}") is None
+    # 壊れたトークンは例外を出さずNone
+    assert webapp._valid_session_token("not-a-valid-token") is None
+    assert webapp._valid_session_token("") is None
+    assert webapp._valid_session_token(None) is None
+
+
+def test_user_roles_crud(db_path):
+    con = sfa_db.connect(db_path)
+    # init_db()のシードで自分のメールが経営として登録済み
+    assert sfa_db.get_user_role(con, "ninsei.hayase@inproc.org") == "経営"
+    # 未登録メールはNone（呼び出し側でUSER_ROLE_DEFAULTへフォールバック）
+    assert sfa_db.get_user_role(con, "unknown@inproc.org") is None
+    sfa_db.set_user_role(con, "unknown@inproc.org", "マネージャー", "テスト太郎")
+    assert sfa_db.get_user_role(con, "unknown@inproc.org") == "マネージャー"
+    rows = sfa_db.list_user_roles(con)
+    assert any(r["email"] == "unknown@inproc.org" and r["display_name"] == "テスト太郎" for r in rows)
+    sfa_db.delete_user_role(con, "unknown@inproc.org")
+    assert sfa_db.get_user_role(con, "unknown@inproc.org") is None
+
+
+def test_route_access_blocks_member_from_masters_and_settings_but_allows_deals(server):
+    """メンバーロール(未登録メール→既定でメンバー扱い)は/masters・/settingsは403、
+    /dealsは通常通りアクセスできる（権限マトリクスの既定案）。"""
+    member_header = {"Cookie": f"sfa_session={webapp._make_session_token('member@inproc.org')}"}
+    code, _ = _get(server + "/masters", headers=member_header)
+    assert code == 403
+    code, _ = _get(server + "/settings", headers=member_header)
+    assert code == 403
+    code, resp = _get(server + "/deals", headers=member_header)
+    assert code == 200
+    assert len(resp.read()) > 0
+
+
+def test_route_access_allows_admin_full_access(server):
+    """経営ロール（既定セッションのシードメール）は/masters・/settingsとも200。"""
+    code, _ = _get(server + "/masters", headers=_auth_header())
+    assert code == 200
+    code, _ = _get(server + "/settings", headers=_auth_header())
+    assert code == 200
+    code, _ = _get(server + "/settings/roles", headers=_auth_header())
+    assert code == 200
+
+
+def test_route_access_view_level_blocks_post_but_allows_get(server, db_path):
+    """事務は/deal-issuesがview（閲覧のみ）。GETは200、POST(書き込み)は403になる。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.set_user_role(con, "clerk@inproc.org", "事務")
+    con.close()
+    clerk_header = {"Cookie": f"sfa_session={webapp._make_session_token('clerk@inproc.org')}"}
+    code, _ = _get(server + "/deal-issues", headers=clerk_header)
+    assert code == 200
+    code, _ = _post(server + "/deal-issues/some-action", {"x": "1"}, headers=clerk_header)
+    assert code == 403
+
+
+def test_nav_hides_admin_links_for_member_but_shows_for_executive(server):
+    code, resp = _get(server + "/deals", headers={
+        "Cookie": f"sfa_session={webapp._make_session_token('member@inproc.org')}"})
+    html_member = resp.read().decode("utf-8")
+    assert "⚙ 設定" not in html_member
+    assert "⚙ マスタ編集" not in html_member
+
+    code, resp = _get(server + "/deals", headers=_auth_header())
+    html_admin = resp.read().decode("utf-8")
+    assert "⚙ 設定" in html_admin
+    assert "⚙ マスタ編集" in html_admin
+
+
+def test_settings_save_persists_required_field_highlights(server, db_path):
+    code, body = _post(server + "/settings/save", {"hl_performance_fee_ratio": "1"}, headers=_auth_header())
+    assert code in (200, 303)
+    con = sfa_db.connect(db_path)
+    saved = sfa_db.get_master_list(con, "required_field_highlights_delivery")
+    assert saved == ["performance_fee_ratio"]  # fee_amount/expense_billingはチェック無しなので含まれない
+
+
+def test_settings_roles_save_updates_and_adds_role(server, db_path):
+    code, _ = _post(server + "/settings/roles/save", {
+        "role_email[]": ["ninsei.hayase@inproc.org"], "role_name[]": ["早瀬"], "role_value[]": ["経営"],
+        "new_email": "newbie@inproc.org", "new_name": "新人", "new_role": "メンバー",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+    con = sfa_db.connect(db_path)
+    assert sfa_db.get_user_role(con, "newbie@inproc.org") == "メンバー"
+
+
+def test_route_access_hides_assign_planning_from_external_role(server, db_path):
+    """アサインプランニングはDeliveryの体制/アサイン（金額に紐づく稼働情報）を横断表示するため、
+    /deliveriesと同じ方針で「外部」ロールには非表示（レビュー時に見つかった抜け穴の回帰テスト）。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.set_user_role(con, "partner@inproc.org", "外部")
+    con.close()
+    partner_header = {"Cookie": f"sfa_session={webapp._make_session_token('partner@inproc.org')}"}
+    code, _ = _get(server + "/assign-planning", headers=partner_header)
+    assert code == 403
+    code, _ = _post(server + "/assign-planning-plan/create", {"name": "x", "plan_json": "{}"},
+                     headers=partner_header)
+    assert code == 403
+    # メンバーは通常通りアクセスできる
+    code, _ = _get(server + "/assign-planning", headers=_auth_header())
+    assert code == 200

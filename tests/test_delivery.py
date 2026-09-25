@@ -2098,3 +2098,147 @@ def test_delivery_role_add_route_auto_numbers_instead_of_blocking(monkeypatch, t
     assert roles == ["ジュニアコンサルタント1", "ジュニアコンサルタント2"], "ブロックされず自動採番で2件とも保存されるべき"
     assert assignments == ["ジュニアコンサルタント1", "ジュニアコンサルタント2"], \
         "役割追加時に自動生成されるアサイン行のroleも採番後の名前と一致するべき"
+
+
+def test_assign_planning_plan_crud_round_trips_nested_plan_json(con):
+    """アサインプランニング（2026-09-25）: マーケ診断の戦略マップと同じ、丸ごとJSONで保存/復元
+    できる仕組み。ネストしたシナリオ構造が壊れず往復することを確認する。"""
+    plan = {
+        "stageScope": 1,
+        "deliveryOrder": [3, 1, 2],
+        "included": {"1": True, "2": False, "3": True},
+        "scenarios": [
+            {"no": 1, "name": "シナリオ1", "data": {"1": {"roles": [{"role": "PM", "fte_billing": 50,
+                                                                     "fte_pct": 50, "sort_order": 0}],
+                                                            "assignments": [{"role": "PM", "member_kind": "内部",
+                                                                              "owner": "早瀬", "from_week": "2026-10-05",
+                                                                              "to_week": "2026-12-28",
+                                                                              "fte_billing": 50, "fte_pct": 50,
+                                                                              "note": ""}]}}},
+            {"no": 2, "name": "壮関を失注した場合", "data": {}},
+        ],
+    }
+    saved = sfa_db.create_assign_planning_plan(con, name="10月想定", plan=plan)
+    assert saved["name"] == "10月想定"
+    assert saved["plan"] == plan
+    assert saved["id"] > 0
+
+    listed = sfa_db.list_assign_planning_plans(con)
+    assert len(listed) == 1
+    assert listed[0]["plan"]["scenarios"][1]["name"] == "壮関を失注した場合"
+    assert listed[0]["plan"]["deliveryOrder"] == [3, 1, 2]
+
+    sfa_db.delete_assign_planning_plan(con, saved["id"])
+    assert sfa_db.list_assign_planning_plans(con) == []
+
+
+def test_assign_planning_page_route_lists_deliveries_by_stage_scope(monkeypatch, tmp_path):
+    """/assign-planningが実際のHTTPルート経由で200を返し、確定/クロージング/提案中の各Delivery
+    （期間設定済みのもの）を埋め込みJSONに含むことを確認する。見込み(提案前)・無効(終了)や
+    期間未設定のDeliveryは対象外。"""
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    db_path = str(tmp_path / "srv_ap.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con2, name="テスト社")
+
+    did1 = sfa_db.upsert_deal(con2, account_id=aid, deal_name="確定", stage="受注")
+    dvid1 = sfa_db.create_delivery(con2, deal_id=did1, title="確定D")
+    sfa_db.update_delivery(con2, dvid1, start_week="2026-10-05", end_week="2026-12-28")
+
+    did2 = sfa_db.upsert_deal(con2, account_id=aid, deal_name="提案前差し戻し", stage="要件詰め")
+    dvid2 = sfa_db.create_delivery(con2, deal_id=did2, title="提案前D")
+    sfa_db.update_delivery(con2, dvid2, start_week="2026-10-05", end_week="2026-12-28")
+
+    did3 = sfa_db.upsert_deal(con2, account_id=aid, deal_name="期間未設定", stage="受注")
+    sfa_db.create_delivery(con2, deal_id=did3, title="期間未設定D")  # start_week/end_week無し
+
+    con2.close()
+
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "u")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "p")
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/assign-planning",
+            headers={"Cookie": f"sfa_session={webapp._make_session_token()}"})
+        body = urllib.request.urlopen(req, timeout=10).read().decode("utf-8")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+    m = re.search(r"var AP_DELIVERIES = (\[.*?\]);\n", body)
+    assert m, "埋め込みJSONが見つからない"
+    deliveries = json.loads(m.group(1))
+    titles = {d["title"] for d in deliveries}
+    assert "確定D" in titles
+    assert "提案前D" not in titles, "見込み(提案前)は対象外のはず"
+    assert "期間未設定D" not in titles, "開始/終了週が無いDeliveryは対象外のはず"
+
+
+def test_assign_planning_plan_routes_create_and_delete_do_not_touch_real_assignments(monkeypatch, tmp_path):
+    """/assign-planning-plan/create・/delete が実DBのdelivery_roles/delivery_assignmentsに
+    一切書き込まない（シミュレーション専用）ことをHTTPルート経由で確認する。"""
+    import threading
+    import urllib.parse
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    db_path = str(tmp_path / "srv_ap2.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con2, name="テスト社")
+    did = sfa_db.upsert_deal(con2, account_id=aid, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con2, deal_id=did, title="D")
+    sfa_db.update_delivery(con2, dvid, start_week="2026-10-05", end_week="2026-12-28")
+    sfa_db.add_delivery_role(con2, delivery_id=dvid, role="PM", fte_billing=50, fte_pct=50)
+    con2.close()
+
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "u")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "p")
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        headers = {"Cookie": f"sfa_session={webapp._make_session_token()}",
+                   "Content-Type": "application/x-www-form-urlencoded"}
+        plan = {"stageScope": 1, "deliveryOrder": [dvid], "included": {str(dvid): True},
+                "scenarios": [{"no": 1, "name": "シナリオ1",
+                               "data": {str(dvid): {"roles": [{"role": "PM(シミュレーション)",
+                                                                "fte_billing": 999, "fte_pct": 999,
+                                                                "sort_order": 0}],
+                                                     "assignments": []}}}]}
+        body = urllib.parse.urlencode({
+            "name": "テストプラン", "plan_json": json.dumps(plan, ensure_ascii=False),
+        }).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/assign-planning-plan/create",
+            data=body, headers=headers, method="POST")
+        resp = json.loads(urllib.request.urlopen(req, timeout=10).read().decode("utf-8"))
+        plan_id = resp["id"]
+        assert resp["plan"]["scenarios"][0]["data"][str(dvid)]["roles"][0]["role"] == "PM(シミュレーション)"
+
+        req2 = urllib.request.Request(
+            f"http://127.0.0.1:{port}/assign-planning-plan/{plan_id}/delete",
+            data=b"", headers=headers, method="POST")
+        urllib.request.urlopen(req2, timeout=10)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+    con3 = sfa_db.connect(db_path)
+    real_roles = sfa_db.list_delivery_roles(con3, dvid)
+    assert len(real_roles) == 1
+    assert real_roles[0]["role"] == "PM", "実際のdelivery_rolesは書き換わっていないはず"
+    assert sfa_db.list_assign_planning_plans(con3) == [], "delete後はプランテーブルも空のはず"
