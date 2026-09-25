@@ -2744,8 +2744,13 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-checklist-row input[type=checkbox]{width:auto;flex:0 0 auto;margin:0}
 .ap-checklist-row.ap-collapsed{opacity:.5}
 .ap-checklist-row .ap-title{font-size:13px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ap-checklist-row .ap-conf{font-size:10px;padding:2px 8px;border-radius:999px;background:#eef1f6;color:#5b6478;flex:0 0 auto}
-.ap-checklist-row .ap-dates{font-size:11px;color:#8893a8;flex:0 0 150px}
+.ap-checklist-row .ap-acc{color:#8893a8;font-weight:600}
+/* 日付/確度は必ず右端に固定幅で揃える（タイトル長に関わらず縦の位置がぶれないように。
+   ユーザー指摘2026-09-26「縦を揃えて」。単純なflex:1の隣に置くだけだとタイトルの実測幅に
+   引きずられてブレる場合があったため、margin-left:autoで独立した右寄せブロックにする）。 */
+.ap-checklist-row .ap-meta{flex:0 0 auto;display:flex;align-items:center;gap:10px;margin-left:auto}
+.ap-checklist-row .ap-conf{font-size:10px;padding:2px 8px;border-radius:999px;background:#eef1f6;color:#5b6478;flex:0 0 auto;white-space:nowrap}
+.ap-checklist-row .ap-dates{font-size:11px;color:#8893a8;flex:0 0 150px;text-align:right}
 .ap-scenario-card{border:1px solid #e2e5eb;border-radius:10px;padding:12px;margin-bottom:16px;background:#fbfcfe}
 .ap-scenario-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .ap-scenario-head input.ap-sc-name{font-size:13px;font-weight:600;padding:4px 8px;width:240px}
@@ -2754,13 +2759,25 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 /* 週の縦を全案件で揃え・週ヘッダを1段だけ固定表示・横スクロールをこの表全体で1つにする
    （ユーザー要望2026-09-26）。delivery_form()の週別グリッド（_sticky_label/_sticky_final）と
    同じ「1つのoverflow:autoラッパー＋sticky列/sticky見出し行」の作法をそのまま踏襲する。 */
-.ap-scroll{overflow:auto;border:1px solid #e6e9f0;border-radius:8px}
+/* 週ヘッダの固定表示バグ修正(2026-09-26): overflow:autoだけでは、このボックス自体が
+   ページ全体のスクロールと無関係な「スクロールしない箱」になり、中のposition:sticky;top:0は
+   このボックスの中でしか機能しない（＝ページを下スクロールしても追従しない）。Hisho経営
+   ダッシュボードの週次グリッド(.wk-scroll)で解決済みと同じ「箱自体にもposition:sticky+
+   max-heightを与えて、スクロールしたら箱をビューポートに固定し、箱の中はそこから内部スクロール
+   にする」方式を採用する。 */
+.ap-scroll{overflow:auto;border:1px solid #e6e9f0;border-radius:8px;
+  position:sticky;top:0;max-height:65vh}
 .ap-grid-tbl{border-collapse:collapse;font-size:11px}
 .ap-grid-tbl th,.ap-grid-tbl td{padding:3px 5px;border-bottom:1px solid #f1f3f7;white-space:nowrap;
   height:24px;box-sizing:border-box}
-.ap-col-staff{position:sticky;left:0;width:640px;min-width:640px;max-width:640px;background:#fff;
+/* 幅は実測で調整済み(2026-09-26レビュー対応)。以前は640pxだったが、select/inputの既定
+   box-sizing:content-box下でpadding/borderぶんが幅指定に乗らず（特に日付inputはブラウザ
+   ネイティブのカレンダーアイコン込みで想定より広くレンダリングされる）、実際の合計幅が
+   640pxを超えてflex-wrapで折り返し、行の高さがPJ/行ごとにバラつく原因になっていた。
+   box-sizing:border-boxを明示した上で、実測に余裕を持たせて720pxへ拡張する。 */
+.ap-col-staff{position:sticky;left:0;width:720px;min-width:720px;max-width:720px;background:#fff;
   z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top}
-.ap-corner{position:sticky;left:0;top:0;width:640px;min-width:640px;max-width:640px;background:#fff;
+.ap-corner{position:sticky;left:0;top:0;width:720px;min-width:720px;max-width:720px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0}
 .ap-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px}
 .ap-delivery-row td{background:#f8fafc}
@@ -2768,11 +2785,15 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-block-meta{font-size:11px;color:#8893a8;white-space:nowrap;margin-left:6px}
 .ap-gantt-cell{text-align:center;font-size:10px}
 .ap-gantt-cell.ap-filled{background:#bbf7d0}
-.ap-asg-fields{display:flex;flex-wrap:wrap;gap:3px;align-items:center;padding:2px 0}
-.ap-asg-fields select,.ap-asg-fields input{font-size:11px;padding:2px 3px}
+.ap-asg-fields{display:flex;flex-wrap:nowrap;gap:4px;align-items:center;padding:2px 0}
+.ap-asg-fields select,.ap-asg-fields input{font-size:11px;padding:2px 3px;box-sizing:border-box;flex:none}
+/* ＋ボタンは最終行以外もvisibility:hiddenで同じ幅の場所を確保する（表示/非表示に関わらず
+   後続列(開始/終了/請/実)の横位置が全行で揃うように。ユーザー指摘2026-09-26「＋ボタンによって
+   縦の項目が揃っていない」）。display:noneではなくvisibility:hiddenなのがポイント
+   （displayだとレイアウト幅ごと消えてズレる）。 */
 .ap-add-inline{cursor:pointer;color:#2f6fed;font-weight:700;font-size:13px;flex:none;
   border:1px dashed #93a3c2;border-radius:4px;width:18px;height:18px;display:inline-flex;
-  align-items:center;justify-content:center;background:#fff}
+  align-items:center;justify-content:center;background:#fff;box-sizing:border-box}
 .ap-add-inline:hover{background:#eaf0ff}
 .ap-empty{color:#8893a8;font-size:12px;padding:10px}
 </style>
@@ -2907,9 +2928,12 @@ function apRenderChecklist(){
     html += '<div class="ap-checklist-row'+(checked?'':' ap-collapsed')+'" data-id="'+id+'">'
       + '<span class="ap-drag" draggable="true" title="ドラッグで並び替え">⠿</span>'
       + '<input type="checkbox" '+(checked?'checked':'')+' onclick="apToggleIncluded('+id+',this.checked)">'
-      + '<span class="ap-title" title="'+_apEsc(d.title)+'">'+_apEsc(d.title)+'</span>'
+      + '<span class="ap-title" title="'+_apEsc(d.account?d.account+' / '+d.title:d.title)+'">'
+      + (d.account ? '<span class="ap-acc">'+_apEsc(d.account)+'</span> / ' : '') + _apEsc(d.title) + '</span>'
+      + '<span class="ap-meta">'
       + '<span class="ap-dates">'+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span>'
       + '<span class="ap-conf">'+_apEsc(d.confidence)+'</span>'
+      + '</span>'
       + '</div>';
   });
   box.innerHTML = html || '<p class="ap-empty">対象ステージに一致するDeliveryがありません</p>';
@@ -3043,10 +3067,11 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
   assignments.forEach(function(a, ai){
     var rowWeeks = {}; apWeeksBetween(a.from_week, a.to_week).forEach(function(w){ rowWeeks[w]=true; });
     // ＋アサイン追加はシンプルな+ボタンにして、最終行のメンバー欄の横に置く（それだけで1段
-    // 使わない。ユーザー要望2026-09-26）。
-    var addBtn = (ai === assignments.length - 1)
-      ? '<span class="ap-add-inline" title="アサイン追加" onclick="apAddAssignmentRow('
-        + scenarioIdx + ',' + deliveryId + ')">＋</span>' : '';
+    // 使わない。ユーザー要望2026-09-26）。最終行以外もvisibility:hiddenで同じ幅の場所だけ
+    // 確保し、後続列の横位置が行によってズレないようにする（ユーザー指摘2026-09-26）。
+    var addBtn = '<span class="ap-add-inline" title="アサイン追加" onclick="apAddAssignmentRow('
+      + scenarioIdx + ',' + deliveryId + ')"'
+      + (ai === assignments.length - 1 ? '' : ' style="visibility:hidden"') + '>＋</span>';
     var fieldsHtml = '<div class="ap-asg-fields">'
       + '<select style="width:96px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)">'
       + _apRoleOpts(snap.roles, a.role) + '</select>'
@@ -3192,6 +3217,7 @@ def assign_planning_page(con) -> str:
         ]
         deliveries.append({
             "id": dv["id"], "title": dv.get("title") or dv.get("deal_name") or f"Delivery#{dv['id']}",
+            "account": dv.get("account_name") or "",
             "confidence": conf, "scopeRank": rank,
             "startWeek": sw, "endWeek": ew,
             "roles": roles, "assignments": assignments,
@@ -5422,6 +5448,23 @@ def delivery_form(con, delivery_id: int) -> str:
     _hl_perf_ratio = "performance_fee_ratio" in _hl_keys and "成果報酬比率" in _missing
     _hl_fee_amount = "fee_amount" in _hl_keys and "報酬形態・報酬額" in _missing
     _hl_expense_billing = "expense_billing" in _hl_keys and "経費請求有無" in _missing
+    # 2026-09-26拡張: Delivery「全項目」対応。想定インパクトは成果報酬比率と同枠（段階ゲート無し）。
+    # 他は#134と同じ段階ゲート（クロージング/受注のみ）に従う。
+    _hl_expected_impact = ("expected_impact" in _hl_keys and (dv.get("performance_fee") or "") == "有"
+                            and dv.get("expected_impact") is None)
+    _hl_responsible_owner = "responsible_owner" in _hl_keys and "責任者" in _missing
+    _hl_billing_reqs = "請求方法・請求期日・請求送付先" in _missing
+    _hl_billing_method = "billing_method" in _hl_keys and _hl_billing_reqs and not (dv.get("billing_method") or "").strip()
+    _hl_billing_recipient = "billing_recipient" in _hl_keys and _hl_billing_reqs and not (dv.get("billing_recipient") or "").strip()
+    _hl_roles = "roles" in _hl_keys and "体制" in _missing
+    _hl_assignments = "assignments" in _hl_keys and "アサイン" in _missing
+    _hl_receipts = "receipts" in _hl_keys and "検収額" in _missing
+    _hl_expense_note = ("expense_billing_note" in _hl_keys and (dv.get("deal_stage") or "") in ("クロージング", "受注")
+                         and (dv.get("expense_billing") or "") == "有"
+                         and not (dv.get("expense_billing_note") or "").strip())
+    _hl_cost_monthly = ("cost_monthly" in _hl_keys and (dv.get("deal_stage") or "") in ("クロージング", "受注")
+                         and (dv.get("cost_vendor") or "").strip()
+                         and dv.get("cost_monthly") is None and dv.get("cost_total") is None)
     _missing_banner = ""
     if _missing:
         _missing_items = "".join(f"<li>{_esc(m)}</li>" for m in _missing)
@@ -5715,24 +5758,27 @@ def delivery_form(con, delivery_id: int) -> str:
                        style="width:90px{';background:#fef3c7' if _hl_perf_ratio else ''}"
                        value="{"" if dv.get("performance_fee_ratio") is None else dv.get("performance_fee_ratio")}" oninput="dvPerfFeeChanged()"></label>
               <label style="font-size:12px" title="想定インパクト×成果報酬比率＝成果報酬額。報酬額/月額・総額（固定報酬）に加算されます">想定インパクト(万)<br>
-                <input type="number" step="0.1" min="0" id="dvExpectedImpact" name="expected_impact" style="width:90px"
+                <input type="number" step="0.1" min="0" id="dvExpectedImpact" name="expected_impact"
+                       style="width:90px{';background:#fef3c7' if _hl_expected_impact else ''}"
                        value="{"" if dv.get("expected_impact") is None else dv.get("expected_impact")}" oninput="dvPerfFeeChanged()"></label>
               <span class="muted" style="font-size:11px;align-self:center;cursor:help" id="dvFeeMonths" title="">ⓘ</span>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">外注先<br>
                 <input type="text" id="dvCostVendor" name="cost_vendor" style="width:140px"
-                       value="{_esc(dv.get("cost_vendor") or "")}"></label>
+                       value="{_esc(dv.get("cost_vendor") or "")}" oninput="dvCostRecalc()"></label>
               <label style="font-size:12px">外注費形態<br>
                 <select id="dvCostMode" name="cost_mode" onchange="dvCostModeChanged()">
                   <option value="monthly"{" selected" if (dv.get("cost_mode") or "monthly") != "total" else ""}>月額</option>
                   <option value="total"{" selected" if (dv.get("cost_mode") or "monthly") == "total" else ""}>総額</option>
                 </select></label>
               <label style="font-size:12px">外注費/月額(万)<br>
-                <input type="number" step="0.1" min="0" id="dvCostMonthly" name="cost_monthly" style="width:110px"
+                <input type="number" step="0.1" min="0" id="dvCostMonthly" name="cost_monthly"
+                       style="width:110px{';background:#fef3c7' if _hl_cost_monthly else ''}"
                        value="{"" if dv.get("cost_monthly") is None else dv.get("cost_monthly")}" oninput="dvCostFieldInput(this)"></label>
               <label style="font-size:12px">外注費/総額(万)<br>
-                <input type="number" step="0.1" min="0" id="dvCostTotal" name="cost_total" style="width:110px"
+                <input type="number" step="0.1" min="0" id="dvCostTotal" name="cost_total"
+                       style="width:110px{';background:#fef3c7' if _hl_cost_monthly else ''}"
                        value="{"" if dv.get("cost_total") is None else dv.get("cost_total")}" oninput="dvCostFieldInput(this)"></label>
               <input type="hidden" id="dvCostManualFlag" name="cost_manual" value="{1 if dv.get("cost_manual") else 0}">
               <label style="font-size:12px">想定経費(万)<span class="muted" style="font-size:10px">絶対額</span><br>
@@ -5742,19 +5788,23 @@ def delivery_form(con, delivery_id: int) -> str:
               <span class="muted" style="font-size:11px;align-self:center;cursor:help" id="dvCostMonths" title="">ⓘ</span>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
-              <label style="font-size:12px">請求方法<br><select name="billing_method">{_delivery_billing_method_opts(con, dv.get("billing_method"))}</select></label>
+              <label style="font-size:12px">請求方法<br><select id="dvBillingMethod" name="billing_method"
+                       style="{'background:#fef3c7' if _hl_billing_method else ''}"
+                       onchange="dvBillingMethodChanged()">{_delivery_billing_method_opts(con, dv.get("billing_method"))}</select></label>
               <label style="font-size:12px">請求期日<br>{_delivery_billing_due_html(con, dv)}</label>
               <label style="font-size:12px">請求送付先<br>
-                <input type="text" name="billing_recipient" placeholder="例: 経理部佐藤さん、PF提出" style="width:220px"
-                       value="{_esc(dv.get("billing_recipient") or "")}"></label>
+                <input type="text" id="dvBillingRecipient" name="billing_recipient" placeholder="例: 経理部佐藤さん、PF提出"
+                       style="width:220px{';background:#fef3c7' if _hl_billing_recipient else ''}"
+                       value="{_esc(dv.get("billing_recipient") or "")}" oninput="dvBillingRecipientChanged()"></label>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">経費請求有無<br><select id="dvExpenseBilling" name="expense_billing"
                        style="{'background:#fef3c7' if _hl_expense_billing else ''}"
                        onchange="dvExpenseBillingChanged()">{_delivery_expense_billing_opts(dv.get("expense_billing"))}</select></label>
               <label style="font-size:12px">経費請求メモ<br>
-                <input type="text" name="expense_billing_note" style="width:220px"
-                       value="{_esc(dv.get("expense_billing_note") or "")}"></label>
+                <input type="text" id="dvExpenseBillingNote" name="expense_billing_note"
+                       style="width:220px{';background:#fef3c7' if _hl_expense_note else ''}"
+                       value="{_esc(dv.get("expense_billing_note") or "")}" oninput="dvExpenseNoteChanged()"></label>
             </div>
             <details style="margin-top:8px;padding:8px 10px;background:#f8fafc;border-radius:8px">
               <summary style="cursor:pointer;font-size:12px;color:#2563eb">総アサイン工数・平均単価・想定利益を表示</summary>
@@ -5778,12 +5828,12 @@ def delivery_form(con, delivery_id: int) -> str:
           </form>
         </div>
         <div style="flex:1 1 380px;min-width:340px;display:flex;flex-direction:column;gap:14px">
-          <div style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+          <div style="border:1px solid {'#fde68a;background:#fffbeb' if _hl_responsible_owner else '#e6e9f0'};border-radius:8px;padding:12px;display:flex;flex-direction:column">
             <h3 style="margin:0 0 6px;font-size:14px">責任者・担当者</h3>
             <p class="muted" style="font-size:11px;margin:0 0 8px">下の「アサイン」各行のチェックボックスで指定します（自動表示のみ）。</p>
             <div id="dvOwnerRolesBox" style="display:flex;gap:14px;flex-wrap:wrap">{_delivery_owner_roles_box_html(dv)}</div>
           </div>
-          <div style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+          <div style="border:1px solid {'#fde68a;background:#fffbeb' if _hl_roles else '#e6e9f0'};border-radius:8px;padding:12px;display:flex;flex-direction:column">
             <h3 style="margin:0 0 6px;font-size:14px">体制（役割別の目標稼働率）</h3>
             <p class="muted" style="font-size:11px;margin:0 0 6px">役割を追加すると、その役割のアサイン行が自動生成されます。削除すると、対応するアサイン行も削除されます。
               各行は編集して「保存」。役割ごとの<b>目標</b>と、アサインした人の<b>合計</b>が一致しないと、該当欄が黄色くハイライトされます。⠿をドラッグすると並び替えられます。
@@ -5798,7 +5848,7 @@ def delivery_form(con, delivery_id: int) -> str:
             </form>
             <div id="dvRoleRows" style="overflow:auto">{role_rows}</div>
           </div>
-          <div style="flex:1;border:1px solid #e6e9f0;border-radius:8px;padding:12px;display:flex;flex-direction:column">
+          <div style="flex:1;border:1px solid {'#fde68a;background:#fffbeb' if _hl_assignments else '#e6e9f0'};border-radius:8px;padding:12px;display:flex;flex-direction:column">
             <h3 style="margin:0 0 6px;font-size:14px">アサイン（役割 × 区分 × メンバー × 期間 × 稼働率）</h3>
             <p class="muted" style="font-size:11px;margin:0 0 8px">稼働率は<b>請求</b>（クライアント請求上）と<b>実想定</b>（実稼働・負荷計算はこちら）。区分「外部」でメンバーを自由記述。<b>入力すると自動保存</b>されます。行の追加は体制の「複製」から。並びは体制の役割順。</p>
             {bedit}
@@ -5809,7 +5859,8 @@ def delivery_form(con, delivery_id: int) -> str:
       <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
       <div id="dvPreview">{grid_html}</div>
 
-      <h3 style="margin:16px 0 6px;font-size:14px">月別入金計画（検収額→入金額）</h3>
+      <div style="{'border:1px solid #fde68a;background:#fffbeb;border-radius:8px;padding:8px 12px;margin-top:16px' if _hl_receipts else 'margin-top:16px'}">
+      <h3 style="margin:0 0 6px;font-size:14px">月別入金計画（検収額→入金額）</h3>
       <p class="muted" style="font-size:11px;margin:0 0 8px">月額/総額報酬を均した換算では実際の入金月がズレるため、月ごとの検収額(万円)を実額で入力すると、
         支払いサイクル分ずらした月の入金額として算出されます。xlsx出力（Delivery一覧の一括抽出）にも同テーブルが出ます。</p>
       <label style="font-size:12px">支払いサイクル<br>
@@ -5817,6 +5868,7 @@ def delivery_form(con, delivery_id: int) -> str:
                value="{int(dv.get("payment_cycle_months") if dv.get("payment_cycle_months") is not None else 1)}"
                onchange="dvSetCycle({delivery_id}, this.value)"> ヶ月後に入金（検収した月を0として。既定=1＝翌月）</label>
       <div id="dvCashflow" style="margin-top:8px">{_delivery_cashflow_table_html(con, delivery_id)}</div>
+      </div>
 
       <div style="margin-top:18px;border-top:1px solid #eee;padding-top:10px">
         <form method="post" action="/delivery/{delivery_id}/delete" style="display:inline"
@@ -6145,6 +6197,12 @@ def delivery_form(con, delivery_id: int) -> str:
         to.style.background = (to.dataset.manual==='1') ? '' : ro;
         if(m && mo.value!=='' && to.dataset.manual!=='1') to.value=Math.round((parseFloat(mo.value)*m)*100)/100;
       }}
+      var vendorEl=document.getElementById('dvCostVendor');
+      if(vendorEl){{
+        var _hlCost = DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('cost_monthly')>=0
+          && vendorEl.value.trim()!=='' && mo.value==='' && to.value==='';
+        if(_hlCost){{ mo.style.background='#fef3c7'; to.style.background='#fef3c7'; }}
+      }}
       dvProfitRecalc();
       if(typeof renderPreview==='function') renderPreview(); // 外注費の変更を限界利益プレビューへ即反映
     }}
@@ -6178,6 +6236,11 @@ def delivery_form(con, delivery_id: int) -> str:
       ratio.required = need;
       var _hlPerf = REQUIRED_FIELD_HIGHLIGHTS.indexOf('performance_fee_ratio')>=0;
       ratio.style.background = (_hlPerf && need && ratio.value==='') ? '#fef3c7' : '';
+      var impact=document.getElementById('dvExpectedImpact');
+      if(impact){{
+        var _hlImpact = REQUIRED_FIELD_HIGHLIGHTS.indexOf('expected_impact')>=0;
+        impact.style.background = (_hlImpact && need && impact.value==='') ? '#fef3c7' : '';
+      }}
       // 成果報酬(想定インパクト×比率)は固定報酬(報酬額/月額・総額)とは別建てで加算する仕様
       // （ユーザー要望2026-09-24）。固定報酬フィールド自体はここでは一切書き換えず、
       // renderPreview()側で固定報酬＋成果報酬を合算して週別限界利益を再計算する。
@@ -6189,6 +6252,23 @@ def delivery_form(con, delivery_id: int) -> str:
       var sel=document.getElementById('dvExpenseBilling'); if(!sel) return;
       var _hlExp = DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('expense_billing')>=0;
       sel.style.background = (_hlExp && sel.value==='') ? '#fef3c7' : '';
+      dvExpenseNoteChanged();
+    }}
+    function dvExpenseNoteChanged(){{
+      var sel=document.getElementById('dvExpenseBilling'), note=document.getElementById('dvExpenseBillingNote');
+      if(!sel||!note) return;
+      var _hlNote = DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('expense_billing_note')>=0;
+      note.style.background = (_hlNote && sel.value==='有' && note.value.trim()==='') ? '#fef3c7' : '';
+    }}
+    function dvBillingMethodChanged(){{
+      var el=document.getElementById('dvBillingMethod'); if(!el) return;
+      var _hl = DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('billing_method')>=0;
+      el.style.background = (_hl && el.value==='') ? '#fef3c7' : '';
+    }}
+    function dvBillingRecipientChanged(){{
+      var el=document.getElementById('dvBillingRecipient'); if(!el) return;
+      var _hl = DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('billing_recipient')>=0;
+      el.style.background = (_hl && el.value.trim()==='') ? '#fef3c7' : '';
     }}
     // 想定利益(月額/総額) = 報酬額－外注費。どちらも未入力なら「—」、片方だけ未入力は0扱い。
     function dvProfitRecalc(){{
@@ -12733,37 +12813,101 @@ def masters_page(con) -> str:
 
 # ── 設定（優先入力項目・権限管理、2026-09-25〜。/settings系はROUTE_ACCESSで経営限定） ──
 
-# v1はDelivery画面の#134(_delivery_missing_requirements)由来3項目のみ対象（単一の入力要素に
-# 対応するもの限定。責任者/体制/アサイン/検収額は行・集合レベルのチェックで単一要素に対応しない
-# ためv1では対象外・バナー表示のまま。商談/開発案件は次段階、ユーザーの視覚レビュー待ち）。
-_SETTINGS_REQUIRED_FIELD_CANDIDATES = ["performance_fee_ratio", "fee_amount", "expense_billing"]
+# Delivery: v1は#134由来3項目のみだったが、ユーザー要望2026-09-26で「全項目」に拡張。
+# 責任者/体制/アサイン/検収額は行・集合レベルのチェックのため、単一inputではなくセクション
+# 全体をハイライトする（各セクション見出し・箱を参照）。既定は全項目ON。
+_SETTINGS_REQUIRED_FIELD_CANDIDATES = [
+    "performance_fee_ratio", "fee_amount", "expense_billing",
+    "expected_impact", "responsible_owner", "billing_method", "billing_recipient",
+    "roles", "assignments", "receipts", "expense_billing_note", "cost_monthly",
+]
 _SETTINGS_REQUIRED_FIELD_LABELS = {
     "performance_fee_ratio": "成果報酬比率（成果報酬有無=有なのに比率未入力）",
     "fee_amount": "報酬形態・報酬額（月額/総額とも未入力）",
     "expense_billing": "経費請求有無（未選択）",
+    "expected_impact": "想定インパクト（成果報酬有無=有なのに未入力）",
+    "responsible_owner": "責任者（未設定）",
+    "billing_method": "請求方法（未選択）",
+    "billing_recipient": "請求送付先（未入力）",
+    "roles": "体制（1件も無い）",
+    "assignments": "アサイン（担当者が1件も無い）",
+    "receipts": "検収額（1件も無い）",
+    "expense_billing_note": "経費請求メモ（経費請求有無=有なのに未入力）",
+    "cost_monthly": "外注費/月額（外注先ありなのに月額/総額とも未入力）",
+}
+
+# 商談（deal_form）向け候補（2026-09-26新規）。段階ゲートは無し（商談は#134のような
+# クロージング/受注ゲート概念を持たない。常時チェック）。既定は全項目ON。
+_SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL = [
+    "stage", "owner", "sub_owner", "business_type_l1", "business_type_l2",
+    "lead_pattern", "value_lumpsum", "milestones", "activities",
+]
+_SETTINGS_REQUIRED_FIELD_LABELS_DEAL = {
+    "stage": "ステージ（未選択）",
+    "owner": "主担当（未選択）",
+    "sub_owner": "サブ担当（未選択）",
+    "business_type_l1": "事業種別L1（未選択）",
+    "business_type_l2": "事業種別L2（未選択）",
+    "lead_pattern": "リード経路（未選択）",
+    "value_lumpsum": "ワンタイム総額（未入力）",
+    "milestones": "次回マイルストン（日付・ラベルとも入った行が1件も無い）",
+    "activities": "活動履歴（1件も無い）",
+}
+
+# 社内PJ（deal_issues）向け候補（2026-09-26新規）。段階ゲート無し。既定は全項目ON。
+_SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL_ISSUES = ["responsible", "due_date"]
+_SETTINGS_REQUIRED_FIELD_LABELS_DEAL_ISSUES = {
+    "responsible": "責任者（未設定）",
+    "due_date": "期限（未設定）",
+}
+
+# アカウント（accounts）向け候補（2026-09-26新規）。段階ゲート無し。既定は全項目ON。
+_SETTINGS_REQUIRED_FIELD_CANDIDATES_ACCOUNT = ["industry", "company_size"]
+_SETTINGS_REQUIRED_FIELD_LABELS_ACCOUNT = {
+    "industry": "業界（未選択）",
+    "company_size": "企業規模（未選択）",
 }
 
 
-def settings_page(con) -> str:
-    _enabled = set(sfa_db.get_master_list(con, "required_field_highlights_delivery")
-                    or _SETTINGS_REQUIRED_FIELD_CANDIDATES)
-    _rows = "".join(
+def _settings_hl_section_rows(con, master_key, prefix, candidates, labels):
+    _enabled = set(sfa_db.get_master_list(con, master_key) or candidates)
+    return "".join(
         f'<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">'
-        f'<input type="checkbox" name="hl_{k}" value="1"{" checked" if k in _enabled else ""}>'
-        f'{_esc(_SETTINGS_REQUIRED_FIELD_LABELS[k])}</label>'
-        for k in _SETTINGS_REQUIRED_FIELD_CANDIDATES)
+        f'<input type="checkbox" name="hl_{prefix}_{k}" value="1"{" checked" if k in _enabled else ""}>'
+        f'{_esc(labels[k])}</label>'
+        for k in candidates)
+
+
+def settings_page(con) -> str:
+    _rows_delivery = _settings_hl_section_rows(
+        con, "required_field_highlights_delivery", "delivery",
+        _SETTINGS_REQUIRED_FIELD_CANDIDATES, _SETTINGS_REQUIRED_FIELD_LABELS)
+    _rows_deal = _settings_hl_section_rows(
+        con, "required_field_highlights_deal", "deal",
+        _SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL, _SETTINGS_REQUIRED_FIELD_LABELS_DEAL)
+    _rows_issue = _settings_hl_section_rows(
+        con, "required_field_highlights_deal_issues", "issue",
+        _SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL_ISSUES, _SETTINGS_REQUIRED_FIELD_LABELS_DEAL_ISSUES)
+    _rows_account = _settings_hl_section_rows(
+        con, "required_field_highlights_accounts", "account",
+        _SETTINGS_REQUIRED_FIELD_CANDIDATES_ACCOUNT, _SETTINGS_REQUIRED_FIELD_LABELS_ACCOUNT)
     return f"""
     <div class="card">
       <h2 style="margin:0 0 6px">⚙ 設定</h2>
       <p class="muted" style="font-size:12px;margin:0 0 12px">
         <a href="/settings/roles">権限管理（ロール割当）はこちら →</a></p>
-      <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（Delivery）</h3>
       <p class="muted" style="font-size:12px;margin:0 0 10px">
-        ONにした項目は、Delivery詳細画面で未入力の間だけ入力欄の背景を黄色くハイライトします
-        （保存はブロックしません。あくまで視覚的な注意喚起）。v1はDeliveryのみ対象で、
-        行・集合レベルのチェック（責任者/体制/アサイン/検収額）は対象外です（バナー表示は従来通り）。</p>
+        ONにした項目は、各画面で未入力の間だけ入力欄（または該当セクション）の背景を黄色くハイライトします
+        （保存はブロックしません。あくまで視覚的な注意喚起）。</p>
       <form method="post" action="/settings/save">
-        {_rows}
+        <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（商談）</h3>
+        {_rows_deal}
+        <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（Delivery）</h3>
+        {_rows_delivery}
+        <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（社内PJ）</h3>
+        {_rows_issue}
+        <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（アカウント）</h3>
+        {_rows_account}
         <div style="margin-top:12px"><button class="btn" type="submit">保存</button></div>
       </form>
     </div>"""
@@ -13447,20 +13591,24 @@ def _ms_row_html(ms: dict) -> str:
     )
 
 
-def _ms_editor_html(milestones: list[dict]) -> str:
-    """個別商談フォームの次回MS複数行エディタ（行群＋追加ボタン＋テンプレ＋JS）。"""
+def _ms_editor_html(milestones: list[dict], highlight: bool = False) -> str:
+    """個別商談フォームの次回MS複数行エディタ（行群＋追加ボタン＋テンプレ＋JS）。
+    highlight=True時は優先入力項目設定用に全体を黄色背景で囲む（日付・ラベルとも入った行が1件も無い場合）。"""
     rows = "".join(_ms_row_html(m) for m in milestones)
     tpl = _ms_row_html({})  # 追加用の空行テンプレ
     js = ("<script>function addMsRow(){"
           "var w=document.getElementById('msRows');"
           "var t=document.getElementById('msRowTpl');"
           "w.insertAdjacentHTML('beforeend', t.innerHTML);}</script>")
-    return (
+    body = (
         '<label>次回マイルストーン（複数設定可・未完了で最も早い日付が「次回MS」として集計されます）</label>'
         f'<div id="msRows" style="margin:2px 0 6px">{rows}</div>'
         '<button type="button" class="btn sec" style="font-size:12px" onclick="addMsRow()">＋ MSを追加</button>'
         f'<template id="msRowTpl">{tpl}</template>' + js
     )
+    if highlight:
+        return f'<div style="background:#fef3c7;border-radius:6px;padding:6px 8px 2px;margin-bottom:2px">{body}</div>'
+    return body
 
 
 def _ms_panel_json(con, deal_id: int) -> dict:
@@ -14220,6 +14368,11 @@ def account_form(con, acc=None) -> str:
     _cur_ind = acc.get("industry") or ""
     if _cur_ind and _cur_ind not in _ind_list:
         _ind_list = [_cur_ind] + _ind_list
+    # 優先入力項目設定（2026-09-26〜、アカウント）。段階ゲート無し（常時チェック）。
+    _hl_keys_account = set(sfa_db.get_master_list(con, "required_field_highlights_accounts")
+                            or _SETTINGS_REQUIRED_FIELD_CANDIDATES_ACCOUNT)
+    _hl_industry = "industry" in _hl_keys_account and not _cur_ind.strip()
+    _hl_company_size = "company_size" in _hl_keys_account and not (acc.get("company_size") or "").strip()
     return f"""
     <div class="card"><h2>{'アカウント編集' if acc.get('id') else '新規アカウント'}</h2>
     {_save_bar('accForm', cancel_url=cancel_url)}
@@ -14228,10 +14381,14 @@ def account_form(con, acc=None) -> str:
       <label>企業名 *</label><input name="name" required value="{_esc(acc.get('name'))}">
       <div class="grid">
         <div><label>業界</label>
-          <select name="industry">{_opt(_ind_list, _cur_ind)}</select>
+          <select id="accIndustry" name="industry"
+            style="{'background:#fef3c7' if _hl_industry else ''}"
+            onchange="this.style.background=this.value?'':this.style.background">{_opt(_ind_list, _cur_ind)}</select>
         </div>
         <div><label>企業規模</label>
-          <select name="company_size">{_opt(sfa_db.COMPANY_SIZES, acc.get('company_size'))}</select>
+          <select id="accCompanySize" name="company_size"
+            style="{'background:#fef3c7' if _hl_company_size else ''}"
+            onchange="this.style.background=this.value?'':this.style.background">{_opt(sfa_db.COMPANY_SIZES, acc.get('company_size'))}</select>
         </div>
       </div>
       <label>メモ</label><textarea name="note" class="ta-expand" onfocus="taExpand(this)" onblur="taShrink(this)" rows="2">{_esc(acc.get('note'))}</textarea>
@@ -15326,7 +15483,20 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
                          "ms_type": deal.get("next_milestone_type"), "done": 0}]
         else:
             _ms_list = [{}]  # 空行1つ
-    ms_editor_html = _ms_editor_html(_ms_list)
+    # 優先入力項目設定（2026-09-26〜、商談。/settings）。Delivery版と同じ「有効キー×未入力」判定を
+    # 商談にも展開。商談には#134のようなステージゲート概念が無いため常時チェックする。
+    _hl_keys_deal = set(sfa_db.get_master_list(con, "required_field_highlights_deal")
+                        or _SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL)
+    _hl_stage = "stage" in _hl_keys_deal and not (deal.get("stage") or "").strip()
+    _hl_deal_owner = "owner" in _hl_keys_deal and not (deal.get("owner") or "").strip()
+    _hl_deal_sub_owner = "sub_owner" in _hl_keys_deal and not (deal.get("sub_owner") or "").strip()
+    _hl_deal_biz_l1 = "business_type_l1" in _hl_keys_deal and not (deal.get("business_type_l1") or "").strip()
+    _hl_deal_biz_l2 = "business_type_l2" in _hl_keys_deal and not (deal.get("business_type_l2") or "").strip()
+    _hl_lead_pattern = "lead_pattern" in _hl_keys_deal and not (deal.get("lead_pattern") or "").strip()
+    _hl_value_lumpsum = "value_lumpsum" in _hl_keys_deal and deal.get("value_lumpsum") is None
+    _hl_milestones = ("milestones" in _hl_keys_deal
+                       and not any(m.get("ms_date") and m.get("ms_label") for m in _ms_list))
+    ms_editor_html = _ms_editor_html(_ms_list, highlight=_hl_milestones)
     accounts = sfa_db.list_accounts(con)
     acc_opts = ['<option value=""></option>']
     for a in accounts:
@@ -15493,6 +15663,8 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
         issues = sfa_db.list_deal_issues(con, deal_id=deal["id"])
         _iss_owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # 社員マスタ連動
         add_issue_btn = f'<a class="btn sec" href="/deal-issue/new?deal_id={deal["id"]}">＋社内PJを追加</a>'
+        _hl_keys_issues = set(sfa_db.get_master_list(con, "required_field_highlights_deal_issues")
+                              or _SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL_ISSUES)
         if issues:
             issue_rows = ""
             for it in issues:
@@ -15505,8 +15677,10 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
                   <td>{_esc(it.get('issue'))}</td>
                   <td>{_issue_status_select_html(it['id'], it.get('status'))}</td>
                   <td>{_issue_members_inline_html(it['id'], it.get('members'), _iss_owners)}</td>
-                  <td>{_issue_responsible_select_html(it['id'], it.get('responsible'), _iss_owners)}</td>
-                  <td>{_issue_due_date_input_html(it['id'], it.get('due_date'))}</td>
+                  <td>{_issue_responsible_select_html(it['id'], it.get('responsible'), _iss_owners,
+                                                       highlight="responsible" in _hl_keys_issues and not it.get('responsible'))}</td>
+                  <td>{_issue_due_date_input_html(it['id'], it.get('due_date'),
+                                                   highlight="due_date" in _hl_keys_issues and not it.get('due_date'))}</td>
                   <td>
                     {summary_box}
                     <details class="di-memo-details">
@@ -15591,6 +15765,7 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
     sync_btn = ""
     if deal.get("id"):
         acts = sfa_db.list_activities(con, deal["id"])
+        _hl_activities = "activities" in _hl_keys_deal and not acts
         _act_types = sfa_db.get_master_list(con, "activity_types")
         act_rows = "".join(
             f'<tr id="act-{a["id"]}" class="actrow">'
@@ -15623,7 +15798,8 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
             for a in acts
         ) or '<tr><td colspan=5 class=muted>活動なし</td></tr>'
         activities_html = f"""
-        <div class="card" id="activity"><h2>活動履歴 <span class="muted" style="font-size:.5em">（「編集」→入力後、エリア外クリックで自動保存して閉じる）</span></h2>
+        <div class="card" id="activity" style="{'border:1px solid #fde68a;background:#fffbeb' if _hl_activities else ''}">
+        <h2>活動履歴 <span class="muted" style="font-size:.5em">（「編集」→入力後、エリア外クリックで自動保存して閉じる）</span></h2>
         <style>
         .actrow .ae{{display:none}}
         .actrow.editing .av{{display:none}}
@@ -15856,26 +16032,33 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           {'<input name="deal_name" required value="' + _esc(deal.get("deal_name")) + '">' if not deal.get("id")
             else '<p class="muted" style="margin:4px 0 0;font-size:13px">画面上部で編集できます</p>'}</div>
         <div><label>ステージ</label>
-          <select name="stage">{_opt(sfa_db.get_master_list(con,'deal_stages'), deal.get('stage'))}</select></div>
+          <select name="stage" id="dealStage" style="{'background:#fef3c7' if _hl_stage else ''}"
+            onchange="dealFieldHlChanged(this)">{_opt(sfa_db.get_master_list(con,'deal_stages'), deal.get('stage'))}</select></div>
         <div><label>主担当</label>
-          <select name="owner">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('owner'))}</select></div>
+          <select name="owner" id="dealOwner" style="{'background:#fef3c7' if _hl_deal_owner else ''}"
+            onchange="dealFieldHlChanged(this)">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('owner'))}</select></div>
         <div><label>サブ担当</label>
-          <select name="sub_owner">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('sub_owner'))}</select></div>
+          <select name="sub_owner" id="dealSubOwner" style="{'background:#fef3c7' if _hl_deal_sub_owner else ''}"
+            onchange="dealFieldHlChanged(this)">{_opt(sfa_db.get_master_list(con,'owners'), deal.get('sub_owner'))}</select></div>
         <div><label>顧客担当者名（先方）</label>
           <input name="client_contact" value="{_esc(deal.get('client_contact'))}" placeholder="例：田中 太郎"></div>
         <div><label>顧客担当 部署（先方）</label>
           <input name="client_dept" value="{_esc(deal.get('client_dept'))}" placeholder="例：購買部"></div>
         <div><label>事業種別L1</label>
-          <select name="business_type_l1" id="biz_l1" onchange="updateL2()">{_opt(sfa_db.get_master_list(con,'business_type_l1'), deal.get('business_type_l1'))}</select></div>
+          <select name="business_type_l1" id="biz_l1" style="{'background:#fef3c7' if _hl_deal_biz_l1 else ''}"
+            onchange="updateL2();dealFieldHlChanged(this)">{_opt(sfa_db.get_master_list(con,'business_type_l1'), deal.get('business_type_l1'))}</select></div>
         <div><label>事業種別L2</label>
-          <select name="business_type_l2" id="biz_l2">{_opt_l2(con, deal.get('business_type_l1'), deal.get('business_type_l2'))}</select></div>
+          <select name="business_type_l2" id="biz_l2" style="{'background:#fef3c7' if _hl_deal_biz_l2 else ''}"
+            onchange="dealFieldHlChanged(this)">{_opt_l2(con, deal.get('business_type_l1'), deal.get('business_type_l2'))}</select></div>
         <div><label>リード経路</label>
-          <select name="lead_pattern">{_opt(sfa_db.get_master_list(con,'lead_patterns'), deal.get('lead_pattern'))}</select></div>
+          <select name="lead_pattern" id="dealLeadPattern" style="{'background:#fef3c7' if _hl_lead_pattern else ''}"
+            onchange="dealFieldHlChanged(this)">{_opt(sfa_db.get_master_list(con,'lead_patterns'), deal.get('lead_pattern'))}</select></div>
         <div><label>展示会名（展示会由来のとき）</label>
           <input name="exhibition_name" list="dealExhNames" value="{_esc(deal.get('exhibition_name'))}" placeholder="どの展示会か（任意）">
           <datalist id="dealExhNames">{"".join(f'<option value="{_esc(_n)}">' for _n in sfa_db.list_exhibition_names(con))}</datalist></div>
         <div><label>ワンタイム総額（万円）</label>
-          <input name="value_lumpsum" value="{_esc(deal.get('value_lumpsum'))}"></div>
+          <input name="value_lumpsum" id="dealValueLumpsum" style="{'background:#fef3c7' if _hl_value_lumpsum else ''}"
+            oninput="dealFieldHlChanged(this)" value="{_esc(deal.get('value_lumpsum'))}"></div>
         <div><label>ワンタイム月額換算（万円）</label>
           <input name="value_lumpsum_monthly" value="{_esc(deal.get('value_lumpsum_monthly'))}"></div>
         <div><label>継続月額（万円）</label>
@@ -15918,6 +16101,16 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
       sel.innerHTML = '<option value=""></option>' +
         (L2_MAP[l1] || []).map(v => `<option value="${{escH(v)}}"${{v===cur?' selected':''}}>${{escH(v)}}</option>`).join('');
       document.getElementById('cost_section').style.display = l1 === 'コスト削減' ? '' : 'none';
+    }}
+    var DEAL_REQUIRED_FIELD_HIGHLIGHTS = {json.dumps(sorted(_hl_keys_deal), ensure_ascii=False)};
+    var _DEAL_HL_FIELD_MAP = {{stage:'dealStage', owner:'dealOwner', sub_owner:'dealSubOwner',
+      business_type_l1:'biz_l1', business_type_l2:'biz_l2', lead_pattern:'dealLeadPattern',
+      value_lumpsum:'dealValueLumpsum'}};
+    function dealFieldHlChanged(el) {{
+      var key = null;
+      for (var k in _DEAL_HL_FIELD_MAP) {{ if (_DEAL_HL_FIELD_MAP[k] === el.id) {{ key = k; break; }} }}
+      if (!key || DEAL_REQUIRED_FIELD_HIGHLIGHTS.indexOf(key) < 0) return;
+      el.style.background = (el.value || '').trim() === '' ? '#fef3c7' : '';
     }}
     </script></div>
     {other_deals_html}
@@ -16612,25 +16805,31 @@ def _issue_members_inline_html(issue_id: int, current_members: str | None, owner
             f'<div class="di-mem-menu">{boxes}</div></details>')
 
 
-def _issue_responsible_select_html(issue_id: int, current: str | None, owners: list) -> str:
-    """責任者（社員1名）のインライン編集セレクト。owners は社員マスタを渡す。"""
+def _issue_responsible_select_html(issue_id: int, current: str | None, owners: list,
+                                   highlight: bool = False) -> str:
+    """責任者（社員1名）のインライン編集セレクト。owners は社員マスタを渡す。
+    highlight=True（優先入力項目設定でON、かつ未設定）は#fef3c7背景で注意喚起する（2026-09-26）。"""
     _menu = list(owners) + ([current] if current and current not in owners else [])
     opts = '<option value="">（未設定）</option>' + "".join(
         f'<option value="{html.escape(o)}"{" selected" if o == current else ""}>{html.escape(o)}</option>'
         for o in _menu
     )
-    return (f'<select onchange="updateDealIssueField({issue_id}, \'responsible\', this.value, true)" '
-            f'style="font-size:11px;padding:2px 4px">{opts}</select>')
+    _style = "font-size:11px;padding:2px 4px" + (";background:#fef3c7" if highlight else "")
+    return (f'<select onchange="updateDealIssueField({issue_id}, \'responsible\', this.value, true);'
+            f'this.style.background=this.value?\'\':this.style.background" '
+            f'style="{_style}">{opts}</select>')
 
 
 def _issue_members_and_responsible_html(issue_id: int, current_members: str | None,
-                                        current_responsible: str | None, owners: list) -> str:
+                                        current_responsible: str | None, owners: list,
+                                        highlight_responsible: bool = False) -> str:
     """議論メンバー・責任者を1列にまとめたインライン編集（2026-09-11ユーザー要望:
     「議論メンバーと責任者は1列で」）。編集方法自体は既存の2部品
     （責任者=単一選択セレクト・議論メンバー=複数選択ポップオーバー）をそのまま流用し、
     縦に積んで1セルに収める（新しい編集UIを増やすとバグ/学習コストの元になるため、
     見た目の統合に留める）。ラベルを小さく添えて、列を分けなくても何の値か分かるようにする。"""
-    resp_html = _issue_responsible_select_html(issue_id, current_responsible, owners)
+    resp_html = _issue_responsible_select_html(issue_id, current_responsible, owners,
+                                                highlight=highlight_responsible)
     mem_html = _issue_members_inline_html(issue_id, current_members, owners)
     return (
         '<div style="display:flex;flex-direction:column;gap:4px">'
@@ -16653,13 +16852,19 @@ def _issue_company_function_select_html(issue_id: int, current: str | None, comp
             f'style="font-size:11px;padding:2px 4px">{opts}</select>')
 
 
-def _issue_due_date_input_html(issue_id: int, due_date: str | None) -> str:
+def _issue_due_date_input_html(issue_id: int, due_date: str | None, highlight: bool = False) -> str:
+    """highlight=True（優先入力項目設定でON、かつ未設定）は#fef3c7背景で注意喚起する（2026-09-26）。
+    既存の「期限超過は赤文字」スタイルとは別軸なので両方同時に効きうる（超過かつ未設定は起きない
+    が、念のため文字色と背景色を分けて衝突を避けている）。"""
     is_overdue = bool(due_date) and due_date <= _today_jst().isoformat()
     style = "font-size:11px;padding:2px 4px"
     if is_overdue:
         style += ";color:#dc2626;font-weight:700;border-color:#dc2626"
+    if highlight and not due_date:
+        style += ";background:#fef3c7"
     return (f'<input type="date" value="{_esc(due_date)}" '
-            f'onchange="updateDealIssueField({issue_id}, \'due_date\', this.value, true)" '
+            f'onchange="updateDealIssueField({issue_id}, \'due_date\', this.value, true);'
+            f'this.style.background=this.value?\'\':this.style.background" '
             f'style="{style}">')
 
 
@@ -16818,6 +17023,8 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
     _owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # 社員マスタ連動
     _company_functions = sfa_db.get_master_list(con, "company_functions") or list(sfa_db.COMPANY_FUNCTIONS)
     rn_issue_ids = sfa_db.rich_note_entity_ids(con, "issue")  # メモありの社内PJ（📝点灯用）
+    _hl_keys_issues = set(sfa_db.get_master_list(con, "required_field_highlights_deal_issues")
+                          or _SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL_ISSUES)
 
     def _fopt(values, current):
         return '<option value="">全て</option>' + "".join(
@@ -16865,8 +17072,10 @@ def deal_issues_list_page(con, *, status: str | None = None, member: str | None 
           <td>{deal_cell}</td>
           <td>{_issue_name_inline_html(it['id'], it.get('issue'), rn_issue_ids)}</td>
           <td>{_issue_status_select_html(it['id'], it.get('status'))}</td>
-          <td>{_issue_members_and_responsible_html(it['id'], it.get('members'), it.get('responsible'), _owners)}</td>
-          <td>{_issue_due_date_input_html(it['id'], it.get('due_date'))}</td>
+          <td>{_issue_members_and_responsible_html(it['id'], it.get('members'), it.get('responsible'), _owners,
+                                                     highlight_responsible="responsible" in _hl_keys_issues and not it.get('responsible'))}</td>
+          <td>{_issue_due_date_input_html(it['id'], it.get('due_date'),
+                                          highlight="due_date" in _hl_keys_issues and not it.get('due_date'))}</td>
           <td>{summary_box}</td>
         </tr>"""
 
@@ -16918,6 +17127,10 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
         for o in _resp_menu
     )
     delete_btn = ""
+    # 優先入力項目設定（2026-09-26〜、社内PJ）。段階ゲート無し（常時チェック）。
+    _hl_keys_issues = set(sfa_db.get_master_list(con, "required_field_highlights_deal_issues")
+                          or _SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL_ISSUES)
+    _hl_issue_responsible = "responsible" in _hl_keys_issues and not _resp_cur
 
     # 会社機能（#147）: 商談に紐づかない社内PJ（商談共通）の場合のみ選択させる。
     _company_functions = sfa_db.get_master_list(con, "company_functions") or list(sfa_db.COMPANY_FUNCTIONS)
@@ -16969,6 +17182,7 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
 
     default_due_date = it.get('due_date') if is_edit else (
         it.get('due_date') or (_today_jst() + timedelta(days=7)).isoformat())
+    _hl_issue_due_date = "due_date" in _hl_keys_issues and not default_due_date
 
     return f"""
     <div class="card" style="max-width:700px">
@@ -16985,11 +17199,15 @@ def deal_issue_form(con, issue: dict | None = None, deal_id: int | None = None,
         <label>議論メンバー</label>
         <div style="margin:4px 0 10px">{members_html}</div>
         <div class="grid">
-          <div><label>責任者</label><select name="responsible">{responsible_html}</select></div>
+          <div><label>責任者</label><select id="diResponsible" name="responsible"
+               style="{'background:#fef3c7' if _hl_issue_responsible else ''}"
+               onchange="this.style.background=this.value?'':this.style.background">{responsible_html}</select></div>
           <div><label>ステータス</label><select name="status">{_opt(sfa_db.DEAL_ISSUE_STATUSES, it.get('status') or '議論中')}</select></div>
         </div>
         <div class="grid">
-          <div><label>解消期限</label><input type="date" name="due_date" value="{_esc(default_due_date)}"></div>
+          <div><label>解消期限</label><input type="date" id="diDueDate" name="due_date"
+               style="{'background:#fef3c7' if _hl_issue_due_date else ''}"
+               oninput="this.style.background=this.value?'':this.style.background" value="{_esc(default_due_date)}"></div>
           <div></div>
         </div>
         <div style="margin-top:16px">
@@ -17110,6 +17328,11 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
         f'<option value="{_esc(o)}"{" selected" if o == _resp_cur else ""}>{_esc(o)}</option>'
         for o in _resp_menu
     )
+    # 優先入力項目設定（2026-09-26〜、社内PJ）。段階ゲート無し（常時チェック）。
+    _hl_keys_issues = set(sfa_db.get_master_list(con, "required_field_highlights_deal_issues")
+                          or _SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL_ISSUES)
+    _hl_issue_responsible = "responsible" in _hl_keys_issues and not _resp_cur
+    _hl_issue_due_date = "due_date" in _hl_keys_issues and not it.get("due_date")
     # 左: 編集フォーム（保存先は既存の /deal-issue/{id}/edit。保存後はこの詳細へ戻る）
     left = f"""
       <div class="card" style="flex:1;min-width:320px;max-width:480px">
@@ -17123,11 +17346,15 @@ def deal_issue_detail_page(con, issue: dict, return_to: str | None = None) -> st
           <label>議論メンバー</label>
           <div style="margin:4px 0 10px">{members_html}</div>
           <div class="grid">
-            <div><label>責任者</label><select name="responsible">{responsible_html}</select></div>
+            <div><label>責任者</label><select id="diResponsible" name="responsible"
+                 style="{'background:#fef3c7' if _hl_issue_responsible else ''}"
+                 onchange="this.style.background=this.value?'':this.style.background">{responsible_html}</select></div>
             <div><label>ステータス</label><select name="status">{_opt(sfa_db.DEAL_ISSUE_STATUSES, it.get('status') or '議論中')}</select></div>
           </div>
           <div class="grid">
-            <div><label>解消期限</label><input type="date" name="due_date" value="{_esc(it.get('due_date'))}"></div>
+            <div><label>解消期限</label><input type="date" id="diDueDate" name="due_date"
+                 style="{'background:#fef3c7' if _hl_issue_due_date else ''}"
+                 oninput="this.style.background=this.value?'':this.style.background" value="{_esc(it.get('due_date'))}"></div>
             <div></div>
           </div>
           <div style="margin-top:16px">
@@ -22811,8 +23038,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
 
                 # ── 設定（優先入力項目・権限管理、2026-09-25〜。/settingsはROUTE_ACCESSで経営限定） ──
                 elif path == "/settings/save":
-                    _hl = [k for k in _SETTINGS_REQUIRED_FIELD_CANDIDATES if f.get(f"hl_{k}") == "1"]
-                    sfa_db.set_master_list(con, "required_field_highlights_delivery", _hl)
+                    _hl_delivery = [k for k in _SETTINGS_REQUIRED_FIELD_CANDIDATES
+                                     if f.get(f"hl_delivery_{k}") == "1"]
+                    sfa_db.set_master_list(con, "required_field_highlights_delivery", _hl_delivery)
+                    _hl_deal = [k for k in _SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL
+                                if f.get(f"hl_deal_{k}") == "1"]
+                    sfa_db.set_master_list(con, "required_field_highlights_deal", _hl_deal)
+                    _hl_issue = [k for k in _SETTINGS_REQUIRED_FIELD_CANDIDATES_DEAL_ISSUES
+                                 if f.get(f"hl_issue_{k}") == "1"]
+                    sfa_db.set_master_list(con, "required_field_highlights_deal_issues", _hl_issue)
+                    _hl_account = [k for k in _SETTINGS_REQUIRED_FIELD_CANDIDATES_ACCOUNT
+                                   if f.get(f"hl_account_{k}") == "1"]
+                    sfa_db.set_master_list(con, "required_field_highlights_accounts", _hl_account)
                     self._redirect("/settings")
                 elif path == "/settings/roles/save":
                     _emails = f_list.get("role_email[]", [])

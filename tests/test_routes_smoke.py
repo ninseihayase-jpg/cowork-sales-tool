@@ -1609,11 +1609,45 @@ def test_nav_hides_admin_links_for_member_but_shows_for_executive(server):
 
 
 def test_settings_save_persists_required_field_highlights(server, db_path):
-    code, body = _post(server + "/settings/save", {"hl_performance_fee_ratio": "1"}, headers=_auth_header())
+    code, body = _post(server + "/settings/save", {"hl_delivery_performance_fee_ratio": "1"},
+                        headers=_auth_header())
     assert code in (200, 303)
     con = sfa_db.connect(db_path)
     saved = sfa_db.get_master_list(con, "required_field_highlights_delivery")
-    assert saved == ["performance_fee_ratio"]  # fee_amount/expense_billingはチェック無しなので含まれない
+    assert saved == ["performance_fee_ratio"]  # fee_amount/expense_billing等はチェック無しなので含まれない
+
+
+def test_settings_save_persists_all_four_screens_independently(server, db_path):
+    """2026-09-26拡張: 商談/Delivery/社内PJ/アカウントの4セクションが、チェックボックスの
+    name=namespace（hl_deal_/hl_delivery_/hl_issue_/hl_account_）で衝突なく別々のマスタキーに
+    書き込まれることを確認する。"""
+    code, _ = _post(server + "/settings/save", {
+        "hl_deal_stage": "1", "hl_deal_owner": "1",
+        "hl_delivery_expected_impact": "1", "hl_delivery_roles": "1",
+        "hl_issue_responsible": "1",
+        "hl_account_industry": "1",
+    }, headers=_auth_header())
+    assert code in (200, 303)
+    con = sfa_db.connect(db_path)
+    assert sorted(sfa_db.get_master_list(con, "required_field_highlights_deal")) == ["owner", "stage"]
+    assert sorted(sfa_db.get_master_list(con, "required_field_highlights_delivery")) == \
+        ["expected_impact", "roles"]
+    assert sfa_db.get_master_list(con, "required_field_highlights_deal_issues") == ["responsible"]
+    assert sfa_db.get_master_list(con, "required_field_highlights_accounts") == ["industry"]
+
+
+def test_settings_page_renders_all_four_sections(server):
+    code, resp = _get(server + "/settings", headers=_auth_header())
+    assert code == 200
+    body = resp.read().decode("utf-8")
+    assert "優先入力項目設定（商談）" in body
+    assert "優先入力項目設定（Delivery）" in body
+    assert "優先入力項目設定（社内PJ）" in body
+    assert "優先入力項目設定（アカウント）" in body
+    assert 'name="hl_deal_stage"' in body
+    assert 'name="hl_delivery_performance_fee_ratio"' in body
+    assert 'name="hl_issue_responsible"' in body
+    assert 'name="hl_account_industry"' in body
 
 
 def test_settings_roles_save_updates_and_adds_role(server, db_path):
