@@ -2771,21 +2771,22 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
   height:24px;box-sizing:border-box}
 /* PJ名列とアサイン編集列を分離（ユーザー要望2026-09-27: 「PJ名はアサイン検討の左に移動」）。
    PJ名セルはrowspanでそのPJの全アサイン行にまたがり、PJごとの空白ヘッダー行を廃止した
-   （縦のスキマ削減）。幅は実測で調整(190px): 160pxでは「確定 / 2026-10-05〜2026-12-28」等の
-   確度・期間メタ表示がscrollWidth>clientWidthとなり右端で見切れていたため広げた。 */
-.ap-col-pj{position:sticky;left:0;width:190px;min-width:190px;max-width:190px;background:#fff;
+   （縦のスキマ削減）。幅は実測で調整(230px): アカウント名併記（ユーザー要望2026-09-27
+   「案件名のところに、アカウント名も記載して」）で表示文字数が増えたため190pxから拡張。 */
+.ap-col-pj{position:sticky;left:0;width:230px;min-width:230px;max-width:230px;background:#fff;
   z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top;padding-top:6px}
-.ap-col-staff{position:sticky;left:190px;width:640px;min-width:640px;max-width:640px;background:#fff;
+.ap-col-staff{position:sticky;left:230px;width:640px;min-width:640px;max-width:640px;background:#fff;
   z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top}
-.ap-corner-pj{position:sticky;left:0;top:0;width:190px;min-width:190px;max-width:190px;background:#fff;
+.ap-corner-pj{position:sticky;left:0;top:0;width:230px;min-width:230px;max-width:230px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0}
-.ap-corner{position:sticky;left:190px;top:0;width:640px;min-width:640px;max-width:640px;background:#fff;
+.ap-corner{position:sticky;left:230px;top:0;width:640px;min-width:640px;max-width:640px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0}
 .ap-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px}
 /* PJの最終アサイン行に太めの下線を入れ、体制チップ廃止後もPJの区切りが視認できるようにする
    （ユーザー要望2026-09-27: 体制表記は削除するが、PJ間の境界は別の手段で維持）。 */
 .ap-pj-last td{border-bottom:2px solid #dbe1ea}
 .ap-block-title{font-size:12px;font-weight:600;color:#3a4760;white-space:normal}
+.ap-block-acc{color:#8893a8;font-weight:600}
 .ap-block-meta{font-size:11px;color:#8893a8;display:block;margin-top:2px}
 .ap-gantt-cell{text-align:center;font-size:10px}
 .ap-gantt-cell.ap-filled{background:#bbf7d0}
@@ -2810,8 +2811,8 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-util-corner{position:sticky;left:0;top:0;width:130px;min-width:130px;max-width:130px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0;font-size:10px;color:#8893a8;text-align:left}
 .ap-util-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px;
-  color:#8893a8;width:44px;min-width:44px}
-.ap-util-cell{text-align:center;font-size:10px;color:#5b6478;width:44px;min-width:44px}
+  color:#8893a8;width:54px;min-width:54px}
+.ap-util-cell{text-align:center;font-size:10px;color:#5b6478;width:54px;min-width:54px}
 /* 稼働率の段階表示（ユーザー要望2026-09-27: 50%/70%/100%/150%で色を変える。数値が大きいほど
    濃い暖色にして危険度が一目でわかるようにする）。 */
 .ap-util-cell.ap-util-l50{background:#dbeafe}
@@ -2900,6 +2901,7 @@ var AP_DELIVERIES = __INITIAL_DELIVERIES_JSON__;
 var AP_OWNERS = __INITIAL_OWNERS_JSON__;
 var AP_OWNER_DOMAIN_MAP = __INITIAL_OWNER_DOMAIN_MAP_JSON__;
 var AP_DOMAIN_ORDER = __INITIAL_DOMAIN_ORDER_JSON__;
+var AP_BIZ_TYPE_ORDER = __INITIAL_BIZ_TYPE_ORDER_JSON__;
 var AP_PLANS = __INITIAL_PLANS_JSON__;
 var AP_BY_ID = {};
 AP_DELIVERIES.forEach(function(d){ AP_BY_ID[d.id] = d; });
@@ -2938,16 +2940,27 @@ function apDefaultIncluded(d){
   var endMonday = d.endWeek ? apMondayOf(d.endWeek) : '';
   return !(endMonday && endMonday <= AP_TODAY_MONDAY);
 }
-// 初期並び順: 既定で対象外(完了済み等)の案件が上の方に混ざって表示されるのは不適当なため
-// （ユーザー指摘2026-09-26）、既定で対象の案件を開始週の早い順に先頭へ、既定で対象外の案件は
-// 末尾へまとめる。
+// 対象Delivery選択の既定並び順: 事業種別L1→L2順 × 終了日の早い順 × 確度順
+// （ユーザー要望2026-09-27）。事業種別の順位はAP_BIZ_TYPE_ORDER（事業種別マスタのL1→L2登録順）
+// を使い、マスタに無いL1/L2は末尾に回す。確度順は既にscopeRank(確定=0 < 見込み(クロージング)=1
+// < 見込み(提案中)=2)としてサーバーから渡されているのでそのまま使う。
+function apBizRank(d){
+  var l1Keys = Object.keys(AP_BIZ_TYPE_ORDER);
+  var l1Idx = l1Keys.indexOf(d.bizL1||''); if(l1Idx<0) l1Idx = l1Keys.length;
+  var l2List = AP_BIZ_TYPE_ORDER[d.bizL1||''] || [];
+  var l2Idx = l2List.indexOf(d.bizL2||''); if(l2Idx<0) l2Idx = l2List.length;
+  return [l1Idx, l2Idx];
+}
+function apCompareDeliveries(a, b){
+  var ba = apBizRank(a), bb = apBizRank(b);
+  if(ba[0] !== bb[0]) return ba[0]-bb[0];
+  if(ba[1] !== bb[1]) return ba[1]-bb[1];
+  var aw = a.endWeek || '', bw = b.endWeek || '';
+  if(aw !== bw) return aw < bw ? -1 : 1;
+  return (a.scopeRank||0) - (b.scopeRank||0);
+}
 var AP_STATE = {
-  deliveryOrder: AP_DELIVERIES.slice().sort(function(a, b){
-    var ai = apDefaultIncluded(a) ? 0 : 1, bi = apDefaultIncluded(b) ? 0 : 1;
-    if (ai !== bi) return ai - bi;
-    var aw = a.startWeek || '', bw = b.startWeek || '';
-    return aw < bw ? -1 : aw > bw ? 1 : 0;
-  }).map(function(d){ return d.id; }),
+  deliveryOrder: AP_DELIVERIES.slice().sort(apCompareDeliveries).map(function(d){ return d.id; }),
   included: {},
   scenarios: [{no:1, name:'シナリオ1', data:{}}]
 };
@@ -3138,6 +3151,17 @@ function apRenderMemberUtilTable(byOwner, weeks, wrapId){
   }).join('');
   return '<div class="ap-util-wrap" id="'+wrapId+'"><table><thead>'+headHtml+'</thead><tbody>'+bodyHtml+'</tbody></table></div>';
 }
+// 実データ(apGlobalWeeks)が当週から近い週までしか無いと、当週を左端に揃えるだけのスクロール量が
+// 確保できず「右端までスクロールしても当週を左端にできない」現象が起きる（ユーザー指摘
+// 2026-09-27）。当週から半年(26週)先までは常に列を確保しておき、実データが無い週は空欄のまま
+// スクロール用の余白として使う（体制・アサインには一切影響しない）。
+function apPadWeeksForScroll(weeks){
+  var set = {}; weeks.forEach(function(w){ set[w] = true; });
+  var target = apIsoAddWeeks(AP_TODAY_MONDAY, 26);
+  var w = AP_TODAY_MONDAY;
+  while (w <= target){ set[w] = true; w = apIsoAddWeeks(w, 1); }
+  return Object.keys(set).sort();
+}
 // 初期表示で当週(AP_TODAY_MONDAY)を左端に揃える（ユーザー要望2026-09-27「当週を一番左に、
 // 直近3ヶ月が画面に上手く収まるように」）。全体の週軸(weeks)はそのまま保持するので、左に
 // スクロールすれば過去週も見える。
@@ -3158,7 +3182,7 @@ function apRenderScenarios(){
   var visibleIds = AP_STATE.deliveryOrder.filter(function(id){
     var d = AP_BY_ID[id]; return d && apEligible(d) && AP_STATE.included[id] !== false;
   });
-  var weeks = apGlobalWeeks(visibleIds);
+  var weeks = apPadWeeksForScroll(apGlobalWeeks(visibleIds));
   // 週ヘッダは1段だけ・全PJ共通（ユーザー要望2026-09-26）。PJ名列とアサイン編集列を分けた
   // ため、コーナーセルも2つに分割する（ユーザー要望2026-09-27）。
   var headHtml = '<tr><th class="ap-corner-pj">&nbsp;</th><th class="ap-corner">&nbsp;</th>'
@@ -3204,9 +3228,11 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
   var assignments = snap.assignments || [];
   // PJ名はrowspanでそのPJの全アサイン行の左に1つだけ配置する（ユーザー要望2026-09-27:
   // 「PJ名はアサイン検討の左に移動、ガントの縦にスキマがあかないように」）。体制チップは
-  // 廃止済み（ユーザー要望2026-09-27:「体制の表記は不要」）。
+  // 廃止済み（ユーザー要望2026-09-27:「体制の表記は不要」）。アカウント名も併記する
+  // （ユーザー要望2026-09-27「案件名のところに、アカウント名も記載して」）。
+  var acctLabel = d.account ? '<span class="ap-block-acc">'+_apEsc(d.account)+'</span> / ' : '';
   var pjCell = '<td class="ap-col-pj" rowspan="'+Math.max(assignments.length,1)+'">'
-    + '<span class="ap-block-title">'+_apEsc(d.title)+'</span>'
+    + '<span class="ap-block-title">'+acctLabel+_apEsc(d.title)+'</span>'
     + '<span class="ap-block-meta">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span>'
     + '</td>';
 
@@ -3372,6 +3398,7 @@ def assign_planning_page(con) -> str:
             "account": dv.get("account_name") or "",
             "confidence": conf, "scopeRank": rank,
             "startWeek": sw, "endWeek": ew,
+            "bizL1": dv.get("deal_business_type_l1") or "", "bizL2": dv.get("deal_business_type_l2") or "",
             "roles": roles, "assignments": assignments,
         })
     owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
@@ -3380,12 +3407,16 @@ def assign_planning_page(con) -> str:
     # 「担当者の担当領域」マスタ（/masters）と同じデータをそのまま流用する。
     owner_domain_map = sfa_db.get_owner_domain_map(con)
     domain_order = sfa_db.get_master_list(con, "owner_domains") or list(sfa_db.OWNER_DOMAINS)
+    # 対象Delivery選択の既定並び順（事業種別L1L2順×終了日の早い順×確度順、ユーザー要望2026-09-27）
+    # に使う。事業種別マスタ（/masters「事業種別」）のL1→L2の登録順をそのまま優先順位にする。
+    biz_type_order = sfa_db.get_business_type_tree(con)
 
     html = _ASSIGN_PLANNING_PAGE_TEMPLATE.replace("__FAVICON_LINK__", _SFA_FAVICON)
     html = html.replace("__INITIAL_DELIVERIES_JSON__", json.dumps(deliveries, ensure_ascii=False))
     html = html.replace("__INITIAL_OWNERS_JSON__", json.dumps(owners, ensure_ascii=False))
     html = html.replace("__INITIAL_OWNER_DOMAIN_MAP_JSON__", json.dumps(owner_domain_map, ensure_ascii=False))
     html = html.replace("__INITIAL_DOMAIN_ORDER_JSON__", json.dumps(domain_order, ensure_ascii=False))
+    html = html.replace("__INITIAL_BIZ_TYPE_ORDER_JSON__", json.dumps(biz_type_order, ensure_ascii=False))
     return html.replace("__INITIAL_PLANS_JSON__", json.dumps(plans, ensure_ascii=False))
 
 

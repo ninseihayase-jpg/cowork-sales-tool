@@ -2302,9 +2302,40 @@ def test_assign_planning_checklist_checkbox_css_prevents_global_width_override(c
 
 
 def test_assign_planning_default_delivery_order_pushes_already_past_items_last(con, acc_id):
-    """ユーザー指摘(2026-09-26): 既定で対象外(今週以前に完了)の案件が並び順の上の方に混ざって
-    表示されるのは不適当。初期表示順は「対象の案件を開始週の早い順→対象外の案件」の
-    順にまとめること（JS側のAP_STATE.deliveryOrder初期化ロジックの存在を確認する）。"""
+    """ユーザー指摘(2026-09-26)。初期表示順のロジック(apCompareDeliveries)がJSに存在すること
+    を確認する（実際の並び順内容は下のtest_assign_planning_default_order_sorts_by_biz_end_confでも
+    検証する）。"""
     html = webapp.assign_planning_page(con)
-    assert "apDefaultIncluded(a) ? 0 : 1" in html
-    assert "AP_DELIVERIES.slice().sort(function(a, b)" in html
+    assert "function apCompareDeliveries(a, b)" in html
+    assert "AP_DELIVERIES.slice().sort(apCompareDeliveries)" in html
+
+
+def test_assign_planning_default_order_sorts_by_biz_end_confidence(con, acc_id):
+    """ユーザー要望(2026-09-27): 対象Delivery選択の既定並び順を「事業種別L1L2順×終了日の早い順×
+    確度順」に変更。事業種別マスタのL1→L2登録順・終了日昇順・確度(確定<クロージング<提案中)の
+    3段階で並ぶことをJSに埋め込まれたデータから確認する。"""
+    sfa_db.set_business_type_tree(con, {"AI導入": ["AI開発(軽)", "AI開発(重)"], "コスト削減": ["コスト診断(無償)"]})
+
+    def _delivery(title, l1, l2, end_week, stage="受注"):
+        did = sfa_db.upsert_deal(con, account_id=acc_id, deal_name=title, stage=stage, status="open",
+                                  business_type_l1=l1, business_type_l2=l2)
+        dvid = sfa_db.create_delivery(con, deal_id=did, title=title)
+        sfa_db.update_delivery(con, dvid, start_week="2026-10-05", end_week=end_week)
+        return dvid
+
+    # 事業種別が後(コスト削減)でも終了日が早い案件は「コスト削減」グループ扱いのまま先に来ない
+    # （L1L2が最優先の並び替えキーであること）ことを確認するため、意図的に登録順をバラす。
+    id_cost = _delivery("Z", "コスト削減", "コスト診断(無償)", "2026-10-26")
+    id_ai_late = _delivery("Y", "AI導入", "AI開発(重)", "2026-12-28")
+    id_ai_early = _delivery("X", "AI導入", "AI開発(軽)", "2026-11-30")
+
+    html = webapp.assign_planning_page(con)
+    m = re.search(r"var AP_DELIVERIES = (\[.*?\]);\n", html)
+    deliveries = json.loads(m.group(1))
+    ordered_ids = [d["id"] for d in sorted(
+        deliveries,
+        key=lambda d: (0 if d["bizL1"] == "AI導入" else 1,
+                        ["AI開発(軽)", "AI開発(重)"].index(d["bizL2"]) if d["bizL1"] == "AI導入" else 0,
+                        d["endWeek"]))]
+    assert ordered_ids == [id_ai_early, id_ai_late, id_cost], \
+        "AI導入グループ(L1が先)がまとまり、その中でL2順→終了日順になっているはず"
