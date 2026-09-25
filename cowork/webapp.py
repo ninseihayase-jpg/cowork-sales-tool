@@ -2741,6 +2741,7 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
 .ap-checklist-row{display:flex;align-items:center;gap:10px;padding:7px 8px;border-bottom:1px solid #f1f3f7}
 .ap-checklist-row .ap-drag{cursor:grab;color:#aab;font-size:16px;line-height:1;flex:0 0 auto}
+.ap-checklist-row input[type=checkbox]{width:auto;flex:0 0 auto;margin:0}
 .ap-checklist-row.ap-collapsed{opacity:.5}
 .ap-checklist-row .ap-title{font-size:13px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ap-checklist-row .ap-conf{font-size:10px;padding:2px 8px;border-radius:999px;background:#eef1f6;color:#5b6478;flex:0 0 auto}
@@ -2748,23 +2749,31 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-scenario-card{border:1px solid #e2e5eb;border-radius:10px;padding:12px;margin-bottom:16px;background:#fbfcfe}
 .ap-scenario-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .ap-scenario-head input.ap-sc-name{font-size:13px;font-weight:600;padding:4px 8px;width:240px}
-.ap-block{border:1px solid #e6e9f0;border-radius:8px;margin-bottom:10px;overflow:hidden;background:#fff}
-.ap-block-head{padding:6px 10px;background:#f8fafc;border-bottom:1px solid #eef1f5;display:flex;
-  flex-wrap:wrap;align-items:center;gap:6px 8px}
-.ap-block-head .ap-block-title{font-size:12px;font-weight:600;color:#3a4760;white-space:nowrap}
-.ap-block-head .ap-block-meta{font-size:11px;color:#8893a8;white-space:nowrap}
 .ap-role-chip{display:inline-flex;align-items:center;gap:5px;background:#eef2ff;border-radius:999px;
-  padding:3px 10px;font-size:10.5px;color:#3a4760;white-space:nowrap}
-.ap-block-body{display:flex}
-.ap-staff{flex:0 0 620px;border-right:1px solid #e6e9f0;min-width:0}
-.ap-gantt-wrap{flex:1;min-width:0;overflow-x:auto}
-.ap-asg-tbl,.ap-gantt-tbl{border-collapse:collapse;font-size:11px;width:100%}
-.ap-asg-tbl th,.ap-asg-tbl td,.ap-gantt-tbl th,.ap-gantt-tbl td{padding:3px 5px;border-bottom:1px solid #f1f3f7;
-  white-space:nowrap;height:24px;box-sizing:border-box}
-.ap-gantt-tbl th,.ap-gantt-tbl td{text-align:center;font-size:10px}
-.ap-gantt-tbl td.ap-filled{background:#bbf7d0}
-.ap-asg-tbl input[type=text],.ap-asg-tbl input[type=date],.ap-asg-tbl input[type=number],
-.ap-asg-tbl select{font-size:11px;padding:2px 3px}
+  padding:2px 8px;font-size:10px;color:#3a4760;white-space:nowrap;margin:2px 3px 0 0}
+/* 週の縦を全案件で揃え・週ヘッダを1段だけ固定表示・横スクロールをこの表全体で1つにする
+   （ユーザー要望2026-09-26）。delivery_form()の週別グリッド（_sticky_label/_sticky_final）と
+   同じ「1つのoverflow:autoラッパー＋sticky列/sticky見出し行」の作法をそのまま踏襲する。 */
+.ap-scroll{overflow:auto;border:1px solid #e6e9f0;border-radius:8px}
+.ap-grid-tbl{border-collapse:collapse;font-size:11px}
+.ap-grid-tbl th,.ap-grid-tbl td{padding:3px 5px;border-bottom:1px solid #f1f3f7;white-space:nowrap;
+  height:24px;box-sizing:border-box}
+.ap-col-staff{position:sticky;left:0;width:640px;min-width:640px;max-width:640px;background:#fff;
+  z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top}
+.ap-corner{position:sticky;left:0;top:0;width:640px;min-width:640px;max-width:640px;background:#fff;
+  z-index:5;border-right:1px solid #e6e9f0}
+.ap-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px}
+.ap-delivery-row td{background:#f8fafc}
+.ap-block-title{font-size:12px;font-weight:600;color:#3a4760;white-space:nowrap}
+.ap-block-meta{font-size:11px;color:#8893a8;white-space:nowrap;margin-left:6px}
+.ap-gantt-cell{text-align:center;font-size:10px}
+.ap-gantt-cell.ap-filled{background:#bbf7d0}
+.ap-asg-fields{display:flex;flex-wrap:wrap;gap:3px;align-items:center;padding:2px 0}
+.ap-asg-fields select,.ap-asg-fields input{font-size:11px;padding:2px 3px}
+.ap-add-inline{cursor:pointer;color:#2f6fed;font-weight:700;font-size:13px;flex:none;
+  border:1px dashed #93a3c2;border-radius:4px;width:18px;height:18px;display:inline-flex;
+  align-items:center;justify-content:center;background:#fff}
+.ap-add-inline:hover{background:#eaf0ff}
 .ap-empty{color:#8893a8;font-size:12px;padding:10px}
 </style>
 <div class="card" style="max-width:100%">
@@ -2852,16 +2861,25 @@ function apCloneDeliverySnapshot(d){
 function apDeepClone(o){ return JSON.parse(JSON.stringify(o)); }
 
 // ── 状態 ──
+// 既定で「今週以前に完了する案件」は対象外にする（ユーザー要望2026-09-26）。
+function apDefaultIncluded(d){
+  var endMonday = d.endWeek ? apMondayOf(d.endWeek) : '';
+  return !(endMonday && endMonday <= AP_TODAY_MONDAY);
+}
+// 初期並び順: 既定で対象外(完了済み等)の案件が上の方に混ざって表示されるのは不適当なため
+// （ユーザー指摘2026-09-26）、既定で対象の案件を開始週の早い順に先頭へ、既定で対象外の案件は
+// 末尾へまとめる。
 var AP_STATE = {
-  deliveryOrder: AP_DELIVERIES.map(function(d){return d.id;}),
+  deliveryOrder: AP_DELIVERIES.slice().sort(function(a, b){
+    var ai = apDefaultIncluded(a) ? 0 : 1, bi = apDefaultIncluded(b) ? 0 : 1;
+    if (ai !== bi) return ai - bi;
+    var aw = a.startWeek || '', bw = b.startWeek || '';
+    return aw < bw ? -1 : aw > bw ? 1 : 0;
+  }).map(function(d){ return d.id; }),
   included: {},
   scenarios: [{no:1, name:'シナリオ1', data:{}}]
 };
-AP_DELIVERIES.forEach(function(d){
-  // 既定で「今週以前に完了する案件」は対象外にする（ユーザー要望2026-09-26）。
-  var endMonday = d.endWeek ? apMondayOf(d.endWeek) : '';
-  AP_STATE.included[d.id] = !(endMonday && endMonday <= AP_TODAY_MONDAY);
-});
+AP_DELIVERIES.forEach(function(d){ AP_STATE.included[d.id] = apDefaultIncluded(d); });
 
 function apScopeVal(){ return parseInt(document.getElementById('apScope').value, 10); }
 function apEligible(d){ return d.scopeRank <= apScopeVal(); }
@@ -2976,6 +2994,10 @@ function apRenderScenarios(){
     var d = AP_BY_ID[id]; return d && apEligible(d) && AP_STATE.included[id] !== false;
   });
   var weeks = apGlobalWeeks(visibleIds);
+  // 週ヘッダは1段だけ・全PJ共通（ユーザー要望2026-09-26）。シナリオ内の表全体で1つの
+  // overflow:autoラッパーを共有するため、ここで1回だけ組み立てて各シナリオへ使い回す。
+  var headHtml = '<tr><th class="ap-corner">&nbsp;</th>'
+    + weeks.map(function(w){ return '<th class="ap-wk-head">'+w.slice(5)+'</th>'; }).join('') + '</tr>';
   var html = '';
   AP_STATE.scenarios.forEach(function(scenario, idx){
     visibleIds.forEach(function(id){ apEnsureScenarioHasDelivery(scenario, id); });
@@ -2987,16 +3009,18 @@ function apRenderScenarios(){
       + '</div>';
     if(!visibleIds.length){
       html += '<p class="ap-empty">対象Deliveryにチェックが入っていません</p>';
+    } else {
+      var bodyHtml = visibleIds.map(function(id){ return apRenderDeliveryRows(idx, id, weeks); }).join('');
+      // 横スクロールはこのシナリオの表全体で1つ（PJ毎には作らない。ユーザー要望2026-09-26）。
+      html += '<div class="ap-scroll"><table class="ap-grid-tbl"><thead>'+headHtml+'</thead>'
+        + '<tbody>'+bodyHtml+'</tbody></table></div>';
     }
-    visibleIds.forEach(function(id){
-      html += apRenderDeliveryBlock(idx, id, weeks);
-    });
     html += '</div>';
   });
   box.innerHTML = html;
 }
 
-function apRenderDeliveryBlock(scenarioIdx, deliveryId, weeks){
+function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
   var d = AP_BY_ID[deliveryId];
   var snap = AP_STATE.scenarios[scenarioIdx].data[deliveryId];
 
@@ -3008,51 +3032,53 @@ function apRenderDeliveryBlock(scenarioIdx, deliveryId, weeks){
       + ' 実'+(r.fte_pct==null?'-':r.fte_pct)+'%</span>';
   }).join('');
 
-  var asgHtml = '<table class="ap-asg-tbl"><tr><th>役割</th><th>区分</th><th>メンバー</th><th>開始</th><th>終了</th><th>請求%</th><th>実%</th></tr>';
-  var ganttHtml = '<table class="ap-gantt-tbl"><tr><th style="min-width:60px">&nbsp;</th>'
-    + weeks.map(function(w){ return '<th>'+w.slice(5)+'</th>'; }).join('') + '</tr>';
-  (snap.assignments||[]).forEach(function(a, ai){
+  var html = '<tr class="ap-delivery-row">'
+    + '<td class="ap-col-staff"><span class="ap-block-title">'+_apEsc(d.title)+'</span>'
+    + '<span class="ap-block-meta">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span>'
+    + '<div>'+rolesChips+'</div></td>'
+    + weeks.map(function(){ return '<td></td>'; }).join('')
+    + '</tr>';
+
+  var assignments = snap.assignments || [];
+  assignments.forEach(function(a, ai){
     var rowWeeks = {}; apWeeksBetween(a.from_week, a.to_week).forEach(function(w){ rowWeeks[w]=true; });
-    asgHtml += '<tr>'
-      + '<td><select onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)">'
-      + _apRoleOpts(snap.roles, a.role) + '</select></td>'
-      + '<td><select onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'member_kind\\',this.value)">'
+    // ＋アサイン追加はシンプルな+ボタンにして、最終行のメンバー欄の横に置く（それだけで1段
+    // 使わない。ユーザー要望2026-09-26）。
+    var addBtn = (ai === assignments.length - 1)
+      ? '<span class="ap-add-inline" title="アサイン追加" onclick="apAddAssignmentRow('
+        + scenarioIdx + ',' + deliveryId + ')">＋</span>' : '';
+    var fieldsHtml = '<div class="ap-asg-fields">'
+      + '<select style="width:96px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)">'
+      + _apRoleOpts(snap.roles, a.role) + '</select>'
+      + '<select style="width:50px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'member_kind\\',this.value)">'
       + ['内部','外部'].map(function(k){ return '<option value="'+k+'"'+(k===a.member_kind?' selected':'')+'>'+k+'</option>'; }).join('')
-      + '</select></td>'
-      + '<td>'+(a.member_kind==='外部'
-          ? '<input type="text" style="width:90px" value="'+_apEsc(a.owner)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'
-          : '<select onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'+_apOwnerOpts(AP_OWNERS, a.owner)+'</select>')
-      + '</td>'
-      + '<td><input type="date" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)"></td>'
-      + '<td><input type="date" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)"></td>'
-      + '<td><input type="number" step="1" min="0" style="width:48px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
-      + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_billing\\',this.value)"></td>'
-      + '<td><input type="number" step="1" min="0" style="width:48px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
-      + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_pct\\',this.value)"></td>'
-      + '</tr>';
-    ganttHtml += '<tr><td style="text-align:left">'+_apEsc(a.owner||'(未定)')+'</td>'
+      + '</select>'
+      + (a.member_kind==='外部'
+          ? '<input type="text" style="width:74px" value="'+_apEsc(a.owner)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'
+          : '<select style="width:74px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'+_apOwnerOpts(AP_OWNERS, a.owner)+'</select>')
+      + addBtn
+      + '<input type="date" style="width:112px" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)">'
+      + '<input type="date" style="width:112px" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)">'
+      + '請<input type="number" step="1" min="0" style="width:36px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
+      + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_billing\\',this.value)">'
+      + '実<input type="number" step="1" min="0" style="width:36px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
+      + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_pct\\',this.value)">'
+      + '</div>';
+    html += '<tr><td class="ap-col-staff">'+fieldsHtml+'</td>'
       + weeks.map(function(w){
           var filled = rowWeeks[w] && parseFloat(a.fte_pct)>0;
-          return '<td class="'+(filled?'ap-filled':'')+'"></td>';
+          return '<td class="ap-gantt-cell'+(filled?' ap-filled':'')+'"></td>';
         }).join('')
       + '</tr>';
   });
-  asgHtml += '</table>';
-  ganttHtml += '</table>';
-
-  return '<div class="ap-block">'
-    + '<div class="ap-block-head">'
-    + '<span class="ap-block-title">'+_apEsc(d.title)+'</span>'
-    + '<span class="ap-block-meta">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span>'
-    + rolesChips
-    + '</div>'
-    + '<div class="ap-block-body">'
-    + '<div class="ap-staff"><div style="padding:6px 8px">'+asgHtml
-    + '<button class="btn sec" style="font-size:11px;margin-top:4px" '
-    + 'onclick="apAddAssignmentRow('+scenarioIdx+','+deliveryId+')">＋アサイン追加</button></div></div>'
-    + '<div class="ap-gantt-wrap"><div style="padding:6px 8px">'+ganttHtml+'</div></div>'
-    + '</div>'
-    + '</div>';
+  if (!assignments.length){
+    // アサインが1件も無い場合も、最終行と同じ位置に＋を出して追加できるようにする。
+    html += '<tr><td class="ap-col-staff"><span class="ap-add-inline" title="アサイン追加" '
+      + 'onclick="apAddAssignmentRow('+scenarioIdx+','+deliveryId+')">＋</span> '
+      + '<span class="muted" style="font-size:11px">アサインを追加</span></td>'
+      + weeks.map(function(){ return '<td></td>'; }).join('') + '</tr>';
+  }
+  return html;
 }
 
 function apAddAssignmentRow(scenarioIdx, deliveryId){

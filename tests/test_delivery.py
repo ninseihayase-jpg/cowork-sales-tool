@@ -2288,3 +2288,23 @@ def test_required_field_highlight_respects_stage_gate_client_side_too(con, acc_i
     assert "var DV_STAGE_GATE_OK = true;" in html_closing
     assert "background:#fef3c7" in html_closing.split('id="dvFeeMonthly"')[1][:200], \
         "クロージング/受注段階で未入力なら#fef3c7がinlineで付くはず"
+
+
+def test_assign_planning_checklist_checkbox_css_prevents_global_width_override(con):
+    """ユーザー報告(2026-09-26):「対象Delivery選択が壊れている」。原因はページ全体の共通CSS
+    `input,select,textarea{width:100%}`がモーダル内のチェックボックスにも適用され、
+    flexレイアウト内でチェックボックスの計算幅が900px超まで肥大化し、隣の.ap-titleが
+    幅0になって案件名が見えなくなっていた。`.ap-checklist-row input[type=checkbox]`に
+    明示的なwidth:auto上書きが入っていることを確認する回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    idx = html.index(".ap-checklist-row .ap-drag")
+    assert "input[type=checkbox]{width:auto" in html[idx:idx + 300]
+
+
+def test_assign_planning_default_delivery_order_pushes_already_past_items_last(con, acc_id):
+    """ユーザー指摘(2026-09-26): 既定で対象外(今週以前に完了)の案件が並び順の上の方に混ざって
+    表示されるのは不適当。初期表示順は「対象の案件を開始週の早い順→対象外の案件」の
+    順にまとめること（JS側のAP_STATE.deliveryOrder初期化ロジックの存在を確認する）。"""
+    html = webapp.assign_planning_page(con)
+    assert "apDefaultIncluded(a) ? 0 : 1" in html
+    assert "AP_DELIVERIES.slice().sort(function(a, b)" in html
