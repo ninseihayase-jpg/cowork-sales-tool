@@ -2382,3 +2382,38 @@ def test_assign_planning_staff_column_wide_enough_for_all_fields(con):
     640pxのままだと実測でフィールドが見切れていたため760pxへ拡張した回帰テスト。"""
     html = webapp.assign_planning_page(con)
     assert "width:760px;min-width:760px;max-width:760px" in html.split(".ap-col-staff{")[1][:100]
+
+
+def test_assign_planning_pj_label_overrides_global_label_margin(con):
+    """ユーザー指摘(2026-09-27):「シナリオの縦が揃ってない。左寄せにそろえて」。原因は
+    ページ共通CSSの`label{margin:10px 0 3px}`がPJ名チェックボックスの<label>にも掛かり、
+    PJ名がセル上端から約10px下にずれていたこと。inline styleでmargin:0を明示して打ち消した
+    ことの回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    assert "display:flex;align-items:flex-start;gap:5px;cursor:pointer;margin:0" in html
+
+
+def test_assign_planning_fte_number_inputs_wide_enough_for_three_digits(con):
+    """ユーザー指摘(2026-09-27続き):「相変わらず、稼働率が隠れている」。請/実の数値入力が
+    36pxだと3桁(100等)がネイティブのスピナー込みで見切れていたため46pxへ拡張した回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    assert 'type="number" step="1" min="0" style="width:46px"' in html
+
+
+def test_assign_planning_member_util_has_domain_group_divider(con):
+    """ユーザー要望(2026-09-27):「担当領域ごとに太線で仕切って。中島/早瀬の間で切るなど」。
+    メンバー別稼働率テーブルの行が、直前のメンバーと担当領域ランクが変わったときに
+    ap-util-group-startクラス(太線)を付けることの回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    assert ".ap-util-group-start td{border-top:2px solid" in html
+    assert "isGroupStart = idx>0 && domainRank !== apOwnerSortKey(owners[idx-1])[0]" in html
+
+
+def test_assign_planning_member_drilldown_order_matches_scenario_pj_order(con):
+    """ユーザー指摘(2026-09-27):「シナリオ検討画面の案件順に統一して」。原因はDelivery idが
+    整数のため、内訳をObject.keys(byDelivery)で列挙すると（JS仕様で整数風文字列キーは常に
+    数値昇順で列挙される）シナリオ編集モーダルのPJ順(AP_STATE.deliveryOrder)と食い違って
+    いたこと。AP_STATE.deliveryOrderをfilterして列挙するよう修正した回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    assert "AP_STATE.deliveryOrder.filter(function(id){ return byDelivery[id]; }).forEach(function(did){" in html
+    assert "Object.keys(byDelivery).forEach" not in html

@@ -2834,6 +2834,8 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-util-sub td{background:#f8fafc}
 .ap-util-sub-name{padding-left:20px;font-weight:400;font-size:10.5px;color:#8893a8}
 .ap-util-subcell{color:#8893a8}
+/* 担当領域(役職)の境目に太線（ユーザー要望2026-09-27「担当領域ごとに太線で仕切って」）。 */
+.ap-util-group-start td{border-top:2px solid #94a3b8}
 /* 稼働率の段階表示（ユーザー要望2026-09-27: 50%/70%/100%/150%で色を変える。数値が大きいほど
    濃い暖色にして危険度が一目でわかるようにする）。 */
 .ap-util-cell.ap-util-l50{background:#dbeafe}
@@ -3206,11 +3208,16 @@ function apRenderMemberUtilTable(scenarioIdx, scenario, computed, weeks, wrapId)
   var expanded = scenario.expandedMembers || {};
   var headHtml = '<tr><th class="ap-util-corner">メンバー</th>'
     + weeks.map(function(w){ return '<th class="ap-util-wk-head">'+w.slice(5)+'</th>'; }).join('') + '</tr>';
-  var bodyHtml = owners.map(function(o){
+  // 担当領域(役職)が切り替わる境目に太線を引く（ユーザー要望2026-09-27「担当領域ごとに
+  // 太線で仕切って。中島/早瀬の間で切るなど」）。owners自体が既にapOwnerSortKey()の
+  // 担当領域ランクで並び替え済みなので、直前のメンバーとランクが変わった行を境目とみなす。
+  var bodyHtml = owners.map(function(o, idx){
     var isOpen = !!expanded[o];
+    var domainRank = apOwnerSortKey(o)[0];
+    var isGroupStart = idx>0 && domainRank !== apOwnerSortKey(owners[idx-1])[0];
     var toggle = '<span class="ap-util-toggle" onclick="apToggleMemberExpand('+scenarioIdx+','+_apJsStr(o)+')">'
       + (isOpen?'▼':'▶') + '</span>';
-    var row = '<tr><td class="ap-util-name">'+toggle+' '+_apEsc(o)+'</td>'
+    var row = '<tr'+(isGroupStart?' class="ap-util-group-start"':'')+'><td class="ap-util-name">'+toggle+' '+_apEsc(o)+'</td>'
       + weeks.map(function(w){
           var v = byOwner[o][w]||0;
           var c = (byCount[o] && byCount[o][w]) || 0;
@@ -3220,7 +3227,12 @@ function apRenderMemberUtilTable(scenarioIdx, scenario, computed, weeks, wrapId)
       + '</tr>';
     if(isOpen){
       var byDelivery = breakdown[o] || {};
-      Object.keys(byDelivery).forEach(function(did){
+      // 内訳の並び順はシナリオ検討画面(PJ×アサイン編集モーダル)のDelivery順序
+      // (AP_STATE.deliveryOrder)に統一する（ユーザー要望2026-09-27「シナリオ検討画面の
+      // 案件順に統一して」）。Object.keys()はDelivery idが整数キーのため昇順に強制ソート
+      // されてしまい、意図した順序にならなかった（JS仕様: 整数風の文字列キーは常に数値昇順で
+      // 列挙される）ための修正。
+      AP_STATE.deliveryOrder.filter(function(id){ return byDelivery[id]; }).forEach(function(did){
         var info = byDelivery[did];
         var label = (info.account ? _apEsc(info.account)+' / ' : '') + _apEsc(info.title);
         row += '<tr class="ap-util-sub"><td class="ap-util-name ap-util-sub-name">'+label+'</td>'
@@ -3343,7 +3355,10 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
   // （ユーザー要望2026-09-27「案件名のところに、アカウント名も記載して」）。
   var acctLabel = d.account ? '<span class="ap-block-acc">'+_apEsc(d.account)+'</span> / ' : '';
   var pjCell = '<td class="ap-col-pj'+(isExcluded?' ap-pj-excluded':'')+'" rowspan="'+Math.max(assignments.length,1)+'">'
-    + '<label style="display:flex;align-items:flex-start;gap:5px;cursor:pointer" title="このシナリオでの対象/対象外">'
+    // ページ共通CSSの`label{margin:10px 0 3px}`が効いてPJ名がセル上端から不揃いに
+    // ずれ下がる不具合があったため（ユーザー指摘2026-09-27「シナリオの縦が揃ってない。
+    // 左寄せにそろえて」）、margin:0で明示的に打ち消す。
+    + '<label style="display:flex;align-items:flex-start;gap:5px;cursor:pointer;margin:0" title="このシナリオでの対象/対象外">'
     + '<input type="checkbox" style="margin-top:3px" '+(isExcluded?'':'checked')
     + ' onchange="apToggleScenarioDeliveryExcluded('+scenarioIdx+','+deliveryId+',!this.checked)">'
     + '<span><span class="ap-block-title">'+acctLabel+_apEsc(d.title)+'</span>'
@@ -3387,11 +3402,13 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
           ? '<input class="ap-fld'+dc('owner')+'" type="text" style="width:74px" value="'+_apEsc(a.owner)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'
           : '<select class="ap-fld'+dc('owner')+'" style="width:74px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'+_apOwnerOpts(AP_OWNERS, a.owner)+'</select>')
       + addBtn
+      // 請/実は36pxだと3桁(100等)がネイティブのスピナー込みで見切れる不具合があったため
+      // （ユーザー指摘2026-09-27「相変わらず、稼働率が隠れている」）、46pxへ拡張。
       + '<input class="ap-fld'+dc('from_week')+'" type="date" style="width:112px" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)">'
       + '<input class="ap-fld'+dc('to_week')+'" type="date" style="width:112px" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)">'
-      + '請<input class="ap-fld'+dc('fte_billing')+'" type="number" step="1" min="0" style="width:36px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
+      + '請<input class="ap-fld'+dc('fte_billing')+'" type="number" step="1" min="0" style="width:46px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
       + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_billing\\',this.value)">'
-      + '実<input class="ap-fld'+dc('fte_pct')+'" type="number" step="1" min="0" style="width:36px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
+      + '実<input class="ap-fld'+dc('fte_pct')+'" type="number" step="1" min="0" style="width:46px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
       + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_pct\\',this.value)">'
       + '</div>';
     var rowCls = [isLast?'ap-pj-last':'', isExcluded?'ap-row-excluded':''].filter(Boolean).join(' ');
