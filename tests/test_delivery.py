@@ -2350,3 +2350,35 @@ def test_assign_planning_default_order_pushes_completed_items_to_bottom_first(co
     assert "apDefaultIncluded(a)" in fn and "apDefaultIncluded(b)" in fn
     assert fn.index("apDefaultIncluded(a)") < fn.index("apBizRank(a)"), \
         "完了済み判定が事業種別判定より先（最優先キー）になっていないといけない"
+
+
+def test_assign_planning_member_util_shows_count_and_drilldown(con):
+    """ユーザー要望(2026-09-27):
+    ①メンバーをクリックして開くとアサインされている案件を見られる(折りたためる)
+    ②各週稼働率に「稼働率(案件数)」の形式で案件数を併記
+    をJSに実装したことの構造的な回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    assert "function apToggleMemberExpand(scenarioIdx, owner)" in html
+    assert "ap-util-sub" in html and "ap-util-toggle" in html
+    # セル文字列が「稼働率(案件数)」形式で組み立てられていること
+    assert "v+'('+c+')'" in html.replace(" ", "")
+
+
+def test_assign_planning_scenario_can_exclude_delivery_independently(con):
+    """ユーザー要望(2026-09-27):「シナリオごとに、対象Delivery選択で選んだ案件をOFFにできる仕様
+    (チェックをOFFにすると、グレーアウトされて自動的に稼働率が0%で計算される)」の回帰テスト。
+    scenario.excludedDeliveriesが稼働率集計(apComputeMemberWeekly)から除外され、
+    PJチェックボックスのトグル関数・グレーアウト用CSSクラスが存在することを確認する。"""
+    html = webapp.assign_planning_page(con)
+    assert "function apToggleScenarioDeliveryExcluded(scenarioIdx, deliveryId, excluded)" in html
+    fn = html.split("function apComputeMemberWeekly(scenario, visibleIds){")[1].split("\n}")[0]
+    assert "scenario.excludedDeliveries" in fn and "if(excluded[id]) return;" in fn
+    assert ".ap-row-excluded" in html and ".ap-col-pj.ap-pj-excluded" in html
+
+
+def test_assign_planning_staff_column_wide_enough_for_all_fields(con):
+    """ユーザー指摘(2026-09-27):「項目が隠れてしまうので、もう少し横幅を広げて。特に
+    「内部/外部」、「稼働率(請求・実)」は見えるように」。アサイン編集列(.ap-col-staff)が
+    640pxのままだと実測でフィールドが見切れていたため760pxへ拡張した回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    assert "width:760px;min-width:760px;max-width:760px" in html.split(".ap-col-staff{")[1][:100]

@@ -2780,11 +2780,14 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
    「案件名のところに、アカウント名も記載して」）で表示文字数が増えたため190pxから拡張。 */
 .ap-col-pj{position:sticky;left:0;width:230px;min-width:230px;max-width:230px;background:#fff;
   z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top;padding-top:6px}
-.ap-col-staff{position:sticky;left:230px;width:640px;min-width:640px;max-width:640px;background:#fff;
+/* アサイン編集列の幅は元々720px(PJ名と同じ列を共有していた頃)あったが、PJ名列を分離した際に
+   640pxのまま据え置いたため「内部/外部」「請/実」が見切れる不具合が発生（ユーザー指摘
+   2026-09-27「項目が隠れてしまうので、もう少し横幅を広げて」）。760pxへ拡張して解消。 */
+.ap-col-staff{position:sticky;left:230px;width:760px;min-width:760px;max-width:760px;background:#fff;
   z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top}
 .ap-corner-pj{position:sticky;left:0;top:0;width:230px;min-width:230px;max-width:230px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0}
-.ap-corner{position:sticky;left:230px;top:0;width:640px;min-width:640px;max-width:640px;background:#fff;
+.ap-corner{position:sticky;left:230px;top:0;width:760px;min-width:760px;max-width:760px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0}
 .ap-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px}
 /* PJの最終アサイン行に太めの下線を入れ、体制チップ廃止後もPJの区切りが視認できるようにする
@@ -2795,6 +2798,10 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-block-meta{font-size:11px;color:#8893a8;display:block;margin-top:2px}
 .ap-gantt-cell{text-align:center;font-size:10px}
 .ap-gantt-cell.ap-filled{background:#bbf7d0}
+/* シナリオごとのDelivery除外（ユーザー要望2026-09-27「対象Delivery選択で選んだ案件をシナリオ
+   ごとにOFFにできる仕様、チェックをOFFにするとグレーアウトされ稼働率が0%で計算される」）。 */
+.ap-col-pj.ap-pj-excluded{opacity:.45}
+.ap-row-excluded td{opacity:.45}
 /* フローティングのシナリオ編集モーダル（ユーザー要望2026-09-27:「画面いっぱいにフローティング」）。 */
 .ap-modal-overlay.ap-modal-overlay-lg{padding:16px}
 .ap-modal.ap-modal-lg{max-width:1700px;width:96vw;height:92vh;max-height:92vh;display:flex;
@@ -2821,6 +2828,12 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-util-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px;
   color:#8893a8;width:54px;min-width:54px}
 .ap-util-cell{text-align:center;font-size:10px;color:#5b6478;width:54px;min-width:54px}
+/* メンバー行クリックでアサイン先Delivery別の内訳を折りたたみ表示（ユーザー要望2026-09-27）。 */
+.ap-util-toggle{cursor:pointer;color:#8893a8;font-size:9px;display:inline-block;width:9px}
+.ap-util-toggle:hover{color:#2f6fed}
+.ap-util-sub td{background:#f8fafc}
+.ap-util-sub-name{padding-left:20px;font-weight:400;font-size:10.5px;color:#8893a8}
+.ap-util-subcell{color:#8893a8}
 /* 稼働率の段階表示（ユーザー要望2026-09-27: 50%/70%/100%/150%で色を変える。数値が大きいほど
    濃い暖色にして危険度が一目でわかるようにする）。 */
 .ap-util-cell.ap-util-l50{background:#dbeafe}
@@ -2829,6 +2842,12 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-util-cell.ap-util-l150{background:#f87171;color:#fff;font-weight:700}
 .ap-asg-fields{display:flex;flex-wrap:nowrap;gap:4px;align-items:center;padding:2px 0}
 .ap-asg-fields select,.ap-asg-fields input{font-size:11px;padding:2px 3px;box-sizing:border-box;flex:none}
+/* 既存のdeliveryアサインとの差分ハイライト（ユーザー要望2026-09-27）。実データと値が異なる
+   フィールドだけを黄色く、このシナリオで新規追加した行（実データに対応が無い）は行全体を
+   薄紫でハイライトする。列幅(width)は変えないので既存の横位置揃えは崩れない。 */
+.ap-asg-fields select.ap-diff-field,.ap-asg-fields input.ap-diff-field{
+  background:#fef3c7;border-color:#f59e0b}
+.ap-asg-fields.ap-diff-new{background:#ede9fe;border-radius:4px;margin:1px -4px;padding:1px 4px}
 /* ＋ボタンは最終行以外もvisibility:hiddenで同じ幅の場所を確保する（表示/非表示に関わらず
    後続列(開始/終了/請/実)の横位置が全行で揃うように。ユーザー指摘2026-09-26「＋ボタンによって
    縦の項目が揃っていない」）。display:noneではなくvisibility:hiddenなのがポイント
@@ -2895,7 +2914,11 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
         <span style="font-size:12px;color:#8893a8" id="apScModalNo"></span>
         <input class="ap-sc-name" id="apScModalName" onchange="apRenameScenario(AP_OPEN_SCENARIO_IDX,this.value)">
       </div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="font-size:11px;color:#8893a8">
+          <span style="background:#fef3c7;padding:1px 6px;border-radius:3px">■</span> 実際のアサインと異なる項目
+          <span style="background:#ede9fe;padding:1px 6px;border-radius:3px">■</span> このシナリオでのみ追加したアサイン
+        </span>
         <button class="btn sec" style="font-size:11px;color:#c53030" onclick="apDeleteOpenScenario()">×このシナリオを削除</button>
         <button class="btn sec" onclick="apCloseScenarioModal()" style="font-size:12px">閉じる</button>
       </div>
@@ -3086,6 +3109,12 @@ function apCloseScenarioModal(){
 
 function _apEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+// onclick="..."（HTML二重引用符属性）の中に埋め込むJS文字列リテラルを安全に組み立てる
+// （メンバー名の折りたたみトグル等）。JSON.stringifyでJS側の引用符/バックスラッシュを
+// エスケープした上で、その結果自体もHTMLエスケープする（生成される二重引用符が属性を
+// 途中で終わらせないように。ブラウザが&quot;を"へ復元してからJSとして評価するため、
+// 最終的には正しいJS文字列リテラルとして働く）。
+function _apJsStr(s){ return _apEsc(JSON.stringify(String(s==null?'':s))); }
 function _apOwnerOpts(owners, current){
   var list = owners.slice(); if(current && list.indexOf(current)===-1) list.push(current);
   return '<option value=""></option>' + list.map(function(o){
@@ -3114,22 +3143,34 @@ function apGlobalWeeks(visibleIds){
 // あるシナリオ内の全アサインを、メンバー(owner)×週で合算する（未アサイン=owner空欄・外部メンバーは
 // 除外。ユーザー要望2026-09-27「稼働率に外部は不要」）。同一メンバーが複数PJを掛け持ちする場合は
 // 週ごとに実%を単純合算する（ユーザー要望2026-09-27: 本画面はメンバー別・週別のDelivery稼働率を
-// 見せる）。
+// 見せる）。シナリオごとに除外したDelivery（ユーザー要望2026-09-27「対象Delivery選択で選んだ
+// 案件をシナリオごとにOFFにできる」、scenario.excludedDeliveries）は集計から外し、自動的に0%
+// 扱いにする。戻り値は sum(合計%)・count(案件数)・breakdown(メンバー×Delivery別の内訳、
+// ユーザー要望2026-09-27「アサインメンバーをクリックして開くとアサインされている案件を見られる
+// 仕様に」用) の3点セット。
 function apComputeMemberWeekly(scenario, visibleIds){
-  var byOwner = {};
+  var excluded = scenario.excludedDeliveries || {};
+  var byOwner = {}, byOwnerCount = {}, byOwnerDeliveries = {};
   visibleIds.forEach(function(id){
+    if(excluded[id]) return;
     var snap = scenario.data[id]; if(!snap) return;
+    var d = AP_BY_ID[id];
     (snap.assignments||[]).forEach(function(a){
       if(a.member_kind === '外部') return;
       var owner = (a.owner||'').trim(); if(!owner) return;
       var pct = parseFloat(a.fte_pct); if(!pct || isNaN(pct)) return;
       if(!byOwner[owner]) byOwner[owner] = {};
+      if(!byOwnerCount[owner]) byOwnerCount[owner] = {};
+      if(!byOwnerDeliveries[owner]) byOwnerDeliveries[owner] = {};
+      if(!byOwnerDeliveries[owner][id]) byOwnerDeliveries[owner][id] = {title:d.title, account:d.account, weeks:{}};
       apWeeksBetween(a.from_week, a.to_week).forEach(function(w){
         byOwner[owner][w] = (byOwner[owner][w]||0) + pct;
+        byOwnerCount[owner][w] = (byOwnerCount[owner][w]||0) + 1;
+        byOwnerDeliveries[owner][id].weeks[w] = (byOwnerDeliveries[owner][id].weeks[w]||0) + pct;
       });
     });
   });
-  return byOwner;
+  return {sum: byOwner, count: byOwnerCount, breakdown: byOwnerDeliveries};
 }
 // メンバーの並び順キー: 役職順(「担当者の担当領域」マスタの並び順)→マスタの名前順(AP_OWNERSの並び順)
 // （ユーザー要望2026-09-27「役職順、マスタの名前順にして」）。担当領域未設定・AP_OWNERS未掲載の
@@ -3149,7 +3190,12 @@ function apUtilCellClass(v){
   if(v>=50) return ' ap-util-l50';
   return '';
 }
-function apRenderMemberUtilTable(byOwner, weeks, wrapId){
+// メンバー名クリックで、そのメンバーがアサインされている案件別の内訳を折りたたみ表示する
+// （ユーザー要望2026-09-27「アサインメンバーをクリックして開くと、アサインされている案件を
+// 見られる仕様に(折りたためる)」）。各週セルには「稼働率(案件数)」の形式で件数も併記する
+// （ユーザー要望2026-09-27）。
+function apRenderMemberUtilTable(scenarioIdx, scenario, computed, weeks, wrapId){
+  var byOwner = computed.sum, byCount = computed.count, breakdown = computed.breakdown;
   var owners = Object.keys(byOwner).sort(function(a,b){
     var ka = apOwnerSortKey(a), kb = apOwnerSortKey(b);
     if(ka[0]!==kb[0]) return ka[0]-kb[0];
@@ -3157,17 +3203,52 @@ function apRenderMemberUtilTable(byOwner, weeks, wrapId){
     return ka[2].localeCompare(kb[2],'ja');
   });
   if(!owners.length){ return '<p class="ap-empty" style="margin:4px 0 0">アサイン済みメンバーがいません</p>'; }
+  var expanded = scenario.expandedMembers || {};
   var headHtml = '<tr><th class="ap-util-corner">メンバー</th>'
     + weeks.map(function(w){ return '<th class="ap-util-wk-head">'+w.slice(5)+'</th>'; }).join('') + '</tr>';
   var bodyHtml = owners.map(function(o){
-    return '<tr><td class="ap-util-name">'+_apEsc(o)+'</td>'
+    var isOpen = !!expanded[o];
+    var toggle = '<span class="ap-util-toggle" onclick="apToggleMemberExpand('+scenarioIdx+','+_apJsStr(o)+')">'
+      + (isOpen?'▼':'▶') + '</span>';
+    var row = '<tr><td class="ap-util-name">'+toggle+' '+_apEsc(o)+'</td>'
       + weeks.map(function(w){
           var v = byOwner[o][w]||0;
-          return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+(v?v:'')+'</td>';
+          var c = (byCount[o] && byCount[o][w]) || 0;
+          var text = v ? (v+'('+c+')') : '';
+          return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+text+'</td>';
         }).join('')
       + '</tr>';
+    if(isOpen){
+      var byDelivery = breakdown[o] || {};
+      Object.keys(byDelivery).forEach(function(did){
+        var info = byDelivery[did];
+        var label = (info.account ? _apEsc(info.account)+' / ' : '') + _apEsc(info.title);
+        row += '<tr class="ap-util-sub"><td class="ap-util-name ap-util-sub-name">'+label+'</td>'
+          + weeks.map(function(w){
+              var v = info.weeks[w]||0;
+              return '<td class="ap-util-cell ap-util-subcell">'+(v?v:'')+'</td>';
+            }).join('')
+          + '</tr>';
+      });
+    }
+    return row;
   }).join('');
   return '<div class="ap-util-wrap" id="'+wrapId+'"><table><thead>'+headHtml+'</thead><tbody>'+bodyHtml+'</tbody></table></div>';
+}
+function apToggleMemberExpand(scenarioIdx, owner){
+  var scenario = AP_STATE.scenarios[scenarioIdx];
+  if(!scenario) return;
+  if(!scenario.expandedMembers) scenario.expandedMembers = {};
+  scenario.expandedMembers[owner] = !scenario.expandedMembers[owner];
+  apRenderScenarios();
+}
+function apToggleScenarioDeliveryExcluded(scenarioIdx, deliveryId, excluded){
+  var scenario = AP_STATE.scenarios[scenarioIdx];
+  if(!scenario) return;
+  if(!scenario.excludedDeliveries) scenario.excludedDeliveries = {};
+  if(excluded) scenario.excludedDeliveries[deliveryId] = true;
+  else delete scenario.excludedDeliveries[deliveryId];
+  apRenderScenarios();
 }
 // 実データ(apGlobalWeeks)が当週から近い週までしか無いと、当週を左端に揃えるだけのスクロール量が
 // 確保できず「右端までスクロールしても当週を左端にできない」現象が起きる（ユーザー指摘
@@ -3211,7 +3292,7 @@ function apRenderScenarios(){
   var outerHtml = '';
   AP_STATE.scenarios.forEach(function(scenario, idx){
     visibleIds.forEach(function(id){ apEnsureScenarioHasDelivery(scenario, id); });
-    var byOwner = apComputeMemberWeekly(scenario, visibleIds);
+    var computed = apComputeMemberWeekly(scenario, visibleIds);
     // シナリオごとの折りたたみ（ユーザー要望2026-09-27「シナリオの縦はスクロールなし、
     // 代わりに畳むことができる仕様に」）。折りたたみ▼/▶のクリックはstopPropagationで
     // 見出しクリック(モーダルを開く)と独立させる。
@@ -3223,7 +3304,7 @@ function apRenderScenarios(){
       + '<span class="ap-sc-name-label">'+_apEsc(scenario.name)+'</span>'
       + '<span class="muted" style="font-size:11px">クリックしてアサインを編集 ▸</span>'
       + '</div>'
-      + (scenario.collapsed ? '' : apRenderMemberUtilTable(byOwner, weeks, 'apUtilWrap'+idx))
+      + (scenario.collapsed ? '' : apRenderMemberUtilTable(idx, scenario, computed, weeks, 'apUtilWrap'+idx))
       + '</div>';
   });
   box.innerHTML = outerHtml;
@@ -3249,55 +3330,72 @@ function apRenderScenarios(){
 
 function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
   var d = AP_BY_ID[deliveryId];
-  var snap = AP_STATE.scenarios[scenarioIdx].data[deliveryId];
+  var scenario = AP_STATE.scenarios[scenarioIdx];
+  var snap = scenario.data[deliveryId];
   var assignments = snap.assignments || [];
+  // シナリオごとにDeliveryをON/OFFできる（ユーザー要望2026-09-27「対象Delivery選択で選んだ
+  // 案件をシナリオごとにOFFにできる仕様、チェックをOFFにするとグレーアウトされ稼働率が0%で
+  // 計算される」）。除外されたDeliveryはPJ名列・各行を薄くグレーアウトする。
+  var isExcluded = !!((scenario.excludedDeliveries||{})[deliveryId]);
   // PJ名はrowspanでそのPJの全アサイン行の左に1つだけ配置する（ユーザー要望2026-09-27:
   // 「PJ名はアサイン検討の左に移動、ガントの縦にスキマがあかないように」）。体制チップは
   // 廃止済み（ユーザー要望2026-09-27:「体制の表記は不要」）。アカウント名も併記する
   // （ユーザー要望2026-09-27「案件名のところに、アカウント名も記載して」）。
   var acctLabel = d.account ? '<span class="ap-block-acc">'+_apEsc(d.account)+'</span> / ' : '';
-  var pjCell = '<td class="ap-col-pj" rowspan="'+Math.max(assignments.length,1)+'">'
-    + '<span class="ap-block-title">'+acctLabel+_apEsc(d.title)+'</span>'
-    + '<span class="ap-block-meta">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span>'
-    + '</td>';
+  var pjCell = '<td class="ap-col-pj'+(isExcluded?' ap-pj-excluded':'')+'" rowspan="'+Math.max(assignments.length,1)+'">'
+    + '<label style="display:flex;align-items:flex-start;gap:5px;cursor:pointer" title="このシナリオでの対象/対象外">'
+    + '<input type="checkbox" style="margin-top:3px" '+(isExcluded?'':'checked')
+    + ' onchange="apToggleScenarioDeliveryExcluded('+scenarioIdx+','+deliveryId+',!this.checked)">'
+    + '<span><span class="ap-block-title">'+acctLabel+_apEsc(d.title)+'</span>'
+    + '<span class="ap-block-meta">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span></span>'
+    + '</label></td>';
 
   if (!assignments.length){
     // アサインが1件も無い場合も、PJ名の右に＋を出して追加できるようにする。
-    return '<tr class="ap-pj-last">' + pjCell
+    return '<tr class="ap-pj-last'+(isExcluded?' ap-row-excluded':'')+'">' + pjCell
       + '<td class="ap-col-staff"><span class="ap-add-inline" title="アサイン追加" '
       + 'onclick="apAddAssignmentRow('+scenarioIdx+','+deliveryId+')">＋</span> '
       + '<span class="muted" style="font-size:11px">アサインを追加</span></td>'
       + weeks.map(function(){ return '<td></td>'; }).join('') + '</tr>';
   }
 
+  // 既存のdeliveryアサインとの差分ハイライト（ユーザー要望2026-09-27）。実データ
+  // (AP_BY_ID[id].assignments、シナリオのclone元)とインデックスで対応付けて比較する
+  // （削除UIは無く追加のみ可能なため、実データの件数までは常に1対1で対応する）。
+  var realAssignments = d.assignments || [];
   var html = '';
   assignments.forEach(function(a, ai){
     var rowWeeks = {}; apWeeksBetween(a.from_week, a.to_week).forEach(function(w){ rowWeeks[w]=true; });
     var isLast = ai === assignments.length - 1;
+    var real = ai < realAssignments.length ? realAssignments[ai] : null;
+    var isNewRow = !real;
+    function dc(field){ return (!isNewRow && apValsDiffer(a[field], real[field])) ? ' ap-diff-field' : ''; }
     // ＋アサイン追加はシンプルな+ボタンにして、最終行のメンバー欄の横に置く（それだけで1段
     // 使わない。ユーザー要望2026-09-26）。最終行以外もvisibility:hiddenで同じ幅の場所だけ
     // 確保し、後続列の横位置が行によってズレないようにする（ユーザー指摘2026-09-26）。
     var addBtn = '<span class="ap-add-inline" title="アサイン追加" onclick="apAddAssignmentRow('
       + scenarioIdx + ',' + deliveryId + ')"'
       + (isLast ? '' : ' style="visibility:hidden"') + '>＋</span>';
-    var fieldsHtml = '<div class="ap-asg-fields">'
-      + '<select style="width:96px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)">'
+    var fieldsHtml = '<div class="ap-asg-fields'+(isNewRow?' ap-diff-new':'')+'"'
+      + (isNewRow ? ' title="このシナリオで追加したアサイン（実際のDeliveryには存在しません）"' : '') + '>'
+      + '<select class="ap-fld'+dc('role')+'" style="width:96px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)">'
       + _apRoleOpts(snap.roles, a.role) + '</select>'
-      + '<select style="width:50px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'member_kind\\',this.value)">'
+      + '<select class="ap-fld'+dc('member_kind')+'" style="width:50px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'member_kind\\',this.value)">'
       + ['内部','外部'].map(function(k){ return '<option value="'+k+'"'+(k===a.member_kind?' selected':'')+'>'+k+'</option>'; }).join('')
       + '</select>'
       + (a.member_kind==='外部'
-          ? '<input type="text" style="width:74px" value="'+_apEsc(a.owner)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'
-          : '<select style="width:74px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'+_apOwnerOpts(AP_OWNERS, a.owner)+'</select>')
+          ? '<input class="ap-fld'+dc('owner')+'" type="text" style="width:74px" value="'+_apEsc(a.owner)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'
+          : '<select class="ap-fld'+dc('owner')+'" style="width:74px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'+_apOwnerOpts(AP_OWNERS, a.owner)+'</select>')
       + addBtn
-      + '<input type="date" style="width:112px" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)">'
-      + '<input type="date" style="width:112px" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)">'
-      + '請<input type="number" step="1" min="0" style="width:36px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
+      + '<input class="ap-fld'+dc('from_week')+'" type="date" style="width:112px" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)">'
+      + '<input class="ap-fld'+dc('to_week')+'" type="date" style="width:112px" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)">'
+      + '請<input class="ap-fld'+dc('fte_billing')+'" type="number" step="1" min="0" style="width:36px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
       + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_billing\\',this.value)">'
-      + '実<input type="number" step="1" min="0" style="width:36px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
+      + '実<input class="ap-fld'+dc('fte_pct')+'" type="number" step="1" min="0" style="width:36px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
       + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_pct\\',this.value)">'
       + '</div>';
-    html += '<tr'+(isLast?' class="ap-pj-last"':'')+'>'
+    var rowCls = [isLast?'ap-pj-last':'', isExcluded?'ap-row-excluded':''].filter(Boolean).join(' ');
+    html += '<tr'+(rowCls?' class="'+rowCls+'"':'')+'>'
       + (ai===0 ? pjCell : '')
       + '<td class="ap-col-staff">'+fieldsHtml+'</td>'
       + weeks.map(function(w){
@@ -3307,6 +3405,15 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
       + '</tr>';
   });
   return html;
+}
+// フィールド値の差分判定。null/undefined/''は同じ「未入力」として扱い、それ以外は文字列化して
+// 比較する（数値/文字列の型ゆれを吸収するため。ユーザー要望2026-09-27「既存のdeliveryアサイン
+// との差分をハイライトする仕様に」）。
+function apValsDiffer(a, b){
+  var na = (a===undefined||a===null||a==='') ? null : a;
+  var nb = (b===undefined||b===null||b==='') ? null : b;
+  if(na===null && nb===null) return false;
+  return String(na) !== String(nb);
 }
 
 function apAddAssignmentRow(scenarioIdx, deliveryId){
