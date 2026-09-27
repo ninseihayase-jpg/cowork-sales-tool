@@ -3029,6 +3029,14 @@ function apCloseModal(){ document.getElementById('apModalOverlay').classList.add
 // 「アサインプランニング保存後、PJが追加された場合、対象PJを読み込むことができない」）。
 // サーバから最新のDelivery一覧を取り直し、まだAP_BY_IDに無いid（＝新規追加分）だけを
 // 追加する（既存分の並び順・チェック状態・シナリオ内の編集途中データは一切変更しない）。
+// 追加調査(2026-09-27続き「なぜ710が読み込まれない？」): AP_BY_ID自体には既に存在するのに
+// AP_STATE.deliveryOrderにだけ無いケースが別途あった。保存済みプランを読み込む(apLoadPlan)と
+// deliveryOrderがそのプラン保存時点の古い配列で丸ごと上書きされるため、プラン保存後に
+// 作られたDeliveryはAP_BY_IDにはあってもdeliveryOrderに載っておらず、一覧descriptionから
+// 漏れてしまう。この場合「AP_BY_IDに無いものだけ追加」という従来の判定では拾えなかった
+// （新規取得データ自体は同じなのでAP_BY_ID判定に引っかかりスキップされていた）ため、
+// 「AP_BY_IDには無い→データごと追加」「AP_BY_IDにはあるがdeliveryOrderに無い→順序だけ追加」
+// の2パターンを両方処理するよう修正。
 function apReloadDeliveries(){
   var msgEl = document.getElementById('apReloadMsg');
   if(msgEl) msgEl.textContent = '読み込み中…';
@@ -3037,12 +3045,15 @@ function apReloadDeliveries(){
     .then(function(list){
       var addedCount = 0;
       list.forEach(function(d){
-        if(AP_BY_ID[d.id]) return;
-        AP_DELIVERIES.push(d);
-        AP_BY_ID[d.id] = d;
-        AP_STATE.deliveryOrder.push(d.id);
-        AP_STATE.included[d.id] = apDefaultIncluded(d);
-        addedCount++;
+        if(!AP_BY_ID[d.id]){
+          AP_DELIVERIES.push(d);
+          AP_BY_ID[d.id] = d;
+        }
+        if(AP_STATE.deliveryOrder.indexOf(d.id) === -1){
+          AP_STATE.deliveryOrder.push(d.id);
+          if(!(d.id in AP_STATE.included)) AP_STATE.included[d.id] = apDefaultIncluded(d);
+          addedCount++;
+        }
       });
       apRenderChecklist();
       apUpdateSummary();
@@ -3518,6 +3529,17 @@ function apLoadPlan(id){
   AP_STATE.deliveryOrder = plan.plan.deliveryOrder;
   AP_STATE.included = plan.plan.included;
   AP_STATE.scenarios = plan.plan.scenarios;
+  // 保存済みプランのdeliveryOrderは保存時点のスナップショットのため、そのプランを保存した後に
+  // 新しく作られたDeliveryは載っていない。ページ読み込み時点で既にAP_DELIVERIESに存在する
+  // （＝プラン保存より後にできたことがブラウザ側では分かっている）ものだけ、末尾に自動で
+  // 補って表示から漏れないようにする（ユーザー指摘2026-09-27「なぜ710が読み込まれない？」＝
+  // 保存済みプランを読み込むと、それより後に作られたDeliveryが一覧から消える不具合）。
+  AP_DELIVERIES.forEach(function(d){
+    if(AP_STATE.deliveryOrder.indexOf(d.id) === -1){
+      AP_STATE.deliveryOrder.push(d.id);
+      if(!(d.id in AP_STATE.included)) AP_STATE.included[d.id] = apDefaultIncluded(d);
+    }
+  });
   apRenderChecklist();
   apUpdateSummary();
   apRenderScenarios();

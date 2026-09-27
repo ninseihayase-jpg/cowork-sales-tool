@@ -2473,7 +2473,7 @@ def test_assign_planning_page_wires_reload_button_to_api(con):
     assert 'onclick="apReloadDeliveries()"' in html
     fn = html.split("function apReloadDeliveries(){")[1].split("\n}")[0]
     assert "fetch('/assign-planning/deliveries')" in fn
-    assert "if(AP_BY_ID[d.id]) return;" in fn
+    assert "if(!AP_BY_ID[d.id]){" in fn
 
 
 def test_assign_planning_reload_api_returns_newly_created_delivery(monkeypatch, tmp_path):
@@ -2527,3 +2527,27 @@ def test_assign_planning_reload_api_returns_newly_created_delivery(monkeypatch, 
         srv.shutdown()
         srv.server_close()
         t.join(timeout=5)
+
+
+def test_assign_planning_load_plan_appends_deliveries_created_after_plan_was_saved(con):
+    """ユーザー指摘(2026-09-27続き):「なぜ710が読み込まれない？」。保存済みプランを読み込むと
+    apLoadPlan()がAP_STATE.deliveryOrderをプラン保存時点の古い配列で丸ごと上書きするため、
+    プラン保存後に作られたDeliveryはAP_BY_IDには存在するのにdeliveryOrderに無く、一覧から
+    消えてしまっていた。apLoadPlan()がAP_DELIVERIES基準でdeliveryOrderの抜けを自動補完する
+    ことの回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    fn = html.split("function apLoadPlan(id){")[1].split("\n}")[0]
+    assert "AP_DELIVERIES.forEach(function(d){" in fn
+    assert "if(AP_STATE.deliveryOrder.indexOf(d.id) === -1){" in fn
+    assert "AP_STATE.deliveryOrder.push(d.id);" in fn
+
+
+def test_assign_planning_reload_also_fixes_delivery_order_not_just_by_id(con):
+    """apReloadDeliveries()も、AP_BY_IDには既にあるがAP_STATE.deliveryOrderに無いid
+    （＝保存済みプラン読み込みで欠落したケース）を、単に「AP_BY_IDに無いものだけ追加」という
+    従来判定では拾えなかった。「データが無ければ追加」「順序に無ければ順序だけ追加」の
+    2段階判定に修正したことの回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    fn = html.split("function apReloadDeliveries(){")[1].split("\n}")[0]
+    assert "if(!AP_BY_ID[d.id]){" in fn
+    assert "if(AP_STATE.deliveryOrder.indexOf(d.id) === -1){" in fn
