@@ -2796,9 +2796,17 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 /* PJの最終アサイン行に太めの下線を入れ、体制チップ廃止後もPJの区切りが視認できるようにする
    （ユーザー要望2026-09-27: 体制表記は削除するが、PJ間の境界は別の手段で維持）。 */
 .ap-pj-last td{border-bottom:2px solid #dbe1ea}
-.ap-block-title{font-size:12px;font-weight:600;color:#3a4760;white-space:normal}
+/* PJ名(タイトル)を2行までにクランプする（ユーザー指摘2026-09-28「まだ縦が揃わない」）。
+   原因: rowspanするPJ名セルの必要高さがタイトルの長さで青天井に伸びるため、アサイン行数が
+   少ないPJ(特に1行)では、その1行だけが長文タイトル分まで間延びし、他のPJの行の高さと
+   バラバラになって「縦が揃っていない」ように見えていた。行数に関わらずPJ名の高さの上限を
+   2行+メタ1行に固定することで、PJごとの行の高さのばらつきを抑える（全文はtitle属性で
+   ホバー表示）。 */
+.ap-block-title{font-size:12px;font-weight:600;color:#3a4760;white-space:normal;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .ap-block-acc{color:#8893a8;font-weight:600}
-.ap-block-meta{font-size:11px;color:#8893a8;display:block;margin-top:2px}
+.ap-block-meta{font-size:11px;color:#8893a8;display:block;margin-top:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ap-gantt-cell{text-align:center;font-size:10px}
 .ap-gantt-cell.ap-filled{background:#bbf7d0}
 /* シナリオごとのDelivery除外（ユーザー要望2026-09-27「対象Delivery選択で選んだ案件をシナリオ
@@ -3407,7 +3415,7 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
     + '<label style="display:flex;align-items:flex-start;gap:5px;cursor:pointer;margin:0" title="このシナリオでの対象/対象外">'
     + '<input type="checkbox" style="margin-top:3px" '+(isExcluded?'':'checked')
     + ' onchange="apToggleScenarioDeliveryExcluded('+scenarioIdx+','+deliveryId+',!this.checked)">'
-    + '<span><span class="ap-block-title">'+acctLabel+_apEsc(d.title)+'</span>'
+    + '<span><span class="ap-block-title" title="'+_apEsc((d.account?d.account+' / ':'')+d.title)+'">'+acctLabel+_apEsc(d.title)+'</span>'
     + '<span class="ap-block-meta">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span></span>'
     + '</label></td>';
 

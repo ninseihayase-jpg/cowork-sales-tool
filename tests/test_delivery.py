@@ -2551,3 +2551,18 @@ def test_assign_planning_reload_also_fixes_delivery_order_not_just_by_id(con):
     fn = html.split("function apReloadDeliveries(){")[1].split("\n}")[0]
     assert "if(!AP_BY_ID[d.id]){" in fn
     assert "if(AP_STATE.deliveryOrder.indexOf(d.id) === -1){" in fn
+
+
+def test_assign_planning_pj_title_is_clamped_so_row_heights_stay_consistent(con):
+    """ユーザー指摘(2026-09-28)「まだ縦が揃わない」。原因はrowspanするPJ名セルの必要高さが
+    タイトルの長さで青天井に伸びるため、アサイン行数が少ないPJ(特に1行)では、その1行だけが
+    長文タイトル分まで間延びし、他のPJの行の高さとバラバラになっていたこと(Playwright実測で
+    1行のみのPJが93.5pxまで伸びていることを確認して発見)。.ap-block-titleを2行までクランプし、
+    .ap-block-metaも1行に丸めることで、行数に関わらずPJ名セルの高さの上限を揃えた回帰テスト。
+    全文はtitle属性でホバー表示する。"""
+    html = webapp.assign_planning_page(con)
+    title_block = html.split(".ap-block-title{")[1].split("}")[0]
+    assert "-webkit-line-clamp:2" in title_block and "overflow:hidden" in title_block
+    meta_block = html.split(".ap-block-meta{")[1].split("}")[0]
+    assert "white-space:nowrap" in meta_block and "text-overflow:ellipsis" in meta_block
+    assert 'class="ap-block-title" title="' in html, "全文をtitle属性でホバー表示できること"
