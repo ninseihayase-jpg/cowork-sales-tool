@@ -2777,9 +2777,12 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 /* PJ名列とアサイン編集列を分離（ユーザー要望2026-09-27: 「PJ名はアサイン検討の左に移動」）。
    PJ名セルはrowspanでそのPJの全アサイン行にまたがり、PJごとの空白ヘッダー行を廃止した
    （縦のスキマ削減）。幅は実測で調整(230px): アカウント名併記（ユーザー要望2026-09-27
-   「案件名のところに、アカウント名も記載して」）で表示文字数が増えたため190pxから拡張。 */
+   「案件名のところに、アカウント名も記載して」）で表示文字数が増えたため190pxから拡張。
+   padding-topは.ap-grid-tbl td共通の3pxのままにする（以前ここに独自のpadding-top:6pxが
+   入っており、.ap-col-staff側の3pxとズレて「縦が揃ってない」原因の一つになっていた。
+   ユーザー指摘2026-09-27続き「縦が揃ってないけど、修正済み？」で実測して発見・削除）。 */
 .ap-col-pj{position:sticky;left:0;width:230px;min-width:230px;max-width:230px;background:#fff;
-  z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top;padding-top:6px}
+  z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top}
 /* アサイン編集列の幅は元々720px(PJ名と同じ列を共有していた頃)あったが、PJ名列を分離した際に
    640pxのまま据え置いたため「内部/外部」「請/実」が見切れる不具合が発生（ユーザー指摘
    2026-09-27「項目が隠れてしまうので、もう少し横幅を広げて」）。760pxへ拡張して解消。 */
@@ -2903,7 +2906,12 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
   <div class="ap-modal">
     <div class="ap-modal-head">
       <h3 style="font-size:14px;margin:0">対象Delivery選択（チェックで表示・⠿でドラッグ並び替え）</h3>
-      <button class="btn sec" onclick="apCloseModal()" style="font-size:12px">閉じる</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="apReloadMsg" class="muted" style="font-size:11px"></span>
+        <button class="btn sec" onclick="apReloadDeliveries()" style="font-size:12px"
+          title="プラン保存後に新しく追加されたDeliveryを一覧へ反映します">🔄 最新の状態を読み込み直す</button>
+        <button class="btn sec" onclick="apCloseModal()" style="font-size:12px">閉じる</button>
+      </div>
     </div>
     <div id="apChecklist"></div>
   </div>
@@ -3016,6 +3024,33 @@ function apEnsureScenarioHasDelivery(scenario, deliveryId){
 // ── 対象Delivery選択モーダル（ユーザー要望2026-09-26: フローティング画面・全幅・1案件1段） ──
 function apOpenModal(){ document.getElementById('apModalOverlay').classList.remove('ap-hidden'); apRenderChecklist(); }
 function apCloseModal(){ document.getElementById('apModalOverlay').classList.add('ap-hidden'); }
+// プラン保存後に新しくDeliveryが追加された場合、AP_DELIVERIESはページ読み込み時点の
+// スナップショットのままのため一覧に出てこない不具合があった（ユーザー指摘2026-09-27
+// 「アサインプランニング保存後、PJが追加された場合、対象PJを読み込むことができない」）。
+// サーバから最新のDelivery一覧を取り直し、まだAP_BY_IDに無いid（＝新規追加分）だけを
+// 追加する（既存分の並び順・チェック状態・シナリオ内の編集途中データは一切変更しない）。
+function apReloadDeliveries(){
+  var msgEl = document.getElementById('apReloadMsg');
+  if(msgEl) msgEl.textContent = '読み込み中…';
+  fetch('/assign-planning/deliveries')
+    .then(function(r){ return r.json(); })
+    .then(function(list){
+      var addedCount = 0;
+      list.forEach(function(d){
+        if(AP_BY_ID[d.id]) return;
+        AP_DELIVERIES.push(d);
+        AP_BY_ID[d.id] = d;
+        AP_STATE.deliveryOrder.push(d.id);
+        AP_STATE.included[d.id] = apDefaultIncluded(d);
+        addedCount++;
+      });
+      apRenderChecklist();
+      apUpdateSummary();
+      apRenderScenarios();
+      if(msgEl) msgEl.textContent = addedCount ? (addedCount+'件のDeliveryを追加で読み込みました') : '新しいDeliveryはありませんでした';
+    })
+    .catch(function(){ if(msgEl) msgEl.textContent = '読み込みに失敗しました'; });
+}
 function apUpdateSummary(){
   var visible = AP_STATE.deliveryOrder.filter(function(id){
     var d = AP_BY_ID[id]; return d && apEligible(d) && AP_STATE.included[id] !== false; });
@@ -3506,13 +3541,11 @@ apRenderScenarios();
 _ASSIGN_PLANNING_SCOPE_RANK = {"確定": 0, "見込み(クロージング)": 1, "見込み(提案中)": 2}
 
 
-def assign_planning_page(con) -> str:
-    """Deliveryアサインプランニング（2026-09-25）。複数Deliveryの体制・アサインを横断で見ながら
-    スタッフの入れ替えを「シナリオ」として複数並行検討し、名前を付けて保存できるシミュレーション
-    ツール。マーケ診断ツールの戦略マップ(保存済みプラン)と同じ「保存/読み込みはクライアント側で
-    完結、サーバは丸ごとJSONを受け取って保存するだけ」という設計を踏襲する（sfa_db.py
-    assign_planning_plans）。v1は体制/アサインへの書き戻しは一切行わない（読み取り専用で
-    スナップショットするだけのシミュレーション専用ツール）。"""
+def _assign_planning_deliveries(con) -> list:
+    """アサインプランニング用のDelivery一覧をJSON化可能な辞書のリストで返す（assign_planning_page()
+    の初期描画と、/assign-planning/deliveries（対象Delivery選択の再読み込み用）の両方で使う
+    共通ロジック。ユーザー要望2026-09-27「プラン保存後にPJが追加された場合、対象Delivery選択を
+    最新状態で読み込み直す仕様を追加」）。"""
     deliveries = []
     for dv in sfa_db.list_deliveries(con):
         sw, ew = dv.get("start_week"), dv.get("end_week")
@@ -3550,6 +3583,17 @@ def assign_planning_page(con) -> str:
             "bizL1": dv.get("deal_business_type_l1") or "", "bizL2": dv.get("deal_business_type_l2") or "",
             "roles": roles, "assignments": assignments,
         })
+    return deliveries
+
+
+def assign_planning_page(con) -> str:
+    """Deliveryアサインプランニング（2026-09-25）。複数Deliveryの体制・アサインを横断で見ながら
+    スタッフの入れ替えを「シナリオ」として複数並行検討し、名前を付けて保存できるシミュレーション
+    ツール。マーケ診断ツールの戦略マップ(保存済みプラン)と同じ「保存/読み込みはクライアント側で
+    完結、サーバは丸ごとJSONを受け取って保存するだけ」という設計を踏襲する（sfa_db.py
+    assign_planning_plans）。v1は体制/アサインへの書き戻しは一切行わない（読み取り専用で
+    スナップショットするだけのシミュレーション専用ツール）。"""
+    deliveries = _assign_planning_deliveries(con)
     owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
     plans = sfa_db.list_assign_planning_plans(con)
     # メンバー別稼働率の並び順（役職順→マスタの名前順、ユーザー要望2026-09-27）に使う。
@@ -6080,11 +6124,11 @@ def delivery_form(con, delivery_id: int) -> str:
                   <option value="monthly"{" selected" if (dv.get("fee_mode") or "monthly") != "total" else ""}>月額報酬</option>
                   <option value="total"{" selected" if (dv.get("fee_mode") or "monthly") == "total" else ""}>総額報酬</option>
                 </select></label>
-              <label style="font-size:12px">報酬額/月額(万)<br>
+              <label style="font-size:12px">固定報酬額/月額(万)<br>
                 <input type="number" step="0.1" min="0" id="dvFeeMonthly" name="fee_monthly"
                        style="width:110px{';background:#fef3c7' if _hl_fee_amount else ''}"
                        value="{"" if dv.get("fee_monthly") is None else dv.get("fee_monthly")}" oninput="dvFeeFieldInput(this)"></label>
-              <label style="font-size:12px">報酬額/総額(万)<br>
+              <label style="font-size:12px">固定報酬額/総額(万)<br>
                 <input type="number" step="0.1" min="0" id="dvFeeTotal" name="fee_total"
                        style="width:110px{';background:#fef3c7' if _hl_fee_amount else ''}"
                        value="{"" if dv.get("fee_total") is None else dv.get("fee_total")}" oninput="dvFeeFieldInput(this)"></label>
@@ -6095,11 +6139,14 @@ def delivery_form(con, delivery_id: int) -> str:
                 <input type="number" step="0.1" min="0" max="100" id="dvPerfFeeRatio" name="performance_fee_ratio"
                        style="width:90px{';background:#fef3c7' if _hl_perf_ratio else ''}"
                        value="{"" if dv.get("performance_fee_ratio") is None else dv.get("performance_fee_ratio")}" oninput="dvPerfFeeChanged()"></label>
-              <label style="font-size:12px" title="想定インパクト×成果報酬比率＝成果報酬額。報酬額/月額・総額（固定報酬）に加算されます">想定インパクト(万)<br>
+              <label style="font-size:12px" title="想定インパクト×成果報酬比率＝成果報酬額。固定報酬額とは別建てで、下の「報酬総額」に合算されます">想定インパクト(万)<br>
                 <input type="number" step="0.1" min="0" id="dvExpectedImpact" name="expected_impact"
                        style="width:90px{';background:#fef3c7' if _hl_expected_impact else ''}"
                        value="{"" if dv.get("expected_impact") is None else dv.get("expected_impact")}" oninput="dvPerfFeeChanged()"></label>
               <span class="muted" style="font-size:11px;align-self:center;cursor:help" id="dvFeeMonths" title="">ⓘ</span>
+              <label style="font-size:12px">報酬総額(万)
+                <span class="muted" style="font-size:10px;cursor:help" title="固定報酬額(総額)＋成果報酬額（想定インパクト×成果報酬比率÷100）の合計。成果報酬有無=無しの場合は固定報酬額のみ">ⓘ</span><br>
+                <span id="dvFeeGrandTotal" style="display:inline-block;min-width:90px;font-weight:600;font-size:13px">—</span></label>
             </div>
             <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
               <label style="font-size:12px">外注先<br>
@@ -6469,6 +6516,22 @@ def delivery_form(con, delivery_id: int) -> str:
       // 優先して黄色でハイライトする（#134の「報酬形態・報酬額」チェックと対応）。
       if(DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('fee_amount')>=0 && mo.value==='' && to.value===''){{
         mo.style.background='#fef3c7'; to.style.background='#fef3c7';
+      }}
+      // 報酬総額＝固定報酬額(総額)＋成果報酬額（想定インパクト×成果報酬比率÷100）。固定報酬と
+      // 成果報酬は別建てで入力する仕様のため、renderPreview()の週別限界利益計算と同じ式で
+      // ここでも合算し、基礎情報カード上に見える形で表示する（ユーザー指摘2026-09-27:
+      // 「固定報酬と成果報酬を分けて計算する仕様にしていなかったっけ？」＝合算した総額が
+      // 画面のどこにも表示されていなかったための追加）。
+      var grandTotalEl=document.getElementById('dvFeeGrandTotal');
+      if(grandTotalEl){{
+        var _fixedTotal=parseFloat(to.value)||0, _perfFeeAmt=0;
+        var _isPerf=((document.getElementById('dvPerfFee')||{{}}).value)==='有';
+        var _impactEl=document.getElementById('dvExpectedImpact'), _ratioEl=document.getElementById('dvPerfFeeRatio');
+        if(_isPerf && _impactEl && _ratioEl && _impactEl.value!=='' && _ratioEl.value!==''){{
+          var _pImpact2=parseFloat(_impactEl.value), _pRatio2=parseFloat(_ratioEl.value);
+          if(!isNaN(_pImpact2) && !isNaN(_pRatio2)) _perfFeeAmt=Math.round(_pImpact2*_pRatio2)/100;
+        }}
+        grandTotalEl.textContent = (to.value==='' && !_perfFeeAmt) ? '—' : (Math.round((_fixedTotal+_perfFeeAmt)*100)/100)+'万';
       }}
       // 想定経費＝報酬額/総額×5%のデフォルトを、報酬額側の変更にあわせて追従させる（手修正済み
       // （expense_manual=1）でなければ、開始日/終了日・報酬額等が変わるたびここで再計算する。
@@ -16208,9 +16271,9 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           <a class="btn sec" href="/hearing/new?target=deal:{_did}">＋新規ヒアリング</a>
           <a class="btn sec" href="/deal-issue/new?deal_id={_did}">＋新規社内PJ</a>
           {_delivery_top_btn}
-          <form method="post" action="/deal/{_did}/duplicate" style="display:inline;margin:0"
+          <form method="post" action="/deal/{_did}/duplicate" style="display:inline-flex;margin:0"
             onsubmit="return confirm('この商談を複製して新規商談を作成します（活動履歴・マイルストーン等は引き継ぎません）。よろしいですか？')">
-            <button class="btn sec" type="submit">📋 この商談を複製</button>
+            <button class="btn sec" type="submit" style="width:100%">📋 この商談を複製</button>
           </form>
         </div>"""
         _rn_links_html = _rich_note_links_html(con, "deal", _did)
@@ -22853,6 +22916,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(mktg_sim_page(con).encode("utf-8"))
                 elif path == "/assign-planning":
                     self._send(render(assign_planning_page(con), wide=True))
+                elif path == "/assign-planning/deliveries":
+                    # 対象Delivery選択の再読み込み用（ユーザー要望2026-09-27「プラン保存後に
+                    # PJが追加された場合、対象Delivery選択を最新状態で読み込み直す仕様を追加」）。
+                    # 重要: パスに/api/を使わないこと。/api/*は_check_basic_auth()でセッション
+                    # 認証ごとスキップされる経路（外部トークン認証のcron専用）のため、もし/api/配下に
+                    # 置くと認証なしで金額付き稼働情報が誰でも取得できてしまう（実装時に自己発見・
+                    # 修正した抜け穴）。/assign-planningと同じprefixにすることで、通常のセッション
+                    # 認証とROUTE_ACCESS（外部ロール非表示）を両方そのまま適用させる。
+                    self._send(json.dumps(_assign_planning_deliveries(con), ensure_ascii=False).encode(),
+                               ctype="application/json")
                 elif path == "/reports":
                     self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":

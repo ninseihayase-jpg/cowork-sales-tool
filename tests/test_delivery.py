@@ -69,6 +69,20 @@ def test_deal_form_shows_delivery_button_in_top_row_when_triggered(con, acc_id):
     assert "🚚 ＋Delivery追加" not in html_early
 
 
+def test_deal_duplicate_button_height_matches_other_top_row_buttons(con, acc_id):
+    """ユーザー指摘(2026-09-27):「『この商談を複製』の高さを、他のボタンと統一して」。
+    原因は他の同列ボタン（<a class="btn sec">や、Delivery追加のdisplay:inline-flexなform）と
+    異なり、複製フォームだけdisplay:inline（非flex）で包んでいたため、中のbuttonがflexコンテナの
+    stretchを受けずに高さがズレていたこと。display:inline-flex+button側width:100%に統一した
+    回帰テスト。"""
+    d_won = _deal(con, acc_id, "受注", name="調達BPO")
+    html = webapp.deal_form(con, sfa_db.get_deal(con, d_won))
+    idx = html.index("/duplicate")
+    form_open = html[idx:idx + 200]
+    assert 'style="display:inline-flex;margin:0"' in form_open
+    assert '<button class="btn sec" type="submit" style="width:100%">📋 この商談を複製</button>' in html
+
+
 def test_create_delivery_accepts_confidence_override_at_creation(con, acc_id):
     """新規Delivery起票時に確度（確定/見込み等）を指定できる（ユーザー要望2026-08-23）。
     不正値・省略時は自動導出(None)にフォールバックする。"""
@@ -2290,6 +2304,25 @@ def test_required_field_highlight_respects_stage_gate_client_side_too(con, acc_i
         "クロージング/受注段階で未入力なら#fef3c7がinlineで付くはず"
 
 
+def test_delivery_form_labels_fixed_fee_and_shows_grand_total(con, acc_id):
+    """ユーザー指摘(2026-09-27):「固定報酬と成果報酬を分けて計算する仕様にしていなかったっけ？」。
+    計算自体（成果報酬=想定インパクト×比率、固定報酬とは別建て）はrenderPreview()内には既に
+    あったが、画面上に合算した総額が一切表示されていなかった。①既存の「報酬額/月額・総額」を
+    「固定報酬額/月額・総額」に表記変更、②固定報酬額(総額)＋成果報酬額を表示する「報酬総額」を
+    新設したことの回帰テスト。"""
+    did = _deal(con, acc_id, "クロージング", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    html = webapp.delivery_form(con, dvid)
+    assert "固定報酬額/月額(万)" in html and "固定報酬額/総額(万)" in html
+    assert ">報酬額/月額(万)<" not in html and ">報酬額/総額(万)<" not in html, \
+        "「固定」を付けずに旧ラベルのまま残っていないこと"
+    assert 'id="dvFeeGrandTotal"' in html
+    fn = html.split("function dvFeeRecalc(){")[1].split("\n    function ")[0]
+    assert "Math.round(_pImpact2*_pRatio2)/100" in fn, \
+        "成果報酬額の算出式(想定インパクト×比率÷100)がdvFeeRecalc内に無い"
+    assert "_fixedTotal+_perfFeeAmt" in fn, "報酬総額=固定報酬額(総額)+成果報酬額の合算になっていない"
+
+
 def test_assign_planning_checklist_checkbox_css_prevents_global_width_override(con):
     """ユーザー報告(2026-09-26):「対象Delivery選択が壊れている」。原因はページ全体の共通CSS
     `input,select,textarea{width:100%}`がモーダル内のチェックボックスにも適用され、
@@ -2417,3 +2450,80 @@ def test_assign_planning_member_drilldown_order_matches_scenario_pj_order(con):
     html = webapp.assign_planning_page(con)
     assert "AP_STATE.deliveryOrder.filter(function(id){ return byDelivery[id]; }).forEach(function(did){" in html
     assert "Object.keys(byDelivery).forEach" not in html
+
+
+def test_assign_planning_pj_and_staff_columns_share_same_top_padding(con):
+    """ユーザー指摘(2026-09-27続き):「縦が揃ってないけど、修正済み？」。label{margin:10px 0 3px}
+    の打ち消し後も、.ap-col-pjだけに独自のpadding-top:6pxが残っていて.ap-col-staffの3pxと
+    3pxズレていたことをPlaywright実測で発見。.ap-col-pjのpadding-top独自指定を削除し、
+    両列とも.ap-grid-tbl td共通の3pxに統一したことの回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    pj_block = html.split(".ap-col-pj{")[1].split("}")[0]
+    assert "padding-top" not in pj_block, ".ap-col-pjに独自のpadding-topが残っていないこと"
+
+
+def test_assign_planning_page_wires_reload_button_to_api(con):
+    """ユーザー要望(2026-09-27):「アサインプランニング保存後、PJが追加された場合、対象PJを
+    読み込むことができない。『対象Delivery選択』を最新状態で読み込み直す仕様を追加」。
+    モーダルに再読み込みボタンがあり、apReloadDeliveries()が/assign-planning/deliveriesを
+    fetchして、既存のAP_BY_IDに無いidだけを追加することの構造的な回帰テスト。パスに/api/を
+    使っていないこと（下のtest_assign_planning_reload_route_requires_session_authの理由で
+    /api/配下だと未認証アクセスになってしまうため）も合わせて確認する。"""
+    html = webapp.assign_planning_page(con)
+    assert 'onclick="apReloadDeliveries()"' in html
+    fn = html.split("function apReloadDeliveries(){")[1].split("\n}")[0]
+    assert "fetch('/assign-planning/deliveries')" in fn
+    assert "if(AP_BY_ID[d.id]) return;" in fn
+
+
+def test_assign_planning_reload_api_returns_newly_created_delivery(monkeypatch, tmp_path):
+    """/assign-planning/deliveriesが、ページ初期描画後にDBへ新規作成されたDeliveryも
+    含めて返すことをHTTPルート経由で確認する（AP_DELIVERIESの読み込み直し元データ）。"""
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    db_path = str(tmp_path / "srv_ap_reload.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con2, name="テスト社")
+    did = sfa_db.upsert_deal(con2, account_id=aid, deal_name="既存PJ", stage="受注")
+    dvid = sfa_db.create_delivery(con2, deal_id=did, title="既存PJ")
+    sfa_db.update_delivery(con2, dvid, start_week="2026-10-05", end_week="2026-12-28")
+    con2.close()
+
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_ID", "u")
+    monkeypatch.setattr(webapp, "GOOGLE_CLIENT_SECRET", "p")
+    handler_cls = webapp._make_handler(db_path, None)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        headers = {"Cookie": f"sfa_session={webapp._make_session_token()}"}
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/assign-planning/deliveries", headers=headers)
+        before = json.loads(urllib.request.urlopen(req, timeout=10).read().decode("utf-8"))
+        assert [d["id"] for d in before] == [dvid]
+
+        # ページを開いたまま(=プラン保存後)に新しいDeliveryが作られる状況を再現。
+        con3 = sfa_db.connect(db_path)
+        did2 = sfa_db.upsert_deal(con3, account_id=aid, deal_name="新規追加PJ", stage="受注")
+        dvid2 = sfa_db.create_delivery(con3, deal_id=did2, title="新規追加PJ")
+        sfa_db.update_delivery(con3, dvid2, start_week="2026-10-12", end_week="2027-01-04")
+        con3.close()
+
+        req2 = urllib.request.Request(f"http://127.0.0.1:{port}/assign-planning/deliveries", headers=headers)
+        after = json.loads(urllib.request.urlopen(req2, timeout=10).read().decode("utf-8"))
+        assert {d["id"] for d in after} == {dvid, dvid2}
+
+        # 未認証(Cookie無し)だと/loginへ302誘導され、Delivery一覧のJSONは返らないこと
+        # （実装中に一度/api/配下へ置いてしまい、認証なしで金額付き稼働情報が取得できる状態に
+        # なっていたことを自己発見・修正した経緯があるための回帰テスト。urllib既定はリダイレクト
+        # を自動追跡するため、最終URLが/loginになっていることで判定する）。
+        req3 = urllib.request.Request(f"http://127.0.0.1:{port}/assign-planning/deliveries")
+        resp3 = urllib.request.urlopen(req3, timeout=10)
+        assert "/login" in resp3.geturl()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)

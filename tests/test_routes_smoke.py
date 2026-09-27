@@ -1677,6 +1677,23 @@ def test_route_access_hides_assign_planning_from_external_role(server, db_path):
     assert code == 200
 
 
+def test_route_access_hides_assign_planning_reload_route_from_external_role(server, db_path):
+    """ユーザー要望(2026-09-27)で新設した/assign-planning/deliveries（対象Delivery選択の
+    再読み込み用）は、あえて/api/配下を避けて/assign-planningの子パスにしている
+    （/api/*は_check_basic_auth()でセッション認証ごとスキップされる経路のため、そちらに
+    置くと認証なしで金額付き稼働情報が誰でも取得できてしまう抜け穴になる。実装時に
+    自己発見・修正した）。/assign-planningと同じprefixのROUTE_ACCESSがそのまま適用され、
+    外部ロールには403になることを確認する。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.set_user_role(con, "partner2@inproc.org", "外部")
+    con.close()
+    partner_header = {"Cookie": f"sfa_session={webapp._make_session_token('partner2@inproc.org')}"}
+    code, _ = _get(server + "/assign-planning/deliveries", headers=partner_header)
+    assert code == 403
+    code, _ = _get(server + "/assign-planning/deliveries", headers=_auth_header())
+    assert code == 200
+
+
 def test_route_access_covers_singular_item_routes_not_just_list_pages(server, db_path):
     """レビュー時に発見した抜け穴の回帰テスト: 一覧ページ(/tasks, /accounts, /hearings, /docs)と
     個別アイテムのルート(/task/, /account/, /hearing/, /doc/, /deal-issue-subitem/)が単数/複数で
