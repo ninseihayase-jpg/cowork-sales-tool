@@ -647,9 +647,14 @@ def _extract_field(text: str, label: str) -> str | None:
     lines = text.split("\n")
     # コロンは全角「：」で入力する人が多いため半角「:」と両対応（#新規: 全角コロンで認識されず
     # サイレントに無視される不具合の修正）。
-    label_pat = re.compile(rf"^\*?{re.escape(label)}[:：]\*? *(.*)$")
+    # 行頭の箇条書き記号（・･•-）も許容する（実事故対策2026-09-28）: MS確認メッセージが
+    # 自ら「・次回MS日: ...」という箇条書き形式で例示・エコーしているため、ユーザーが同じ
+    # 「・」付きの形式でそのまま上書き返信すると、この記号が邪魔してどのフィールドにもマッチ
+    # せず、Botが無反応（上書き受付の確認すら返さない）のまま止まって見える事故が発生していた。
+    _bullet = r"(?:[・･•\-]\s*)?"
+    label_pat = re.compile(rf"^{_bullet}\*?{re.escape(label)}[:：]\*? *(.*)$")
     _others = [l for l in _FIELD_LABELS_ALL if l != label]
-    other_label_pat = re.compile(r"^\*?(?:" + "|".join(re.escape(l) for l in _others) + r")[:：]")
+    other_label_pat = re.compile(rf"^{_bullet}\*?(?:" + "|".join(re.escape(l) for l in _others) + r")[:：]")
     for i, line in enumerate(lines):
         m = label_pat.match(line)
         if not m:

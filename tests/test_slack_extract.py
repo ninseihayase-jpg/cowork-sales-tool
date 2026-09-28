@@ -55,3 +55,21 @@ def test_memo_stops_at_next_label_fullwidth_colon():
     t = "追記メモ：一行目\n続き\n担当：早瀬\n"
     assert sb._extract_field(t, "追記メモ") == "一行目\n続き"
     assert sb._extract_field(t, "担当") == "早瀬"
+
+
+def test_extract_field_accepts_leading_bullet():
+    """実事故(2026-09-28)の回帰テスト: 次回MS確認メッセージが自ら「・次回MS日: ...」という
+    箇条書き形式で例示・エコーしているため、ユーザーが同じ「・」付きの形式でそのまま
+    上書き返信すると、この記号が邪魔してどのフィールドにもマッチせずBotが無反応のまま
+    止まって見える事故が起きていた（_extract_fieldが行頭の箇条書き記号を考慮していなかった）。"""
+    t = "・次回MS日: 2026-10-09\n・次回MSラベル: InProc側の提案まとめ\n"
+    assert sb._extract_field(t, "次回MS日") == "2026-10-09"
+    assert sb._extract_field(t, "次回MSラベル") == "InProc側の提案まとめ"
+
+
+def test_memo_stops_at_next_label_with_leading_bullet():
+    """自由記述欄の終端判定（他ラベル検出）も行頭の箇条書き記号に対応していること
+    （・付きの上書き行が自由記述欄の続きとして誤って取り込まれないこと）。"""
+    t = "追記メモ: 一行目\n続き\n・担当: 早瀬\n"
+    assert sb._extract_field(t, "追記メモ") == "一行目\n続き"
+    assert sb._extract_field(t, "担当") == "早瀬"
