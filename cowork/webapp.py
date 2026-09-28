@@ -2773,53 +2773,42 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
    top:0はそのモーダルのスクロールに対して素直に機能する）。 */
 /* table-layout:fixedを明示（ユーザー指摘2026-09-28「変わらず揃っていない」）。指定が無い既定の
    auto層は、rowspanするセル(.ap-col-pj)の幅をブラウザが行ごとの内容から再計算するため、
-   行によって数px単位の揺れが起きうる（各列の幅は.ap-col-pj/.ap-col-staff/.ap-wk-head等で
+   行によって数px単位の揺れが起きうる（各列の幅は.ap-col-pj/.ap-col-staff等で
    既に明示済みなので、fixedにしてもレイアウトは変わらず、揺れの原因になり得る自動再計算だけを
-   止められる）。 */
-.ap-grid-tbl{border-collapse:collapse;font-size:11px;table-layout:fixed}
-.ap-grid-tbl th,.ap-grid-tbl td{padding:3px 5px;border-bottom:1px solid #f1f3f7;white-space:nowrap;
-  height:24px;box-sizing:border-box}
+   止められる）。width:100%はガントチャート撤去後（下記）に.ap-col-staffが残り幅いっぱいへ
+   広がるための前提（ユーザー要望2026-09-28「ガントチャート表示は削除し、画面右端まで拡大」）。 */
+.ap-grid-tbl{border-collapse:collapse;font-size:11px;table-layout:fixed;width:100%}
+.ap-grid-tbl th,.ap-grid-tbl td{padding:3px 5px;border-bottom:1px solid #f1f3f7;
+  box-sizing:border-box}
 /* PJ名列とアサイン編集列を分離（ユーザー要望2026-09-27: 「PJ名はアサイン検討の左に移動」）。
    PJ名セルはrowspanでそのPJの全アサイン行にまたがり、PJごとの空白ヘッダー行を廃止した
-   （縦のスキマ削減）。PJ情報を1行構成（チェックボックス・確度ワッペン・タイトル・日付）に
-   リニューアルしたため（ユーザー要望2026-09-28）、幅を230px→340pxへ拡張（その分、横1行に
-   収める情報が増えたため。以前の「タイトル2行+メタ2行」構成で高さがタイトル長依存になり
-   min-heightのいたちごっこになっていた反省を踏まえ、1行固定構成でPJセルの高さを常に一定に
-   する根本解決）。padding-topは.ap-grid-tbl td共通の3pxのままにする（以前ここに独自の
-   padding-top:6pxが入っており、.ap-col-staff側の3pxとズレて「縦が揃ってない」原因の一つに
-   なっていた。ユーザー指摘2026-09-27続き「縦が揃ってないけど、修正済み？」で実測して発見・
-   削除）。左側の余白はチェックボックスをより左に寄せるため縮小（ユーザー要望2026-09-28
-   「チェックボックスの位置を左にずらして」）。 */
-.ap-col-pj{position:sticky;left:0;width:340px;min-width:340px;max-width:340px;background:#fff;
-  z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:middle;padding-left:2px}
-/* アサイン編集列の幅は元々720px(PJ名と同じ列を共有していた頃)あったが、PJ名列を分離した際に
-   640pxのまま据え置いたため「内部/外部」「請/実」が見切れる不具合が発生（ユーザー指摘
-   2026-09-27「項目が隠れてしまうので、もう少し横幅を広げて」）。760pxへ拡張して解消。
-   さらに各フィールド自体も拡幅した（ユーザー要望2026-09-28「役割～稼働率のエリアを線
-   ギリギリまで右にずらして」＝右端に余白が残っていたのを解消）ため、列自体は790pxへ再拡張。 */
-.ap-col-staff{position:sticky;left:340px;width:790px;min-width:790px;max-width:790px;background:#fff;
-  z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top}
-.ap-corner-pj{position:sticky;left:0;top:0;width:340px;min-width:340px;max-width:340px;background:#fff;
+   （縦のスキマ削減）。ガントチャート（週別セル）を撤去し画面右端まで拡大した
+   （ユーザー要望2026-09-28続き）のに伴い、横スクロールが不要になったためposition:sticky
+   （左方向）も撤去した。PJ名・アカウント名は原則全文字表示（ユーザー要望）にするため
+   white-space:normalで折り返しを許容し、幅も340→420pxへ拡張。 */
+.ap-col-pj{width:420px;min-width:420px;max-width:420px;background:#fff;
+  border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top;padding-left:6px}
+/* アサイン編集列は、ガントチャート撤去で空いた分も含めて残り幅いっぱいに広がる
+   （width:auto。table-layout:fixedでは幅指定の無い列が残余幅を占める仕様）。 */
+.ap-col-staff{width:auto;background:#fff;white-space:normal;vertical-align:top}
+.ap-corner-pj{position:sticky;top:0;width:420px;min-width:420px;max-width:420px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0}
-.ap-corner{position:sticky;left:340px;top:0;width:790px;min-width:790px;max-width:790px;background:#fff;
-  z-index:5;border-right:1px solid #e6e9f0}
-.ap-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px}
+.ap-corner{position:sticky;top:0;background:#fff;z-index:5}
 /* PJの最終アサイン行に太めの下線を入れ、体制チップ廃止後もPJの区切りが視認できるようにする
    （ユーザー要望2026-09-27: 体制表記は削除するが、PJ間の境界は別の手段で維持）。 */
 .ap-pj-last td{border-bottom:2px solid #dbe1ea}
-/* PJ情報1行構成（ユーザー要望2026-09-28）: 確度ワッペン(.ap-block-badge、縦幅を取らない)＋
-   タイトル(1行省略表示、flex:1で残り幅を吸収)＋日付(年表記なし、常に右端寄り)。以前の
-   「タイトル2行クランプ+メタ2行」はタイトル長でPJセルの必要高さが変動し、min-heightの
-   いたちごっこになっていた（縦が揃わない指摘が3回続いた根本原因）。1行固定にすることで
-   PJセルの高さが常に一定になる。 */
-.ap-block-badge{flex:none;font-size:9px;font-weight:700;color:#fff;padding:2px 6px;
+/* PJ情報（ユーザー要望2026-09-28続き「かなり可視性が悪い」への対応で再リニューアル）:
+   チェックボックスを左揃え・確度ワッペンをアカウント/案件名の「上」の行に単独配置（横幅を
+   占有しない＝ワッペン行はcontentサイズのみ）・アカウント/案件名は省略せず全文字表示
+   （折り返し許容）、という縦積み構成にした。以前の「チェックボックス＋ワッペン＋タイトル
+   （省略表示）＋日付」の横1行構成は、タイトルが省略されて読めない・ワッペンが横幅を
+   圧迫する、という新たな可視性の問題を生んでいたための見直し。 */
+.ap-block-badge{align-self:flex-start;font-size:9px;font-weight:700;color:#fff;padding:2px 6px;
   border-radius:999px;white-space:nowrap}
-.ap-block-title{font-size:12px;font-weight:600;color:#3a4760;flex:1 1 auto;min-width:0;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ap-block-title{font-size:12px;font-weight:600;color:#3a4760;white-space:normal;
+  overflow-wrap:break-word}
 .ap-block-acc{color:#8893a8;font-weight:600}
-.ap-block-dates{flex:none;font-size:10px;color:#8893a8;white-space:nowrap}
-.ap-gantt-cell{text-align:center;font-size:10px}
-.ap-gantt-cell.ap-filled{background:#bbf7d0}
+.ap-block-dates{font-size:10px;color:#8893a8;white-space:nowrap}
 /* シナリオごとのDelivery除外（ユーザー要望2026-09-27「対象Delivery選択で選んだ案件をシナリオ
    ごとにOFFにできる仕様、チェックをOFFにするとグレーアウトされ稼働率が0%で計算される」）。 */
 .ap-col-pj.ap-pj-excluded{opacity:.45}
@@ -3369,11 +3358,13 @@ function apRenderScenarios(){
   var visibleIds = AP_STATE.deliveryOrder.filter(function(id){
     var d = AP_BY_ID[id]; return d && apEligible(d) && AP_STATE.included[id] !== false;
   });
+  // weeksは下のapRenderMemberUtilTable（メンバー別週別稼働率テーブル、シナリオカード内に
+  // 常時表示）とapScrollUtilToTodayで使う。編集モーダル側のPJ×アサイン詳細表は
+  // ガントチャート（週別セル）を撤去した（ユーザー要望2026-09-28続き「ガントチャート表示は
+  // 削除し、画面右端まで拡大」）ため、もう週リストを必要としない。
   var weeks = apPadWeeksForScroll(apGlobalWeeks(visibleIds));
-  // 週ヘッダは1段だけ・全PJ共通（ユーザー要望2026-09-26）。PJ名列とアサイン編集列を分けた
-  // ため、コーナーセルも2つに分割する（ユーザー要望2026-09-27）。
-  var headHtml = '<tr><th class="ap-corner-pj">&nbsp;</th><th class="ap-corner">&nbsp;</th>'
-    + weeks.map(function(w){ return '<th class="ap-wk-head">'+w.slice(5)+'</th>'; }).join('') + '</tr>';
+  // ヘッダはPJ名列・アサイン編集列の2コーナーのみ（ユーザー要望2026-09-27で分割した構成を維持）。
+  var headHtml = '<tr><th class="ap-corner-pj">&nbsp;</th><th class="ap-corner">&nbsp;</th></tr>';
 
   var outerHtml = '';
   AP_STATE.scenarios.forEach(function(scenario, idx){
@@ -3408,13 +3399,13 @@ function apRenderScenarios(){
     if(!visibleIds.length){
       bodyEl.innerHTML = '<p class="ap-empty">対象Deliveryにチェックが入っていません</p>';
     } else {
-      var rowsHtml = visibleIds.map(function(id){ return apRenderDeliveryRows(AP_OPEN_SCENARIO_IDX, id, weeks); }).join('');
+      var rowsHtml = visibleIds.map(function(id){ return apRenderDeliveryRows(AP_OPEN_SCENARIO_IDX, id); }).join('');
       bodyEl.innerHTML = '<table class="ap-grid-tbl"><thead>'+headHtml+'</thead><tbody>'+rowsHtml+'</tbody></table>';
     }
   }
 }
 
-function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
+function apRenderDeliveryRows(scenarioIdx, deliveryId){
   var d = AP_BY_ID[deliveryId];
   var scenario = AP_STATE.scenarios[scenarioIdx];
   var snap = scenario.data[deliveryId];
@@ -3434,25 +3425,40 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
   // min-height調整が不要になる（根本解決）。
   var acctLabel = d.account ? '<span class="ap-block-acc">'+_apEsc(d.account)+'</span> / ' : '';
   var confColor = AP_CONFIDENCE_COLORS[d.confidence] || '#6b7280';
+  // PJ情報を縦積み構成にリニューアル（ユーザー要望2026-09-28続き「かなり可視性が悪い」）:
+  // チェックボックスは左揃え（align-items:flex-startで上端に揃える）、確度ワッペンは
+  // アカウント/案件名の上に単独の行として配置（align-self:flex-startで横幅を占有しない）、
+  // アカウント/案件名は省略せず全文字表示（折り返し許容）。以前の横1行構成（チェックボックス＋
+  // ワッペン＋省略タイトル＋日付）は、タイトルが省略されて読めない・ワッペンが横幅を圧迫する、
+  // という可視性の問題があったための見直し。
   var pjCell = '<td class="ap-col-pj'+(isExcluded?' ap-pj-excluded':'')+'" rowspan="'+Math.max(assignments.length,1)+'">'
     // ページ共通CSSの`label{margin:10px 0 3px}`が効いてPJ名がセル上端から不揃いに
     // ずれ下がる不具合があったため（ユーザー指摘2026-09-27「シナリオの縦が揃ってない。
     // 左寄せにそろえて」）、margin:0で明示的に打ち消す。
-    + '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;min-width:0" title="このシナリオでの対象/対象外">'
-    + '<input type="checkbox" '+(isExcluded?'':'checked')
+    + '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;margin:0;min-width:0" title="このシナリオでの対象/対象外">'
+    // ページ共通CSSの`input,select,textarea{width:100%}`がチェックボックスにも掛かり、
+    // flex:noneだけだと（flex-shrink:0のため）幅100%のまま縮まずレイアウトが崩壊する
+    // （Playwright実機検証でチェックボックスの実測幅がラベル全幅と同じになることを確認して
+    // 特定）。width:autoで明示的に打ち消す。
+    + '<input type="checkbox" style="margin-top:2px;flex:none;width:auto" '+(isExcluded?'':'checked')
     + ' onchange="apToggleScenarioDeliveryExcluded('+scenarioIdx+','+deliveryId+',!this.checked)">'
+    // flex:1(=1 1 0%)が無いとflex-basis:auto(既定)のまま、中身(.ap-block-title)自体も
+    // flexboxで幅未指定のため「内容に基づくbasis計算」が循環して0近くに潰れ、
+    // overflow-wrap:break-wordのタイトルが1文字幅まで折り返される事故が起きる
+    // （Playwright実機検証でstackの実測幅が0pxになることを確認して特定）。
+    // flex-basis:0%にして中身のサイズを無視し、flex-growだけで残り幅いっぱいに広げる。
+    + '<span style="display:flex;flex-direction:column;gap:2px;min-width:0;flex:1">'
     + '<span class="ap-block-badge" style="background:'+confColor+'">'+_apEsc(d.confidence)+'</span>'
     + '<span class="ap-block-title" title="'+_apEsc((d.account?d.account+' / ':'')+d.title)+'">'+acctLabel+_apEsc(d.title)+'</span>'
     + '<span class="ap-block-dates">'+_apShortDate(d.startWeek)+'〜'+_apShortDate(d.endWeek)+'</span>'
-    + '</label></td>';
+    + '</span></label></td>';
 
   if (!assignments.length){
     // アサインが1件も無い場合も、PJ名の右に＋を出して追加できるようにする。
     return '<tr class="ap-pj-last'+(isExcluded?' ap-row-excluded':'')+'">' + pjCell
       + '<td class="ap-col-staff"><span class="ap-add-inline" title="アサイン追加" '
       + 'onclick="apAddAssignmentRow('+scenarioIdx+','+deliveryId+')">＋</span> '
-      + '<span class="muted" style="font-size:11px">アサインを追加</span></td>'
-      + weeks.map(function(){ return '<td></td>'; }).join('') + '</tr>';
+      + '<span class="muted" style="font-size:11px">アサインを追加</span></td></tr>';
   }
 
   // 既存のdeliveryアサインとの差分ハイライト（ユーザー要望2026-09-27）。実データ
@@ -3461,7 +3467,6 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
   var realAssignments = d.assignments || [];
   var html = '';
   assignments.forEach(function(a, ai){
-    var rowWeeks = {}; apWeeksBetween(a.from_week, a.to_week).forEach(function(w){ rowWeeks[w]=true; });
     var isLast = ai === assignments.length - 1;
     var real = ai < realAssignments.length ? realAssignments[ai] : null;
     var isNewRow = !real;
@@ -3486,8 +3491,12 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
           ? '<input class="ap-fld'+dc('owner')+'" type="text" style="width:100px" value="'+_apEsc(a.owner)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'
           : '<select class="ap-fld'+dc('owner')+'" style="width:100px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'+_apOwnerOpts(AP_OWNERS, a.owner)+'</select>')
       + addBtn
-      + '<input class="ap-fld'+dc('from_week')+'" type="date" style="width:140px" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)">'
-      + '<input class="ap-fld'+dc('to_week')+'" type="date" style="width:140px" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)">'
+      // 開始日/終了日は幅を狭く簡易にする（ユーザー要望2026-09-28続き「かなり可視性が悪い」
+      // への対応。従来140px→108pxへ縮小。type="date"はブラウザ標準の日付ピッカーのため
+      // 表記自体（YYYY/MM/DD等）はOS/ブラウザ依存で変更できないが、横幅はこの範囲まで
+      // 縮めても操作・表示に支障が無いことを実機確認済み）。
+      + '<input class="ap-fld'+dc('from_week')+'" type="date" style="width:108px" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)">'
+      + '<input class="ap-fld'+dc('to_week')+'" type="date" style="width:108px" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)">'
       + '請<input class="ap-fld'+dc('fte_billing')+'" type="number" step="1" min="0" style="width:60px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
       + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_billing\\',this.value)">'
       + '実<input class="ap-fld'+dc('fte_pct')+'" type="number" step="1" min="0" style="width:60px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
@@ -3497,10 +3506,6 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
     html += '<tr'+(rowCls?' class="'+rowCls+'"':'')+'>'
       + (ai===0 ? pjCell : '')
       + '<td class="ap-col-staff">'+fieldsHtml+'</td>'
-      + weeks.map(function(w){
-          var filled = rowWeeks[w] && parseFloat(a.fte_pct)>0;
-          return '<td class="ap-gantt-cell'+(filled?' ap-filled':'')+'"></td>';
-        }).join('')
       + '</tr>';
   });
   return html;

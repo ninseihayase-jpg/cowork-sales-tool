@@ -2409,23 +2409,31 @@ def test_assign_planning_scenario_can_exclude_delivery_independently(con):
     assert ".ap-row-excluded" in html and ".ap-col-pj.ap-pj-excluded" in html
 
 
-def test_assign_planning_staff_column_wide_enough_for_all_fields(con):
-    """ユーザー要望(2026-09-28)「役割～稼働率のエリアを線ギリギリまで右にずらして」。
-    PJ情報1行構成へのリニューアルにあわせ、アサイン編集列(.ap-col-staff)を760pxから
-    790pxへ再拡張した回帰テスト(PJ名列も230px→340pxへ拡張済み)。"""
+def test_assign_planning_staff_column_fills_remaining_width_after_gantt_removed(con):
+    """ユーザー要望(2026-09-28さらに続き)「ガントチャート表示は削除し、画面右端まで拡大」。
+    週別ガントセル(.ap-gantt-cell/.ap-wk-head)を撤去し、横スクロールが不要になったため
+    position:sticky(左方向)も撤去。アサイン編集列(.ap-col-staff)は固定790pxをやめ
+    width:autoで残り幅いっぱいに広がる（.ap-grid-tbl側にwidth:100%を追加）。PJ名列
+    (.ap-col-pj)は全文字表示化に伴い340px→420pxへ拡張。"""
     html = webapp.assign_planning_page(con)
-    assert "width:790px;min-width:790px;max-width:790px" in html.split(".ap-col-staff{")[1][:100]
-    assert "width:340px;min-width:340px;max-width:340px" in html.split(".ap-col-pj{")[1][:100]
+    assert "width:auto;background:#fff" in html.split(".ap-col-staff{")[1][:60]
+    assert "position:sticky" not in html.split(".ap-col-staff{")[1].split("}")[0]
+    assert "width:420px;min-width:420px;max-width:420px" in html.split(".ap-col-pj{")[1][:100]
+    assert "position:sticky" not in html.split(".ap-col-pj{")[1].split("}")[0]
+    assert "width:100%" in html.split(".ap-grid-tbl{")[1].split("}")[0]
+    assert ".ap-gantt-cell" not in html and ".ap-wk-head" not in html
 
 
-def test_assign_planning_pj_label_overrides_global_label_margin(con):
-    """ユーザー指摘(2026-09-27):「シナリオの縦が揃ってない。左寄せにそろえて」。原因は
-    ページ共通CSSの`label{margin:10px 0 3px}`がPJ名チェックボックスの<label>にも掛かり、
-    PJ名がセル上端から約10px下にずれていたこと。inline styleでmargin:0を明示して打ち消した
-    ことの回帰テスト。PJ情報1行構成へのリニューアル(2026-09-28)で
-    align-items:flex-start→centerに変わり、min-width:0も追加されている。"""
+def test_assign_planning_pj_label_checkbox_left_aligned(con):
+    """ユーザー指摘(2026-09-27):「シナリオの縦が揃ってない。左寄せにそろえて」に加え、
+    (2026-09-28さらに続き)「かなり可視性が悪い。チェックボックスを左揃えに」で再度指摘。
+    PJ情報を縦積み構成（チェックボックス＋確度ワッペン/アカウント・案件名/日付のスタック）に
+    再リニューアルし、align-items:flex-startでチェックボックスをスタックの上端・左端に
+    揃えたことの回帰テスト（ページ共通CSSのlabel{margin:10px 0 3px}を打ち消す
+    margin:0は維持）。"""
     html = webapp.assign_planning_page(con)
-    assert "display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;min-width:0" in html
+    assert "display:flex;align-items:flex-start;gap:6px;cursor:pointer;margin:0;min-width:0" in html
+    assert 'type="checkbox" style="margin-top:2px;flex:none;width:auto"' in html
 
 
 def test_assign_planning_fte_number_inputs_wide_enough_for_three_digits(con):
@@ -2556,24 +2564,43 @@ def test_assign_planning_reload_also_fixes_delivery_order_not_just_by_id(con):
     assert "if(AP_STATE.deliveryOrder.indexOf(d.id) === -1){" in fn
 
 
-def test_assign_planning_pj_cell_is_single_line_so_row_heights_stay_constant(con):
-    """ユーザー要望(2026-09-28、複数回の「縦が揃わない」報告の最終的な根本解決)。
-    以前は「タイトル最大2行＋メタ1〜2行」でPJ名セルの必要高さがタイトル長・確度/期間の
-    表記行数に依存しており、min-heightの拡張(46px→72px等)をいたちごっこで繰り返していた。
-    PJ情報を「チェックボックス＋確度ワッペン(.ap-block-badge、縦幅を取らない)＋
-    1行省略のタイトル(.ap-block-title)＋タイトル右の年表記なし日付(.ap-block-dates)」の
-    完全な1行構成にリニューアルし、PJセルの高さが行数・文字数に関わらず常に一定になった
-    ことの回帰テスト。旧来の2行クランプ(.ap-block-meta等)は撤去済み。"""
+def test_assign_planning_pj_badge_above_name_no_ellipsis(con):
+    """ユーザー要望(2026-09-28さらに続き)「かなり可視性が悪い」への対応で、PJ情報の1行構成
+    （チェックボックス＋確度ワッペン＋省略表示タイトル＋日付を横1列）から縦積み構成へ再度
+    リニューアル: (1)確度ワッペンはアカウント/案件名の「上」に単独配置し、横幅を占有しない
+    （align-self:flex-startでスタック内の他要素と幅を揃えない＝content-sizeのまま）。
+    (2)アカウント/案件名は省略せず全文字表示（overflow-wrap:break-wordで折り返し、
+    text-overflow:ellipsis/white-space:nowrapは撤去）。"""
     html = webapp.assign_planning_page(con)
     assert ".ap-block-meta" not in html, "旧メタ表記(確度/期間を挟む複数行レイアウト)は撤去済みであること"
     badge_block = html.split(".ap-block-badge{")[1].split("}")[0]
-    assert "flex:none" in badge_block and "white-space:nowrap" in badge_block, \
-        "確度ワッペンは行の高さに影響しないflex:noneの1行要素であること"
+    assert "align-self:flex-start" in badge_block, \
+        "確度ワッペンはスタック内で横幅いっぱいに伸びず、content-sizeのまま上に単独配置されること"
     title_block = html.split(".ap-block-title{")[1].split("}")[0]
-    assert "white-space:nowrap" in title_block and "text-overflow:ellipsis" in title_block, \
-        "PJタイトルは折り返さず1行省略表示であること"
-    dates_block = html.split(".ap-block-dates{")[1].split("}")[0]
-    assert "flex:none" in dates_block and "white-space:nowrap" in dates_block
+    assert "white-space:nowrap" not in title_block and "text-overflow:ellipsis" not in title_block, \
+        "PJタイトル/アカウント名は省略せず折り返して全文字表示すること"
+    assert "overflow-wrap:break-word" in title_block
+    # チェックボックス→(ワッペン→アカウント/案件名→日付の縦積みスタック)の順で並び、
+    # ワッペンがタイトルより上（先）に来ること（apRenderDeliveryRowsのpjCell組み立て順）。
+    # class="..." 付きで検索し、コード中の説明コメント（class名に触れているだけの箇所）を
+    # 誤ってヒットさせないようにする。
+    fn = html.split("function apRenderDeliveryRows(scenarioIdx, deliveryId){")[1].split("\nfunction ")[0]
+    assert 'type="checkbox" style="margin-top:2px;flex:none;width:auto"' in fn
+    stack_wrap_pos = fn.index('<span style="display:flex;flex-direction:column')
+    badge_pos = fn.index('class="ap-block-badge"')
+    title_pos = fn.index('class="ap-block-title"')
+    checkbox_pos = fn.index('type="checkbox"')
+    assert checkbox_pos < stack_wrap_pos < badge_pos < title_pos, \
+        "チェックボックス→スタック→ワッペン→タイトルの順であること"
+
+
+def test_assign_planning_assignment_date_inputs_narrowed(con):
+    """ユーザー要望(2026-09-28さらに続き)「アサインメンバーの開始日、終了日を横幅狭く」。
+    開始日/終了日のtype="date"入力を140px→108pxへ縮小したことの回帰テスト
+    （表記自体はブラウザ標準の日付ピッカーに依存するため変更できない。横幅のみ縮小）。"""
+    html = webapp.assign_planning_page(con)
+    assert "type=\"date\" style=\"width:108px\"" in html
+    assert "type=\"date\" style=\"width:140px\"" not in html
 
 
 def test_assign_planning_all_assignment_rows_share_uniform_min_height(con):
