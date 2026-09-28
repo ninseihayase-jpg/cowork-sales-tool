@@ -2410,27 +2410,30 @@ def test_assign_planning_scenario_can_exclude_delivery_independently(con):
 
 
 def test_assign_planning_staff_column_wide_enough_for_all_fields(con):
-    """ユーザー指摘(2026-09-27):「項目が隠れてしまうので、もう少し横幅を広げて。特に
-    「内部/外部」、「稼働率(請求・実)」は見えるように」。アサイン編集列(.ap-col-staff)が
-    640pxのままだと実測でフィールドが見切れていたため760pxへ拡張した回帰テスト。"""
+    """ユーザー要望(2026-09-28)「役割～稼働率のエリアを線ギリギリまで右にずらして」。
+    PJ情報1行構成へのリニューアルにあわせ、アサイン編集列(.ap-col-staff)を760pxから
+    790pxへ再拡張した回帰テスト(PJ名列も230px→340pxへ拡張済み)。"""
     html = webapp.assign_planning_page(con)
-    assert "width:760px;min-width:760px;max-width:760px" in html.split(".ap-col-staff{")[1][:100]
+    assert "width:790px;min-width:790px;max-width:790px" in html.split(".ap-col-staff{")[1][:100]
+    assert "width:340px;min-width:340px;max-width:340px" in html.split(".ap-col-pj{")[1][:100]
 
 
 def test_assign_planning_pj_label_overrides_global_label_margin(con):
     """ユーザー指摘(2026-09-27):「シナリオの縦が揃ってない。左寄せにそろえて」。原因は
     ページ共通CSSの`label{margin:10px 0 3px}`がPJ名チェックボックスの<label>にも掛かり、
     PJ名がセル上端から約10px下にずれていたこと。inline styleでmargin:0を明示して打ち消した
-    ことの回帰テスト。"""
+    ことの回帰テスト。PJ情報1行構成へのリニューアル(2026-09-28)で
+    align-items:flex-start→centerに変わり、min-width:0も追加されている。"""
     html = webapp.assign_planning_page(con)
-    assert "display:flex;align-items:flex-start;gap:5px;cursor:pointer;margin:0" in html
+    assert "display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;min-width:0" in html
 
 
 def test_assign_planning_fte_number_inputs_wide_enough_for_three_digits(con):
     """ユーザー指摘(2026-09-27続き):「相変わらず、稼働率が隠れている」。請/実の数値入力が
-    36pxだと3桁(100等)がネイティブのスピナー込みで見切れていたため46pxへ拡張した回帰テスト。"""
+    36pxだと3桁(100等)がネイティブのスピナー込みで見切れていたため46pxへ拡張した回帰テスト。
+    2026-09-28の「役割～稼働率のエリアを線ギリギリまで右にずらして」対応でさらに60pxへ拡張。"""
     html = webapp.assign_planning_page(con)
-    assert 'type="number" step="1" min="0" style="width:46px"' in html
+    assert 'type="number" step="1" min="0" style="width:60px"' in html
 
 
 def test_assign_planning_member_util_has_domain_group_divider(con):
@@ -2553,46 +2556,45 @@ def test_assign_planning_reload_also_fixes_delivery_order_not_just_by_id(con):
     assert "if(AP_STATE.deliveryOrder.indexOf(d.id) === -1){" in fn
 
 
-def test_assign_planning_pj_title_is_clamped_so_row_heights_stay_consistent(con):
-    """ユーザー指摘(2026-09-28)「まだ縦が揃わない」。原因はrowspanするPJ名セルの必要高さが
-    タイトルの長さで青天井に伸びるため、アサイン行数が少ないPJ(特に1行)では、その1行だけが
-    長文タイトル分まで間延びし、他のPJの行の高さとバラバラになっていたこと(Playwright実測で
-    1行のみのPJが93.5pxまで伸びていることを確認して発見)。.ap-block-titleを2行までクランプし、
-    .ap-block-metaも1行に丸めることで、行数に関わらずPJ名セルの高さの上限を揃えた回帰テスト。
-    全文はtitle属性でホバー表示する。"""
+def test_assign_planning_pj_cell_is_single_line_so_row_heights_stay_constant(con):
+    """ユーザー要望(2026-09-28、複数回の「縦が揃わない」報告の最終的な根本解決)。
+    以前は「タイトル最大2行＋メタ1〜2行」でPJ名セルの必要高さがタイトル長・確度/期間の
+    表記行数に依存しており、min-heightの拡張(46px→72px等)をいたちごっこで繰り返していた。
+    PJ情報を「チェックボックス＋確度ワッペン(.ap-block-badge、縦幅を取らない)＋
+    1行省略のタイトル(.ap-block-title)＋タイトル右の年表記なし日付(.ap-block-dates)」の
+    完全な1行構成にリニューアルし、PJセルの高さが行数・文字数に関わらず常に一定になった
+    ことの回帰テスト。旧来の2行クランプ(.ap-block-meta等)は撤去済み。"""
     html = webapp.assign_planning_page(con)
+    assert ".ap-block-meta" not in html, "旧メタ表記(確度/期間を挟む複数行レイアウト)は撤去済みであること"
+    badge_block = html.split(".ap-block-badge{")[1].split("}")[0]
+    assert "flex:none" in badge_block and "white-space:nowrap" in badge_block, \
+        "確度ワッペンは行の高さに影響しないflex:noneの1行要素であること"
     title_block = html.split(".ap-block-title{")[1].split("}")[0]
-    assert "-webkit-line-clamp:2" in title_block and "overflow:hidden" in title_block
-    meta_block = html.split(".ap-block-meta{")[1].split("}")[0]
-    assert "white-space:nowrap" in meta_block and "text-overflow:ellipsis" in meta_block
-    assert 'class="ap-block-title" title="' in html, "全文をtitle属性でホバー表示できること"
+    assert "white-space:nowrap" in title_block and "text-overflow:ellipsis" in title_block, \
+        "PJタイトルは折り返さず1行省略表示であること"
+    dates_block = html.split(".ap-block-dates{")[1].split("}")[0]
+    assert "flex:none" in dates_block and "white-space:nowrap" in dates_block
 
 
 def test_assign_planning_all_assignment_rows_share_uniform_min_height(con):
-    """ユーザー指摘(2026-09-28)「まだ揃っていない」→抜本原因を特定した回帰テスト。
-    PJ名を2行クランプしても、アサインが1行だけのPJは「PJ名(最大2行)+メタ1行」に必要な高さ
-    (実測約60px)が、アサイン欄1行自身の自然な高さ(実測約25px)より大きいため、その1行だけが
-    複数行に自然に収まる他のPJ(1行あたり25〜32px)より高くなり、表全体で行の高さが揃わなかった
-    （Playwright実測でPHC(1行,短いタイトル)=42.5px、TOPPAN(3行,長いタイトルをクランプ)の
-    各行=32〜32.5pxと、約10px食い違うことを確認して特定）。.ap-asg-fieldsにmin-heightを
-    与え、行数・タイトルの長さに関わらず全アサイン行の高さの下限を揃えたことの回帰テスト
-    （min-height指定後は実測で全行が63〜64px、1px未満の差に収まることを確認済み）。"""
+    """PJ情報1行構成へのリニューアル(2026-09-28)により、PJセルの高さが常に一定になった
+    ため、アサイン行の高さ下限(.ap-asg-fields)も以前の72px(2行メタ分の余白込み)から
+    32pxへ縮小した回帰テスト。行数・タイトル長に関わらず表全体の行揃えが崩れないことは
+    [[test_assign_planning_pj_cell_is_single_line_so_row_heights_stay_constant]]で担保する。"""
     html = webapp.assign_planning_page(con)
     fields_block = html.split(".ap-asg-fields{")[1].split("}")[0]
-    assert "min-height:72px" in fields_block and "box-sizing:border-box" in fields_block
+    assert "min-height:32px" in fields_block and "box-sizing:border-box" in fields_block
 
 
-def test_assign_planning_status_and_period_are_separate_lines(con):
-    """ユーザー要望(2026-09-28):「ステータスの『見込み(クロージング』と『期間』を別行で表記」。
-    以前は" / "で1行に連結していた確度と期間を、それぞれ独立した.ap-block-metaに分けた
-    回帰テスト。分離した分メタが2行になるため、.ap-asg-fieldsのmin-height(2026-09-28続きの
-    行揃え修正)も72pxへ再拡張していることを合わせて確認する。"""
+def test_assign_planning_pj_date_range_omits_year(con):
+    """ユーザー要望(2026-09-28):「PJの日付は、PJタイトルの右に配置。日付は、年の表記は
+    不要」。_apShortDate()がISO日付(YYYY-MM-DD)の年部分を落としてMM/DD〜MM/DDで
+    表示することの回帰テスト。"""
     html = webapp.assign_planning_page(con)
-    fn = html.split("function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){")[1].split("\nfunction ")[0]
-    assert fn.count("'<span class=\"ap-block-meta\">") == 2, \
-        "確度と期間がそれぞれ独立した.ap-block-metaになっていること"
-    assert "+_apEsc(d.confidence)+'</span>'" in fn
-    assert "_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span></span>'" in fn
+    fn = html.split("function _apShortDate(s){")[1].split("\n")[0]
+    assert "s.slice(5)" in fn, "先頭のYYYY-を取り除いていること"
+    assert "ap-block-dates\">'+_apShortDate(d.startWeek)+'〜'+_apShortDate(d.endWeek)" in html, \
+        "PJタイトルの右(.ap-block-dates)に年なし日付レンジを表示していること"
 
 
 def test_assign_planning_grid_uses_fixed_table_layout(con):

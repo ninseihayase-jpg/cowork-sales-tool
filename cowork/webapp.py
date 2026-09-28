@@ -2781,37 +2781,43 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
   height:24px;box-sizing:border-box}
 /* PJ名列とアサイン編集列を分離（ユーザー要望2026-09-27: 「PJ名はアサイン検討の左に移動」）。
    PJ名セルはrowspanでそのPJの全アサイン行にまたがり、PJごとの空白ヘッダー行を廃止した
-   （縦のスキマ削減）。幅は実測で調整(230px): アカウント名併記（ユーザー要望2026-09-27
-   「案件名のところに、アカウント名も記載して」）で表示文字数が増えたため190pxから拡張。
-   padding-topは.ap-grid-tbl td共通の3pxのままにする（以前ここに独自のpadding-top:6pxが
-   入っており、.ap-col-staff側の3pxとズレて「縦が揃ってない」原因の一つになっていた。
-   ユーザー指摘2026-09-27続き「縦が揃ってないけど、修正済み？」で実測して発見・削除）。 */
-.ap-col-pj{position:sticky;left:0;width:230px;min-width:230px;max-width:230px;background:#fff;
-  z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top}
+   （縦のスキマ削減）。PJ情報を1行構成（チェックボックス・確度ワッペン・タイトル・日付）に
+   リニューアルしたため（ユーザー要望2026-09-28）、幅を230px→340pxへ拡張（その分、横1行に
+   収める情報が増えたため。以前の「タイトル2行+メタ2行」構成で高さがタイトル長依存になり
+   min-heightのいたちごっこになっていた反省を踏まえ、1行固定構成でPJセルの高さを常に一定に
+   する根本解決）。padding-topは.ap-grid-tbl td共通の3pxのままにする（以前ここに独自の
+   padding-top:6pxが入っており、.ap-col-staff側の3pxとズレて「縦が揃ってない」原因の一つに
+   なっていた。ユーザー指摘2026-09-27続き「縦が揃ってないけど、修正済み？」で実測して発見・
+   削除）。左側の余白はチェックボックスをより左に寄せるため縮小（ユーザー要望2026-09-28
+   「チェックボックスの位置を左にずらして」）。 */
+.ap-col-pj{position:sticky;left:0;width:340px;min-width:340px;max-width:340px;background:#fff;
+  z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:middle;padding-left:2px}
 /* アサイン編集列の幅は元々720px(PJ名と同じ列を共有していた頃)あったが、PJ名列を分離した際に
    640pxのまま据え置いたため「内部/外部」「請/実」が見切れる不具合が発生（ユーザー指摘
-   2026-09-27「項目が隠れてしまうので、もう少し横幅を広げて」）。760pxへ拡張して解消。 */
-.ap-col-staff{position:sticky;left:230px;width:760px;min-width:760px;max-width:760px;background:#fff;
+   2026-09-27「項目が隠れてしまうので、もう少し横幅を広げて」）。760pxへ拡張して解消。
+   さらに各フィールド自体も拡幅した（ユーザー要望2026-09-28「役割～稼働率のエリアを線
+   ギリギリまで右にずらして」＝右端に余白が残っていたのを解消）ため、列自体は790pxへ再拡張。 */
+.ap-col-staff{position:sticky;left:340px;width:790px;min-width:790px;max-width:790px;background:#fff;
   z-index:2;border-right:1px solid #e6e9f0;white-space:normal;vertical-align:top}
-.ap-corner-pj{position:sticky;left:0;top:0;width:230px;min-width:230px;max-width:230px;background:#fff;
+.ap-corner-pj{position:sticky;left:0;top:0;width:340px;min-width:340px;max-width:340px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0}
-.ap-corner{position:sticky;left:230px;top:0;width:760px;min-width:760px;max-width:760px;background:#fff;
+.ap-corner{position:sticky;left:340px;top:0;width:790px;min-width:790px;max-width:790px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0}
 .ap-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px}
 /* PJの最終アサイン行に太めの下線を入れ、体制チップ廃止後もPJの区切りが視認できるようにする
    （ユーザー要望2026-09-27: 体制表記は削除するが、PJ間の境界は別の手段で維持）。 */
 .ap-pj-last td{border-bottom:2px solid #dbe1ea}
-/* PJ名(タイトル)を2行までにクランプする（ユーザー指摘2026-09-28「まだ縦が揃わない」）。
-   原因: rowspanするPJ名セルの必要高さがタイトルの長さで青天井に伸びるため、アサイン行数が
-   少ないPJ(特に1行)では、その1行だけが長文タイトル分まで間延びし、他のPJの行の高さと
-   バラバラになって「縦が揃っていない」ように見えていた。行数に関わらずPJ名の高さの上限を
-   2行+メタ1行に固定することで、PJごとの行の高さのばらつきを抑える（全文はtitle属性で
-   ホバー表示）。 */
-.ap-block-title{font-size:12px;font-weight:600;color:#3a4760;white-space:normal;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* PJ情報1行構成（ユーザー要望2026-09-28）: 確度ワッペン(.ap-block-badge、縦幅を取らない)＋
+   タイトル(1行省略表示、flex:1で残り幅を吸収)＋日付(年表記なし、常に右端寄り)。以前の
+   「タイトル2行クランプ+メタ2行」はタイトル長でPJセルの必要高さが変動し、min-heightの
+   いたちごっこになっていた（縦が揃わない指摘が3回続いた根本原因）。1行固定にすることで
+   PJセルの高さが常に一定になる。 */
+.ap-block-badge{flex:none;font-size:9px;font-weight:700;color:#fff;padding:2px 6px;
+  border-radius:999px;white-space:nowrap}
+.ap-block-title{font-size:12px;font-weight:600;color:#3a4760;flex:1 1 auto;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ap-block-acc{color:#8893a8;font-weight:600}
-.ap-block-meta{font-size:11px;color:#8893a8;display:block;margin-top:2px;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ap-block-dates{flex:none;font-size:10px;color:#8893a8;white-space:nowrap}
 .ap-gantt-cell{text-align:center;font-size:10px}
 .ap-gantt-cell.ap-filled{background:#bbf7d0}
 /* シナリオごとのDelivery除外（ユーザー要望2026-09-27「対象Delivery選択で選んだ案件をシナリオ
@@ -2858,15 +2864,12 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-util-cell.ap-util-l70{background:#fef08a}
 .ap-util-cell.ap-util-l100{background:#fdba74;font-weight:700}
 .ap-util-cell.ap-util-l150{background:#f87171;color:#fff;font-weight:700}
-/* 全アサイン行の高さを揃える（ユーザー指摘2026-09-28「まだ縦が揃わない」で発見した真因）。
-   PJ名を2行クランプしても、アサインが1行しか無いPJは「PJ名(最大2行)+メタ」の高さの方が、
-   アサイン欄自身の自然な高さ（実測約25px）より大きいため、その1行だけが周囲のPJの各行
-   （複数行に自然に収まり25〜32px/行で済む）より高くなり、表全体で行の高さが揃わなかった。
-   min-heightで全行の下限をPJ名2行クランプ時の最大所要高さに揃えることで、行数やタイトルの
-   長さに関わらず全行を同じ高さにする。確度と期間を別行表記に変更（ユーザー要望2026-09-28）
-   してメタが2行になった分、72pxへ再拡張（タイトル最大2行+メタ2行の最大所要高さに対応）。 */
+/* 全アサイン行の高さを揃える。PJ情報が1行構成（ユーザー要望2026-09-28）になったことで
+   PJセルの必要高さがタイトル長に依存しなくなったため、以前(2026-09-28前半)何度も再拡張
+   していたmin-heightは32pxまで縮小できる（1行構成なら常にこの程度で全PJの必要高さを
+   賄えるため、以後タイトル長でmin-heightを追いかけ直す必要が無くなったのが根本解決点）。 */
 .ap-asg-fields{display:flex;flex-wrap:nowrap;gap:4px;align-items:center;padding:2px 0;
-  min-height:72px;box-sizing:border-box}
+  min-height:32px;box-sizing:border-box}
 .ap-asg-fields select,.ap-asg-fields input{font-size:11px;padding:2px 3px;box-sizing:border-box;flex:none}
 /* 既存のdeliveryアサインとの差分ハイライト（ユーザー要望2026-09-27）。実データと値が異なる
    フィールドだけを黄色く、このシナリオで新規追加した行（実データに対応が無い）は行全体を
@@ -2964,6 +2967,7 @@ var AP_OWNERS = __INITIAL_OWNERS_JSON__;
 var AP_OWNER_DOMAIN_MAP = __INITIAL_OWNER_DOMAIN_MAP_JSON__;
 var AP_DOMAIN_ORDER = __INITIAL_DOMAIN_ORDER_JSON__;
 var AP_BIZ_TYPE_ORDER = __INITIAL_BIZ_TYPE_ORDER_JSON__;
+var AP_CONFIDENCE_COLORS = __INITIAL_CONFIDENCE_COLORS_JSON__;
 var AP_PLANS = __INITIAL_PLANS_JSON__;
 var AP_BY_ID = {};
 AP_DELIVERIES.forEach(function(d){ AP_BY_ID[d.id] = d; });
@@ -3184,6 +3188,9 @@ function _apEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){
 // 途中で終わらせないように。ブラウザが&quot;を"へ復元してからJSとして評価するため、
 // 最終的には正しいJS文字列リテラルとして働く）。
 function _apJsStr(s){ return _apEsc(JSON.stringify(String(s==null?'':s))); }
+// PJ日付は年の表記が不要（ユーザー要望2026-09-28「日付は、年の表記は不要」）。
+// "2026-08-31"→"08/31"。
+function _apShortDate(s){ s = String(s==null?'':s); return s.length>=10 ? s.slice(5).replace('-','/') : s; }
 function _apOwnerOpts(owners, current){
   var list = owners.slice(); if(current && list.indexOf(current)===-1) list.push(current);
   return '<option value=""></option>' + list.map(function(o){
@@ -3420,20 +3427,23 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
   // 「PJ名はアサイン検討の左に移動、ガントの縦にスキマがあかないように」）。体制チップは
   // 廃止済み（ユーザー要望2026-09-27:「体制の表記は不要」）。アカウント名も併記する
   // （ユーザー要望2026-09-27「案件名のところに、アカウント名も記載して」）。
+  // PJ情報を1行構成にリニューアル（ユーザー要望2026-09-28: チェックボックスを左に、確度は
+  // 縦幅を取らないワッペン表記、日付はPJタイトルの右・年表記なし）。以前は「タイトル最大2行＋
+  // メタ2行」で高さがタイトル長依存になり、行揃えのためにmin-heightを何度も拡張する
+  // いたちごっこになっていた。1行構成にすることでPJセルの高さが常に一定になり、その場しのぎの
+  // min-height調整が不要になる（根本解決）。
   var acctLabel = d.account ? '<span class="ap-block-acc">'+_apEsc(d.account)+'</span> / ' : '';
+  var confColor = AP_CONFIDENCE_COLORS[d.confidence] || '#6b7280';
   var pjCell = '<td class="ap-col-pj'+(isExcluded?' ap-pj-excluded':'')+'" rowspan="'+Math.max(assignments.length,1)+'">'
     // ページ共通CSSの`label{margin:10px 0 3px}`が効いてPJ名がセル上端から不揃いに
     // ずれ下がる不具合があったため（ユーザー指摘2026-09-27「シナリオの縦が揃ってない。
     // 左寄せにそろえて」）、margin:0で明示的に打ち消す。
-    + '<label style="display:flex;align-items:flex-start;gap:5px;cursor:pointer;margin:0" title="このシナリオでの対象/対象外">'
-    + '<input type="checkbox" style="margin-top:3px" '+(isExcluded?'':'checked')
+    + '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;min-width:0" title="このシナリオでの対象/対象外">'
+    + '<input type="checkbox" '+(isExcluded?'':'checked')
     + ' onchange="apToggleScenarioDeliveryExcluded('+scenarioIdx+','+deliveryId+',!this.checked)">'
-    + '<span><span class="ap-block-title" title="'+_apEsc((d.account?d.account+' / ':'')+d.title)+'">'+acctLabel+_apEsc(d.title)+'</span>'
-    // 確度と期間は別行に分ける（ユーザー要望2026-09-28「ステータスの『見込み(クロージング』と
-    // 『期間』を別行で表記」）。以前は" / "で1行に連結していたため、確度ラベルが長いと
-    // 期間側が見切れやすかった。
-    + '<span class="ap-block-meta">'+_apEsc(d.confidence)+'</span>'
-    + '<span class="ap-block-meta">'+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span></span>'
+    + '<span class="ap-block-badge" style="background:'+confColor+'">'+_apEsc(d.confidence)+'</span>'
+    + '<span class="ap-block-title" title="'+_apEsc((d.account?d.account+' / ':'')+d.title)+'">'+acctLabel+_apEsc(d.title)+'</span>'
+    + '<span class="ap-block-dates">'+_apShortDate(d.startWeek)+'〜'+_apShortDate(d.endWeek)+'</span>'
     + '</label></td>';
 
   if (!assignments.length){
@@ -3462,24 +3472,25 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
     var addBtn = '<span class="ap-add-inline" title="アサイン追加" onclick="apAddAssignmentRow('
       + scenarioIdx + ',' + deliveryId + ')"'
       + (isLast ? '' : ' style="visibility:hidden"') + '>＋</span>';
+    // フィールド幅は「役割～稼働率のエリアを線ギリギリまで右にずらして」（ユーザー要望
+    // 2026-09-28）に対応し、.ap-col-staffの拡幅(790px)にあわせて全体を拡幅（以前は右側に
+    // 使われない余白が残っていた）。
     var fieldsHtml = '<div class="ap-asg-fields'+(isNewRow?' ap-diff-new':'')+'"'
       + (isNewRow ? ' title="このシナリオで追加したアサイン（実際のDeliveryには存在しません）"' : '') + '>'
-      + '<select class="ap-fld'+dc('role')+'" style="width:96px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)">'
+      + '<select class="ap-fld'+dc('role')+'" style="width:130px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'role\\',this.value)">'
       + _apRoleOpts(snap.roles, a.role) + '</select>'
-      + '<select class="ap-fld'+dc('member_kind')+'" style="width:50px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'member_kind\\',this.value)">'
+      + '<select class="ap-fld'+dc('member_kind')+'" style="width:70px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'member_kind\\',this.value)">'
       + ['内部','外部'].map(function(k){ return '<option value="'+k+'"'+(k===a.member_kind?' selected':'')+'>'+k+'</option>'; }).join('')
       + '</select>'
       + (a.member_kind==='外部'
-          ? '<input class="ap-fld'+dc('owner')+'" type="text" style="width:74px" value="'+_apEsc(a.owner)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'
-          : '<select class="ap-fld'+dc('owner')+'" style="width:74px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'+_apOwnerOpts(AP_OWNERS, a.owner)+'</select>')
+          ? '<input class="ap-fld'+dc('owner')+'" type="text" style="width:100px" value="'+_apEsc(a.owner)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'
+          : '<select class="ap-fld'+dc('owner')+'" style="width:100px" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'owner\\',this.value)">'+_apOwnerOpts(AP_OWNERS, a.owner)+'</select>')
       + addBtn
-      // 請/実は36pxだと3桁(100等)がネイティブのスピナー込みで見切れる不具合があったため
-      // （ユーザー指摘2026-09-27「相変わらず、稼働率が隠れている」）、46pxへ拡張。
-      + '<input class="ap-fld'+dc('from_week')+'" type="date" style="width:112px" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)">'
-      + '<input class="ap-fld'+dc('to_week')+'" type="date" style="width:112px" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)">'
-      + '請<input class="ap-fld'+dc('fte_billing')+'" type="number" step="1" min="0" style="width:46px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
+      + '<input class="ap-fld'+dc('from_week')+'" type="date" style="width:140px" value="'+_apEsc(a.from_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'from_week\\',this.value)">'
+      + '<input class="ap-fld'+dc('to_week')+'" type="date" style="width:140px" value="'+_apEsc(a.to_week)+'" onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'to_week\\',this.value)">'
+      + '請<input class="ap-fld'+dc('fte_billing')+'" type="number" step="1" min="0" style="width:60px" value="'+(a.fte_billing==null?'':a.fte_billing)+'" '
       + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_billing\\',this.value)">'
-      + '実<input class="ap-fld'+dc('fte_pct')+'" type="number" step="1" min="0" style="width:46px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
+      + '実<input class="ap-fld'+dc('fte_pct')+'" type="number" step="1" min="0" style="width:60px" value="'+(a.fte_pct==null?'':a.fte_pct)+'" '
       + 'onchange="apEditAsg('+scenarioIdx+','+deliveryId+','+ai+',\\'fte_pct\\',this.value)">'
       + '</div>';
     var rowCls = [isLast?'ap-pj-last':'', isExcluded?'ap-row-excluded':''].filter(Boolean).join(' ');
@@ -3650,6 +3661,8 @@ def assign_planning_page(con) -> str:
     # 対象Delivery選択の既定並び順（事業種別L1L2順×終了日の早い順×確度順、ユーザー要望2026-09-27）
     # に使う。事業種別マスタ（/masters「事業種別」）のL1→L2の登録順をそのまま優先順位にする。
     biz_type_order = sfa_db.get_business_type_tree(con)
+    # 確度ワッペンの色（ユーザー要望2026-09-28「確度はワッペンで表記」）。Delivery一覧の
+    # バッジ配色(_DELIVERY_CONFIDENCE_COLORS)とそのまま揃える。
 
     html = _ASSIGN_PLANNING_PAGE_TEMPLATE.replace("__FAVICON_LINK__", _SFA_FAVICON)
     html = html.replace("__INITIAL_DELIVERIES_JSON__", json.dumps(deliveries, ensure_ascii=False))
@@ -3657,6 +3670,7 @@ def assign_planning_page(con) -> str:
     html = html.replace("__INITIAL_OWNER_DOMAIN_MAP_JSON__", json.dumps(owner_domain_map, ensure_ascii=False))
     html = html.replace("__INITIAL_DOMAIN_ORDER_JSON__", json.dumps(domain_order, ensure_ascii=False))
     html = html.replace("__INITIAL_BIZ_TYPE_ORDER_JSON__", json.dumps(biz_type_order, ensure_ascii=False))
+    html = html.replace("__INITIAL_CONFIDENCE_COLORS_JSON__", json.dumps(_DELIVERY_CONFIDENCE_COLORS, ensure_ascii=False))
     return html.replace("__INITIAL_PLANS_JSON__", json.dumps(plans, ensure_ascii=False))
 
 
