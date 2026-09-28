@@ -22420,9 +22420,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _load["thresholds"] = sfa_db.DELIVERY_HEAT_THRESHOLDS
                         _load["points_per_fte"] = sfa_db.POINTS_PER_FTE
                         _load["owner_order"] = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
-                        # 事業種別L1/L2フィルタ用マスタ（Hishoダッシュボード稼働予定3タブ共通・2026-09-23）
-                        _load["business_type_l1"] = sfa_db.BUSINESS_TYPE_L1
-                        _load["business_type_l2_by_l1"] = sfa_db.BUSINESS_TYPE_L2_BY_L1
+                        # 事業種別L1/L2フィルタ用マスタ（Hishoダッシュボード稼働予定3タブ共通・2026-09-23）。
+                        # ユーザー指摘(2026-09-28)「hisho dashboardの事業種別が、SFA側と一致していない」の
+                        # 原因: ここが編集不可のコード内定数(sfa_db.BUSINESS_TYPE_L1/BUSINESS_TYPE_L2_BY_L1)を
+                        # 返しており、/masters画面で事業種別ツリーを編集してもHisho側には反映されなかった。
+                        # 実際のマスタ(get_business_type_tree)を返すよう修正。
+                        _biz_tree = sfa_db.get_business_type_tree(con)
+                        _load["business_type_l1"] = list(_biz_tree.keys())
+                        _load["business_type_l2_by_l1"] = _biz_tree
                         _load["base_items"] = sfa_db.list_base_workload(con)  # 明細(人×機能×%)
                         _load["base_max"] = sfa_db.get_owner_base_max(con)    # 人→最大稼働率%（未設定は100扱い・互換）
                         _load["base_max_periods"] = sfa_db.list_base_max_periods(con)  # 人→期間別最大稼働率（#75）
