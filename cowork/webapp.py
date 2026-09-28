@@ -2853,7 +2853,14 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-util-cell.ap-util-l70{background:#fef08a}
 .ap-util-cell.ap-util-l100{background:#fdba74;font-weight:700}
 .ap-util-cell.ap-util-l150{background:#f87171;color:#fff;font-weight:700}
-.ap-asg-fields{display:flex;flex-wrap:nowrap;gap:4px;align-items:center;padding:2px 0}
+/* 全アサイン行の高さを揃える（ユーザー指摘2026-09-28「まだ縦が揃わない」で発見した真因）。
+   PJ名を2行クランプしても、アサインが1行しか無いPJは「PJ名(最大2行)+メタ1行」の高さ
+   （実測約60px）の方が、アサイン欄自身の自然な高さ（実測約25px）より大きいため、その1行だけが
+   周囲のPJの各行（複数行に自然に収まり25〜32px/行で済む）より高くなり、表全体で行の高さが
+   揃わなかった。min-heightで全行の下限をPJ名2行クランプ時の最大所要高さに揃えることで、
+   行数やタイトルの長さに関わらず全行を同じ高さにする。 */
+.ap-asg-fields{display:flex;flex-wrap:nowrap;gap:4px;align-items:center;padding:2px 0;
+  min-height:56px;box-sizing:border-box}
 .ap-asg-fields select,.ap-asg-fields input{font-size:11px;padding:2px 3px;box-sizing:border-box;flex:none}
 /* 既存のdeliveryアサインとの差分ハイライト（ユーザー要望2026-09-27）。実データと値が異なる
    フィールドだけを黄色く、このシナリオで新規追加した行（実データに対応が無い）は行全体を

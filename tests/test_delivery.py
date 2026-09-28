@@ -2566,3 +2566,17 @@ def test_assign_planning_pj_title_is_clamped_so_row_heights_stay_consistent(con)
     meta_block = html.split(".ap-block-meta{")[1].split("}")[0]
     assert "white-space:nowrap" in meta_block and "text-overflow:ellipsis" in meta_block
     assert 'class="ap-block-title" title="' in html, "全文をtitle属性でホバー表示できること"
+
+
+def test_assign_planning_all_assignment_rows_share_uniform_min_height(con):
+    """ユーザー指摘(2026-09-28)「まだ揃っていない」→抜本原因を特定した回帰テスト。
+    PJ名を2行クランプしても、アサインが1行だけのPJは「PJ名(最大2行)+メタ1行」に必要な高さ
+    (実測約60px)が、アサイン欄1行自身の自然な高さ(実測約25px)より大きいため、その1行だけが
+    複数行に自然に収まる他のPJ(1行あたり25〜32px)より高くなり、表全体で行の高さが揃わなかった
+    （Playwright実測でPHC(1行,短いタイトル)=42.5px、TOPPAN(3行,長いタイトルをクランプ)の
+    各行=32〜32.5pxと、約10px食い違うことを確認して特定）。.ap-asg-fieldsにmin-heightを
+    与え、行数・タイトルの長さに関わらず全アサイン行の高さの下限を揃えたことの回帰テスト
+    （min-height指定後は実測で全行が63〜64px、1px未満の差に収まることを確認済み）。"""
+    html = webapp.assign_planning_page(con)
+    fields_block = html.split(".ap-asg-fields{")[1].split("}")[0]
+    assert "min-height:56px" in fields_block and "box-sizing:border-box" in fields_block
