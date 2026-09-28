@@ -2771,7 +2771,12 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
    「箱自体にもposition:sticky+max-heightを与えてページスクロールに追従させる」トリックは
    不要になった（モーダル自体が専用のスクロールコンテナになるため、中のthead position:sticky;
    top:0はそのモーダルのスクロールに対して素直に機能する）。 */
-.ap-grid-tbl{border-collapse:collapse;font-size:11px}
+/* table-layout:fixedを明示（ユーザー指摘2026-09-28「変わらず揃っていない」）。指定が無い既定の
+   auto層は、rowspanするセル(.ap-col-pj)の幅をブラウザが行ごとの内容から再計算するため、
+   行によって数px単位の揺れが起きうる（各列の幅は.ap-col-pj/.ap-col-staff/.ap-wk-head等で
+   既に明示済みなので、fixedにしてもレイアウトは変わらず、揺れの原因になり得る自動再計算だけを
+   止められる）。 */
+.ap-grid-tbl{border-collapse:collapse;font-size:11px;table-layout:fixed}
 .ap-grid-tbl th,.ap-grid-tbl td{padding:3px 5px;border-bottom:1px solid #f1f3f7;white-space:nowrap;
   height:24px;box-sizing:border-box}
 /* PJ名列とアサイン編集列を分離（ユーザー要望2026-09-27: 「PJ名はアサイン検討の左に移動」）。
@@ -2854,13 +2859,14 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-util-cell.ap-util-l100{background:#fdba74;font-weight:700}
 .ap-util-cell.ap-util-l150{background:#f87171;color:#fff;font-weight:700}
 /* 全アサイン行の高さを揃える（ユーザー指摘2026-09-28「まだ縦が揃わない」で発見した真因）。
-   PJ名を2行クランプしても、アサインが1行しか無いPJは「PJ名(最大2行)+メタ1行」の高さ
-   （実測約60px）の方が、アサイン欄自身の自然な高さ（実測約25px）より大きいため、その1行だけが
-   周囲のPJの各行（複数行に自然に収まり25〜32px/行で済む）より高くなり、表全体で行の高さが
-   揃わなかった。min-heightで全行の下限をPJ名2行クランプ時の最大所要高さに揃えることで、
-   行数やタイトルの長さに関わらず全行を同じ高さにする。 */
+   PJ名を2行クランプしても、アサインが1行しか無いPJは「PJ名(最大2行)+メタ」の高さの方が、
+   アサイン欄自身の自然な高さ（実測約25px）より大きいため、その1行だけが周囲のPJの各行
+   （複数行に自然に収まり25〜32px/行で済む）より高くなり、表全体で行の高さが揃わなかった。
+   min-heightで全行の下限をPJ名2行クランプ時の最大所要高さに揃えることで、行数やタイトルの
+   長さに関わらず全行を同じ高さにする。確度と期間を別行表記に変更（ユーザー要望2026-09-28）
+   してメタが2行になった分、72pxへ再拡張（タイトル最大2行+メタ2行の最大所要高さに対応）。 */
 .ap-asg-fields{display:flex;flex-wrap:nowrap;gap:4px;align-items:center;padding:2px 0;
-  min-height:56px;box-sizing:border-box}
+  min-height:72px;box-sizing:border-box}
 .ap-asg-fields select,.ap-asg-fields input{font-size:11px;padding:2px 3px;box-sizing:border-box;flex:none}
 /* 既存のdeliveryアサインとの差分ハイライト（ユーザー要望2026-09-27）。実データと値が異なる
    フィールドだけを黄色く、このシナリオで新規追加した行（実データに対応が無い）は行全体を
@@ -3423,7 +3429,11 @@ function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){
     + '<input type="checkbox" style="margin-top:3px" '+(isExcluded?'':'checked')
     + ' onchange="apToggleScenarioDeliveryExcluded('+scenarioIdx+','+deliveryId+',!this.checked)">'
     + '<span><span class="ap-block-title" title="'+_apEsc((d.account?d.account+' / ':'')+d.title)+'">'+acctLabel+_apEsc(d.title)+'</span>'
-    + '<span class="ap-block-meta">'+_apEsc(d.confidence)+' / '+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span></span>'
+    // 確度と期間は別行に分ける（ユーザー要望2026-09-28「ステータスの『見込み(クロージング』と
+    // 『期間』を別行で表記」）。以前は" / "で1行に連結していたため、確度ラベルが長いと
+    // 期間側が見切れやすかった。
+    + '<span class="ap-block-meta">'+_apEsc(d.confidence)+'</span>'
+    + '<span class="ap-block-meta">'+_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span></span>'
     + '</label></td>';
 
   if (!assignments.length){

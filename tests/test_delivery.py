@@ -2579,4 +2579,26 @@ def test_assign_planning_all_assignment_rows_share_uniform_min_height(con):
     （min-height指定後は実測で全行が63〜64px、1px未満の差に収まることを確認済み）。"""
     html = webapp.assign_planning_page(con)
     fields_block = html.split(".ap-asg-fields{")[1].split("}")[0]
-    assert "min-height:56px" in fields_block and "box-sizing:border-box" in fields_block
+    assert "min-height:72px" in fields_block and "box-sizing:border-box" in fields_block
+
+
+def test_assign_planning_status_and_period_are_separate_lines(con):
+    """ユーザー要望(2026-09-28):「ステータスの『見込み(クロージング』と『期間』を別行で表記」。
+    以前は" / "で1行に連結していた確度と期間を、それぞれ独立した.ap-block-metaに分けた
+    回帰テスト。分離した分メタが2行になるため、.ap-asg-fieldsのmin-height(2026-09-28続きの
+    行揃え修正)も72pxへ再拡張していることを合わせて確認する。"""
+    html = webapp.assign_planning_page(con)
+    fn = html.split("function apRenderDeliveryRows(scenarioIdx, deliveryId, weeks){")[1].split("\nfunction ")[0]
+    assert fn.count("'<span class=\"ap-block-meta\">") == 2, \
+        "確度と期間がそれぞれ独立した.ap-block-metaになっていること"
+    assert "+_apEsc(d.confidence)+'</span>'" in fn
+    assert "_apEsc(d.startWeek)+'〜'+_apEsc(d.endWeek)+'</span></span>'" in fn
+
+
+def test_assign_planning_grid_uses_fixed_table_layout(con):
+    """ユーザー指摘(2026-09-28)「変わらず揃っていない」。table-layout未指定(既定auto)だと、
+    rowspanするセル(.ap-col-pj)の幅をブラウザが行ごとに再計算し、数px単位で揺れうる。
+    table-layout:fixedを明示して列幅の自動再計算を止めたことの回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    grid_block = html.split(".ap-grid-tbl{")[1].split("}")[0]
+    assert "table-layout:fixed" in grid_block
