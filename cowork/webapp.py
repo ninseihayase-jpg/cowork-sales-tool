@@ -2829,12 +2829,17 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
    畳むことができる仕様に」）、代わりにシナリオ見出しの▼/▶で丸ごと折りたたみできるようにする
    （apToggleScenarioFold）。横スクロールのみ残す。 */
 .ap-util-wrap{overflow-x:auto;border:1px solid #e6e9f0;border-radius:8px}
-.ap-util-wrap table{border-collapse:collapse;font-size:11px}
+.ap-util-wrap table{border-collapse:collapse;font-size:11px;table-layout:fixed}
 .ap-util-wrap th,.ap-util-wrap td{padding:3px 6px;border-bottom:1px solid #f1f3f7;white-space:nowrap;
   height:22px;box-sizing:border-box}
-.ap-util-name{position:sticky;left:0;width:130px;min-width:130px;max-width:130px;background:#fff;
-  z-index:2;border-right:1px solid #e6e9f0;font-size:11px;font-weight:600;color:#3a4760}
-.ap-util-corner{position:sticky;left:0;top:0;width:130px;min-width:130px;max-width:130px;background:#fff;
+/* メンバー名/案件名の列は、案件名（内訳行）が数値列に重なって読めなくなっていた
+   （ユーザー指摘2026-09-29「案件名が数値にかぶって読めない」）。130px→195px(1.5倍)へ拡幅した
+   上で、それでも収まらない場合はoverflow:hidden+text-overflow:ellipsisで途中省略し、
+   title属性でホバー時に全文を表示する（各行の生成箇所で個別にtitle="..."を付与）。 */
+.ap-util-name{position:sticky;left:0;width:195px;min-width:195px;max-width:195px;background:#fff;
+  z-index:2;border-right:1px solid #e6e9f0;font-size:11px;font-weight:600;color:#3a4760;
+  overflow:hidden;text-overflow:ellipsis}
+.ap-util-corner{position:sticky;left:0;top:0;width:195px;min-width:195px;max-width:195px;background:#fff;
   z-index:5;border-right:1px solid #e6e9f0;font-size:10px;color:#8893a8;text-align:left}
 .ap-util-wk-head{position:sticky;top:0;background:#fff;z-index:4;text-align:center;font-size:10px;
   color:#8893a8;width:54px;min-width:54px}
@@ -2847,6 +2852,19 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-util-subcell{color:#8893a8}
 /* 担当領域(役職)の境目に太線（ユーザー要望2026-09-27「担当領域ごとに太線で仕切って」）。 */
 .ap-util-group-start td{border-top:2px solid #94a3b8}
+/* 役割別集計セクション（外部メンバーも含む。ユーザー要望2026-09-29「各シナリオのメンバーの
+   上に、役割別集計を追加。外部を含む」）。メンバー別セクションと視覚的に区別するため
+   淡い背景色を付ける。クリックでの案件内訳展開は.ap-util-sub/.ap-util-sub-nameを
+   メンバー別と共用する（同じ仕様で開けるように、というユーザー要望に対応）。 */
+.ap-util-role td{background:#eef2ff;font-weight:600;color:#3a4760}
+/* セクション見出しのラベルセルは.ap-util-name(単一列・position:sticky;left:0)をそのまま
+   流用する（colspanで全列をまたぐ単一セルにすると、Chromiumでposition:sticky(left方向)の
+   追従が不安定になり、初期表示の横スクロール(apScrollUtilToToday)後にラベル文字列の先頭側が
+   画面外へスクロールアウトして見えなくなる不具合があった。実機検証で発見・修正）。
+   見出し専用の色/背景/余白だけを.ap-util-nameより後勝ちの詳細度で上書きする。 */
+.ap-util-section-label .ap-util-name{font-size:10px;color:#8893a8;font-weight:700;
+  background:#fbfbfc;padding-top:6px}
+.ap-util-section-label td{border-bottom:none}
 /* 稼働率の段階表示（ユーザー要望2026-09-27: 50%/70%/100%/150%で色を変える。数値が大きいほど
    濃い暖色にして危険度が一目でわかるようにする）。 */
 .ap-util-cell.ap-util-l50{background:#dbeafe}
@@ -3237,6 +3255,34 @@ function apComputeMemberWeekly(scenario, visibleIds){
   });
   return {sum: byOwner, count: byOwnerCount, breakdown: byOwnerDeliveries};
 }
+// 役割別集計（外部メンバーも含む。ユーザー要望2026-09-29「各シナリオのメンバーの上に、役割別
+// 集計を追加。外部を含む」）。apComputeMemberWeeklyとほぼ同じロジックだが、集計キーが
+// owner(メンバー名)ではなくrole(役割)であること、member_kind='外部'を除外しないことが異なる
+// （メンバー別集計は元々「稼働率に外部は不要」というユーザー要望2026-09-27で外部を除外して
+// いたが、役割別集計は外部アドバイザー等も含めた役割ごとの総工数を見たいという別の要望）。
+function apComputeRoleWeekly(scenario, visibleIds){
+  var excluded = scenario.excludedDeliveries || {};
+  var byRole = {}, byRoleCount = {}, byRoleDeliveries = {};
+  visibleIds.forEach(function(id){
+    if(excluded[id]) return;
+    var snap = scenario.data[id]; if(!snap) return;
+    var d = AP_BY_ID[id];
+    (snap.assignments||[]).forEach(function(a){
+      var role = (a.role||'').trim(); if(!role) return;
+      var pct = parseFloat(a.fte_pct); if(!pct || isNaN(pct)) return;
+      if(!byRole[role]) byRole[role] = {};
+      if(!byRoleCount[role]) byRoleCount[role] = {};
+      if(!byRoleDeliveries[role]) byRoleDeliveries[role] = {};
+      if(!byRoleDeliveries[role][id]) byRoleDeliveries[role][id] = {title:d.title, account:d.account, weeks:{}};
+      apWeeksBetween(a.from_week, a.to_week).forEach(function(w){
+        byRole[role][w] = (byRole[role][w]||0) + pct;
+        byRoleCount[role][w] = (byRoleCount[role][w]||0) + 1;
+        byRoleDeliveries[role][id].weeks[w] = (byRoleDeliveries[role][id].weeks[w]||0) + pct;
+      });
+    });
+  });
+  return {sum: byRole, count: byRoleCount, breakdown: byRoleDeliveries};
+}
 // メンバーの並び順キー: 役職順(「担当者の担当領域」マスタの並び順)→マスタの名前順(AP_OWNERSの並び順)
 // （ユーザー要望2026-09-27「役職順、マスタの名前順にして」）。担当領域未設定・AP_OWNERS未掲載の
 // メンバーは各段階の最後にまとめ、最終的に名前の五十音順で安定させる。
@@ -3259,7 +3305,24 @@ function apUtilCellClass(v){
 // （ユーザー要望2026-09-27「アサインメンバーをクリックして開くと、アサインされている案件を
 // 見られる仕様に(折りたためる)」）。各週セルには「稼働率(案件数)」の形式で件数も併記する
 // （ユーザー要望2026-09-27）。
-function apRenderMemberUtilTable(scenarioIdx, scenario, computed, weeks, wrapId){
+// 案件内訳サブ行（.ap-util-sub）を1件分組み立てる、役割別/メンバー別で共用のヘルパー
+// （ユーザー要望2026-09-29「各役割をクリックすると、現在のメンバーと同じ仕様で、案件が
+// 開いて見られる」＝内訳展開のUI/HTML構造を完全に共通化する）。
+function apUtilBreakdownRows(byDelivery, weeks){
+  var out = '';
+  AP_STATE.deliveryOrder.filter(function(id){ return byDelivery[id]; }).forEach(function(did){
+    var info = byDelivery[did];
+    var label = (info.account ? _apEsc(info.account)+' / ' : '') + _apEsc(info.title);
+    out += '<tr class="ap-util-sub"><td class="ap-util-name ap-util-sub-name" title="'+label+'">'+label+'</td>'
+      + weeks.map(function(w){
+          var v = info.weeks[w]||0;
+          return '<td class="ap-util-cell ap-util-subcell">'+(v?v:'')+'</td>';
+        }).join('')
+      + '</tr>';
+  });
+  return out;
+}
+function apRenderMemberUtilTable(scenarioIdx, scenario, computed, roleComputed, weeks, wrapId){
   var byOwner = computed.sum, byCount = computed.count, breakdown = computed.breakdown;
   var owners = Object.keys(byOwner).sort(function(a,b){
     var ka = apOwnerSortKey(a), kb = apOwnerSortKey(b);
@@ -3267,10 +3330,48 @@ function apRenderMemberUtilTable(scenarioIdx, scenario, computed, weeks, wrapId)
     if(ka[1]!==kb[1]) return ka[1]-kb[1];
     return ka[2].localeCompare(kb[2],'ja');
   });
-  if(!owners.length){ return '<p class="ap-empty" style="margin:4px 0 0">アサイン済みメンバーがいません</p>'; }
+  var byRole = roleComputed.sum, byRoleCount = roleComputed.count, roleBreakdown = roleComputed.breakdown;
+  // 役割は合計工数(全週合算)の降順に並べる（最も稼働が大きい役割を上に）。
+  var roles = Object.keys(byRole).sort(function(a,b){
+    var ta=0, tb=0;
+    weeks.forEach(function(w){ ta += byRole[a][w]||0; tb += byRole[b][w]||0; });
+    return tb-ta;
+  });
+  if(!owners.length && !roles.length){ return '<p class="ap-empty" style="margin:4px 0 0">アサイン済みメンバーがいません</p>'; }
   var expanded = scenario.expandedMembers || {};
+  var expandedRoles = scenario.expandedRoles || {};
   var headHtml = '<tr><th class="ap-util-corner">メンバー</th>'
     + weeks.map(function(w){ return '<th class="ap-util-wk-head">'+w.slice(5)+'</th>'; }).join('') + '</tr>';
+  // セクション見出し行は、colspanで全列をまたぐ単一セルではなく.ap-util-name(単一列・
+  // position:sticky;left:0)＋空セル×週数、という他行と同じ形にする。実機検証の結果、
+  // Chromiumはcolspanセルに対するposition:sticky(left方向)の追従が不安定で、初期表示時の
+  // 横スクロール(apScrollUtilToToday)後にラベル文字列の先頭側がスクロールアウトして見えなく
+  // なる不具合があった（colspanなしの.ap-util-nameは他行で問題なく機能しているため、
+  // 同じ構造に揃えることで回避する）。
+  var roleHtml = '';
+  if(roles.length){
+    roleHtml += '<tr class="ap-util-section-label"><td class="ap-util-name">役割別集計（外部含む）</td>'
+      + weeks.map(function(){ return '<td></td>'; }).join('') + '</tr>';
+    roleHtml += roles.map(function(r){
+      var isOpen = !!expandedRoles[r];
+      var toggle = '<span class="ap-util-toggle" onclick="apToggleRoleExpand('+scenarioIdx+','+_apJsStr(r)+')">'
+        + (isOpen?'▼':'▶') + '</span>';
+      var row = '<tr class="ap-util-role"><td class="ap-util-name" title="'+_apEsc(r)+'">'+toggle+' '+_apEsc(r)+'</td>'
+        + weeks.map(function(w){
+            var v = byRole[r][w]||0;
+            var c = (byRoleCount[r] && byRoleCount[r][w]) || 0;
+            var text = v ? (v+'('+c+')') : '';
+            return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+text+'</td>';
+          }).join('')
+        + '</tr>';
+      if(isOpen) row += apUtilBreakdownRows(roleBreakdown[r] || {}, weeks);
+      return row;
+    }).join('');
+  }
+  if(roles.length && owners.length){
+    roleHtml += '<tr class="ap-util-section-label"><td class="ap-util-name">メンバー別</td>'
+      + weeks.map(function(){ return '<td></td>'; }).join('') + '</tr>';
+  }
   // 担当領域(役職)が切り替わる境目に太線を引く（ユーザー要望2026-09-27「担当領域ごとに
   // 太線で仕切って。中島/早瀬の間で切るなど」）。owners自体が既にapOwnerSortKey()の
   // 担当領域ランクで並び替え済みなので、直前のメンバーとランクが変わった行を境目とみなす。
@@ -3280,7 +3381,7 @@ function apRenderMemberUtilTable(scenarioIdx, scenario, computed, weeks, wrapId)
     var isGroupStart = idx>0 && domainRank !== apOwnerSortKey(owners[idx-1])[0];
     var toggle = '<span class="ap-util-toggle" onclick="apToggleMemberExpand('+scenarioIdx+','+_apJsStr(o)+')">'
       + (isOpen?'▼':'▶') + '</span>';
-    var row = '<tr'+(isGroupStart?' class="ap-util-group-start"':'')+'><td class="ap-util-name">'+toggle+' '+_apEsc(o)+'</td>'
+    var row = '<tr'+(isGroupStart?' class="ap-util-group-start"':'')+'><td class="ap-util-name" title="'+_apEsc(o)+'">'+toggle+' '+_apEsc(o)+'</td>'
       + weeks.map(function(w){
           var v = byOwner[o][w]||0;
           var c = (byCount[o] && byCount[o][w]) || 0;
@@ -3288,33 +3389,25 @@ function apRenderMemberUtilTable(scenarioIdx, scenario, computed, weeks, wrapId)
           return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+text+'</td>';
         }).join('')
       + '</tr>';
-    if(isOpen){
-      var byDelivery = breakdown[o] || {};
-      // 内訳の並び順はシナリオ検討画面(PJ×アサイン編集モーダル)のDelivery順序
-      // (AP_STATE.deliveryOrder)に統一する（ユーザー要望2026-09-27「シナリオ検討画面の
-      // 案件順に統一して」）。Object.keys()はDelivery idが整数キーのため昇順に強制ソート
-      // されてしまい、意図した順序にならなかった（JS仕様: 整数風の文字列キーは常に数値昇順で
-      // 列挙される）ための修正。
-      AP_STATE.deliveryOrder.filter(function(id){ return byDelivery[id]; }).forEach(function(did){
-        var info = byDelivery[did];
-        var label = (info.account ? _apEsc(info.account)+' / ' : '') + _apEsc(info.title);
-        row += '<tr class="ap-util-sub"><td class="ap-util-name ap-util-sub-name">'+label+'</td>'
-          + weeks.map(function(w){
-              var v = info.weeks[w]||0;
-              return '<td class="ap-util-cell ap-util-subcell">'+(v?v:'')+'</td>';
-            }).join('')
-          + '</tr>';
-      });
-    }
+    if(isOpen) row += apUtilBreakdownRows(breakdown[o] || {}, weeks);
     return row;
   }).join('');
-  return '<div class="ap-util-wrap" id="'+wrapId+'"><table><thead>'+headHtml+'</thead><tbody>'+bodyHtml+'</tbody></table></div>';
+  return '<div class="ap-util-wrap" id="'+wrapId+'"><table><thead>'+headHtml+'</thead><tbody>'+roleHtml+bodyHtml+'</tbody></table></div>';
 }
 function apToggleMemberExpand(scenarioIdx, owner){
   var scenario = AP_STATE.scenarios[scenarioIdx];
   if(!scenario) return;
   if(!scenario.expandedMembers) scenario.expandedMembers = {};
   scenario.expandedMembers[owner] = !scenario.expandedMembers[owner];
+  apRenderScenarios();
+}
+// 役割別集計行のクリック展開（ユーザー要望2026-09-29「各役割をクリックすると、現在の
+// メンバーと同じ仕様で、案件が開いて見られる」）。apToggleMemberExpandと対になる役割版。
+function apToggleRoleExpand(scenarioIdx, role){
+  var scenario = AP_STATE.scenarios[scenarioIdx];
+  if(!scenario) return;
+  if(!scenario.expandedRoles) scenario.expandedRoles = {};
+  scenario.expandedRoles[role] = !scenario.expandedRoles[role];
   apRenderScenarios();
 }
 function apToggleScenarioDeliveryExcluded(scenarioIdx, deliveryId, excluded){
@@ -3350,7 +3443,9 @@ function apScrollUtilToToday(wrapId, weeks){
   var heads = wrap.querySelectorAll('.ap-util-wk-head');
   var th = heads[idx];
   if(!th) return;
-  wrap.scrollLeft = Math.max(0, th.offsetLeft - 130);
+  // .ap-util-name/.ap-util-cornerの幅(195px、ユーザー要望2026-09-29で130px→195pxへ拡幅)に
+  // 合わせてオフセットも更新。
+  wrap.scrollLeft = Math.max(0, th.offsetLeft - 195);
 }
 
 function apRenderScenarios(){
@@ -3370,6 +3465,7 @@ function apRenderScenarios(){
   AP_STATE.scenarios.forEach(function(scenario, idx){
     visibleIds.forEach(function(id){ apEnsureScenarioHasDelivery(scenario, id); });
     var computed = apComputeMemberWeekly(scenario, visibleIds);
+    var roleComputed = apComputeRoleWeekly(scenario, visibleIds);
     // シナリオごとの折りたたみ（ユーザー要望2026-09-27「シナリオの縦はスクロールなし、
     // 代わりに畳むことができる仕様に」）。折りたたみ▼/▶のクリックはstopPropagationで
     // 見出しクリック(モーダルを開く)と独立させる。
@@ -3381,7 +3477,7 @@ function apRenderScenarios(){
       + '<span class="ap-sc-name-label">'+_apEsc(scenario.name)+'</span>'
       + '<span class="muted" style="font-size:11px">クリックしてアサインを編集 ▸</span>'
       + '</div>'
-      + (scenario.collapsed ? '' : apRenderMemberUtilTable(idx, scenario, computed, weeks, 'apUtilWrap'+idx))
+      + (scenario.collapsed ? '' : apRenderMemberUtilTable(idx, scenario, computed, roleComputed, weeks, 'apUtilWrap'+idx))
       + '</div>';
   });
   box.innerHTML = outerHtml;

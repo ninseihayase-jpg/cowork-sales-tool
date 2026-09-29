@@ -2397,6 +2397,45 @@ def test_assign_planning_member_util_shows_count_and_drilldown(con):
     assert "v+'('+c+')'" in html.replace(" ", "")
 
 
+def test_assign_planning_member_util_name_column_widened_with_ellipsis(con):
+    """ユーザー指摘(2026-09-29)「案件名が数値にかぶって読めない」。メンバー名/案件名列
+    (.ap-util-name/.ap-util-corner)を130px→195px(1.5倍)へ拡幅し、それでも収まらない場合に
+    備えてoverflow:hidden+text-overflow:ellipsisで途中省略する回帰テスト。案件内訳・メンバー行
+    ともにtitle属性で全文をホバー表示できることも確認する。"""
+    html = webapp.assign_planning_page(con)
+    name_block = html.split(".ap-util-name{")[1].split("}")[0]
+    assert "width:195px;min-width:195px;max-width:195px" in name_block
+    assert "overflow:hidden" in name_block and "text-overflow:ellipsis" in name_block
+    corner_block = html.split(".ap-util-corner{")[1].split("}")[0]
+    assert "width:195px;min-width:195px;max-width:195px" in corner_block
+    assert """class="ap-util-name ap-util-sub-name" title="'+label+'\">'+label+'</td>'""" in html
+    assert """class="ap-util-name" title="'+_apEsc(o)+'\">'+toggle+' '+_apEsc(o)+'</td>'""" in html
+
+
+def test_assign_planning_member_util_has_role_breakdown_including_external(con):
+    """ユーザー要望(2026-09-29)「各シナリオのメンバーの上に、役割別集計(プロジェクトマネジャー、
+    リードコンサルタント等)を追加。外部を含む。各役割をクリックすると、現在のメンバーと同じ
+    仕様で、案件が開いて見られる」。apComputeRoleWeekly()がapComputeMemberWeekly()と異なり
+    member_kind='外部'を除外しないこと、役割別集計行(.ap-util-role)がクリックで案件内訳
+    (.ap-util-sub、メンバー別と共通のapUtilBreakdownRowsヘルパー)を展開できることの回帰テスト。"""
+    html = webapp.assign_planning_page(con)
+    fn = html.split("function apComputeRoleWeekly(scenario, visibleIds){")[1].split("\n}")[0]
+    assert "if(a.member_kind === '外部') return;" not in fn, \
+        "役割別集計は外部メンバーも含めて集計すること（メンバー別集計と違う点）"
+    assert "var role = (a.role||'').trim(); if(!role) return;" in fn
+    assert "function apToggleRoleExpand(scenarioIdx, role)" in html
+    assert "scenario.expandedRoles" in html
+    assert "function apUtilBreakdownRows(byDelivery, weeks){" in html, \
+        "案件内訳の組み立てをメンバー別/役割別で共通のヘルパーに統一していること"
+    render_fn = html.split("function apRenderMemberUtilTable(scenarioIdx, scenario, computed, roleComputed, weeks, wrapId){")[1]
+    assert "apUtilBreakdownRows(roleBreakdown[r] || {}, weeks)" in render_fn
+    assert "apUtilBreakdownRows(breakdown[o] || {}, weeks)" in render_fn
+    assert '役割別集計（外部含む）' in html
+    # 呼び出し元(apRenderScenarios)がroleComputedを計算して渡していること
+    assert "var roleComputed = apComputeRoleWeekly(scenario, visibleIds);" in html
+    assert "apRenderMemberUtilTable(idx, scenario, computed, roleComputed, weeks, 'apUtilWrap'+idx)" in html
+
+
 def test_assign_planning_scenario_can_exclude_delivery_independently(con):
     """ユーザー要望(2026-09-27):「シナリオごとに、対象Delivery選択で選んだ案件をOFFにできる仕様
     (チェックをOFFにすると、グレーアウトされて自動的に稼働率が0%で計算される)」の回帰テスト。
