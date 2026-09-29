@@ -2974,6 +2974,7 @@ var AP_OWNERS = __INITIAL_OWNERS_JSON__;
 var AP_OWNER_DOMAIN_MAP = __INITIAL_OWNER_DOMAIN_MAP_JSON__;
 var AP_DOMAIN_ORDER = __INITIAL_DOMAIN_ORDER_JSON__;
 var AP_BIZ_TYPE_ORDER = __INITIAL_BIZ_TYPE_ORDER_JSON__;
+var AP_ROLE_ORDER = __INITIAL_ROLE_ORDER_JSON__;
 var AP_CONFIDENCE_COLORS = __INITIAL_CONFIDENCE_COLORS_JSON__;
 var AP_PLANS = __INITIAL_PLANS_JSON__;
 var AP_BY_ID = {};
@@ -3255,11 +3256,37 @@ function apComputeMemberWeekly(scenario, visibleIds){
   });
   return {sum: byOwner, count: byOwnerCount, breakdown: byOwnerDeliveries};
 }
+// 役割名の末尾の連番を取り除いて「基底の役割名」に戻す（ユーザー要望2026-09-29「ジュニア
+// コンサルタントはジュニアコンサルタントで判定できる？連番は不要」）。体制で同名役割を
+// 複数追加すると自動的に「ジュニアコンサルタント1」「ジュニアコンサルタント2」のような
+// 連番付き文字列で保存される仕様（sfa_db.resolve_delivery_role_name_for_save、role_idの
+// ようなFKは無く文字列一致で対応付けている）ため、役割別集計では表示上この連番を無視して
+// 同じ役割にまとめる。
+function apRoleBaseName(role){
+  var m = /^(.+?)\d+$/.exec(role);
+  return m ? m[1] : role;
+}
+// 役割別集計行の並び順キー（ユーザー要望2026-09-29「役職の順番を、マスタにあわせて
+// (プロジェクトマネジャーから始まるはず)」）。ラベルは"役割名(内)"/"役割名(外)"形式
+// （apComputeRoleWeeklyが生成）なので、末尾の"(内)"/"(外)"を切り離してから体制の役割
+// マスタ(AP_ROLE_ORDER)の登録順で並べる。マスタに無い役割（旧値等）は末尾に回す。
+// 同じ役割内では内部→外部の順に揃える。
+function apRoleSortKey(label){
+  var kind = label.slice(-2, -1);
+  var base = label.slice(0, -3);
+  var idx = AP_ROLE_ORDER.indexOf(base);
+  if(idx < 0) idx = AP_ROLE_ORDER.length;
+  return [idx, kind === '外' ? 1 : 0];
+}
 // 役割別集計（外部メンバーも含む。ユーザー要望2026-09-29「各シナリオのメンバーの上に、役割別
 // 集計を追加。外部を含む」）。apComputeMemberWeeklyとほぼ同じロジックだが、集計キーが
-// owner(メンバー名)ではなくrole(役割)であること、member_kind='外部'を除外しないことが異なる
-// （メンバー別集計は元々「稼働率に外部は不要」というユーザー要望2026-09-27で外部を除外して
-// いたが、役割別集計は外部アドバイザー等も含めた役割ごとの総工数を見たいという別の要望）。
+// owner(メンバー名)ではなくrole(役割、連番を除いた基底名)＋内部/外部の別であること、
+// member_kind='外部'を除外しないことが異なる（メンバー別集計は元々「稼働率に外部は不要」
+// というユーザー要望2026-09-27で外部を除外していたが、役割別集計は外部アドバイザー等も
+// 含めた役割ごとの総工数を見たいという別の要望）。内部/外部を仕分けて別行にする
+// （ユーザー要望2026-09-29「各役割、内部/外部を仕分けして表示。0の分類は表示不要」）ため、
+// 実際にアサインが存在する(役割,内外)の組み合わせしかキーが生成されず、0件の分類は
+// 自動的に非表示になる。
 function apComputeRoleWeekly(scenario, visibleIds){
   var excluded = scenario.excludedDeliveries || {};
   var byRole = {}, byRoleCount = {}, byRoleDeliveries = {};
@@ -3270,14 +3297,16 @@ function apComputeRoleWeekly(scenario, visibleIds){
     (snap.assignments||[]).forEach(function(a){
       var role = (a.role||'').trim(); if(!role) return;
       var pct = parseFloat(a.fte_pct); if(!pct || isNaN(pct)) return;
-      if(!byRole[role]) byRole[role] = {};
-      if(!byRoleCount[role]) byRoleCount[role] = {};
-      if(!byRoleDeliveries[role]) byRoleDeliveries[role] = {};
-      if(!byRoleDeliveries[role][id]) byRoleDeliveries[role][id] = {title:d.title, account:d.account, weeks:{}};
+      var kind = a.member_kind === '外部' ? '外' : '内';
+      var label = apRoleBaseName(role) + '(' + kind + ')';
+      if(!byRole[label]) byRole[label] = {};
+      if(!byRoleCount[label]) byRoleCount[label] = {};
+      if(!byRoleDeliveries[label]) byRoleDeliveries[label] = {};
+      if(!byRoleDeliveries[label][id]) byRoleDeliveries[label][id] = {title:d.title, account:d.account, weeks:{}};
       apWeeksBetween(a.from_week, a.to_week).forEach(function(w){
-        byRole[role][w] = (byRole[role][w]||0) + pct;
-        byRoleCount[role][w] = (byRoleCount[role][w]||0) + 1;
-        byRoleDeliveries[role][id].weeks[w] = (byRoleDeliveries[role][id].weeks[w]||0) + pct;
+        byRole[label][w] = (byRole[label][w]||0) + pct;
+        byRoleCount[label][w] = (byRoleCount[label][w]||0) + 1;
+        byRoleDeliveries[label][id].weeks[w] = (byRoleDeliveries[label][id].weeks[w]||0) + pct;
       });
     });
   });
@@ -3331,11 +3360,11 @@ function apRenderMemberUtilTable(scenarioIdx, scenario, computed, roleComputed, 
     return ka[2].localeCompare(kb[2],'ja');
   });
   var byRole = roleComputed.sum, byRoleCount = roleComputed.count, roleBreakdown = roleComputed.breakdown;
-  // 役割は合計工数(全週合算)の降順に並べる（最も稼働が大きい役割を上に）。
+  // 役割は体制の役割マスタ(AP_ROLE_ORDER)の登録順に並べる（ユーザー要望2026-09-29
+  // 「役職の順番を、マスタにあわせて(プロジェクトマネジャーから始まるはず)」）。
   var roles = Object.keys(byRole).sort(function(a,b){
-    var ta=0, tb=0;
-    weeks.forEach(function(w){ ta += byRole[a][w]||0; tb += byRole[b][w]||0; });
-    return tb-ta;
+    var ka = apRoleSortKey(a), kb = apRoleSortKey(b);
+    return ka[0]!==kb[0] ? ka[0]-kb[0] : ka[1]-kb[1];
   });
   if(!owners.length && !roles.length){ return '<p class="ap-empty" style="margin:4px 0 0">アサイン済みメンバーがいません</p>'; }
   var expanded = scenario.expandedMembers || {};
@@ -3350,23 +3379,31 @@ function apRenderMemberUtilTable(scenarioIdx, scenario, computed, roleComputed, 
   // 同じ構造に揃えることで回避する）。
   var roleHtml = '';
   if(roles.length){
-    roleHtml += '<tr class="ap-util-section-label"><td class="ap-util-name">役割別集計（外部含む）</td>'
+    // 役割別集計セクション全体の折りたたみ（ユーザー要望2026-09-29「役割別集計、全体を
+    // 折りたためる仕様に」）。折りたたみ中は見出し行だけ残し、各役割の行(展開中の内訳含む)は
+    // 描画しない。開閉状態はscenario単位で保持しapToggleRoleSectionで切り替える。
+    var roleSectionOpen = !scenario.roleSectionCollapsed;
+    var sectionToggle = '<span class="ap-util-toggle" onclick="apToggleRoleSection('+scenarioIdx+')">'
+      + (roleSectionOpen?'▼':'▶') + '</span>';
+    roleHtml += '<tr class="ap-util-section-label"><td class="ap-util-name">'+sectionToggle+' 役割別集計（外部含む）</td>'
       + weeks.map(function(){ return '<td></td>'; }).join('') + '</tr>';
-    roleHtml += roles.map(function(r){
-      var isOpen = !!expandedRoles[r];
-      var toggle = '<span class="ap-util-toggle" onclick="apToggleRoleExpand('+scenarioIdx+','+_apJsStr(r)+')">'
-        + (isOpen?'▼':'▶') + '</span>';
-      var row = '<tr class="ap-util-role"><td class="ap-util-name" title="'+_apEsc(r)+'">'+toggle+' '+_apEsc(r)+'</td>'
-        + weeks.map(function(w){
-            var v = byRole[r][w]||0;
-            var c = (byRoleCount[r] && byRoleCount[r][w]) || 0;
-            var text = v ? (v+'('+c+')') : '';
-            return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+text+'</td>';
-          }).join('')
-        + '</tr>';
-      if(isOpen) row += apUtilBreakdownRows(roleBreakdown[r] || {}, weeks);
-      return row;
-    }).join('');
+    if(roleSectionOpen){
+      roleHtml += roles.map(function(r){
+        var isOpen = !!expandedRoles[r];
+        var toggle = '<span class="ap-util-toggle" onclick="apToggleRoleExpand('+scenarioIdx+','+_apJsStr(r)+')">'
+          + (isOpen?'▼':'▶') + '</span>';
+        var row = '<tr class="ap-util-role"><td class="ap-util-name" title="'+_apEsc(r)+'">'+toggle+' '+_apEsc(r)+'</td>'
+          + weeks.map(function(w){
+              var v = byRole[r][w]||0;
+              var c = (byRoleCount[r] && byRoleCount[r][w]) || 0;
+              var text = v ? (v+'('+c+')') : '';
+              return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+text+'</td>';
+            }).join('')
+          + '</tr>';
+        if(isOpen) row += apUtilBreakdownRows(roleBreakdown[r] || {}, weeks);
+        return row;
+      }).join('');
+    }
   }
   if(roles.length && owners.length){
     roleHtml += '<tr class="ap-util-section-label"><td class="ap-util-name">メンバー別</td>'
@@ -3408,6 +3445,15 @@ function apToggleRoleExpand(scenarioIdx, role){
   if(!scenario) return;
   if(!scenario.expandedRoles) scenario.expandedRoles = {};
   scenario.expandedRoles[role] = !scenario.expandedRoles[role];
+  apRenderScenarios();
+}
+// 役割別集計セクション全体の開閉（ユーザー要望2026-09-29「役割別集計、全体を折りたためる
+// 仕様に」）。個々の役割行の開閉(apToggleRoleExpand/expandedRoles)とは別に、セクション
+// 自体の表示/非表示を切り替える。
+function apToggleRoleSection(scenarioIdx){
+  var scenario = AP_STATE.scenarios[scenarioIdx];
+  if(!scenario) return;
+  scenario.roleSectionCollapsed = !scenario.roleSectionCollapsed;
   apRenderScenarios();
 }
 function apToggleScenarioDeliveryExcluded(scenarioIdx, deliveryId, excluded){
@@ -3764,6 +3810,9 @@ def assign_planning_page(con) -> str:
     biz_type_order = sfa_db.get_business_type_tree(con)
     # 確度ワッペンの色（ユーザー要望2026-09-28「確度はワッペンで表記」）。Delivery一覧の
     # バッジ配色(_DELIVERY_CONFIDENCE_COLORS)とそのまま揃える。
+    # 役割別集計の並び順（ユーザー要望2026-09-29「役職の順番をマスタにあわせて」）。
+    # 体制の役割マスタ（/masters「役割（体制）」）の登録順をそのまま優先順位にする。
+    role_order = sfa_db.get_master_list(con, "delivery_roles") or list(sfa_db.DELIVERY_ROLES)
 
     html = _ASSIGN_PLANNING_PAGE_TEMPLATE.replace("__FAVICON_LINK__", _SFA_FAVICON)
     html = html.replace("__INITIAL_DELIVERIES_JSON__", json.dumps(deliveries, ensure_ascii=False))
@@ -3772,6 +3821,7 @@ def assign_planning_page(con) -> str:
     html = html.replace("__INITIAL_DOMAIN_ORDER_JSON__", json.dumps(domain_order, ensure_ascii=False))
     html = html.replace("__INITIAL_BIZ_TYPE_ORDER_JSON__", json.dumps(biz_type_order, ensure_ascii=False))
     html = html.replace("__INITIAL_CONFIDENCE_COLORS_JSON__", json.dumps(_DELIVERY_CONFIDENCE_COLORS, ensure_ascii=False))
+    html = html.replace("__INITIAL_ROLE_ORDER_JSON__", json.dumps(role_order, ensure_ascii=False))
     return html.replace("__INITIAL_PLANS_JSON__", json.dumps(plans, ensure_ascii=False))
 
 

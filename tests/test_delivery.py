@@ -2436,6 +2436,62 @@ def test_assign_planning_member_util_has_role_breakdown_including_external(con):
     assert "apRenderMemberUtilTable(idx, scenario, computed, roleComputed, weeks, 'apUtilWrap'+idx)" in html
 
 
+def test_assign_planning_role_order_matches_master_and_starts_with_pm(con):
+    """ユーザー要望(2026-09-29)「役職の順番を、マスタにあわせて(プロジェクトマネジャーから
+    始まるはず)」。役割別集計の並び順は合計工数の降順ではなく、体制の役割マスタ
+    (delivery_roles)の登録順を使うこと。マスタ未設定時のシード既定値でも先頭は
+    プロジェクトマネジャーであること。"""
+    role_order = sfa_db.get_master_list(con, "delivery_roles")
+    assert role_order[0] == "プロジェクトマネジャー"
+    html = webapp.assign_planning_page(con)
+    assert json.dumps(role_order, ensure_ascii=False) in html, \
+        "AP_ROLE_ORDERにマスタ順の役割リストがそのまま埋め込まれていること"
+    assert "var AP_ROLE_ORDER = " in html
+    fn = html.split("function apRoleSortKey(label){")[1].split("\n}")[0]
+    assert "AP_ROLE_ORDER.indexOf(base)" in fn
+    render_fn = html.split("function apRenderMemberUtilTable(scenarioIdx, scenario, computed, roleComputed, weeks, wrapId){")[1]
+    assert "apRoleSortKey(a)" in render_fn and "apRoleSortKey(b)" in render_fn
+
+
+def test_assign_planning_role_base_name_strips_trailing_sequence_number(con):
+    """ユーザー要望(2026-09-29)「ジュニアコンサルタントはジュニアコンサルタント、で判定
+    できる？連番は不要」。体制で同名役割を複数追加すると自動連番付き文字列
+    (「ジュニアコンサルタント1」「ジュニアコンサルタント2」)で保存される
+    (sfa_db.resolve_delivery_role_name_for_save)仕様のため、役割別集計では連番を無視して
+    同じ役割にまとめること。"""
+    html = webapp.assign_planning_page(con)
+    fn = html.split("function apRoleBaseName(role){")[1].split("\n}")[0]
+    assert re.search(r"/\^\(\.\+\?\)\\d\+\$/", fn), \
+        "末尾の連番だけを切り離す正規表現になっていること（役割名自体の末尾の非数字は保持）"
+    compute_fn = html.split("function apComputeRoleWeekly(scenario, visibleIds){")[1].split("\n}")[0]
+    assert "apRoleBaseName(role)" in compute_fn
+
+
+def test_assign_planning_role_split_by_internal_external_hides_zero_category(con):
+    """ユーザー要望(2026-09-29)「各役割、内部/外部を仕分けして表示できる？0の分類は表示
+    不要(ジュニアコンサルタント(内)、ジュニアコンサルタント(外))」。集計キーを
+    "役割(内)"/"役割(外)"形式にし、実際にアサインが存在する組み合わせしかキーが
+    生成されないため、0件の分類は自動的に非表示になること。"""
+    html = webapp.assign_planning_page(con)
+    compute_fn = html.split("function apComputeRoleWeekly(scenario, visibleIds){")[1].split("\n}")[0]
+    assert "var kind = a.member_kind === '外部' ? '外' : '内';" in compute_fn
+    assert "apRoleBaseName(role) + '(' + kind + ')'" in compute_fn
+
+
+def test_assign_planning_role_section_can_collapse_as_a_whole(con):
+    """ユーザー要望(2026-09-29)「役割別集計、全体を折りたためる仕様に」。個々の役割行の
+    開閉(apToggleRoleExpand/scenario.expandedRoles)とは別に、セクション全体を1つの
+    トグルで折りたためること(scenario.roleSectionCollapsed/apToggleRoleSection)。"""
+    html = webapp.assign_planning_page(con)
+    assert "function apToggleRoleSection(scenarioIdx){" in html
+    fn = html.split("function apToggleRoleSection(scenarioIdx){")[1].split("\n}")[0]
+    assert "scenario.roleSectionCollapsed = !scenario.roleSectionCollapsed;" in fn
+    render_fn = html.split("function apRenderMemberUtilTable(scenarioIdx, scenario, computed, roleComputed, weeks, wrapId){")[1]
+    assert "var roleSectionOpen = !scenario.roleSectionCollapsed;" in render_fn
+    assert "apToggleRoleSection(" in render_fn
+    assert "if(roleSectionOpen){" in render_fn
+
+
 def test_assign_planning_scenario_can_exclude_delivery_independently(con):
     """ユーザー要望(2026-09-27):「シナリオごとに、対象Delivery選択で選んだ案件をOFFにできる仕様
     (チェックをOFFにすると、グレーアウトされて自動的に稼働率が0%で計算される)」の回帰テスト。
