@@ -1929,14 +1929,30 @@ def test_delivery_roles_master_has_default_seven_roles(con):
 
 
 def test_delivery_roles_master_dynamically_reflected(con, acc_id):
-    """マスタ設定(delivery_roles)を変更すると、体制・アサインの役割<select>の選択肢に動的に反映される。"""
+    """役割ツリー(delivery_role_tree)を変更すると、体制・アサインの役割<select>の選択肢に
+    動的に反映される（2026-09-29〜、役割はフラグ×役割ツリーで管理する方式に変更。
+    _delivery_role_optsがdelivery_role_leaves経由になったことの回帰テスト）。"""
+    sfa_db.set_delivery_role_tree(con, {"カスタムフラグ": ["カスタム役割A", "カスタム役割B"]})
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    html = webapp.delivery_form(con, dvid)
+    assert "カスタム役割A" in html
+    assert "カスタム役割B" in html
+    assert "プロジェクトマネジャー" not in html  # ツリーを丸ごと差し替えたので、もう選択肢に出ない
+
+
+def test_delivery_roles_legacy_flat_master_customization_does_not_replace_tree(con, acc_id):
+    """旧フラットマスタ(masters key='delivery_roles')だけをカスタマイズしても、ツリー
+    (delivery_role_tree)自体が明示保存されるまでは、既定の8ロールはフル構成のまま残り
+    （黙って消えない）、カスタマイズ値は「未分類」フラグに追加される形で選択肢に出ること。"""
     sfa_db.set_master_list(con, "delivery_roles", ["カスタム役割A", "カスタム役割B"])
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
     html = webapp.delivery_form(con, dvid)
     assert "カスタム役割A" in html
     assert "カスタム役割B" in html
-    assert "プロジェクトマネジャー" not in html  # デフォルトは上書きされ、もう選択肢に出ない
+    assert "プロジェクトマネジャー" in html
+    assert "外部オペレータ" in html
 
 
 def test_delivery_form_role_select_marks_master_role_selected(con, acc_id):
@@ -2438,14 +2454,15 @@ def test_assign_planning_member_util_has_role_breakdown_including_external(con):
 
 def test_assign_planning_role_order_matches_master_and_starts_with_pm(con):
     """ユーザー要望(2026-09-29)「役職の順番を、マスタにあわせて(プロジェクトマネジャーから
-    始まるはず)」。役割別集計の並び順は合計工数の降順ではなく、体制の役割マスタ
-    (delivery_roles)の登録順を使うこと。マスタ未設定時のシード既定値でも先頭は
-    プロジェクトマネジャーであること。"""
-    role_order = sfa_db.get_master_list(con, "delivery_roles")
+    始まるはず)」。役割別集計の並び順は合計工数の降順ではなく、Delivery役割ツリー
+    (delivery_role_tree)のフラグ登録順×フラグ内登録順を使うこと。マスタ未設定時の
+    シード既定値でも先頭はプロジェクトマネジャーであること。"""
+    role_order = sfa_db.delivery_role_leaves(con)
     assert role_order[0] == "プロジェクトマネジャー"
+    assert role_order[-1] == "外部オペレータ"
     html = webapp.assign_planning_page(con)
     assert json.dumps(role_order, ensure_ascii=False) in html, \
-        "AP_ROLE_ORDERにマスタ順の役割リストがそのまま埋め込まれていること"
+        "AP_ROLE_ORDERにツリー由来の役割リストがそのまま埋め込まれていること"
     assert "var AP_ROLE_ORDER = " in html
     fn = html.split("function apRoleSortKey(label){")[1].split("\n}")[0]
     assert "AP_ROLE_ORDER.indexOf(base)" in fn
@@ -2490,6 +2507,123 @@ def test_assign_planning_role_section_can_collapse_as_a_whole(con):
     assert "var roleSectionOpen = !scenario.roleSectionCollapsed;" in render_fn
     assert "apToggleRoleSection(" in render_fn
     assert "if(roleSectionOpen){" in render_fn
+
+
+def test_delivery_role_tree_default_matches_requested_flag_mapping(con):
+    """ユーザー要望(2026-09-29)「役割にフラグを付けて、階層のようにしたい。マスタから追加。
+    プロジェクトマネジャー→マネジャー、リードコンサルタント/ジュニアコンサルタント→
+    コンサルタント、リードエンジニア/エンジニア→エンジニア、内部アドバイザー/
+    外部アドバイザー→アドバイザー、外部オペレータ(新規)→オペレータ」。未保存時は
+    このデフォルトツリーが返り、外部オペレータが新規ロールとして含まれること。"""
+    tree = sfa_db.get_delivery_role_tree(con)
+    assert tree == {
+        "マネジャー": ["プロジェクトマネジャー"],
+        "コンサルタント": ["リードコンサルタント", "ジュニアコンサルタント"],
+        "エンジニア": ["リードエンジニア", "エンジニア"],
+        "アドバイザー": ["内部アドバイザー", "外部アドバイザー"],
+        "オペレータ": ["外部オペレータ"],
+    }
+    assert list(tree.keys())[0] == "マネジャー"
+    assert sfa_db.delivery_role_leaves(con) == [
+        "プロジェクトマネジャー", "リードコンサルタント", "ジュニアコンサルタント",
+        "リードエンジニア", "エンジニア", "内部アドバイザー", "外部アドバイザー", "外部オペレータ",
+    ]
+    assert sfa_db.delivery_role_flag_of(con) == {
+        "プロジェクトマネジャー": "マネジャー",
+        "リードコンサルタント": "コンサルタント", "ジュニアコンサルタント": "コンサルタント",
+        "リードエンジニア": "エンジニア", "エンジニア": "エンジニア",
+        "内部アドバイザー": "アドバイザー", "外部アドバイザー": "アドバイザー",
+        "外部オペレータ": "オペレータ",
+    }
+
+
+def test_delivery_role_tree_migrates_legacy_flat_customization_to_unclassified(con):
+    """既存運用で平坦マスタ(masters key='delivery_roles')がツリー導入前にカスタマイズ
+    されていた場合、既定の8ロールは常にフル構成で返しつつ、既定に無い値（旧カスタマイズ分）
+    だけを「未分類」フラグへ引き継ぐこと（カスタマイズを黙って消さない）。"""
+    sfa_db.set_master_list(con, "delivery_roles", list(sfa_db.DELIVERY_ROLES) + ["謎ロールX"])
+    tree = sfa_db.get_delivery_role_tree(con)
+    assert tree["未分類"] == ["謎ロールX"]
+    assert tree["マネジャー"] == ["プロジェクトマネジャー"]
+    assert tree["オペレータ"] == ["外部オペレータ"]
+
+
+def test_delivery_role_tree_round_trips_and_cleans_on_save(con):
+    """set_delivery_role_tree: 空フラグ名は除外、各フラグ内の役割は重複除去（順序保持）。
+    tech_seed_tree/business_type_treeと同じクリーニング仕様の回帰テスト。保存後は
+    get_delivery_role_tree がそのツリーを返す(デフォルトへフォールバックしない)こと。"""
+    sfa_db.set_delivery_role_tree(con, {
+        " マネジャー ": ["プロジェクトマネジャー", " プロジェクトマネジャー ", ""],
+        "": ["空フラグ配下は無視されるはず"],
+        "コンサル": ["A", "A", "B"],
+    })
+    tree = sfa_db.get_delivery_role_tree(con)
+    assert tree == {"マネジャー": ["プロジェクトマネジャー"], "コンサル": ["A", "B"]}
+
+
+def test_assign_planning_page_embeds_role_flag_map_and_order(con):
+    """ユーザー要望(2026-09-29)「役割にフラグを付けて、階層のようにしたい」。
+    アサインプランニングページにAP_ROLE_FLAG_OF(役割→フラグ)とAP_ROLE_FLAG_ORDER
+    (フラグの表示順)がDelivery役割ツリーからそのまま埋め込まれること。"""
+    html = webapp.assign_planning_page(con)
+    role_flag_of = sfa_db.delivery_role_flag_of(con)
+    role_flag_order = list(sfa_db.get_delivery_role_tree(con).keys())
+    assert "var AP_ROLE_FLAG_OF = " in html
+    assert "var AP_ROLE_FLAG_ORDER = " in html
+    assert json.dumps(role_flag_of, ensure_ascii=False) in html
+    assert json.dumps(role_flag_order, ensure_ascii=False) in html
+
+
+def test_assign_planning_role_aggregation_has_three_level_flag_hierarchy(con):
+    """ユーザー要望(2026-09-29)「シナリオ画面での表示は、フラグ表示→内外×フラグ表示→
+    内外×役割表示(現在の表記)、と3階層で開くようにしたい」。apComputeRoleWeeklyが
+    アサインを二重に走査せず、既存の役割×内外集計(byRole)をAP_ROLE_FLAG_OFで束ねて
+    フラグ/フラグ×内外の2階層を導出すること。apRenderMemberUtilTableがflag/flagKind/roleの
+    3階層を入れ子で描画し、各階層が独立した開閉トグル
+    (apToggleFlagExpand/apToggleFlagKindExpand/既存のapToggleRoleExpand)を持つこと。"""
+    html = webapp.assign_planning_page(con)
+    compute_fn = html.split("function apComputeRoleWeekly(scenario, visibleIds){")[1].split("\n}")[0]
+    assert "var flag = AP_ROLE_FLAG_OF[base] || '未分類';" in compute_fn
+    assert "flag: {sum: byFlag, count: byFlagCount}," in compute_fn
+    assert "flagKind: {sum: byFlagKind, count: byFlagKindCount}," in compute_fn
+    assert "role: {sum: byRole, count: byRoleCount, breakdown: byRoleDeliveries}" in compute_fn
+
+    assert "function apFlagSortKey(flag){" in html
+    assert "function apToggleFlagExpand(scenarioIdx, flag){" in html
+    assert "function apToggleFlagKindExpand(scenarioIdx, flagKind){" in html
+
+    render_fn = html.split("function apRenderMemberUtilTable(scenarioIdx, scenario, computed, roleComputed, weeks, wrapId){")[1]
+    assert "var byRole = roleComputed.role.sum" in render_fn
+    assert "var byFlag = roleComputed.flag.sum" in render_fn
+    assert "var byFlagKind = roleComputed.flagKind.sum" in render_fn
+    assert "var expandedFlags = scenario.expandedFlags || {};" in render_fn
+    assert "var expandedFlagKinds = scenario.expandedFlagKinds || {};" in render_fn
+    assert "apToggleFlagExpand(" in render_fn
+    assert "apToggleFlagKindExpand(" in render_fn
+    assert "apToggleRoleExpand(" in render_fn, "3階層目(役割×内外)は既存のapToggleRoleExpandを再利用すること"
+    assert "class=\"ap-util-flag\"" in render_fn
+    assert "class=\"ap-util-flagkind\"" in render_fn
+
+
+def test_masters_page_shows_delivery_role_tree_card_not_flat(con):
+    """delivery_rolesはフラットな選択肢カードではなく、business_type_treeと同型の
+    フラグ×役割ツリー編集カードで表示すること（ユーザー要望2026-09-29「マスタから追加」）。"""
+    html = webapp.masters_page(con)
+    assert 'id="master_delivery_role"' in html
+    assert "Delivery役割（フラグ × 役割 ツリー）" in html
+    assert 'id="master_delivery_roles"' not in html, "旧フラットカードは表示しないこと"
+    assert 'name="dr_l1_name[]"' in html and 'name="dr_l2_lines[]"' in html
+    assert "function drAddBlock()" in html
+    assert "initDrag('delivery_roles')" not in html, \
+        "フラットカードが無いのでinitDrag初期化からも除外すること"
+
+
+def test_delivery_role_opts_uses_tree_leaves_including_external_operator(con):
+    """_delivery_role_optsが平坦マスタ(get_master_list)ではなくdelivery_role_leaves経由に
+    なり、新設の「外部オペレータ」も体制/アサインの役割選択肢に出ること。"""
+    opts = webapp._delivery_role_opts(con, None)
+    assert "外部オペレータ" in opts
+    assert "プロジェクトマネジャー" in opts
 
 
 def test_assign_planning_scenario_can_exclude_delivery_independently(con):

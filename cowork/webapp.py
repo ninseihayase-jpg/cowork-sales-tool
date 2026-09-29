@@ -304,7 +304,7 @@ def _delivery_role_opts(con, current: str | None, delivery_id: int | None = None
     delivery_id指定時は、そのDeliveryの体制に実在する連番役割（「ジュニアコンサルタント2」等、
     resolve_delivery_role_name_for_save()による自動採番）も通常の選択肢として追加する
     （マスタに無いというだけで「旧値・要見直し」と誤表示させないため。ユーザー要望2026-09-24）。"""
-    values = list(sfa_db.get_master_list(con, "delivery_roles"))
+    values = list(sfa_db.delivery_role_leaves(con))
     if delivery_id is not None:
         base_set = set(values)
         numbered = []
@@ -2848,15 +2848,25 @@ _ASSIGN_PLANNING_PAGE_TEMPLATE = """<link rel="icon" href="__FAVICON_LINK__">
 .ap-util-toggle{cursor:pointer;color:#8893a8;font-size:9px;display:inline-block;width:9px}
 .ap-util-toggle:hover{color:#2f6fed}
 .ap-util-sub td{background:#f8fafc}
-.ap-util-sub-name{padding-left:20px;font-weight:400;font-size:10.5px;color:#8893a8}
+.ap-util-sub-name{padding-left:42px;font-weight:400;font-size:10.5px;color:#8893a8}
 .ap-util-subcell{color:#8893a8}
 /* 担当領域(役職)の境目に太線（ユーザー要望2026-09-27「担当領域ごとに太線で仕切って」）。 */
 .ap-util-group-start td{border-top:2px solid #94a3b8}
 /* 役割別集計セクション（外部メンバーも含む。ユーザー要望2026-09-29「各シナリオのメンバーの
    上に、役割別集計を追加。外部を含む」）。メンバー別セクションと視覚的に区別するため
    淡い背景色を付ける。クリックでの案件内訳展開は.ap-util-sub/.ap-util-sub-nameを
-   メンバー別と共用する（同じ仕様で開けるように、というユーザー要望に対応）。 */
+   メンバー別と共用する（同じ仕様で開けるように、というユーザー要望に対応）。
+   2026-09-29「役割にフラグを付けて階層のようにしたい」「フラグ表示→内外×フラグ表示→
+   内外×役割表示、と3階層で開く」により、フラグ(.ap-util-flag)/フラグ×内外
+   (.ap-util-flagkind)/役割×内外(.ap-util-role、既存)の3段階になった。フラグが最も濃く、
+   下の階層ほど淡い配色にして階層の深さを一目でわかるようにする。名前セルの左パディングも
+   段階的に増やし、案件内訳(.ap-util-sub-name)まで含めて4段階のインデントにする。 */
+.ap-util-flag td{background:#c7d2fe;font-weight:700;color:#1e2a52}
+.ap-util-flagkind td{background:#dfe6fb;font-weight:600;color:#2c3a63}
 .ap-util-role td{background:#eef2ff;font-weight:600;color:#3a4760}
+.ap-util-flag-name{padding-left:6px}
+.ap-util-flagkind-name{padding-left:18px}
+.ap-util-role-name{padding-left:30px}
 /* セクション見出しのラベルセルは.ap-util-name(単一列・position:sticky;left:0)をそのまま
    流用する（colspanで全列をまたぐ単一セルにすると、Chromiumでposition:sticky(left方向)の
    追従が不安定になり、初期表示の横スクロール(apScrollUtilToToday)後にラベル文字列の先頭側が
@@ -2975,6 +2985,8 @@ var AP_OWNER_DOMAIN_MAP = __INITIAL_OWNER_DOMAIN_MAP_JSON__;
 var AP_DOMAIN_ORDER = __INITIAL_DOMAIN_ORDER_JSON__;
 var AP_BIZ_TYPE_ORDER = __INITIAL_BIZ_TYPE_ORDER_JSON__;
 var AP_ROLE_ORDER = __INITIAL_ROLE_ORDER_JSON__;
+var AP_ROLE_FLAG_OF = __INITIAL_ROLE_FLAG_OF_JSON__;
+var AP_ROLE_FLAG_ORDER = __INITIAL_ROLE_FLAG_ORDER_JSON__;
 var AP_CONFIDENCE_COLORS = __INITIAL_CONFIDENCE_COLORS_JSON__;
 var AP_PLANS = __INITIAL_PLANS_JSON__;
 var AP_BY_ID = {};
@@ -3278,6 +3290,13 @@ function apRoleSortKey(label){
   if(idx < 0) idx = AP_ROLE_ORDER.length;
   return [idx, kind === '外' ? 1 : 0];
 }
+// フラグ別集計の並び順キー（ユーザー要望2026-09-29「役割にフラグを付けて、階層のように
+// したい」。Delivery役割ツリーのフラグ登録順(AP_ROLE_FLAG_ORDER)で並べる。ツリーに無い
+// フラグ（旧フラットマスタのカスタマイズ値を引き継いだ「未分類」等）は末尾に回す。
+function apFlagSortKey(flag){
+  var idx = AP_ROLE_FLAG_ORDER.indexOf(flag);
+  return idx < 0 ? AP_ROLE_FLAG_ORDER.length : idx;
+}
 // 役割別集計（外部メンバーも含む。ユーザー要望2026-09-29「各シナリオのメンバーの上に、役割別
 // 集計を追加。外部を含む」）。apComputeMemberWeeklyとほぼ同じロジックだが、集計キーが
 // owner(メンバー名)ではなくrole(役割、連番を除いた基底名)＋内部/外部の別であること、
@@ -3310,7 +3329,35 @@ function apComputeRoleWeekly(scenario, visibleIds){
       });
     });
   });
-  return {sum: byRole, count: byRoleCount, breakdown: byRoleDeliveries};
+  // 役割別集計の上位2階層（フラグ／フラグ×内外）。ユーザー要望2026-09-29「役割にフラグを
+  // 付けて、階層のようにしたい」「シナリオ画面での表示は、フラグ表示→内外×フラグ表示→
+  // 内外×役割表示(現在の表記)、と3階層で開くようにしたい」。アサインを二重に走査せず、
+  // 直前に作った役割×内外の集計(byRole)をDelivery役割ツリーのフラグ定義(AP_ROLE_FLAG_OF)で
+  // さらに束ねて導出する。実在する(フラグ,内外)の組み合わせしかキーが生成されないため、
+  // 役割別集計と同じ理屈で0件の分類は自動的に非表示になる。
+  var byFlag = {}, byFlagCount = {}, byFlagKind = {}, byFlagKindCount = {};
+  Object.keys(byRole).forEach(function(roleLabel){
+    var kind = roleLabel.slice(-2, -1);
+    var base = roleLabel.slice(0, -3);
+    var flag = AP_ROLE_FLAG_OF[base] || '未分類';
+    var flagKindLabel = flag + '(' + kind + ')';
+    if(!byFlag[flag]) byFlag[flag] = {};
+    if(!byFlagCount[flag]) byFlagCount[flag] = {};
+    if(!byFlagKind[flagKindLabel]) byFlagKind[flagKindLabel] = {};
+    if(!byFlagKindCount[flagKindLabel]) byFlagKindCount[flagKindLabel] = {};
+    Object.keys(byRole[roleLabel]).forEach(function(w){
+      var v = byRole[roleLabel][w], c = byRoleCount[roleLabel][w] || 0;
+      byFlag[flag][w] = (byFlag[flag][w]||0) + v;
+      byFlagCount[flag][w] = (byFlagCount[flag][w]||0) + c;
+      byFlagKind[flagKindLabel][w] = (byFlagKind[flagKindLabel][w]||0) + v;
+      byFlagKindCount[flagKindLabel][w] = (byFlagKindCount[flagKindLabel][w]||0) + c;
+    });
+  });
+  return {
+    flag: {sum: byFlag, count: byFlagCount},
+    flagKind: {sum: byFlagKind, count: byFlagKindCount},
+    role: {sum: byRole, count: byRoleCount, breakdown: byRoleDeliveries}
+  };
 }
 // メンバーの並び順キー: 役職順(「担当者の担当領域」マスタの並び順)→マスタの名前順(AP_OWNERSの並び順)
 // （ユーザー要望2026-09-27「役職順、マスタの名前順にして」）。担当領域未設定・AP_OWNERS未掲載の
@@ -3359,16 +3406,22 @@ function apRenderMemberUtilTable(scenarioIdx, scenario, computed, roleComputed, 
     if(ka[1]!==kb[1]) return ka[1]-kb[1];
     return ka[2].localeCompare(kb[2],'ja');
   });
-  var byRole = roleComputed.sum, byRoleCount = roleComputed.count, roleBreakdown = roleComputed.breakdown;
+  var byRole = roleComputed.role.sum, byRoleCount = roleComputed.role.count, roleBreakdown = roleComputed.role.breakdown;
+  var byFlag = roleComputed.flag.sum, byFlagCount = roleComputed.flag.count;
+  var byFlagKind = roleComputed.flagKind.sum, byFlagKindCount = roleComputed.flagKind.count;
   // 役割は体制の役割マスタ(AP_ROLE_ORDER)の登録順に並べる（ユーザー要望2026-09-29
   // 「役職の順番を、マスタにあわせて(プロジェクトマネジャーから始まるはず)」）。
   var roles = Object.keys(byRole).sort(function(a,b){
     var ka = apRoleSortKey(a), kb = apRoleSortKey(b);
     return ka[0]!==kb[0] ? ka[0]-kb[0] : ka[1]-kb[1];
   });
+  // フラグはDelivery役割ツリーのフラグ登録順に並べる。
+  var flags = Object.keys(byFlag).sort(function(a,b){ return apFlagSortKey(a)-apFlagSortKey(b); });
   if(!owners.length && !roles.length){ return '<p class="ap-empty" style="margin:4px 0 0">アサイン済みメンバーがいません</p>'; }
   var expanded = scenario.expandedMembers || {};
   var expandedRoles = scenario.expandedRoles || {};
+  var expandedFlags = scenario.expandedFlags || {};
+  var expandedFlagKinds = scenario.expandedFlagKinds || {};
   var headHtml = '<tr><th class="ap-util-corner">メンバー</th>'
     + weeks.map(function(w){ return '<th class="ap-util-wk-head">'+w.slice(5)+'</th>'; }).join('') + '</tr>';
   // セクション見出し行は、colspanで全列をまたぐ単一セルではなく.ap-util-name(単一列・
@@ -3388,20 +3441,60 @@ function apRenderMemberUtilTable(scenarioIdx, scenario, computed, roleComputed, 
     roleHtml += '<tr class="ap-util-section-label"><td class="ap-util-name">'+sectionToggle+' 役割別集計（外部含む）</td>'
       + weeks.map(function(){ return '<td></td>'; }).join('') + '</tr>';
     if(roleSectionOpen){
-      roleHtml += roles.map(function(r){
-        var isOpen = !!expandedRoles[r];
-        var toggle = '<span class="ap-util-toggle" onclick="apToggleRoleExpand('+scenarioIdx+','+_apJsStr(r)+')">'
-          + (isOpen?'▼':'▶') + '</span>';
-        var row = '<tr class="ap-util-role"><td class="ap-util-name" title="'+_apEsc(r)+'">'+toggle+' '+_apEsc(r)+'</td>'
+      // 3階層クリック展開（ユーザー要望2026-09-29「フラグ表示→内外×フラグ表示→
+      // 内外×役割表示(現在の表記)、と3階層で開くようにしたい」）。1階層目=フラグ合計、
+      // 2階層目=フラグ×内外、3階層目=役割×内外(従来の表記のまま)。各階層の開閉状態は
+      // scenario単位で独立して保持する（expandedFlags/expandedFlagKinds/expandedRoles）。
+      roleHtml += flags.map(function(flag){
+        var flagOpen = !!expandedFlags[flag];
+        var flagToggle = '<span class="ap-util-toggle" onclick="apToggleFlagExpand('+scenarioIdx+','+_apJsStr(flag)+')">'
+          + (flagOpen?'▼':'▶') + '</span>';
+        var flagRow = '<tr class="ap-util-flag"><td class="ap-util-name ap-util-flag-name" title="'+_apEsc(flag)+'">'+flagToggle+' '+_apEsc(flag)+'</td>'
           + weeks.map(function(w){
-              var v = byRole[r][w]||0;
-              var c = (byRoleCount[r] && byRoleCount[r][w]) || 0;
+              var v = byFlag[flag][w]||0;
+              var c = (byFlagCount[flag] && byFlagCount[flag][w]) || 0;
               var text = v ? (v+'('+c+')') : '';
               return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+text+'</td>';
             }).join('')
           + '</tr>';
-        if(isOpen) row += apUtilBreakdownRows(roleBreakdown[r] || {}, weeks);
-        return row;
+        if(!flagOpen) return flagRow;
+        var flagKinds = ['内','外'].map(function(k){ return flag+'('+k+')'; })
+          .filter(function(fk){ return !!byFlagKind[fk]; });
+        flagRow += flagKinds.map(function(fk){
+          var fkOpen = !!expandedFlagKinds[fk];
+          var fkToggle = '<span class="ap-util-toggle" onclick="apToggleFlagKindExpand('+scenarioIdx+','+_apJsStr(fk)+')">'
+            + (fkOpen?'▼':'▶') + '</span>';
+          var fkRow = '<tr class="ap-util-flagkind"><td class="ap-util-name ap-util-flagkind-name" title="'+_apEsc(fk)+'">'+fkToggle+' '+_apEsc(fk)+'</td>'
+            + weeks.map(function(w){
+                var v = byFlagKind[fk][w]||0;
+                var c = (byFlagKindCount[fk] && byFlagKindCount[fk][w]) || 0;
+                var text = v ? (v+'('+c+')') : '';
+                return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+text+'</td>';
+              }).join('')
+            + '</tr>';
+          if(!fkOpen) return fkRow;
+          var kind = fk.slice(-2,-1);
+          var rolesHere = roles.filter(function(r){
+            return r.slice(-2,-1) === kind && (AP_ROLE_FLAG_OF[r.slice(0,-3)] || '未分類') === flag;
+          });
+          fkRow += rolesHere.map(function(r){
+            var isOpen = !!expandedRoles[r];
+            var toggle = '<span class="ap-util-toggle" onclick="apToggleRoleExpand('+scenarioIdx+','+_apJsStr(r)+')">'
+              + (isOpen?'▼':'▶') + '</span>';
+            var row = '<tr class="ap-util-role"><td class="ap-util-name ap-util-role-name" title="'+_apEsc(r)+'">'+toggle+' '+_apEsc(r)+'</td>'
+              + weeks.map(function(w){
+                  var v = byRole[r][w]||0;
+                  var c = (byRoleCount[r] && byRoleCount[r][w]) || 0;
+                  var text = v ? (v+'('+c+')') : '';
+                  return '<td class="ap-util-cell'+apUtilCellClass(v)+'">'+text+'</td>';
+                }).join('')
+              + '</tr>';
+            if(isOpen) row += apUtilBreakdownRows(roleBreakdown[r] || {}, weeks);
+            return row;
+          }).join('');
+          return fkRow;
+        }).join('');
+        return flagRow;
       }).join('');
     }
   }
@@ -3445,6 +3538,23 @@ function apToggleRoleExpand(scenarioIdx, role){
   if(!scenario) return;
   if(!scenario.expandedRoles) scenario.expandedRoles = {};
   scenario.expandedRoles[role] = !scenario.expandedRoles[role];
+  apRenderScenarios();
+}
+// フラグ行／フラグ×内外行のクリック展開（ユーザー要望2026-09-29「フラグ表示→内外×フラグ
+// 表示→内外×役割表示、と3階層で開くようにしたい」）。apToggleRoleExpandと同じ形の
+// 独立した開閉状態を、フラグ階層・フラグ×内外階層それぞれに持たせる。
+function apToggleFlagExpand(scenarioIdx, flag){
+  var scenario = AP_STATE.scenarios[scenarioIdx];
+  if(!scenario) return;
+  if(!scenario.expandedFlags) scenario.expandedFlags = {};
+  scenario.expandedFlags[flag] = !scenario.expandedFlags[flag];
+  apRenderScenarios();
+}
+function apToggleFlagKindExpand(scenarioIdx, flagKind){
+  var scenario = AP_STATE.scenarios[scenarioIdx];
+  if(!scenario) return;
+  if(!scenario.expandedFlagKinds) scenario.expandedFlagKinds = {};
+  scenario.expandedFlagKinds[flagKind] = !scenario.expandedFlagKinds[flagKind];
   apRenderScenarios();
 }
 // 役割別集計セクション全体の開閉（ユーザー要望2026-09-29「役割別集計、全体を折りたためる
@@ -3811,8 +3921,14 @@ def assign_planning_page(con) -> str:
     # 確度ワッペンの色（ユーザー要望2026-09-28「確度はワッペンで表記」）。Delivery一覧の
     # バッジ配色(_DELIVERY_CONFIDENCE_COLORS)とそのまま揃える。
     # 役割別集計の並び順（ユーザー要望2026-09-29「役職の順番をマスタにあわせて」）。
-    # 体制の役割マスタ（/masters「役割（体制）」）の登録順をそのまま優先順位にする。
-    role_order = sfa_db.get_master_list(con, "delivery_roles") or list(sfa_db.DELIVERY_ROLES)
+    # Delivery役割ツリー（/masters「Delivery役割（フラグ×役割 ツリー）」）のフラグ登録順×
+    # フラグ内登録順をそのまま優先順位にする。
+    _role_tree = sfa_db.get_delivery_role_tree(con)
+    role_order = sfa_db.delivery_role_leaves(con)
+    # 役割別集計のフラグ階層化（ユーザー要望2026-09-29「役割にフラグを付けて、階層のように
+    # したい」）。役割名→フラグ名のマップと、フラグの表示順（ツリーの登録順）をJSへ渡す。
+    role_flag_of = sfa_db.delivery_role_flag_of(con)
+    role_flag_order = list(_role_tree.keys())
 
     html = _ASSIGN_PLANNING_PAGE_TEMPLATE.replace("__FAVICON_LINK__", _SFA_FAVICON)
     html = html.replace("__INITIAL_DELIVERIES_JSON__", json.dumps(deliveries, ensure_ascii=False))
@@ -3822,6 +3938,8 @@ def assign_planning_page(con) -> str:
     html = html.replace("__INITIAL_BIZ_TYPE_ORDER_JSON__", json.dumps(biz_type_order, ensure_ascii=False))
     html = html.replace("__INITIAL_CONFIDENCE_COLORS_JSON__", json.dumps(_DELIVERY_CONFIDENCE_COLORS, ensure_ascii=False))
     html = html.replace("__INITIAL_ROLE_ORDER_JSON__", json.dumps(role_order, ensure_ascii=False))
+    html = html.replace("__INITIAL_ROLE_FLAG_OF_JSON__", json.dumps(role_flag_of, ensure_ascii=False))
+    html = html.replace("__INITIAL_ROLE_FLAG_ORDER_JSON__", json.dumps(role_flag_order, ensure_ascii=False))
     return html.replace("__INITIAL_PLANS_JSON__", json.dumps(plans, ensure_ascii=False))
 
 
@@ -13225,13 +13343,35 @@ def _biz_type_block(l1: str, leaves: list) -> str:
         '</div>')
 
 
+def _delivery_role_block(flag: str, roles: list) -> str:
+    """Delivery役割マスタの1ブロック(フラグ)。フラグ名＋配下役割(1行ずつ)のtextarea。
+    _biz_type_block/_tech_seed_blockと同UI（ユーザー要望2026-09-29「役割にフラグを付けて、
+    階層のようにしたい。マスタから追加」）。"""
+    lines = "\n".join(roles)
+    return (
+        '<div class="dr-block" style="border:1px solid #e6e9f0;border-radius:8px;padding:12px;'
+        'margin-bottom:10px;background:#fafbfc">'
+        '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">'
+        f'<input name="dr_l1_name[]" value="{_esc(flag)}" placeholder="フラグ（例: マネジャー）" '
+        'style="flex:1;font-weight:700">'
+        '<button type="button" class="btn sec" style="font-size:11px;white-space:nowrap" '
+        "onclick=\"this.closest('.dr-block').remove()\">このフラグを削除</button>"
+        '</div>'
+        f'<textarea name="dr_l2_lines[]" rows="4" placeholder="配下の役割を1行ずつ入力" '
+        f'style="font-size:13px;width:100%;box-sizing:border-box">{_esc(lines)}</textarea>'
+        '</div>')
+
+
 def masters_page(con) -> str:
     """入力マスタ編集ページ。各リストの選択肢を追加・削除・並び替えできる。
-    事業種別は L1×L2 のツリー構造のため、専用のツリー編集UIで扱う（フラットな L1 カードは出さない）。"""
+    事業種別は L1×L2 のツリー構造、Delivery役割はフラグ×役割のツリー構造のため、
+    それぞれ専用のツリー編集UIで扱う（フラットなカードは出さない）。"""
     cards = []
     for key, label in sfa_db.MASTER_LABELS.items():
         if key == "business_type_l1":
             continue  # L1はツリー編集カード（下部）で扱うためフラット表示しない
+        if key == "delivery_roles":
+            continue  # フラグ×役割のツリー編集カード（下部）で扱うためフラット表示しない
         values = sfa_db.get_master_list(con, key)
         items_html = "".join(
             f'<div class="master-item" draggable="true" data-key="{html.escape(key)}" data-idx="{i}">'
@@ -13272,6 +13412,22 @@ def masters_page(con) -> str:
           <div id="btBlocks">{_bt_blocks}</div>
           <button type="button" class="btn sec" onclick="btAddBlock()">＋ L1を追加</button>
           <template id="btBlockTpl">{_biz_type_block("", [])}</template>
+        </div>"""
+
+    # Delivery役割（フラグ×役割）ツリー編集カード（ユーザー要望2026-09-29）
+    _dr_tree = sfa_db.get_delivery_role_tree(con)
+    _dr_blocks = "".join(_delivery_role_block(flag, roles) for flag, roles in _dr_tree.items()) \
+        or _delivery_role_block("", [])
+    role_tree_card = f"""
+        <div class="card" id="master_delivery_role">
+          <h2>Delivery役割（フラグ × 役割 ツリー）</h2>
+          <p class="muted" style="margin:0 0 10px;font-size:12px">フラグ（例: マネジャー/コンサルタント）ごとに、
+            配下の役割（プロジェクトマネジャー等）を1行ずつ入力します。「＋ フラグを追加」で分類を足せます。
+            フラグ名が空の枠は保存時に削除されます。Delivery体制・アサインの役割選択、
+            アサインプランニングの役割別集計（フラグ→内外×フラグ→内外×役割の3階層表示）はこのツリーに連動します。</p>
+          <div id="drBlocks">{_dr_blocks}</div>
+          <button type="button" class="btn sec" onclick="drAddBlock()">＋ フラグを追加</button>
+          <template id="drBlockTpl">{_delivery_role_block("", [])}</template>
         </div>"""
 
     # 担当者ごとの担当領域の割当カード（領域の候補は上の「担当領域」マスタで編集）
@@ -13350,6 +13506,7 @@ def masters_page(con) -> str:
     <form method="post" action="/masters/save" id="master_form">
       {''.join(cards)}
       {biz_type_card}
+      {role_tree_card}
       {owner_domain_card}
       {owner_daily_capacity_card}
       {target_domain_card}
@@ -13418,8 +13575,12 @@ def masters_page(con) -> str:
       const t = document.getElementById('btBlockTpl');
       document.getElementById('btBlocks').insertAdjacentHTML('beforeend', t.innerHTML);
     }}
+    function drAddBlock() {{
+      const t = document.getElementById('drBlockTpl');
+      document.getElementById('drBlocks').insertAdjacentHTML('beforeend', t.innerHTML);
+    }}
     document.addEventListener('DOMContentLoaded', () => {{
-      {'; '.join(f"initDrag('{html.escape(key)}')" for key in sfa_db.MASTER_LABELS if key != 'business_type_l1')}
+      {'; '.join(f"initDrag('{html.escape(key)}')" for key in sfa_db.MASTER_LABELS if key not in ('business_type_l1', 'delivery_roles'))}
     }});
     </script>"""
 
@@ -23621,6 +23782,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     for key in sfa_db.MASTER_KEYS:
                         if key == "business_type_l1":
                             continue  # 事業種別L1はツリー(business_type_tree)保存側でキー同期する
+                        if key == "delivery_roles":
+                            continue  # Delivery役割はツリー(delivery_role_tree)保存側で扱う
                         values = f_list.get(f"{key}[]", [])
                         values = [v.strip() for v in values if v.strip()]
                         sfa_db.set_master_list(con, key, values)
@@ -23635,6 +23798,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _raw = _bt_lines[_i] if _i < len(_bt_lines) else ""
                         _bt_tree[_nm] = [ln.strip() for ln in _raw.replace("\r", "").split("\n") if ln.strip()]
                     sfa_db.set_business_type_tree(con, _bt_tree)
+                    # Delivery役割 フラグ×役割 ツリー（ユーザー要望2026-09-29「役割にフラグを
+                    # 付けて、階層のようにしたい。マスタから追加」）。空フラグは除外。
+                    _dr_names = f_list.get("dr_l1_name[]", [])
+                    _dr_lines = f_list.get("dr_l2_lines[]", [])
+                    _dr_tree = {}
+                    for _i, _nm in enumerate(_dr_names):
+                        _nm = (_nm or "").strip()
+                        if not _nm:
+                            continue
+                        _raw = _dr_lines[_i] if _i < len(_dr_lines) else ""
+                        _dr_tree[_nm] = [ln.strip() for ln in _raw.replace("\r", "").split("\n") if ln.strip()]
+                    sfa_db.set_delivery_role_tree(con, _dr_tree)
                     # 担当者→担当領域 の割当（parallel arrays）。空領域は未設定扱い。
                     _ow = f_list.get("owdom_owner[]", [])
                     _ov = f_list.get("owdom_value[]", [])

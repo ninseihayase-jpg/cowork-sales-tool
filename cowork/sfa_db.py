@@ -2270,6 +2270,83 @@ def business_type_l2_of(con, l1: str | None) -> list:
     return list(get_business_type_tree(con).get(l1 or "", []))
 
 
+# ---- Delivery役割のツリー（フラグ→役割, 2026-09-29）。tech_seed_tree と同方式で
+# masters に JSON 保持。マスタキー名は既存の同名SQLテーブル delivery_roles（Delivery毎の
+# 体制行、こちらとは無関係）との混同を避けるため "delivery_role_tree" にする。 ----
+DELIVERY_ROLE_TREE_DEFAULT = {
+    "マネジャー": ["プロジェクトマネジャー"],
+    "コンサルタント": ["リードコンサルタント", "ジュニアコンサルタント"],
+    "エンジニア": ["リードエンジニア", "エンジニア"],
+    "アドバイザー": ["内部アドバイザー", "外部アドバイザー"],
+    "オペレータ": ["外部オペレータ"],
+}
+
+
+def get_delivery_role_tree(con) -> dict:
+    """Delivery役割 {フラグ: [役割, ...]} を挿入順で返す。未保存ならデフォルト
+    (DELIVERY_ROLE_TREE_DEFAULT)。旧フラットマスタ(masters key='delivery_roles')が
+    ツリー導入前にカスタマイズされていた場合は、既定の役割一覧に無い値だけを
+    「未分類」フラグへ引き継ぐ（カスタマイズを黙って消さない。既定の役割自体は
+    常にフル構成で返す＝新設の「外部オペレータ」も常に含まれる）。"""
+    row = con.execute("SELECT values_json FROM masters WHERE key='delivery_role_tree'").fetchone()
+    if row:
+        try:
+            data = _json.loads(row[0])
+            if isinstance(data, dict) and data:
+                return {str(k): [str(x) for x in (v or [])] for k, v in data.items()}
+        except (ValueError, TypeError):
+            print("[masters] delivery_role_tree broken, falling back to default", flush=True)
+    tree = {k: list(v) for k, v in DELIVERY_ROLE_TREE_DEFAULT.items()}
+    known = {name for names in DELIVERY_ROLE_TREE_DEFAULT.values() for name in names}
+    legacy = get_master_list(con, "delivery_roles")
+    unknown = [name for name in legacy if name not in known]
+    if unknown:
+        tree["未分類"] = unknown
+    return tree
+
+
+def set_delivery_role_tree(con, tree: dict) -> None:
+    """ツリーを保存。空フラグ名は除外、各フラグ内の役割は重複除去（順序保持）。"""
+    clean: dict = {}
+    for k, v in tree.items():
+        k = str(k).strip()
+        if not k:
+            continue
+        seen: set = set()
+        items: list = []
+        for x in (v or []):
+            x = str(x).strip()
+            if x and x not in seen:
+                seen.add(x)
+                items.append(x)
+        clean[k] = items
+    con.execute(
+        "INSERT INTO masters(key,values_json) VALUES('delivery_role_tree',?) "
+        "ON CONFLICT(key) DO UPDATE SET values_json=excluded.values_json",
+        (_json.dumps(clean, ensure_ascii=False),),
+    )
+    con.commit()
+
+
+def delivery_role_leaves(con) -> list[str]:
+    """全役割名を、フラグの登録順×フラグ内登録順で平坦に返す（体制/アサインの
+    役割選択・アサインプランニングの役割別集計の並び順に使う）。"""
+    out: list = []
+    for v in get_delivery_role_tree(con).values():
+        out.extend(v)
+    return out
+
+
+def delivery_role_flag_of(con) -> dict:
+    """役割名 -> フラグ のマップ（アサインプランニングの役割別集計の階層化・
+    表示グルーピング用。重複時は先勝ち）。"""
+    m: dict = {}
+    for flag, roles in get_delivery_role_tree(con).items():
+        for role in roles:
+            m.setdefault(role, flag)
+    return m
+
+
 def get_owner_domain_map(con) -> dict:
     """担当者→担当領域 のマップ（masters key='owner_domain_map' にJSON保持）。未設定は空dict。"""
     row = con.execute("SELECT values_json FROM masters WHERE key='owner_domain_map'").fetchone()
