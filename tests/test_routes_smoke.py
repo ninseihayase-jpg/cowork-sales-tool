@@ -979,9 +979,10 @@ def test_delivery_receipt_route_persists_monthly_amount(server, db_path):
     con2.close()
 
 
-def test_delivery_cost_payment_route_persists_monthly_amount(server, db_path):
-    """POST /delivery/{id}/cost-payment で月別外注費支払額を保存できること
-    （月別入金計画・ユーザー要望2026-09-30「検収、入金に加え、外注費支払、の行を追加」）。
+def test_delivery_cost_receipt_route_persists_monthly_amount(server, db_path):
+    """POST /delivery/{id}/cost-receipt で月別外注費検収を保存できること
+    （月別入金計画・ユーザー要望2026-09-30「外注費検収を追加」。売上側の検収と対称の構造で、
+    外注費支払額は支払いサイト（支払）分シフトした自動算出値になった）。
     test_delivery_receipt_route_persists_monthly_amountと同型。"""
     con = sfa_db.connect(db_path)
     acc = con.execute("INSERT INTO accounts(name) VALUES('テスト社')").lastrowid
@@ -989,12 +990,12 @@ def test_delivery_cost_payment_route_persists_monthly_amount(server, db_path):
     dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-10-04")
     con.close()
 
-    code, _ = _post(server + f"/delivery/{dvid}/cost-payment", {"month": "2026-09", "amount": "40"},
+    code, _ = _post(server + f"/delivery/{dvid}/cost-receipt", {"month": "2026-09", "amount": "40"},
                     headers=_auth_header())
     assert code in (200, 303)
 
     con2 = sfa_db.connect(db_path)
-    rows = con2.execute("SELECT * FROM delivery_cost_payments WHERE delivery_id=?", (dvid,)).fetchall()
+    rows = con2.execute("SELECT * FROM delivery_cost_receipts WHERE delivery_id=?", (dvid,)).fetchall()
     assert len(rows) == 1 and rows[0]["month"] == "2026-09" and rows[0]["amount"] == 40
     con2.close()
 
@@ -1096,7 +1097,7 @@ def test_issue_page_hides_rich_note_links_when_locked(server, db_path):
 
 
 def test_delivery_payment_schedule_xlsx_route_returns_workbook(server, db_path):
-    """#115（2026-08-28修正）: /deliveries/payment-schedule.xlsx が検収/入金を
+    """#115（2026-08-28修正）: /deliveries/payment-schedule.xlsx が売上/入金を
     同一シートにまとめたxlsxを返すこと。"""
     con = sfa_db.connect(db_path)
     acc = con.execute("INSERT INTO accounts(name) VALUES('加藤製作所')").lastrowid

@@ -49,8 +49,8 @@ def test_cashflow_forecast_by_confidence_buckets_by_confidence_and_excludes_inva
     d_kakutei = _deal(con, acc_id, "受注")  # 確定
     dv_kakutei = sfa_db.create_delivery(con, deal_id=d_kakutei, start_week="2026-09-07", end_week="2026-09-14")
     sfa_db.set_delivery_receipt(con, dv_kakutei, "2026-09", 100)
-    sfa_db.update_delivery(con, dv_kakutei, payment_cycle_months=0)
-    sfa_db.set_delivery_cost_payment(con, dv_kakutei, "2026-09", 30)
+    sfa_db.update_delivery(con, dv_kakutei, payment_cycle_months=0, cost_payment_cycle_months=0)
+    sfa_db.set_delivery_cost_receipt(con, dv_kakutei, "2026-09", 30)
 
     d_closing = _deal(con, acc_id, "クロージング")  # 見込み(クロージング)
     dv_closing = sfa_db.create_delivery(con, deal_id=d_closing, start_week="2026-09-07", end_week="2026-09-14")
