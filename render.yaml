@@ -30,6 +30,8 @@ services:
         value: https://sfa-crm.onrender.com
       - key: SFA_API_TOKEN
         sync: false
+      - key: SFA_CASHFLOW_TOKEN
+        sync: false          # 資金繰りシミュレーション専用トークン。Hishoバックエンドからのみサーバー間で使用、ブラウザには埋め込まない
       - key: GOOGLE_CLIENT_ID
         sync: false          # Googleログイン(SSO)。2026-09-24〜唯一の認証経路。未設定だと全ページ503
       - key: GOOGLE_CLIENT_SECRET

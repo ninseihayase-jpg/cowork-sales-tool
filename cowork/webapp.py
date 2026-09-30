@@ -36,6 +36,12 @@ from . import theme_link
 from . import dev_project_link
 
 SFA_API_TOKEN = os.environ.get("SFA_API_TOKEN", "")
+# 資金繰りシミュレーション専用トークン（2026-09-30）。既存のSFA_API_TOKENはHishoダッシュボードの
+# HTMLに埋め込まれ、ブラウザ側JSから直接叩かれる前提（他の閲覧者にも見えてしまう）。財務情報
+# （銀行残高・入出金）はより機微なため、Hishoの「バックエンド」からサーバー間でのみ叩かれる
+# 別トークンで保護する（ブラウザには一切埋め込まない。ユーザー要望「経営ロールしか見られない
+# 仕様」を、UIを隠すだけでなくAPIレベルでも満たすための分離）。
+SFA_CASHFLOW_TOKEN = os.environ.get("SFA_CASHFLOW_TOKEN", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 # Jamie Webhook検証用（#29 P3）。署名(HMAC)方式=JAMIE_WEBHOOK_SECRET / APIキーヘッダ方式=JAMIE_WEBHOOK_API_KEY。
 # どちらも未設定なら受信を拒否（fail-closed）。値はRender秘匿設定に格納しコミットしない。
@@ -4275,6 +4281,35 @@ def _delivery_confidence(deal_stage: str, deal_status: str, override: str | None
     クローズ非受注=無効(終了)。override（deliveries.confidence_override）があれば自動導出より優先。"""
     label = override if override in sfa_db.DELIVERY_CONFIDENCE_LEVELS else sfa_db.delivery_confidence_auto(deal_stage, deal_status)
     return (label, _DELIVERY_CONFIDENCE_COLORS.get(label, "#6b7280"))
+
+
+def cashflow_forecast_by_confidence(con) -> dict:
+    """Hisho資金繰りシミュレーション向け集計（2026-09-30）。全Deliveryのdelivery_cashflow()を
+    確度別・月別に合算する。「入金予定」はcf["payments"](検収額を支払いサイクル分ずらした実際の
+    入金月ベース)、「外注費」はcf["cost_payments"](月別実額入力)を使う。無効(終了)のDeliveryは
+    キャンセル済みで将来の入出金に寄与しないため除外する。
+    戻り値: {"months": [...], "by_confidence": {確度ラベル: {月: {"inflow":合計入金予定,"cost":合計外注費}}}}
+    Hishoの資金繰りタブは、ユーザーが選んだ確度フィルタ（確定のみ/クロージングまで含む/
+    提案中まで含む）に応じて、この確度別内訳を該当分だけ合算して使う。"""
+    by_conf: dict = {}
+    months_set: set = set()
+    for dv in sfa_db.list_deliveries(con):
+        conf_lbl, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
+                                           dv.get("confidence_override"))
+        if conf_lbl == "無効(終了)":
+            continue
+        cf = sfa_db.delivery_cashflow(con, dv["id"])
+        bucket = by_conf.setdefault(conf_lbl, {})
+        for m in cf["months"]:
+            inflow = cf["payments"].get(m) or 0.0
+            cost = cf["cost_payments"].get(m) or 0.0
+            if not inflow and not cost:
+                continue
+            months_set.add(m)
+            entry = bucket.setdefault(m, {"inflow": 0.0, "cost": 0.0})
+            entry["inflow"] += inflow
+            entry["cost"] += cost
+    return {"months": sorted(months_set), "by_confidence": by_conf}
 
 
 def _delivery_new_confidence_opts() -> str:
@@ -22798,6 +22833,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         _load["base_max_periods"] = sfa_db.list_base_max_periods(con)  # 人→期間別最大稼働率（#75）
                         _load["owner_domains"] = sfa_db.get_owner_domain_map(con)  # 人→担当領域（余剰工数の対象判定用）
                         self._send_cors_json(json.dumps(_load, ensure_ascii=False).encode())
+                elif path == "/api/cashflow_forecast":
+                    # Hisho資金繰りシミュレーション用（2026-09-30）。ブラウザではなくHisho
+                    # バックエンドからサーバー間でのみ叩かれる想定（財務情報のため、SFA_API_TOKENとは
+                    # 別のSFA_CASHFLOW_TOKENで保護。ブラウザに埋め込まれる既存の/api/*と違い、
+                    # このトークンはHisho側のHTMLには一切含めない）。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_CASHFLOW_TOKEN or not hmac.compare_digest(token, SFA_CASHFLOW_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        self._send_cors_json(
+                            json.dumps(cashflow_forecast_by_confidence(con), ensure_ascii=False).encode())
                 elif path == "/api/base_workload":
                     # Hishoダッシュボード用: ベース工数(人×機能×%)。{owner:pct}合算＋明細（#75）。
                     qs = self._qs()
