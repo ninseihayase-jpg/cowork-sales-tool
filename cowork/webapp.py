@@ -4285,21 +4285,28 @@ def _delivery_confidence(deal_stage: str, deal_status: str, override: str | None
 
 def cashflow_forecast_by_confidence(con) -> dict:
     """Hisho資金繰りシミュレーション向け集計（2026-09-30）。全Deliveryのdelivery_cashflow()を
-    確度別・月別に合算する。「入金予定」はcf["payments"](売上を支払いサイト・売上分ずらした
-    実際の入金月ベース)、「外注費」はcf["cost_payments"](外注費検収を支払いサイト・支払分
-    ずらした実際の支払月ベース。2026-09-30〜自動算出に変更)を使う。無効(終了)のDeliveryは
-    キャンセル済みで将来の入出金に寄与しないため除外する。
-    戻り値: {"months": [...], "by_confidence": {確度ラベル: {月: {"inflow":合計入金予定,"cost":合計外注費}}},
-             "deliveries": {月: [{"id","name","confidence","inflow","cost"}, ...]}}
+    確度別・月別に合算する。実収支ベース（"by_confidence"/"deliveries"）はcf["payments"]
+    (売上を支払いサイト・売上分ずらした実際の入金月ベース)・cf["cost_payments"](外注費検収を
+    支払いサイト・支払分ずらした実際の支払月ベース)を使う。計上ベース
+    （"by_confidence_accrual"/"deliveries_accrual"、2026-09-30追加）はずらす前の発生ベース、
+    cf["receipts"](売上計上額)・cf["cost_receipts"](外注費検収額)をそのまま使う。無効(終了)の
+    Deliveryはキャンセル済みで将来の入出金に寄与しないため除外する。
+    戻り値: {"months": [...],
+             "by_confidence": {確度ラベル: {月: {"inflow":合計入金予定,"cost":合計外注費}}},
+             "deliveries": {月: [{"id","name","confidence","inflow","cost"}, ...]},
+             "by_confidence_accrual": {確度ラベル: {月: {"inflow":合計売上,"cost":合計外注費検収}}},
+             "deliveries_accrual": {月: [{"id","name","confidence","inflow","cost"}, ...]}}
     Hishoの資金繰りタブは、ユーザーが選んだ確度フィルタ（確定のみ/クロージングまで含む/
-    提案中まで含む）に応じて、この確度別内訳を該当分だけ合算して使う。"months"はSFA上で
-    さかのぼれる最も古い月まで含む全期間（未来分だけでなく過去分も）＝Hisho側で表示する
-    デフォルト期間の「さかのぼれる最も古い月」の判定にもそのまま使われる（2026-09-30
-    ユーザー要望「SFA上でさかのぼれる最も古い月までさかのぼって、資金繰りを表示して」）。
-    "deliveries"は月別入金へのホバーで案件別内訳（案件名・限界利益額(入金額,外注費)）を
-    表示するための明細（2026-09-30ユーザー要望）。"""
+    提案中まで含む）とベース（実収支/計上、2026-09-30追加のタブ切替）に応じて、該当する
+    確度別内訳を合算して使う。"months"は両ベースを合わせてSFA上でさかのぼれる最も古い月まで
+    含む全期間（未来分だけでなく過去分も）＝Hisho側で表示するデフォルト期間の判定にそのまま
+    使われる（2026-09-30ユーザー要望「SFA上でさかのぼれる最も古い月までさかのぼって、
+    資金繰りを表示して」）。"deliveries"/"deliveries_accrual"は月別入金・売上へのホバーで
+    案件別内訳を表示するための明細（2026-09-30ユーザー要望）。"""
     by_conf: dict = {}
+    by_conf_accrual: dict = {}
     by_delivery: dict = {}
+    by_delivery_accrual: dict = {}
     months_set: set = set()
     for dv in sfa_db.list_deliveries(con):
         conf_lbl, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
@@ -4308,23 +4315,37 @@ def cashflow_forecast_by_confidence(con) -> dict:
             continue
         cf = sfa_db.delivery_cashflow(con, dv["id"])
         bucket = by_conf.setdefault(conf_lbl, {})
+        bucket_accrual = by_conf_accrual.setdefault(conf_lbl, {})
         name = f'{dv.get("account_name") or ""} / {dv.get("title") or dv.get("deal_name") or ""}'.strip("／ /")
         for m in cf["months"]:
             inflow = cf["payments"].get(m) or 0.0
             cost = cf["cost_payments"].get(m) or 0.0
-            if not inflow and not cost:
-                continue
-            months_set.add(m)
-            entry = bucket.setdefault(m, {"inflow": 0.0, "cost": 0.0})
-            entry["inflow"] += inflow
-            entry["cost"] += cost
-            by_delivery.setdefault(m, []).append({
-                "id": dv["id"], "name": name, "confidence": conf_lbl,
-                "inflow": round(inflow, 1), "cost": round(cost, 1),
-            })
+            if inflow or cost:
+                months_set.add(m)
+                entry = bucket.setdefault(m, {"inflow": 0.0, "cost": 0.0})
+                entry["inflow"] += inflow
+                entry["cost"] += cost
+                by_delivery.setdefault(m, []).append({
+                    "id": dv["id"], "name": name, "confidence": conf_lbl,
+                    "inflow": round(inflow, 1), "cost": round(cost, 1),
+                })
+            receipt = cf["receipts"].get(m) or 0.0
+            cost_receipt = cf["cost_receipts"].get(m) or 0.0
+            if receipt or cost_receipt:
+                months_set.add(m)
+                entry_a = bucket_accrual.setdefault(m, {"inflow": 0.0, "cost": 0.0})
+                entry_a["inflow"] += receipt
+                entry_a["cost"] += cost_receipt
+                by_delivery_accrual.setdefault(m, []).append({
+                    "id": dv["id"], "name": name, "confidence": conf_lbl,
+                    "inflow": round(receipt, 1), "cost": round(cost_receipt, 1),
+                })
     for _m in by_delivery:
         by_delivery[_m].sort(key=lambda e: -e["inflow"])
-    return {"months": sorted(months_set), "by_confidence": by_conf, "deliveries": by_delivery}
+    for _m in by_delivery_accrual:
+        by_delivery_accrual[_m].sort(key=lambda e: -e["inflow"])
+    return {"months": sorted(months_set), "by_confidence": by_conf, "deliveries": by_delivery,
+            "by_confidence_accrual": by_conf_accrual, "deliveries_accrual": by_delivery_accrual}
 
 
 def _delivery_new_confidence_opts() -> str:

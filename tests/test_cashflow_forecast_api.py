@@ -84,6 +84,33 @@ def test_cashflow_forecast_by_confidence_buckets_by_confidence_and_excludes_inva
     assert {d["confidence"] for d in deliveries} == {"確定", "見込み(クロージング)", "見込み(提案中)"}
 
 
+def test_cashflow_forecast_by_confidence_accrual_basis_uses_unshifted_receipts(con, acc_id):
+    """2026-09-30ユーザー要望「計上ベース/実収支ベースをタブで切替」: 支払いサイトで月がずれる
+    実収支ベース(by_confidence/deliveries)に対し、計上ベース(by_confidence_accrual/
+    deliveries_accrual)は検収・売上計上月のまま（ずらさない）ことを確認する。"""
+    d = _deal(con, acc_id, "受注")
+    dv = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dv, payment_cycle_months=2, cost_payment_cycle_months=1)
+    sfa_db.set_delivery_receipt(con, dv, "2026-09", 100)
+    sfa_db.set_delivery_cost_receipt(con, dv, "2026-09", 30)
+
+    result = webapp.cashflow_forecast_by_confidence(con)
+
+    # 実収支ベース: 売上は+2ヶ月(2026-11)へ、外注費検収は+1ヶ月(2026-10)へずれる
+    assert result["by_confidence"]["確定"]["2026-11"] == {"inflow": 100, "cost": 0}
+    assert result["by_confidence"]["確定"]["2026-10"] == {"inflow": 0, "cost": 30}
+    assert "2026-09" not in result["by_confidence"].get("確定", {})
+
+    # 計上ベース: 計上月(2026-09)のまま、ずらさない
+    assert result["by_confidence_accrual"]["確定"]["2026-09"] == {"inflow": 100, "cost": 30}
+    assert "2026-10" not in result["by_confidence_accrual"]["確定"]
+    assert "2026-11" not in result["by_confidence_accrual"]["確定"]
+
+    accrual_rows = result["deliveries_accrual"]["2026-09"]
+    assert accrual_rows == [{"id": dv, "name": "テスト社 / D", "confidence": "確定",
+                              "inflow": 100, "cost": 30}]
+
+
 def _run_server(db_path):
     handler_cls = webapp._make_handler(db_path, None)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
@@ -115,7 +142,8 @@ def test_cashflow_forecast_route_requires_dedicated_token_not_sfa_api_token(monk
             f"http://127.0.0.1:{port}/api/cashflow_forecast?token=cashflow-secret-token", timeout=10)
         assert resp.getcode() == 200
         data = json.loads(resp.read())
-        assert data == {"months": [], "by_confidence": {}, "deliveries": {}}
+        assert data == {"months": [], "by_confidence": {}, "deliveries": {},
+                         "by_confidence_accrual": {}, "deliveries_accrual": {}}
     finally:
         srv.shutdown()
         srv.server_close()
