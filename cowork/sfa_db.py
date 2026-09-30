@@ -1122,6 +1122,19 @@ CREATE TABLE IF NOT EXISTS delivery_receipts (
     FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
 );
 
+-- Delivery月別外注費支払額（2026-09-30、ユーザー要望「月別入金計画に、検収、入金に加え、
+-- 外注費支払、の行を追加」）。cost_monthly/cost_totalの按分見込みとは別に、実際に外注先へ
+-- 支払った月・金額をdelivery_receiptsと全く同じ形（月×実額）で記録する。支払いサイクルの
+-- ような自動シフトは行わない（外注費の支払月は検収月とは独立に実額入力する想定）。
+CREATE TABLE IF NOT EXISTS delivery_cost_payments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_id INTEGER NOT NULL,
+    month       TEXT NOT NULL,              -- 外注費支払月(YYYY-MM)
+    amount      REAL NOT NULL,              -- 外注費支払額（万円）
+    UNIQUE(delivery_id, month),
+    FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE
+);
+
 -- アサインブロック（#75）。入力の最小単位＝(メンバー・開始週〜終了週・FTE%)。
 -- 週へは読み出し時に展開・合算する（20週手打ち回避）。特定週調整は from=to の1週ブロック。
 CREATE TABLE IF NOT EXISTS delivery_assignments (
@@ -5742,8 +5755,9 @@ def update_delivery(con, delivery_id: int, **fields) -> None:
 def duplicate_delivery(con, delivery_id: int) -> int | None:
     """Deliveryを複製する（ユーザー要望2026-08-27）。deal_duplicateと同じ思想：
     計画情報（体制の目標役割・報酬/外注費設定・期間の初期値）は引き継ぎ、実行済みの
-    実績データ（アサイン=誰がいつ稼働したか・月別検収額）と確度の手動固定は引き継がず、
-    ステータスは「進行中」から真っ白に始める。戻り値は新規Delivery id（元が無ければNone）。"""
+    実績データ（アサイン=誰がいつ稼働したか・月別検収額・月別外注費支払額）と確度の手動固定は
+    引き継がず、ステータスは「進行中」から真っ白に始める。戻り値は新規Delivery id（元が無ければ
+    None）。"""
     src = get_delivery(con, delivery_id)
     if not src:
         return None
@@ -5772,9 +5786,11 @@ def duplicate_delivery(con, delivery_id: int) -> int | None:
 
 
 def delete_delivery(con, delivery_id: int) -> None:
-    # delivery_assignments/delivery_receipts は ON DELETE CASCADE。念のためFK ON前提でなくても消す。
+    # delivery_assignments/delivery_receipts/delivery_cost_payments は ON DELETE CASCADE。
+    # 念のためFK ON前提でなくても消す。
     con.execute("DELETE FROM delivery_assignments WHERE delivery_id=?", (int(delivery_id),))
     con.execute("DELETE FROM delivery_receipts WHERE delivery_id=?", (int(delivery_id),))
+    con.execute("DELETE FROM delivery_cost_payments WHERE delivery_id=?", (int(delivery_id),))
     con.execute("DELETE FROM deliveries WHERE id=?", (int(delivery_id),))
     con.commit()
     clear_orphaned_task_links(con)
@@ -5807,6 +5823,34 @@ def set_delivery_receipt(con, delivery_id: int, month: str, amount) -> None:
     con.commit()
 
 
+def list_delivery_cost_payments(con, delivery_id: int) -> list[dict]:
+    """月別外注費支払額（月別入金計画）の登録済み行。月昇順。list_delivery_receiptsと同型。"""
+    return [dict(r) for r in con.execute(
+        "SELECT * FROM delivery_cost_payments WHERE delivery_id=? ORDER BY month",
+        (int(delivery_id),))]
+
+
+def set_delivery_cost_payment(con, delivery_id: int, month: str, amount) -> None:
+    """月別外注費支払額を1ヶ月分保存。amountが空/不正ならその月の行を削除（未入力に戻す）。
+    set_delivery_receiptと同型（検証ロジック・削除挙動とも完全に同じ）。"""
+    month = (str(month) or "")[:7]
+    try:
+        amt = float(amount) if amount not in (None, "") else None
+    except (TypeError, ValueError):
+        amt = None
+    if len(month) != 7 or month[4] != "-" or not month[:4].isdigit() or not month[5:7].isdigit():
+        return
+    if amt is None:
+        con.execute("DELETE FROM delivery_cost_payments WHERE delivery_id=? AND month=?",
+                    (int(delivery_id), month))
+    else:
+        con.execute(
+            "INSERT INTO delivery_cost_payments (delivery_id, month, amount) VALUES (?,?,?) "
+            "ON CONFLICT(delivery_id, month) DO UPDATE SET amount=excluded.amount",
+            (int(delivery_id), month, amt))
+    con.commit()
+
+
 def _add_months_ym(year: int, month: int, n: int) -> tuple:
     idx = year * 12 + (month - 1) + n
     return (idx // 12, idx % 12 + 1)
@@ -5831,14 +5875,21 @@ def delivery_month_range(dv: dict, extra_months: int = 0) -> list:
 
 
 def delivery_cashflow(con, delivery_id: int) -> dict:
-    """月別入金計画: {"months": [...], "receipts": {月: 検収額}, "payments": {月: 入金額}}。
-    入金額は検収額をpayment_cycle_months分先の月へずらして算出（同月に複数検収があれば合算）。"""
+    """月別入金計画: {"months": [...], "receipts": {月: 検収額}, "payments": {月: 入金額},
+    "cost_payments": {月: 外注費支払額}, "margins": {月: 限界利益(Net)}}。
+    入金額は検収額をpayment_cycle_months分先の月へずらして算出（同月に複数検収があれば合算）。
+    外注費支払額は検収額のような自動シフトを行わない実額入力（ユーザー要望2026-09-30
+    「月別入金計画に、検収、入金に加え、外注費支払、の行を追加」）。限界利益(Net)は
+    「検収額－外注費支払（同一月ベース）」で算出する（ユーザー確定仕様2026-09-30:
+    既存の週別生産性機能の限界利益＝売上－外注費－想定経費という按分ベースの別システムとは
+    独立に、ここは実績（検収額/外注費支払の実額入力）だけを見るシンプルな計算にする）。"""
     dv = get_delivery(con, delivery_id)
     if not dv:
-        return {"months": [], "receipts": {}, "payments": {}}
+        return {"months": [], "receipts": {}, "payments": {}, "cost_payments": {}, "margins": {}}
     cycle = int(dv.get("payment_cycle_months") or 0)
     months = set(delivery_month_range(dv, extra_months=cycle))
     receipts = {r["month"]: r["amount"] for r in list_delivery_receipts(con, delivery_id)}
+    cost_payments = {r["month"]: r["amount"] for r in list_delivery_cost_payments(con, delivery_id)}
     payments = {}
     for m, amt in receipts.items():
         try:
@@ -5850,7 +5901,13 @@ def delivery_cashflow(con, delivery_id: int) -> dict:
         payments[pm] = (payments.get(pm) or 0.0) + (amt or 0.0)
         months.add(m)
         months.add(pm)
-    return {"months": sorted(months), "receipts": receipts, "payments": payments}
+    months.update(cost_payments.keys())
+    margins = {
+        m: round((receipts.get(m) or 0.0) - (cost_payments.get(m) or 0.0), 1)
+        for m in (set(receipts) | set(cost_payments))
+    }
+    return {"months": sorted(months), "receipts": receipts, "payments": payments,
+            "cost_payments": cost_payments, "margins": margins}
 
 
 def ensure_delivery_on_stage(con, deal_id: int, stage: str | None) -> int | None:

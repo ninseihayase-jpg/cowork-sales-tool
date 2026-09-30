@@ -792,6 +792,61 @@ def test_delivery_form_renders_cashflow_table(con, acc_id):
     assert f'onchange="dvReceiptSet({dvid},\'2026-09\',this.value)"' in html
 
 
+def test_delivery_cost_payment_set_and_delete(con, acc_id):
+    """set_delivery_cost_payment: set_delivery_receiptと同型（保存・上書き・空入力での削除）。
+    ユーザー要望(2026-09-30)「月別入金計画に、検収、入金に加え、外注費支払、の行を追加」。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.set_delivery_cost_payment(con, dvid, "2026-09", 40)
+    assert sfa_db.list_delivery_cost_payments(con, dvid)[0]["amount"] == 40
+    sfa_db.set_delivery_cost_payment(con, dvid, "2026-09", 55)  # 上書き
+    rows = sfa_db.list_delivery_cost_payments(con, dvid)
+    assert len(rows) == 1 and rows[0]["amount"] == 55
+    sfa_db.set_delivery_cost_payment(con, dvid, "2026-09", "")  # 空入力で削除
+    assert sfa_db.list_delivery_cost_payments(con, dvid) == []
+    sfa_db.set_delivery_cost_payment(con, dvid, "不正な月", 40)  # 不正な月は無視
+    assert sfa_db.list_delivery_cost_payments(con, dvid) == []
+
+
+def test_delivery_cashflow_computes_net_margin_from_receipt_minus_cost_payment(con, acc_id):
+    """delivery_cashflow: 限界利益(Net)＝検収額－外注費支払額を同一月ベースで算出する
+    （ユーザー確定仕様2026-09-30。既存の週別生産性機能の限界利益(売上－外注費－想定経費・
+    按分ベース)とは独立な、実績だけを見るシンプルな計算）。外注費支払は検収額と違い
+    payment_cycle_monthsによる自動シフトを行わない実額。片方しか無い月も0扱いで算出し、
+    どちらも無い月はキーごと存在しない（0の月を埋めて表示崩れさせないため月一覧には含む）。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-11-04")
+    sfa_db.set_delivery_receipt(con, dvid, "2026-09", 100)
+    sfa_db.set_delivery_cost_payment(con, dvid, "2026-09", 30)
+    sfa_db.set_delivery_cost_payment(con, dvid, "2026-10", 20)  # 検収の無い月に外注費支払のみ
+    cf = sfa_db.delivery_cashflow(con, dvid)
+    assert cf["cost_payments"] == {"2026-09": 30, "2026-10": 20}
+    assert cf["margins"] == {"2026-09": 70, "2026-10": -20}
+    assert "2026-10" in cf["months"]  # 検収が無い月も、外注費支払があれば月一覧に含まれる
+
+
+def test_delivery_form_renders_cost_payment_and_margin_rows(con, acc_id):
+    """月別入金計画テーブルに、外注費支払額(入力)・限界利益(Net)(算出)の2行が追加されていること。
+    dvCashflowRecalcのJSがinput[id^="dvRc_"]/input[id^="dvCp_"]で行を区別していること
+    （id属性ではなくdata-month属性だけで.querySelectorAll('input[data-month]')すると、
+    検収額欄と外注費支払欄の両方を「検収額」として拾って入金額計算が壊れるため）。"""
+    d = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=d, start_week="2026-09-07", end_week="2026-10-04")
+    sfa_db.set_delivery_cost_payment(con, dvid, "2026-09", 40)
+    html = webapp.delivery_form(con, dvid)
+    assert "外注費支払額(万)" in html and "限界利益(Net,万)" in html
+    assert f'id="dvCp_{dvid}_2026-09"' in html
+    assert f'onchange="dvCostPaymentSet({dvid},\'2026-09\',this.value)"' in html
+    assert f'id="dvMg_{dvid}_2026-09"' in html
+    recalc_fn = html.split("function dvCashflowRecalc(){")[1].split("\n    }")[0]
+    assert 'input[id^="dvRc_"]' in recalc_fn
+    assert 'input[id^="dvCp_"]' in recalc_fn
+    assert 'td[id^="dvPy_"]' in recalc_fn
+    assert 'td[id^="dvMg_"]' in recalc_fn
+    assert "function dvCostPaymentSet(id, month, value){" in html
+    assert "/cost-payment" in html
+
+
 def test_delivery_business_type_inherits_from_deal_by_default(con, acc_id):
     """事業種別L1/L2はデフォルトで紐づく商談を継承（ユーザー要望2026-08-23）。"""
     d = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D", stage="受注",
@@ -968,10 +1023,14 @@ def _ml(ym: str) -> str:
     return f"{ym[2:4]}/{ym[5:7]}"
 
 
+_SCHEDULE_KIND_COL = "区分（検収/入金/外注費支払/限界利益）"
+
+
 def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable_flag(con, acc_id):
     """#115（2026-08-28修正）: 検収/入金は別ファイルではなく同一xlsx・同一シートに同居させ、
-    先頭列「検収/入金」の値でExcel側のフィルタ機能から絞り込めるようにする。
-    支払いサイト・責任者/担当者・請求関連・アサインN・月列(今月〜+18ヶ月固定・未登録月は0)も検証。"""
+    先頭列「区分」の値でExcel側のフィルタ機能から絞り込めるようにする。
+    支払いサイト・責任者/担当者・請求関連・アサインN・月列(今月〜+18ヶ月固定・未登録月は0)も検証。
+    2026-09-30: 外注費支払/限界利益(Net)の2行を追加したため、1案件あたりの行数は2→4になった。"""
     d = _deal(con, acc_id, "受注")
     dvid = sfa_db.create_delivery(con, deal_id=d, title="A社支援", status="進行中")
     sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-09-07",
@@ -983,13 +1042,14 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     m0, m1, m2 = _ym(0), _ym(1), _ym(2)
     sfa_db.set_delivery_receipt(con, dvid, m0, 100)
     sfa_db.set_delivery_receipt(con, dvid, m1, 200)
+    sfa_db.set_delivery_cost_payment(con, dvid, m0, 30)
     import openpyxl
     from io import BytesIO
     wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
     ws = wb.active
     assert ws.title == "入金予定表"
     hdr = [c.value for c in ws[1]]
-    assert hdr[:18] == ["確度", "検収/入金", "#", "クライアント", "案件", "事業種別L1", "事業種別L2",
+    assert hdr[:18] == ["確度", _SCHEDULE_KIND_COL, "#", "クライアント", "案件", "事業種別L1", "事業種別L2",
                         "状態", "開始週", "終了週", "支払いサイト", "責任者", "担当者", "請求方法",
                         "請求期日", "請求送付先", "経費請求有無", "経費請求メモ"]
     assert hdr[18] == "アサイン1"
@@ -997,9 +1057,11 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     assert _ml(_ym(18)) in hdr   # 今月+18ヶ月後まで含む
     assert _ml(_ym(19)) not in hdr  # +19ヶ月後は含まない(固定19ヶ月分)
 
-    rows = [dict(zip(hdr, [c.value for c in ws[r]])) for r in (2, 3)]
-    receipt_row = next(r for r in rows if r["検収/入金"] == "検収")
-    payment_row = next(r for r in rows if r["検収/入金"] == "入金")
+    rows = [dict(zip(hdr, [c.value for c in ws[r]])) for r in (2, 3, 4, 5)]
+    receipt_row = next(r for r in rows if r[_SCHEDULE_KIND_COL] == "検収")
+    payment_row = next(r for r in rows if r[_SCHEDULE_KIND_COL] == "入金")
+    cost_row = next(r for r in rows if r[_SCHEDULE_KIND_COL] == "外注費支払")
+    margin_row = next(r for r in rows if r[_SCHEDULE_KIND_COL] == "限界利益(Net)")
     assert receipt_row["#"] == dvid and receipt_row["案件"] == "A社支援"
     assert receipt_row["確度"] == "確定"  # stage=受注→自動判定は「確定」
     assert receipt_row["支払いサイト"] == 1
@@ -1013,7 +1075,9 @@ def test_payment_schedule_xlsx_combines_receipt_and_payment_rows_with_filterable
     assert receipt_row[_ml(m2)] == 0  # 登録の無い月は0
     assert payment_row[_ml(m0)] == 0  # 検収月自体には入金額は出ない
     assert payment_row[_ml(m1)] == 100 and payment_row[_ml(m2)] == 200  # 1ヶ月後に入金
-    assert ws.auto_filter.ref == f"A1:{openpyxl.utils.get_column_letter(len(hdr))}3"
+    assert cost_row[_ml(m0)] == 30 and cost_row[_ml(m1)] == 0
+    assert margin_row[_ml(m0)] == 70  # 検収額100－外注費支払30
+    assert ws.auto_filter.ref == f"A1:{openpyxl.utils.get_column_letter(len(hdr))}5"
 
 
 def test_payment_schedule_xlsx_uses_meiryo_ui_10pt_font(con, acc_id):
@@ -1107,17 +1171,18 @@ def test_payment_schedule_xlsx_multiple_assignees_get_own_columns(con, acc_id):
 
 def test_payment_schedule_xlsx_includes_deliveries_with_no_amount_registered(con, acc_id):
     """#121（2026-08-28）: 検収/入金の登録が無い案件も、月列0埋めの行として出力する
-    （以前はスキップしていたが、予定が未入力の案件も一覧できるよう変更）。"""
+    （以前はスキップしていたが、予定が未入力の案件も一覧できるよう変更）。
+    2026-09-30: 外注費支払/限界利益(Net)の2行を追加したため、1案件あたりの行数は2→4になった。"""
     d = _deal(con, acc_id, "受注")
     dvid = sfa_db.create_delivery(con, deal_id=d, title="登録なし案件")
     import openpyxl
     from io import BytesIO
     wb = openpyxl.load_workbook(BytesIO(webapp.build_delivery_payment_schedule_xlsx(con)))
     ws = wb.active
-    assert ws.max_row == 3  # ヘッダ+検収行+入金行
+    assert ws.max_row == 5  # ヘッダ+検収行+入金行+外注費支払行+限界利益行
     hdr = [c.value for c in ws[1]]
-    rows = [dict(zip(hdr, [c.value for c in ws[r]])) for r in (2, 3)]
-    assert {r["検収/入金"] for r in rows} == {"検収", "入金"}
+    rows = [dict(zip(hdr, [c.value for c in ws[r]])) for r in (2, 3, 4, 5)]
+    assert {r[_SCHEDULE_KIND_COL] for r in rows} == {"検収", "入金", "外注費支払", "限界利益(Net)"}
     assert all(r["#"] == dvid for r in rows)
     assert all(r[_ml(_ym(0))] == 0 for r in rows)  # 登録が無い月は0埋め
 
@@ -1138,10 +1203,10 @@ def test_payment_schedule_xlsx_includes_past_months_for_completed_deliveries(con
     hdr = [c.value for c in ws[1]]
     assert _ml(m_past2) in hdr and _ml(m_past1) in hdr, "過去の実績月が列に出力されていない"
     rows = [dict(zip(hdr, [c.value for c in ws[r]])) for r in range(2, ws.max_row + 1)]
-    receipt_row = next(r for r in rows if r["#"] == dvid and r["検収/入金"] == "検収")
+    receipt_row = next(r for r in rows if r["#"] == dvid and r[_SCHEDULE_KIND_COL] == "検収")
     assert receipt_row[_ml(m_past2)] == 300 and receipt_row[_ml(m_past1)] == 400
     # payment_cycle_months未設定(既定1ヶ月)なので入金は検収の翌月
-    payment_row = next(r for r in rows if r["#"] == dvid and r["検収/入金"] == "入金")
+    payment_row = next(r for r in rows if r["#"] == dvid and r[_SCHEDULE_KIND_COL] == "入金")
     m_past2_pay = _ym(-23)
     assert payment_row[_ml(m_past2_pay)] == 300
 

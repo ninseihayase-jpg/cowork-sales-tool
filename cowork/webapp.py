@@ -4725,7 +4725,8 @@ def build_deliveries_xlsx(con) -> bytes:
             r3 += 1
 
     ws4 = wb.create_sheet("月別入金計画")
-    hdr4 = ["Delivery ID", "納品案件", "アカウント", "月", "検収額(万)", "入金額(万)"]
+    hdr4 = ["Delivery ID", "納品案件", "アカウント", "月", "検収額(万)", "入金額(万)",
+            "外注費支払額(万)", "限界利益(Net,万)"]
     for c, h in enumerate(hdr4, 1):
         ws4.cell(row=1, column=c, value=h).font = Font(bold=True)
     r4 = 2
@@ -4733,7 +4734,8 @@ def build_deliveries_xlsx(con) -> bytes:
         cf = sfa_db.delivery_cashflow(con, dv["id"])
         for m in cf["months"]:
             vals = [dv["id"], dv.get("title") or "", dv.get("account_name") or "", m,
-                    cf["receipts"].get(m), cf["payments"].get(m)]
+                    cf["receipts"].get(m), cf["payments"].get(m),
+                    cf["cost_payments"].get(m), cf["margins"].get(m)]
             for c, v in enumerate(vals, 1):
                 ws4.cell(row=r4, column=c, value=v)
             r4 += 1
@@ -4744,9 +4746,10 @@ def build_deliveries_xlsx(con) -> bytes:
 
 
 def build_delivery_payment_schedule_xlsx(con) -> bytes:
-    """検収/入金の月別金額一覧（1案件×検収/入金の2行のピボット形式）を1枚のxlsxで出力する
-    （ユーザー要望2026-08-28: 検収/入金は同じxlsx内に同居させ、「検収/入金」列の値で
-    Excelのフィルタ機能により絞り込めるようにする）。一番左は「確度」列（Delivery一覧と
+    """検収/入金/外注費支払/限界利益(Net)の月別金額一覧（1案件×4行のピボット形式）を1枚の
+    xlsxで出力する（ユーザー要望2026-08-28: 検収/入金は同じxlsx内に同居させ、「区分」列の値で
+    Excelのフィルタ機能により絞り込めるようにする。2026-09-30、外注費支払/限界利益(Net)の
+    2行を追加=月別入金計画カードの5行構成と揃えた）。一番左は「確度」列（Delivery一覧と
     同じ_delivery_confidenceのラベル）。
     月列は「今月〜+18ヶ月後」の固定19ヶ月分に加え、実データ（検収額/入金額）が存在する
     月（完了済み案件の過去の実績も含む）を必ず含める（ユーザー報告2026-09-18: 過去の実績月が
@@ -4784,20 +4787,26 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
         _dvs.append((dv, _conf_lbl))
     _dvs.sort(key=lambda t: (_XLSX_CONF_RANK.get(t[1], 4), t[0].get("start_week") or "9999-99-99", t[0]["id"]))
 
-    per_delivery = []  # [(dv, conf_lbl, "検収"|"入金", vals, assignees), ...]
+    per_delivery = []  # [(dv, conf_lbl, "検収"|"入金"|"外注費支払"|"限界利益(Net)", vals, assignees), ...]
     max_assignees = 0
     for dv, conf_lbl in _dvs:
         cf = sfa_db.delivery_cashflow(con, dv["id"])
         receipts = cf.get("receipts") or {}
         payments = cf.get("payments") or {}
+        cost_payments = cf.get("cost_payments") or {}
+        margins = cf.get("margins") or {}
         # 完了済み案件を含め、過去の実績月（19ヶ月固定窓の外）も欠落させない。
         months_set.update(receipts.keys())
         months_set.update(payments.keys())
+        months_set.update(cost_payments.keys())
+        months_set.update(margins.keys())
         blocks = sfa_db.list_delivery_assignments(con, dv["id"])
         assignees = sorted({b["owner"] for b in blocks if (b.get("owner") or "").strip()})
         max_assignees = max(max_assignees, len(assignees))
         per_delivery.append((dv, conf_lbl, "検収", receipts, assignees))
         per_delivery.append((dv, conf_lbl, "入金", payments, assignees))
+        per_delivery.append((dv, conf_lbl, "外注費支払", cost_payments, assignees))
+        per_delivery.append((dv, conf_lbl, "限界利益(Net)", margins, assignees))
     months = sorted(months_set)
 
     wb = openpyxl.Workbook()
@@ -4806,9 +4815,9 @@ def build_delivery_payment_schedule_xlsx(con) -> bytes:
     # フォントはメイリオ UI 10pt に統一（ユーザー要望2026-08-30）。
     _font = Font(name="Meiryo UI", size=10)
     _font_bold = Font(name="Meiryo UI", size=10, bold=True)
-    fixed_hdr = ["確度", "検収/入金", "#", "クライアント", "案件", "事業種別L1", "事業種別L2", "状態",
-                 "開始週", "終了週", "支払いサイト", "責任者", "担当者", "請求方法", "請求期日",
-                 "請求送付先", "経費請求有無", "経費請求メモ"]
+    fixed_hdr = ["確度", "区分（検収/入金/外注費支払/限界利益）", "#", "クライアント", "案件",
+                 "事業種別L1", "事業種別L2", "状態", "開始週", "終了週", "支払いサイト", "責任者",
+                 "担当者", "請求方法", "請求期日", "請求送付先", "経費請求有無", "経費請求メモ"]
     hdr = (fixed_hdr + [f"アサイン{i + 1}" for i in range(max_assignees)]
            + [f"{m[2:4]}/{m[5:7]}" for m in months])
     for c, h in enumerate(hdr, 1):
@@ -6084,12 +6093,14 @@ def _delivery_row_fields(con, owners: list, b: dict, dv: dict) -> str:
 
 
 def _delivery_cashflow_table_html(con, delivery_id: int) -> str:
-    """月別入金計画テーブル（月が横軸、検収額(入力)/入金額(算出)が縦軸）。#75外注費に続く2026-08機能。
-    3行(月ヘッダ/検収額/入金額)の縦のズレ防止のため、データ列は全てtext-align:centerに統一する
-    （th既定=center・td既定=left・right指定と混在させると同じ列でも行ごとに水平位置が変わり、
-    縦に並べた時にガタついて見える：ユーザー報告2026-08-24）。
-    JS側のライブ再計算（dvCashflowRecalc、リロード無しで検収額入力→入金額表示を即時更新するため）が
-    月を突き止められるよう、各セルに data-month 属性を付ける。"""
+    """月別入金計画テーブル（月が横軸、検収額/外注費支払額(入力)・入金額/限界利益(Net)(算出)が
+    縦軸）。#75外注費に続く2026-08機能。2026-09-30、外注費支払額(実額入力)と限界利益(Net)
+    (検収額－外注費支払、ユーザー確定仕様2026-09-30)の2行を追加した。
+    5行(月ヘッダ/検収額/入金額/外注費支払額/限界利益)の縦のズレ防止のため、データ列は全て
+    text-align:centerに統一する（th既定=center・td既定=left・right指定と混在させると同じ列でも
+    行ごとに水平位置が変わり、縦に並べた時にガタついて見える：ユーザー報告2026-08-24）。
+    JS側のライブ再計算（dvCashflowRecalc、リロード無しで検収額/外注費支払額入力→入金額/限界利益
+    表示を即時更新するため）が月を突き止められるよう、各セルに data-month 属性を付ける。"""
     cf = sfa_db.delivery_cashflow(con, delivery_id)
     months = cf["months"]
     if not months:
@@ -6109,11 +6120,26 @@ def _delivery_cashflow_table_html(con, delivery_id: int) -> str:
         f'<td data-month="{m}" id="dvPy_{delivery_id}_{m}" '
         f'style="text-align:center;padding:4px 8px;white-space:nowrap">{_pay_disp(m)}</td>'
         for m in months)
+    cost_payment_cells = "".join(
+        f'<td style="padding:2px 4px;text-align:center"><input type="number" step="0.1" min="0" '
+        f'data-month="{m}" id="dvCp_{delivery_id}_{m}" style="width:80px;text-align:center;box-sizing:border-box" '
+        f'value="{"" if cf["cost_payments"].get(m) is None else cf["cost_payments"][m]}" '
+        f'onchange="dvCostPaymentSet({delivery_id},\'{m}\',this.value)"></td>'
+        for m in months)
+    def _margin_disp(m):
+        v = cf["margins"].get(m)
+        return f'{v:,.1f}' if v is not None else '<span class="muted">—</span>'
+    margin_cells = "".join(
+        f'<td data-month="{m}" id="dvMg_{delivery_id}_{m}" '
+        f'style="text-align:center;padding:4px 8px;white-space:nowrap">{_margin_disp(m)}</td>'
+        for m in months)
     return (
         '<div style="overflow:auto"><table style="border-collapse:collapse">'
         f'<tr><th style="text-align:left;font-size:11px;padding:4px 8px;white-space:nowrap">月</th>{head}</tr>'
         f'<tr><th style="text-align:left;font-size:11px;padding:4px 8px;white-space:nowrap">検収額(万)</th>{receipt_cells}</tr>'
         f'<tr><th style="text-align:left;font-size:11px;padding:4px 8px;white-space:nowrap">入金額(万)</th>{payment_cells}</tr>'
+        f'<tr><th style="text-align:left;font-size:11px;padding:4px 8px;white-space:nowrap">外注費支払額(万)</th>{cost_payment_cells}</tr>'
+        f'<tr><th style="text-align:left;font-size:11px;padding:4px 8px;white-space:nowrap">限界利益(Net,万)</th>{margin_cells}</tr>'
         '</table></div>')
 
 
@@ -6575,9 +6601,11 @@ def delivery_form(con, delivery_id: int) -> str:
       <div id="dvPreview">{grid_html}</div>
 
       <div style="{'border:1px solid #fde68a;background:#fffbeb;border-radius:8px;padding:8px 12px;margin-top:16px' if _hl_receipts else 'margin-top:16px'}">
-      <h3 style="margin:0 0 6px;font-size:14px">月別入金計画（検収額→入金額）</h3>
+      <h3 style="margin:0 0 6px;font-size:14px">月別入金計画（検収額→入金額／外注費支払額→限界利益）</h3>
       <p class="muted" style="font-size:11px;margin:0 0 8px">月額/総額報酬を均した換算では実際の入金月がズレるため、月ごとの検収額(万円)を実額で入力すると、
-        支払いサイクル分ずらした月の入金額として算出されます。xlsx出力（Delivery一覧の一括抽出）にも同テーブルが出ます。</p>
+        支払いサイクル分ずらした月の入金額として算出されます。外注費支払額(万円)も月ごとに実額で入力できます
+        （自動シフトはありません）。限界利益(Net)は同一月の「検収額－外注費支払額」で自動算出されます。
+        xlsx出力（Delivery一覧の一括抽出・入金予定表）にも同じ行が出ます。</p>
       <label style="font-size:12px">支払いサイクル<br>
         <input type="number" min="0" max="24" id="dvPayCycle" style="width:70px"
                value="{int(dv.get("payment_cycle_months") if dv.get("payment_cycle_months") is not None else 1)}"
@@ -7012,7 +7040,7 @@ def delivery_form(con, delivery_id: int) -> str:
       pm.textContent = (fmv===null && cmv===null) ? '—' : Math.round(((fmv||0)-(cmv||0))*100)/100;
       pt.textContent = (ftv===null && ctv===null) ? '—' : Math.round(((ftv||0)-(ctv||0))*100)/100;
     }}
-    // 月別入金計画: 保存はバックグラウンドで行い（レスポンスを待たない）、入金額表示は
+    // 月別入金計画: 保存はバックグラウンドで行い（レスポンスを待たない）、入金額/限界利益表示は
     // その場でJS側で再計算する。以前はfetch完了後にlocation.reload()していたため、セルを
     // move（Tab/クリック）した直後にページ全体が再読込されてしまい、連続入力ができなかった
     // （ユーザー報告2026-08-24）。入金月が現在の表示列より先（表の右端より後ろ）に出る場合のみ、
@@ -7023,28 +7051,53 @@ def delivery_form(con, delivery_id: int) -> str:
         body:'month='+encodeURIComponent(month)+'&amount='+encodeURIComponent(value)}}).catch(function(){{}});
       dvCashflowRecalc();
     }}
+    // 外注費支払額（ユーザー要望2026-09-30「月別入金計画に、検収、入金に加え、外注費支払、の
+    // 行を追加」）。検収額と違い支払いサイクルによる自動シフトは行わない実額入力。
+    function dvCostPaymentSet(id, month, value){{
+      fetch('/delivery/'+id+'/cost-payment',{{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'month='+encodeURIComponent(month)+'&amount='+encodeURIComponent(value)}}).catch(function(){{}});
+      dvCashflowRecalc();
+    }}
     function dvSetCycle(id, value){{
       fetch('/delivery/'+id+'/field',{{method:'POST',
         headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
         body:'field=payment_cycle_months&value='+encodeURIComponent(value)}}).catch(function(){{}});
       dvCashflowRecalc();
     }}
+    // 入金額(dvPy_)は検収額(dvRc_)をpayment_cycle_months分シフトして算出、限界利益(dvMg_)は
+    // 検収額(dvRc_)－外注費支払額(dvCp_)を同一月ベースで算出する（自動シフトなし）。
+    // id接頭辞で行を区別する（data-month属性だけで.querySelectorAll('input[data-month]')すると
+    // 検収額欄と外注費支払欄の両方を「検収額」として拾ってしまい入金額がおかしくなるため）。
     function dvCashflowRecalc(){{
       var cont=document.getElementById('dvCashflow'); if(!cont) return;
       var cycleEl=document.getElementById('dvPayCycle');
       var cycle=cycleEl?(parseInt(cycleEl.value,10)||0):1;
-      var pays={{}};
-      cont.querySelectorAll('input[data-month]').forEach(function(el){{
+      var receipts={{}}, costPayments={{}}, pays={{}};
+      cont.querySelectorAll('input[id^="dvRc_"]').forEach(function(el){{
         var v=parseFloat(el.value); if(!(v>0))return;
-        var m=el.getAttribute('data-month'), p=m.split('-'), y=+p[0], mo=+p[1];
+        var m=el.getAttribute('data-month');
+        receipts[m]=(receipts[m]||0)+v;
+        var p=m.split('-'), y=+p[0], mo=+p[1];
         var idx=y*12+(mo-1)+cycle, py=Math.floor(idx/12), pmo=(idx%12)+1;
         var pm=py+'-'+('0'+pmo).slice(-2);
         pays[pm]=(pays[pm]||0)+v;
       }});
-      cont.querySelectorAll('td[data-month]').forEach(function(td){{
+      cont.querySelectorAll('input[id^="dvCp_"]').forEach(function(el){{
+        var v=parseFloat(el.value); if(!(v>0))return;
+        var m=el.getAttribute('data-month');
+        costPayments[m]=(costPayments[m]||0)+v;
+      }});
+      cont.querySelectorAll('td[id^="dvPy_"]').forEach(function(td){{
         var m=td.getAttribute('data-month');
         td.innerHTML = pays.hasOwnProperty(m) ? (Math.round(pays[m]*10)/10).toLocaleString()
                                               : '<span class="muted">—</span>';
+      }});
+      cont.querySelectorAll('td[id^="dvMg_"]').forEach(function(td){{
+        var m=td.getAttribute('data-month');
+        var has = receipts.hasOwnProperty(m) || costPayments.hasOwnProperty(m);
+        var margin = (receipts[m]||0) - (costPayments[m]||0);
+        td.innerHTML = has ? (Math.round(margin*10)/10).toLocaleString() : '<span class="muted">—</span>';
       }});
     }}
     dvExclRenderChips();
@@ -24545,6 +24598,14 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 月別入金計画: 1ヶ月分の検収額をajax保存（ユーザー要望2026-08-23）。
                     _dvid = int(path.split("/")[2])
                     sfa_db.set_delivery_receipt(con, _dvid, f.get("month", ""), f.get("amount", ""))
+                    self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                elif (path.startswith("/delivery/") and path.endswith("/cost-payment")
+                      and len(path.split("/")) == 4 and path.split("/")[2].isdigit()):
+                    # 月別入金計画: 1ヶ月分の外注費支払額をajax保存（ユーザー要望2026-09-30
+                    # 「月別入金計画に、検収、入金に加え、外注費支払、の行を追加」）。
+                    # set_delivery_receiptと同型。
+                    _dvid = int(path.split("/")[2])
+                    sfa_db.set_delivery_cost_payment(con, _dvid, f.get("month", ""), f.get("amount", ""))
                     self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
                 elif path == "/deliveries/bulk_delete":
                     for _idr in f_list.get("ids", []):
