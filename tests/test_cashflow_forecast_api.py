@@ -129,3 +129,33 @@ def test_cashflow_forecast_route_disabled_when_no_token_configured(monkeypatch, 
         srv.shutdown()
         srv.server_close()
         t.join(timeout=5)
+
+
+def test_keiei_emails_route_returns_only_keiei_role_sorted(monkeypatch, tmp_path):
+    """/api/keiei_emails: ユーザー要望(2026-09-30)「経営ロールって、この割り当て（SFA-CRM側の
+    権限管理）を採用できないの？」。Hisho側で別管理せず、SFA-CRM側のuser_rolesを単一の正と
+    する。role='経営'の行だけをメール昇順で返し、他ロール(マネージャー等)は含めないこと。
+    init_db()のロックアウト防止シード(ninsei.hayase@inproc.org=経営)も含まれることを踏まえる。"""
+    db_path = str(tmp_path / "srv3.db")
+    sfa_db.init_db(db_path)
+    con = sfa_db.connect(db_path)
+    sfa_db.set_user_role(con, "yasutaka.nakajima@inproc.org", "経営", display_name="中島")
+    sfa_db.set_user_role(con, "eijiro.iwasaki@inproc.org", "マネージャー", display_name="岩崎")
+    con.close()
+    monkeypatch.setattr(webapp, "SFA_CASHFLOW_TOKEN", "cashflow-secret-token")
+    srv, t = _run_server(db_path)
+    try:
+        port = srv.server_address[1]
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/keiei_emails")
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=10)
+        assert exc.value.code == 401
+
+        resp = urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/keiei_emails?token=cashflow-secret-token", timeout=10)
+        data = json.loads(resp.read())
+        assert data == {"emails": ["ninsei.hayase@inproc.org", "yasutaka.nakajima@inproc.org"]}
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)

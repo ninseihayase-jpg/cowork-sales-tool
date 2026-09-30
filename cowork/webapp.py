@@ -22845,6 +22845,20 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     else:
                         self._send_cors_json(
                             json.dumps(cashflow_forecast_by_confidence(con), ensure_ascii=False).encode())
+                elif path == "/api/keiei_emails":
+                    # Hisho資金繰りシミュレーションの経営ロール判定用（2026-09-30）。ユーザー要望
+                    # 「経営ロールって、この割り当て（SFA-CRM側の権限管理/user_roles）を採用
+                    # できないの？」に対応。Hisho側でメールアドレスの許可リストを別管理せず、
+                    # SFA-CRM側の権限管理（/settings/roles、ROLE_ACCESS）を単一の正とする。
+                    # /api/cashflow_forecastと同じSFA_CASHFLOW_TOKENで保護（サーバー間専用）。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_CASHFLOW_TOKEN or not hmac.compare_digest(token, SFA_CASHFLOW_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        _emails = sorted(r["email"] for r in sfa_db.list_user_roles(con)
+                                         if r.get("role") == "経営")
+                        self._send_cors_json(json.dumps({"emails": _emails}, ensure_ascii=False).encode())
                 elif path == "/api/base_workload":
                     # Hishoダッシュボード用: ベース工数(人×機能×%)。{owner:pct}合算＋明細（#75）。
                     qs = self._qs()
