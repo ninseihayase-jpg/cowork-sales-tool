@@ -4289,10 +4289,17 @@ def cashflow_forecast_by_confidence(con) -> dict:
     実際の入金月ベース)、「外注費」はcf["cost_payments"](外注費検収を支払いサイト・支払分
     ずらした実際の支払月ベース。2026-09-30〜自動算出に変更)を使う。無効(終了)のDeliveryは
     キャンセル済みで将来の入出金に寄与しないため除外する。
-    戻り値: {"months": [...], "by_confidence": {確度ラベル: {月: {"inflow":合計入金予定,"cost":合計外注費}}}}
+    戻り値: {"months": [...], "by_confidence": {確度ラベル: {月: {"inflow":合計入金予定,"cost":合計外注費}}},
+             "deliveries": {月: [{"id","name","confidence","inflow","cost"}, ...]}}
     Hishoの資金繰りタブは、ユーザーが選んだ確度フィルタ（確定のみ/クロージングまで含む/
-    提案中まで含む）に応じて、この確度別内訳を該当分だけ合算して使う。"""
+    提案中まで含む）に応じて、この確度別内訳を該当分だけ合算して使う。"months"はSFA上で
+    さかのぼれる最も古い月まで含む全期間（未来分だけでなく過去分も）＝Hisho側で表示する
+    デフォルト期間の「さかのぼれる最も古い月」の判定にもそのまま使われる（2026-09-30
+    ユーザー要望「SFA上でさかのぼれる最も古い月までさかのぼって、資金繰りを表示して」）。
+    "deliveries"は月別入金へのホバーで案件別内訳（案件名・限界利益額(入金額,外注費)）を
+    表示するための明細（2026-09-30ユーザー要望）。"""
     by_conf: dict = {}
+    by_delivery: dict = {}
     months_set: set = set()
     for dv in sfa_db.list_deliveries(con):
         conf_lbl, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
@@ -4301,6 +4308,7 @@ def cashflow_forecast_by_confidence(con) -> dict:
             continue
         cf = sfa_db.delivery_cashflow(con, dv["id"])
         bucket = by_conf.setdefault(conf_lbl, {})
+        name = f'{dv.get("account_name") or ""} / {dv.get("title") or dv.get("deal_name") or ""}'.strip("／ /")
         for m in cf["months"]:
             inflow = cf["payments"].get(m) or 0.0
             cost = cf["cost_payments"].get(m) or 0.0
@@ -4310,7 +4318,13 @@ def cashflow_forecast_by_confidence(con) -> dict:
             entry = bucket.setdefault(m, {"inflow": 0.0, "cost": 0.0})
             entry["inflow"] += inflow
             entry["cost"] += cost
-    return {"months": sorted(months_set), "by_confidence": by_conf}
+            by_delivery.setdefault(m, []).append({
+                "id": dv["id"], "name": name, "confidence": conf_lbl,
+                "inflow": round(inflow, 1), "cost": round(cost, 1),
+            })
+    for _m in by_delivery:
+        by_delivery[_m].sort(key=lambda e: -e["inflow"])
+    return {"months": sorted(months_set), "by_confidence": by_conf, "deliveries": by_delivery}
 
 
 def _delivery_new_confidence_opts() -> str:

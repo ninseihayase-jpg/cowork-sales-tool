@@ -75,6 +75,14 @@ def test_cashflow_forecast_by_confidence_buckets_by_confidence_and_excludes_inva
     assert by_conf["見込み(クロージング)"]["2026-09"] == {"inflow": 200, "cost": 0}
     assert by_conf["見込み(提案中)"]["2026-09"] == {"inflow": 400, "cost": 0}
 
+    # 2026-09-30ユーザー要望: 月別入金のホバーで案件別内訳(案件名・入金額・外注費)を出せるように
+    deliveries = result["deliveries"]["2026-09"]
+    assert len(deliveries) == 3  # 無効(終了)は除外される
+    kakutei_row = next(d for d in deliveries if d["confidence"] == "確定")
+    assert kakutei_row == {"id": dv_kakutei, "name": "テスト社 / D", "confidence": "確定",
+                            "inflow": 100, "cost": 30}
+    assert {d["confidence"] for d in deliveries} == {"確定", "見込み(クロージング)", "見込み(提案中)"}
+
 
 def _run_server(db_path):
     handler_cls = webapp._make_handler(db_path, None)
@@ -107,7 +115,7 @@ def test_cashflow_forecast_route_requires_dedicated_token_not_sfa_api_token(monk
             f"http://127.0.0.1:{port}/api/cashflow_forecast?token=cashflow-secret-token", timeout=10)
         assert resp.getcode() == 200
         data = json.loads(resp.read())
-        assert data == {"months": [], "by_confidence": {}}
+        assert data == {"months": [], "by_confidence": {}, "deliveries": {}}
     finally:
         srv.shutdown()
         srv.server_close()
