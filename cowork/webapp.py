@@ -4359,8 +4359,14 @@ def order_value_by_month(con) -> dict:
     「収支状況」タブの計算基準（実収支ベース/計上ベース）の3つ目の選択肢として統合し、
     経営ロール限定に変更。/api/cashflow_forecast（SFA_CASHFLOW_TOKEN保護）のレスポンスに
     "order_value"キーとして合流させる（独立の/api/order_valueルートは廃止済み）。
-    戻り値: {"months": [...], "order_value": {月: 合計金額}}"""
+    "deliveries"は月別受注高へのホバーで案件別内訳（案件名・金額・主担当）を表示するための
+    明細（2026-10-01ユーザー要望。受注件数集計の主担当別カウントもHisho側でこの明細から
+    算出する）。主担当は商談(deals.owner)を使う（Deliveryのresponsible_owner＝納品責任者とは
+    別概念。受注高は受注＝営業活動の成果のため、案件を獲得した主担当に紐づける）。
+    戻り値: {"months": [...], "order_value": {月: 合計金額},
+             "deliveries": {月: [{"id","name","amount","owner"}, ...]}}"""
     order_value: dict[str, float] = {}
+    deliveries: dict[str, list] = {}
     for dv in sfa_db.list_deliveries(con):
         order_date = (dv.get("order_date") or "").strip()
         if not order_date:
@@ -4370,7 +4376,14 @@ def order_value_by_month(con) -> dict:
             continue
         ym = order_date[:7]
         order_value[ym] = (order_value.get(ym) or 0.0) + fee_total
-    return {"months": sorted(order_value.keys()), "order_value": order_value}
+        name = f'{dv.get("account_name") or ""} / {dv.get("title") or dv.get("deal_name") or ""}'.strip("／ /")
+        deliveries.setdefault(ym, []).append({
+            "id": dv["id"], "name": name, "amount": round(fee_total, 1),
+            "owner": dv.get("deal_owner") or "",
+        })
+    for _m in deliveries:
+        deliveries[_m].sort(key=lambda e: -e["amount"])
+    return {"months": sorted(order_value.keys()), "order_value": order_value, "deliveries": deliveries}
 
 
 def _delivery_new_confidence_opts() -> str:

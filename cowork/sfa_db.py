@@ -5623,6 +5623,7 @@ def list_deliveries(con, *, deal_id: int | None = None) -> list[dict]:
     """Delivery一覧（deal名・stage・status付き）。deal_id指定でその商談分のみ。"""
     sql = ("SELECT dv.*, d.deal_name, d.stage AS deal_stage, d.status AS deal_status, "
            "d.business_type_l1 AS deal_business_type_l1, d.business_type_l2 AS deal_business_type_l2, "
+           "d.owner AS deal_owner, "
            "acc.name AS account_name, acc.aliases AS account_aliases "
            "FROM deliveries dv JOIN deals d ON d.id=dv.deal_id "
            "LEFT JOIN accounts acc ON acc.id=d.account_id ")

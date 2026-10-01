@@ -33,9 +33,9 @@ def con():
     shutil.rmtree(d, ignore_errors=True)
 
 
-def _delivery(con, acc_name="A社", order_date=None, fee_total=None):
+def _delivery(con, acc_name="A社", order_date=None, fee_total=None, owner=None, deal_name="D"):
     aid = sfa_db.upsert_account(con, name=acc_name)
-    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="D", stage="受注")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name=deal_name, stage="受注", owner=owner)
     dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-09-14")
     fields = {}
     if order_date is not None:
@@ -51,31 +51,37 @@ def _delivery(con, acc_name="A社", order_date=None, fee_total=None):
 # ── webapp.order_value_by_month ──
 
 def test_order_value_by_month_empty_db_returns_empty(con):
-    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}}
+    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
 
 
 def test_order_value_by_month_sums_fee_total_by_order_date_month(con):
-    _delivery(con, order_date="2026-09-15", fee_total=300)
+    dv = _delivery(con, order_date="2026-09-15", fee_total=300, owner="岩崎")
     result = webapp.order_value_by_month(con)
-    assert result == {"months": ["2026-09"], "order_value": {"2026-09": 300}}
+    assert result["months"] == ["2026-09"]
+    assert result["order_value"] == {"2026-09": 300}
+    assert result["deliveries"]["2026-09"] == [{"id": dv, "name": "A社 / D", "amount": 300, "owner": "岩崎"}]
 
 
 def test_order_value_by_month_combines_multiple_deliveries_in_same_month(con):
-    _delivery(con, acc_name="A社", order_date="2026-09-01", fee_total=100)
-    _delivery(con, acc_name="B社", order_date="2026-09-28", fee_total=50)
+    _delivery(con, acc_name="A社", order_date="2026-09-01", fee_total=100, owner="岩崎")
+    _delivery(con, acc_name="B社", order_date="2026-09-28", fee_total=50, owner="早瀬")
 
     result = webapp.order_value_by_month(con)
-    assert result == {"months": ["2026-09"], "order_value": {"2026-09": 150}}
+    assert result["months"] == ["2026-09"]
+    assert result["order_value"] == {"2026-09": 150}
+    assert {d["owner"] for d in result["deliveries"]["2026-09"]} == {"岩崎", "早瀬"}
+    # 金額の大きい順にソートされていること
+    assert [d["amount"] for d in result["deliveries"]["2026-09"]] == [100, 50]
 
 
 def test_order_value_by_month_excludes_deliveries_without_order_date(con):
     _delivery(con, order_date=None, fee_total=999)
-    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}}
+    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
 
 
 def test_order_value_by_month_excludes_deliveries_without_fee_total(con):
     _delivery(con, order_date="2026-09-01")  # 受注日はあるが報酬総額/月額とも未入力
-    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}}
+    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
 
 
 def test_order_value_by_month_ignores_monthly_receipts_entirely(con):
@@ -83,7 +89,15 @@ def test_order_value_by_month_ignores_monthly_receipts_entirely(con):
     （ユーザー確認2026-10-01: 受注日入力時点で金額を即反映したいため報酬総額へ切替）。"""
     dv = _delivery(con, order_date="2026-09-15", fee_total=None)
     sfa_db.set_delivery_receipt(con, dv, "2026-09", 9999)
-    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}}
+    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
+
+
+def test_order_value_by_month_uses_deal_owner_not_delivery_responsible_owner(con):
+    """主担当は商談(deals.owner)を使う（Deliveryのresponsible_owner＝納品責任者とは別概念）。"""
+    dv = _delivery(con, order_date="2026-09-15", fee_total=100, owner="岩崎")
+    sfa_db.update_delivery(con, dv, responsible_owner="山崎")  # 納品責任者は別の人
+    result = webapp.order_value_by_month(con)
+    assert result["deliveries"]["2026-09"][0]["owner"] == "岩崎"
 
 
 # ── Delivery編集フォームの受注日保存 ──

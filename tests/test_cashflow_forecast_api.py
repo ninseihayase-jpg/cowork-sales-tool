@@ -144,7 +144,7 @@ def test_cashflow_forecast_route_requires_dedicated_token_not_sfa_api_token(monk
         data = json.loads(resp.read())
         assert data == {"months": [], "by_confidence": {}, "deliveries": {},
                          "by_confidence_accrual": {}, "deliveries_accrual": {},
-                         "order_value": {"months": [], "order_value": {}}}
+                         "order_value": {"months": [], "order_value": {}, "deliveries": {}}}
     finally:
         srv.shutdown()
         srv.server_close()
@@ -171,7 +171,9 @@ def test_cashflow_forecast_route_includes_order_value(monkeypatch, tmp_path):
         resp = urllib.request.urlopen(
             f"http://127.0.0.1:{port}/api/cashflow_forecast?token=cashflow-secret-token", timeout=10)
         data = json.loads(resp.read())
-        assert data["order_value"] == {"months": ["2026-09"], "order_value": {"2026-09": 500}}
+        assert data["order_value"]["months"] == ["2026-09"]
+        assert data["order_value"]["order_value"] == {"2026-09": 500}
+        assert data["order_value"]["deliveries"]["2026-09"][0]["amount"] == 500
 
         # 旧専用ルートは廃止済み（存在しないこと）
         req = urllib.request.Request(f"http://127.0.0.1:{port}/api/order_value?token=cashflow-secret-token")
