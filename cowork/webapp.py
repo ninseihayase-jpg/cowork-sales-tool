@@ -4351,18 +4351,23 @@ def cashflow_forecast_by_confidence(con) -> dict:
 def order_value_by_month(con) -> dict:
     """受注高（月別）。2026-10-01ユーザー要望「受注高の集計もしたいから、個別Deliveryに
     受注日を入力できるように」「受注高タブを追加」。受注日(deliveries.order_date)が設定されて
-    いるDeliveryについて、そのDeliveryの契約総額（delivery_receiptsの合計＝月別売上の総額）を
-    受注日の月(YYYY-MM)で合算する。資金繰り（経営ロール限定）とは異なり、受注高は他のタブと
-    同じく経営ロール限定ではないため、ブラウザ埋め込みのSFA_API_TOKENで保護する
+    いるDeliveryについて、その報酬総額（fee_total。delivery_display_feesでfee_mode/契約期間
+    から正規化した値）を受注日の月(YYYY-MM)で合算する。月別売上(delivery_receipts)は使わない
+    （ユーザー確認2026-10-01: 受注日を入力した時点で金額が反映されるようにしたいため、後から
+    埋める月別売上の内訳入力を待たない方針）。資金繰り（経営ロール限定）とは異なり、受注高は
+    他のタブと同じく経営ロール限定ではないため、ブラウザ埋め込みのSFA_API_TOKENで保護する
     （SFA_CASHFLOW_TOKENは使わない）。
     戻り値: {"months": [...], "order_value": {月: 合計金額}}"""
-    rows = con.execute(
-        "SELECT substr(dv.order_date,1,7) AS ym, SUM(dr.amount) AS total "
-        "FROM deliveries dv JOIN delivery_receipts dr ON dr.delivery_id = dv.id "
-        "WHERE dv.order_date IS NOT NULL AND dv.order_date != '' "
-        "GROUP BY ym ORDER BY ym"
-    ).fetchall()
-    order_value = {r["ym"]: (r["total"] or 0.0) for r in rows}
+    order_value: dict[str, float] = {}
+    for dv in sfa_db.list_deliveries(con):
+        order_date = (dv.get("order_date") or "").strip()
+        if not order_date:
+            continue
+        _, fee_total = sfa_db.delivery_display_fees(dv)
+        if not fee_total:
+            continue
+        ym = order_date[:7]
+        order_value[ym] = (order_value.get(ym) or 0.0) + fee_total
     return {"months": sorted(order_value.keys()), "order_value": order_value}
 
 

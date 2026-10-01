@@ -3,7 +3,9 @@
 ユーザー要望(2026-10-01)「受注高の集計もしたいから、個別Deliveryに受注日を入力できる
 ように」「受注高タブを追加」。受注高は資金繰り（経営ロール限定）と異なり他タブ同様
 誰でも見られる想定のため、ブラウザ埋め込みのSFA_API_TOKEN（SFA_CASHFLOW_TOKENではない）
-で保護する。一時DBのみ使用。
+で保護する。集計元は月別売上(delivery_receipts)ではなく報酬総額(fee_total)（ユーザー確認
+2026-10-01: 受注日を入力した時点で金額が反映されるようにしたいため、後から埋める月別売上
+の内訳入力を待たない方針）。一時DBのみ使用。
 """
 from __future__ import annotations
 
@@ -32,12 +34,18 @@ def con():
     shutil.rmtree(d, ignore_errors=True)
 
 
-def _delivery(con, acc_name="A社", order_date=None):
+def _delivery(con, acc_name="A社", order_date=None, fee_total=None):
     aid = sfa_db.upsert_account(con, name=acc_name)
     did = sfa_db.upsert_deal(con, account_id=aid, deal_name="D", stage="受注")
     dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-09-14")
+    fields = {}
     if order_date is not None:
-        sfa_db.update_delivery(con, dvid, order_date=order_date)
+        fields["order_date"] = order_date
+    if fee_total is not None:
+        fields["fee_mode"] = "total"
+        fields["fee_total"] = fee_total
+    if fields:
+        sfa_db.update_delivery(con, dvid, **fields)
     return dvid
 
 
@@ -47,33 +55,35 @@ def test_order_value_by_month_empty_db_returns_empty(con):
     assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}}
 
 
-def test_order_value_by_month_sums_receipts_by_order_date_month(con):
-    dv = _delivery(con, order_date="2026-09-15")
-    sfa_db.set_delivery_receipt(con, dv, "2026-09", 100)
-    sfa_db.set_delivery_receipt(con, dv, "2026-10", 200)  # 売上計上月は無関係、受注日の月に集計
-
+def test_order_value_by_month_sums_fee_total_by_order_date_month(con):
+    _delivery(con, order_date="2026-09-15", fee_total=300)
     result = webapp.order_value_by_month(con)
     assert result == {"months": ["2026-09"], "order_value": {"2026-09": 300}}
 
 
 def test_order_value_by_month_combines_multiple_deliveries_in_same_month(con):
-    dv1 = _delivery(con, acc_name="A社", order_date="2026-09-01")
-    dv2 = _delivery(con, acc_name="B社", order_date="2026-09-28")
-    sfa_db.set_delivery_receipt(con, dv1, "2026-09", 100)
-    sfa_db.set_delivery_receipt(con, dv2, "2026-09", 50)
+    _delivery(con, acc_name="A社", order_date="2026-09-01", fee_total=100)
+    _delivery(con, acc_name="B社", order_date="2026-09-28", fee_total=50)
 
     result = webapp.order_value_by_month(con)
     assert result == {"months": ["2026-09"], "order_value": {"2026-09": 150}}
 
 
 def test_order_value_by_month_excludes_deliveries_without_order_date(con):
-    dv = _delivery(con, order_date=None)
-    sfa_db.set_delivery_receipt(con, dv, "2026-09", 999)
+    _delivery(con, order_date=None, fee_total=999)
     assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}}
 
 
-def test_order_value_by_month_excludes_deliveries_without_any_receipt(con):
-    _delivery(con, order_date="2026-09-01")  # 受注日はあるが月別売上を未入力
+def test_order_value_by_month_excludes_deliveries_without_fee_total(con):
+    _delivery(con, order_date="2026-09-01")  # 受注日はあるが報酬総額/月額とも未入力
+    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}}
+
+
+def test_order_value_by_month_ignores_monthly_receipts_entirely(con):
+    """月別売上(delivery_receipts)はもう受注高の集計に使わない
+    （ユーザー確認2026-10-01: 受注日入力時点で金額を即反映したいため報酬総額へ切替）。"""
+    dv = _delivery(con, order_date="2026-09-15", fee_total=None)
+    sfa_db.set_delivery_receipt(con, dv, "2026-09", 9999)
     assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}}
 
 
@@ -115,8 +125,7 @@ def test_order_value_route_returns_aggregated_data(monkeypatch, tmp_path):
     db_path = str(tmp_path / "srv2.db")
     sfa_db.init_db(db_path)
     con2 = sfa_db.connect(db_path)
-    dv = _delivery(con2, order_date="2026-09-10")
-    sfa_db.set_delivery_receipt(con2, dv, "2026-09", 500)
+    _delivery(con2, order_date="2026-09-10", fee_total=500)
     con2.close()
 
     monkeypatch.setattr(webapp, "SFA_API_TOKEN", "api-token")
