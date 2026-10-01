@@ -1107,6 +1107,8 @@ CREATE TABLE IF NOT EXISTS deliveries (
     cost_payment_cycle_months INTEGER DEFAULT 1, -- 支払いサイト(支払): 外注費検収月から何ヶ月後に外注費を支払うか（既定=翌月）
     business_type_l1_override TEXT,        -- 事業種別L1の手修正。NULL=紐づく商談のL1を継承
     business_type_l2_override TEXT,        -- 事業種別L2の手修正。NULL=紐づく商談のL2を継承
+    order_date  TEXT,                      -- 受注日(YYYY-MM-DD)。手入力。受注高集計（月別・Hisho
+                                            -- ダッシュボード「受注高」タブ）のキーに使う（2026-10-01）。
     created_at  TEXT DEFAULT (datetime('now')),
     updated_at  TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE
@@ -1825,6 +1827,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         # 月別入金計画（2026-09-30）: 外注費検収月から何ヶ月後に外注費を支払うか（支払いサイト・支払）。
         if _dv_cols and "cost_payment_cycle_months" not in _dv_cols:
             con.execute("ALTER TABLE deliveries ADD COLUMN cost_payment_cycle_months INTEGER DEFAULT 1")
+        # 受注高集計（2026-10-01）: 受注日。Hishoダッシュボード「受注高」タブの月別集計キー。
+        if _dv_cols and "order_date" not in _dv_cols:
+            con.execute("ALTER TABLE deliveries ADD COLUMN order_date TEXT")
         # 旧テーブルdelivery_cost_payments（2026-09-30同日中に「外注費支払額(手入力・自動シフト
         # 無し)」から「外注費検収(発生ベース・手入力)」へ概念を改称した際の移行）。当日launchの
         # 機能のため実データはほぼ無い想定だが、既存データは念のためコピーしてから旧テーブルを
@@ -5759,7 +5764,7 @@ def update_delivery(con, delivery_id: int, **fields) -> None:
                "business_type_l1_override", "business_type_l2_override",
                "responsible_owner", "handling_owner", "billing_method", "billing_due",
                "billing_recipient", "expense_billing", "expense_billing_note",
-               "performance_fee", "performance_fee_ratio", "expected_impact"}
+               "performance_fee", "performance_fee_ratio", "expected_impact", "order_date"}
     sets, args = [], []
     for k, v in fields.items():
         if k in allowed:

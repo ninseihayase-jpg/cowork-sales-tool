@@ -4348,6 +4348,24 @@ def cashflow_forecast_by_confidence(con) -> dict:
             "by_confidence_accrual": by_conf_accrual, "deliveries_accrual": by_delivery_accrual}
 
 
+def order_value_by_month(con) -> dict:
+    """受注高（月別）。2026-10-01ユーザー要望「受注高の集計もしたいから、個別Deliveryに
+    受注日を入力できるように」「受注高タブを追加」。受注日(deliveries.order_date)が設定されて
+    いるDeliveryについて、そのDeliveryの契約総額（delivery_receiptsの合計＝月別売上の総額）を
+    受注日の月(YYYY-MM)で合算する。資金繰り（経営ロール限定）とは異なり、受注高は他のタブと
+    同じく経営ロール限定ではないため、ブラウザ埋め込みのSFA_API_TOKENで保護する
+    （SFA_CASHFLOW_TOKENは使わない）。
+    戻り値: {"months": [...], "order_value": {月: 合計金額}}"""
+    rows = con.execute(
+        "SELECT substr(dv.order_date,1,7) AS ym, SUM(dr.amount) AS total "
+        "FROM deliveries dv JOIN delivery_receipts dr ON dr.delivery_id = dv.id "
+        "WHERE dv.order_date IS NOT NULL AND dv.order_date != '' "
+        "GROUP BY ym ORDER BY ym"
+    ).fetchall()
+    order_value = {r["ym"]: (r["total"] or 0.0) for r in rows}
+    return {"months": sorted(order_value.keys()), "order_value": order_value}
+
+
 def _delivery_new_confidence_opts() -> str:
     """新規Delivery起票時（confidence_override）の<option>群。既定は空=自動（商談ステージに連動）。"""
     return ('<option value="">確度: 自動（商談ステージに連動）</option>' +
@@ -6535,6 +6553,7 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">開始日<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" style="width:125px" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">終了日<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" style="width:125px" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status" style="width:74px">{status_opts}</select></label>
+              <label style="font-size:12px" title="受注高集計（Hishoダッシュボード）のキーに使用">受注日<br><input type="date" name="order_date" value="{_esc(dv.get("order_date") or "")}" style="width:125px"></label>
             </div>
             <div style="margin-top:8px">
               <div style="font-size:12px;margin-bottom:4px">開始日・終了日・対象外期間をカレンダーで選択
@@ -22765,6 +22784,16 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         effective = None if status_q == "all" else status_q
                         deals = sfa_db.list_deals(con, status=effective)
                         self._send(json.dumps([dict(d) for d in deals], ensure_ascii=False, default=str).encode(), ctype="application/json")
+                elif path == "/api/order_value":
+                    # 受注高（月別）。Hishoダッシュボード「受注高」タブがブラウザから直接叩く
+                    # （2026-10-01、/api/deal_timeline等と同じ方式）。CORS必須のため
+                    # _send_cors_jsonを使う（/api/deals等の非ブラウザ向けAPIと異なる点に注意）。
+                    qs = self._qs()
+                    token = (qs.get("token", [None])[0] or "")
+                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
+                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
+                    else:
+                        self._send_cors_json(json.dumps(order_value_by_month(con), ensure_ascii=False).encode())
                 elif path == "/api/admin_tasks":
                     # 事務タスク一覧(is_admin=1)。請求リマインド等の外部cronから利用。トークン認証。
                     qs = self._qs()
@@ -24867,7 +24896,8 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         expense_billing_note=(f.get("expense_billing_note", "") or "").strip(),
                         performance_fee=_perf_fee,
                         performance_fee_ratio=_perf_ratio,
-                        expected_impact=_expected_impact)
+                        expected_impact=_expected_impact,
+                        order_date=_valid_date(f.get("order_date", "")))
                     # 期間の変更に合わせて各アサインの週も連動スライド（開始移動＝全員スライド／週数延長＝全員の終了延長）
                     sfa_db.reschedule_delivery_assignments(
                         con, _dvid, _old_dv.get("start_week"), _old_dv.get("end_week"), _sw, _ew)
