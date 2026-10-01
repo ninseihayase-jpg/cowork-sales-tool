@@ -1,21 +1,20 @@
-"""受注高（月別）API `/api/order_value` と `webapp.order_value_by_month` の回帰テスト。
+"""受注高（月別） `webapp.order_value_by_month` の回帰テスト。
 
 ユーザー要望(2026-10-01)「受注高の集計もしたいから、個別Deliveryに受注日を入力できる
-ように」「受注高タブを追加」。受注高は資金繰り（経営ロール限定）と異なり他タブ同様
-誰でも見られる想定のため、ブラウザ埋め込みのSFA_API_TOKEN（SFA_CASHFLOW_TOKENではない）
-で保護する。集計元は月別売上(delivery_receipts)ではなく報酬総額(fee_total)（ユーザー確認
+ように」。集計元は月別売上(delivery_receipts)ではなく報酬総額(fee_total)（ユーザー確認
 2026-10-01: 受注日を入力した時点で金額が反映されるようにしたいため、後から埋める月別売上
-の内訳入力を待たない方針）。一時DBのみ使用。
+の内訳入力を待たない方針）。
+
+当初は独立タブ+SFA_API_TOKEN(非経営ロール限定)の専用ルート/api/order_valueだったが、
+同日中にユーザー要望で「収支状況」タブの計算基準の3つ目の選択肢として統合され、経営
+ロール限定に変更。独立ルートは廃止し、/api/cashflow_forecast(SFA_CASHFLOW_TOKEN保護)の
+レスポンスに"order_value"キーとして合流した（HTTPルートのテストはtest_cashflow_forecast_
+api.pyに統合済み）。一時DBのみ使用。
 """
 from __future__ import annotations
 
-import json
 import shutil
 import tempfile
-import threading
-import urllib.error
-import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -85,77 +84,6 @@ def test_order_value_by_month_ignores_monthly_receipts_entirely(con):
     dv = _delivery(con, order_date="2026-09-15", fee_total=None)
     sfa_db.set_delivery_receipt(con, dv, "2026-09", 9999)
     assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}}
-
-
-# ── HTTPルート ──
-
-def _run_server(db_path):
-    handler_cls = webapp._make_handler(db_path, None)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    return srv, t
-
-
-def test_order_value_route_requires_sfa_api_token_not_cashflow_token(monkeypatch, tmp_path):
-    """資金繰り(SFA_CASHFLOW_TOKEN)とは別の、既存SFA_API_TOKENで保護されること
-    （受注高は資金繰りと違い経営ロール限定ではないため）。"""
-    db_path = str(tmp_path / "srv.db")
-    sfa_db.init_db(db_path)
-    monkeypatch.setattr(webapp, "SFA_API_TOKEN", "api-token")
-    monkeypatch.setattr(webapp, "SFA_CASHFLOW_TOKEN", "cashflow-token")
-    srv, t = _run_server(db_path)
-    try:
-        port = srv.server_address[1]
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/order_value?token=cashflow-token")
-        with pytest.raises(urllib.error.HTTPError) as exc:
-            urllib.request.urlopen(req, timeout=10)
-        assert exc.value.code == 401
-
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/order_value?token=api-token", timeout=10)
-        assert resp.getcode() == 200
-        assert json.loads(resp.read()) == {"months": [], "order_value": {}}
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        t.join(timeout=5)
-
-
-def test_order_value_route_returns_aggregated_data(monkeypatch, tmp_path):
-    db_path = str(tmp_path / "srv2.db")
-    sfa_db.init_db(db_path)
-    con2 = sfa_db.connect(db_path)
-    _delivery(con2, order_date="2026-09-10", fee_total=500)
-    con2.close()
-
-    monkeypatch.setattr(webapp, "SFA_API_TOKEN", "api-token")
-    srv, t = _run_server(db_path)
-    try:
-        port = srv.server_address[1]
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/order_value?token=api-token", timeout=10)
-        data = json.loads(resp.read())
-        assert data == {"months": ["2026-09"], "order_value": {"2026-09": 500}}
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        t.join(timeout=5)
-
-
-def test_order_value_route_disabled_when_no_token_configured(monkeypatch, tmp_path):
-    db_path = str(tmp_path / "srv3.db")
-    sfa_db.init_db(db_path)
-    monkeypatch.setattr(webapp, "SFA_API_TOKEN", "")
-    srv, t = _run_server(db_path)
-    try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{srv.server_address[1]}/api/order_value?token=anything")
-        with pytest.raises(urllib.error.HTTPError) as exc:
-            urllib.request.urlopen(req, timeout=10)
-        assert exc.value.code == 401
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        t.join(timeout=5)
 
 
 # ── Delivery編集フォームの受注日保存 ──

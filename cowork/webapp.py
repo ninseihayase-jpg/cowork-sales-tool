@@ -4350,13 +4350,15 @@ def cashflow_forecast_by_confidence(con) -> dict:
 
 def order_value_by_month(con) -> dict:
     """受注高（月別）。2026-10-01ユーザー要望「受注高の集計もしたいから、個別Deliveryに
-    受注日を入力できるように」「受注高タブを追加」。受注日(deliveries.order_date)が設定されて
-    いるDeliveryについて、その報酬総額（fee_total。delivery_display_feesでfee_mode/契約期間
-    から正規化した値）を受注日の月(YYYY-MM)で合算する。月別売上(delivery_receipts)は使わない
-    （ユーザー確認2026-10-01: 受注日を入力した時点で金額が反映されるようにしたいため、後から
-    埋める月別売上の内訳入力を待たない方針）。資金繰り（経営ロール限定）とは異なり、受注高は
-    他のタブと同じく経営ロール限定ではないため、ブラウザ埋め込みのSFA_API_TOKENで保護する
-    （SFA_CASHFLOW_TOKENは使わない）。
+    受注日を入力できるように」。受注日(deliveries.order_date)が設定されているDeliveryに
+    ついて、その報酬総額（fee_total。delivery_display_feesでfee_mode/契約期間から正規化した
+    値）を受注日の月(YYYY-MM)で合算する。月別売上(delivery_receipts)は使わない（ユーザー確認
+    2026-10-01: 受注日を入力した時点で金額が反映されるようにしたいため、後から埋める月別売上
+    の内訳入力を待たない方針）。
+    当初は独立タブ+SFA_API_TOKEN(非経営ロール限定)だったが、同日中にユーザー要望で
+    「収支状況」タブの計算基準（実収支ベース/計上ベース）の3つ目の選択肢として統合し、
+    経営ロール限定に変更。/api/cashflow_forecast（SFA_CASHFLOW_TOKEN保護）のレスポンスに
+    "order_value"キーとして合流させる（独立の/api/order_valueルートは廃止済み）。
     戻り値: {"months": [...], "order_value": {月: 合計金額}}"""
     order_value: dict[str, float] = {}
     for dv in sfa_db.list_deliveries(con):
@@ -22812,16 +22814,6 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         effective = None if status_q == "all" else status_q
                         deals = sfa_db.list_deals(con, status=effective)
                         self._send(json.dumps([dict(d) for d in deals], ensure_ascii=False, default=str).encode(), ctype="application/json")
-                elif path == "/api/order_value":
-                    # 受注高（月別）。Hishoダッシュボード「受注高」タブがブラウザから直接叩く
-                    # （2026-10-01、/api/deal_timeline等と同じ方式）。CORS必須のため
-                    # _send_cors_jsonを使う（/api/deals等の非ブラウザ向けAPIと異なる点に注意）。
-                    qs = self._qs()
-                    token = (qs.get("token", [None])[0] or "")
-                    if not SFA_API_TOKEN or not hmac.compare_digest(token, SFA_API_TOKEN):
-                        self._send_cors_json(b'{"error":"unauthorized"}', status=401)
-                    else:
-                        self._send_cors_json(json.dumps(order_value_by_month(con), ensure_ascii=False).encode())
                 elif path == "/api/admin_tasks":
                     # 事務タスク一覧(is_admin=1)。請求リマインド等の外部cronから利用。トークン認証。
                     qs = self._qs()
@@ -22982,8 +22974,12 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if not SFA_CASHFLOW_TOKEN or not hmac.compare_digest(token, SFA_CASHFLOW_TOKEN):
                         self._send_cors_json(b'{"error":"unauthorized"}', status=401)
                     else:
-                        self._send_cors_json(
-                            json.dumps(cashflow_forecast_by_confidence(con), ensure_ascii=False).encode())
+                        # 受注高（2026-10-01、「受注高」ビューを収支状況タブの計算基準に統合。
+                        # 旧/api/order_value(SFA_API_TOKEN・ブラウザ直叩き)は廃止し、経営ロール
+                        # 限定のこのエンドポイントへ合流させた）。
+                        _cf_result = cashflow_forecast_by_confidence(con)
+                        _cf_result["order_value"] = order_value_by_month(con)
+                        self._send_cors_json(json.dumps(_cf_result, ensure_ascii=False).encode())
                 elif path == "/api/keiei_emails":
                     # Hisho資金繰りシミュレーションの経営ロール判定用（2026-09-30）。ユーザー要望
                     # 「経営ロールって、この割り当て（SFA-CRM側の権限管理/user_roles）を採用

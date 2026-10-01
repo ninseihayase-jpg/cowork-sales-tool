@@ -143,7 +143,41 @@ def test_cashflow_forecast_route_requires_dedicated_token_not_sfa_api_token(monk
         assert resp.getcode() == 200
         data = json.loads(resp.read())
         assert data == {"months": [], "by_confidence": {}, "deliveries": {},
-                         "by_confidence_accrual": {}, "deliveries_accrual": {}}
+                         "by_confidence_accrual": {}, "deliveries_accrual": {},
+                         "order_value": {"months": [], "order_value": {}}}
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+
+def test_cashflow_forecast_route_includes_order_value(monkeypatch, tmp_path):
+    """2026-10-01ユーザー要望: 「受注高」ビューを収支状況タブの計算基準に統合（経営ロール
+    限定に）。独立だった/api/order_value(SFA_API_TOKEN)は廃止し、この経営ロール限定の
+    /api/cashflow_forecastへ"order_value"キーとして合流させた。"""
+    db_path = str(tmp_path / "srv4.db")
+    sfa_db.init_db(db_path)
+    con2 = sfa_db.connect(db_path)
+    aid = con2.execute("INSERT INTO accounts(name) VALUES('A社')").lastrowid
+    did = sfa_db.upsert_deal(con2, account_id=aid, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con2, deal_id=did, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con2, dvid, order_date="2026-09-10", fee_mode="total", fee_total=500)
+    con2.close()
+
+    monkeypatch.setattr(webapp, "SFA_CASHFLOW_TOKEN", "cashflow-secret-token")
+    srv, t = _run_server(db_path)
+    try:
+        port = srv.server_address[1]
+        resp = urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/cashflow_forecast?token=cashflow-secret-token", timeout=10)
+        data = json.loads(resp.read())
+        assert data["order_value"] == {"months": ["2026-09"], "order_value": {"2026-09": 500}}
+
+        # 旧専用ルートは廃止済み（存在しないこと）
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/order_value?token=cashflow-secret-token")
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=10)
+        assert exc.value.code == 404
     finally:
         srv.shutdown()
         srv.server_close()
