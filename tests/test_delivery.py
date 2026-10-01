@@ -1357,6 +1357,7 @@ def test_delivery_missing_requirements_lists_gaps_once_deal_reaches_closing(con,
     assert "アサイン" in missing
     assert "売上" in missing
     assert "経費請求有無" in missing
+    assert "受注日" in missing
 
 
 def test_delivery_missing_requirements_empty_once_all_fields_filled(con, acc_id):
@@ -1369,7 +1370,8 @@ def test_delivery_missing_requirements_empty_once_all_fields_filled(con, acc_id)
     sfa_db.update_delivery(
         con, dvid, fee_mode="monthly", fee_monthly=100, fee_total=100,
         responsible_owner="早瀬", billing_method=sfa_db.DELIVERY_BILLING_METHODS[0],
-        billing_recipient="経理部佐藤さん", expense_billing="有", payment_cycle_months=1)
+        billing_recipient="経理部佐藤さん", expense_billing="有", payment_cycle_months=1,
+        order_date="2026-09-01")
     sfa_db.set_delivery_receipt(con, dvid, "2026-09", 50)
     dv = sfa_db.get_delivery(con, dvid)
     assert webapp._delivery_missing_requirements(con, dv) == []

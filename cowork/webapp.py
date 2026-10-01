@@ -4519,6 +4519,8 @@ def _delivery_missing_requirements(con, dv: dict, *, assignments: list | None = 
         missing.append("売上")
     if not (dv.get("expense_billing") or "").strip():
         missing.append("経費請求有無")
+    if not (dv.get("order_date") or "").strip():
+        missing.append("受注日")
     return missing
 
 
@@ -6307,6 +6309,7 @@ def delivery_form(con, delivery_id: int) -> str:
     _hl_cost_monthly = ("cost_monthly" in _hl_keys and (dv.get("deal_stage") or "") in ("クロージング", "受注")
                          and (dv.get("cost_vendor") or "").strip()
                          and dv.get("cost_monthly") is None and dv.get("cost_total") is None)
+    _hl_order_date = "order_date" in _hl_keys and "受注日" in _missing
     _missing_banner = ""
     if _missing:
         _missing_items = "".join(f"<li>{_esc(m)}</li>" for m in _missing)
@@ -6525,16 +6528,20 @@ def delivery_form(con, delivery_id: int) -> str:
     </div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-        <h2 style="margin:0">🎙️ 議論メモ</h2>
+        <h2 style="margin:0;cursor:pointer;user-select:none" onclick="dvToggleNotes()">
+          <span id="dvNotesToggle" data-collapsed="1" style="display:inline-block;width:1em">▶</span>
+          🎙️ 議論メモ{f" <span class='muted' style='font-size:12px;font-weight:400'>({len(_dv_notes)}件)</span>" if _dv_notes else ""}</h2>
         <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           <a class="btn sec" href="/delivery/{delivery_id}/intake" style="font-size:12px"
              title="議論の文字起こしを貼付→AIで整形してメモ化">🎙️ 議論を取り込む（AI整形）</a>
           {_rich_note_chip("delivery", delivery_id)}
         </span>
       </div>
-      <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">{_note_cards}</div>
-      {_dv_rn_links_html}
-      {_dv_intake_html}
+      <div id="dvNotesBody" style="display:none;margin-top:10px">
+        <div style="display:flex;flex-direction:column;gap:8px">{_note_cards}</div>
+        {_dv_rn_links_html}
+        {_dv_intake_html}
+      </div>
     </div>
     <div class="card">
 
@@ -6553,7 +6560,7 @@ def delivery_form(con, delivery_id: int) -> str:
               <label style="font-size:12px">開始日<br><input type="date" class="wkdate" id="hdrStart" name="start_week" value="{_esc(dv.get("start_week") or "")}" style="width:125px" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">終了日<br><input type="date" class="wkdate" id="hdrEnd" name="end_week" value="{_esc(dv.get("end_week") or "")}" style="width:125px" onchange="dvFeeRecalc();dvCostRecalc()"></label>
               <label style="font-size:12px">状態<br><select name="status" style="width:74px">{status_opts}</select></label>
-              <label style="font-size:12px" title="受注高集計（Hishoダッシュボード）のキーに使用">受注日<br><input type="date" name="order_date" value="{_esc(dv.get("order_date") or "")}" style="width:125px"></label>
+              <label style="font-size:12px" title="受注高集計（Hishoダッシュボード）のキーに使用">受注日<br><input type="date" id="dvOrderDate" name="order_date" value="{_esc(dv.get("order_date") or "")}" style="width:125px{';background:#fef3c7' if _hl_order_date else ''}" onchange="dvOrderDateChanged()"></label>
             </div>
             <div style="margin-top:8px">
               <div style="font-size:12px;margin-bottom:4px">開始日・終了日・対象外期間をカレンダーで選択
@@ -7139,6 +7146,20 @@ def delivery_form(con, delivery_id: int) -> str:
       var el=document.getElementById('dvBillingRecipient'); if(!el) return;
       var _hl = DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('billing_recipient')>=0;
       el.style.background = (_hl && el.value.trim()==='') ? '#fef3c7' : '';
+    }}
+    function dvOrderDateChanged(){{
+      var el=document.getElementById('dvOrderDate'); if(!el) return;
+      var _hl = DV_STAGE_GATE_OK && REQUIRED_FIELD_HIGHLIGHTS.indexOf('order_date')>=0;
+      el.style.background = (_hl && el.value.trim()==='') ? '#fef3c7' : '';
+    }}
+    // 議論メモは既定で畳んだ状態（2026-10-01ユーザー要望）。
+    function dvToggleNotes(){{
+      var body=document.getElementById('dvNotesBody'), tgl=document.getElementById('dvNotesToggle');
+      if(!body||!tgl) return;
+      var next = tgl.getAttribute('data-collapsed')==='1';
+      body.style.display = next ? '' : 'none';
+      tgl.setAttribute('data-collapsed', next ? '0' : '1');
+      tgl.textContent = next ? '▼' : '▶';
     }}
     // 想定利益(月額/総額) = 報酬額－外注費。どちらも未入力なら「—」、片方だけ未入力は0扱い。
     function dvProfitRecalc(){{
@@ -13783,6 +13804,7 @@ _SETTINGS_REQUIRED_FIELD_CANDIDATES = [
     "performance_fee_ratio", "fee_amount", "expense_billing",
     "expected_impact", "responsible_owner", "billing_method", "billing_recipient",
     "roles", "assignments", "receipts", "expense_billing_note", "cost_monthly",
+    "order_date",
 ]
 _SETTINGS_REQUIRED_FIELD_LABELS = {
     "performance_fee_ratio": "成果報酬比率（成果報酬有無=有なのに比率未入力）",
@@ -13797,6 +13819,7 @@ _SETTINGS_REQUIRED_FIELD_LABELS = {
     "receipts": "売上（1件も無い）",
     "expense_billing_note": "経費請求メモ（経費請求有無=有なのに未入力）",
     "cost_monthly": "外注費/月額（外注先ありなのに月額/総額とも未入力）",
+    "order_date": "受注日（未入力）",
 }
 
 # 商談（deal_form）向け候補（2026-09-26新規）。段階ゲートは無し（商談は#134のような

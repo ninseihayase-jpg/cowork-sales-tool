@@ -157,6 +157,19 @@ def test_delivery_billing_method_and_recipient_highlight_with_stage_gate(con, ac
     assert "background:#fef3c7" not in html2.split('id="dvBillingRecipient"')[1][:300]
 
 
+def test_delivery_order_date_highlights_with_stage_gate(con, acc_id):
+    """2026-10-01ユーザー要望「受注日を必須入力項目に（他と同様に、入力していないと
+    黄色ハイライト）」。"""
+    did = _deal(con, acc_id, "受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    html = webapp.delivery_form(con, dvid)
+    seg = html.split('id="dvOrderDate"')[1][:300]
+    assert "background:#fef3c7" in seg
+    sfa_db.update_delivery(con, dvid, order_date="2026-09-20")
+    html2 = webapp.delivery_form(con, dvid)
+    assert "background:#fef3c7" not in html2.split('id="dvOrderDate"')[1][:300]
+
+
 def test_delivery_collection_level_sections_highlight_when_empty(con, acc_id):
     """責任者/体制/アサイン/検収額はセクション単位のハイライト（クロージング以降のみ）。"""
     did = _deal(con, acc_id, "受注")
