@@ -1,9 +1,13 @@
 """受注高（月別） `webapp.order_value_by_month` の回帰テスト。
 
 ユーザー要望(2026-10-01)「受注高の集計もしたいから、個別Deliveryに受注日を入力できる
-ように」。集計元は月別売上(delivery_receipts)ではなく報酬総額(fee_total)（ユーザー確認
-2026-10-01: 受注日を入力した時点で金額が反映されるようにしたいため、後から埋める月別売上
-の内訳入力を待たない方針）。
+ように」。集計元は月別売上(delivery_receipts)ではなく報酬総額（ユーザー確認2026-10-01:
+受注日を入力した時点で金額が反映されるようにしたいため、後から埋める月別売上の内訳入力を
+待たない方針）。
+
+**2026-10-02修正**: 当初は`delivery_display_fees()`の固定報酬のみを使っており、固定報酬
+総額が0円（成果報酬のみで契約しているDelivery）が受注高から漏れていた不具合をユーザー
+報告で発見・`_delivery_fee_grand_total()`（固定報酬総額＋成果報酬額）に修正。
 
 当初は独立タブ+SFA_API_TOKEN(非経営ロール限定)の専用ルート/api/order_valueだったが、
 同日中にユーザー要望で「収支状況」タブの計算基準の3つ目の選択肢として統合され、経営
@@ -98,6 +102,34 @@ def test_order_value_by_month_uses_deal_owner_not_delivery_responsible_owner(con
     sfa_db.update_delivery(con, dv, responsible_owner="山崎")  # 納品責任者は別の人
     result = webapp.order_value_by_month(con)
     assert result["deliveries"]["2026-09"][0]["owner"] == "岩崎"
+
+
+def test_order_value_by_month_includes_performance_fee_only_delivery(con):
+    """2026-10-02ユーザー報告の回帰テスト:「この9/1受注案件が表示されていない」
+    「固定報酬総額0円、報酬総額あり、の場合、表示されていない気がする」「報酬総額
+    （成果報酬含む）で計算されていない気がする」。固定報酬総額0円＋成果報酬(想定
+    インパクト348万×比率10%=34.8万)のDeliveryが、34.8万として受注高に含まれること。"""
+    dv = _delivery(con, order_date="2026-09-01", fee_total=0.0, owner="岩崎")
+    sfa_db.update_delivery(con, dv, performance_fee="有", performance_fee_ratio=10.0, expected_impact=348.0)
+    result = webapp.order_value_by_month(con)
+    assert result["order_value"] == {"2026-09": 34.8}
+    assert result["deliveries"]["2026-09"][0]["amount"] == 34.8
+
+
+def test_order_value_by_month_excludes_when_performance_fee_flag_not_yes(con):
+    """成果報酬有無が「有」以外（無/不明(要確認)/未設定）なら、想定インパクト・比率が
+    入っていても成果報酬額は加算しない（JS側の#dvFeeGrandTotalの判定と同じ）。"""
+    dv = _delivery(con, order_date="2026-09-01", fee_total=0.0)
+    sfa_db.update_delivery(con, dv, performance_fee="無", performance_fee_ratio=10.0, expected_impact=348.0)
+    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
+
+
+def test_delivery_fee_grand_total_adds_fixed_and_performance_fee(con):
+    """固定報酬総額＋成果報酬額（想定インパクト×比率÷100、JS側#dvFeeGrandTotalと同じ式）。"""
+    dv = _delivery(con, fee_total=100)
+    sfa_db.update_delivery(con, dv, performance_fee="有", performance_fee_ratio=20.0, expected_impact=500.0)
+    dv_dict = sfa_db.get_delivery(con, dv)
+    assert webapp._delivery_fee_grand_total(dv_dict) == 200.0  # 100 + 500*20/100
 
 
 # ── Delivery編集フォームの受注日保存 ──

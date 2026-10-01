@@ -4348,13 +4348,31 @@ def cashflow_forecast_by_confidence(con) -> dict:
             "by_confidence_accrual": by_conf_accrual, "deliveries_accrual": by_delivery_accrual}
 
 
+def _delivery_fee_grand_total(dv: dict) -> float:
+    """報酬総額（固定報酬総額＋成果報酬額）。Delivery基礎情報カードの#dvFeeGrandTotal（JS側、
+    webapp.py内の<script>）と同じ式をサーバー側でも算出する（2026-10-01ユーザー報告:
+    受注高集計がdelivery_display_fees()の固定報酬のみを見ており、固定報酬総額が0円
+    （成果報酬のみで契約している）Deliveryが受注高から漏れていた不具合の修正）。
+    成果報酬額＝成果報酬有無='有'の時のみ、想定インパクト×成果報酬比率÷100（JS側の
+    Math.round(impact*ratio)/100と同じ丸め）。固定報酬総額が0でも成果報酬だけで合計が
+    正になりうるため、固定報酬の有無では足切りしない。"""
+    _, fixed_total = sfa_db.delivery_display_fees(dv)
+    fixed_total = fixed_total or 0.0
+    perf_amt = 0.0
+    if (dv.get("performance_fee") or "") == "有":
+        impact, ratio = dv.get("expected_impact"), dv.get("performance_fee_ratio")
+        if impact is not None and ratio is not None:
+            perf_amt = round(impact * ratio) / 100.0
+    return round((fixed_total + perf_amt) * 100) / 100.0
+
+
 def order_value_by_month(con) -> dict:
     """受注高（月別）。2026-10-01ユーザー要望「受注高の集計もしたいから、個別Deliveryに
     受注日を入力できるように」。受注日(deliveries.order_date)が設定されているDeliveryに
-    ついて、その報酬総額（fee_total。delivery_display_feesでfee_mode/契約期間から正規化した
-    値）を受注日の月(YYYY-MM)で合算する。月別売上(delivery_receipts)は使わない（ユーザー確認
-    2026-10-01: 受注日を入力した時点で金額が反映されるようにしたいため、後から埋める月別売上
-    の内訳入力を待たない方針）。
+    ついて、その報酬総額（_delivery_fee_grand_total。固定報酬総額＋成果報酬額）を受注日の月
+    (YYYY-MM)で合算する。月別売上(delivery_receipts)は使わない（ユーザー確認2026-10-01:
+    受注日を入力した時点で金額が反映されるようにしたいため、後から埋める月別売上の内訳入力を
+    待たない方針）。
     当初は独立タブ+SFA_API_TOKEN(非経営ロール限定)だったが、同日中にユーザー要望で
     「収支状況」タブの計算基準（実収支ベース/計上ベース）の3つ目の選択肢として統合し、
     経営ロール限定に変更。/api/cashflow_forecast（SFA_CASHFLOW_TOKEN保護）のレスポンスに
@@ -4371,7 +4389,7 @@ def order_value_by_month(con) -> dict:
         order_date = (dv.get("order_date") or "").strip()
         if not order_date:
             continue
-        _, fee_total = sfa_db.delivery_display_fees(dv)
+        fee_total = _delivery_fee_grand_total(dv)
         if not fee_total:
             continue
         ym = order_date[:7]
