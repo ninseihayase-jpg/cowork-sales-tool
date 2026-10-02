@@ -71,9 +71,9 @@ def test_cashflow_forecast_by_confidence_buckets_by_confidence_and_excludes_inva
     assert result["months"] == ["2026-09"]
     by_conf = result["by_confidence"]
     assert "無効(終了)" not in by_conf
-    assert by_conf["確定"]["2026-09"] == {"inflow": 100, "cost": 30}
-    assert by_conf["見込み(クロージング)"]["2026-09"] == {"inflow": 200, "cost": 0}
-    assert by_conf["見込み(提案中)"]["2026-09"] == {"inflow": 400, "cost": 0}
+    assert by_conf["確定"]["2026-09"] == {"inflow": 100, "cost": 30, "inflow_by_l1": {"未設定": 100}}
+    assert by_conf["見込み(クロージング)"]["2026-09"] == {"inflow": 200, "cost": 0, "inflow_by_l1": {"未設定": 200}}
+    assert by_conf["見込み(提案中)"]["2026-09"] == {"inflow": 400, "cost": 0, "inflow_by_l1": {"未設定": 400}}
 
     # 2026-09-30ユーザー要望: 月別入金のホバーで案件別内訳(案件名・入金額・外注費)を出せるように
     deliveries = result["deliveries"]["2026-09"]
@@ -97,18 +97,43 @@ def test_cashflow_forecast_by_confidence_accrual_basis_uses_unshifted_receipts(c
     result = webapp.cashflow_forecast_by_confidence(con)
 
     # 実収支ベース: 売上は+2ヶ月(2026-11)へ、外注費検収は+1ヶ月(2026-10)へずれる
-    assert result["by_confidence"]["確定"]["2026-11"] == {"inflow": 100, "cost": 0}
-    assert result["by_confidence"]["確定"]["2026-10"] == {"inflow": 0, "cost": 30}
+    assert result["by_confidence"]["確定"]["2026-11"] == {"inflow": 100, "cost": 0, "inflow_by_l1": {"未設定": 100}}
+    assert result["by_confidence"]["確定"]["2026-10"] == {"inflow": 0, "cost": 30, "inflow_by_l1": {}}
     assert "2026-09" not in result["by_confidence"].get("確定", {})
 
     # 計上ベース: 計上月(2026-09)のまま、ずらさない
-    assert result["by_confidence_accrual"]["確定"]["2026-09"] == {"inflow": 100, "cost": 30}
+    assert result["by_confidence_accrual"]["確定"]["2026-09"] == {"inflow": 100, "cost": 30, "inflow_by_l1": {"未設定": 100}}
     assert "2026-10" not in result["by_confidence_accrual"]["確定"]
     assert "2026-11" not in result["by_confidence_accrual"]["確定"]
 
     accrual_rows = result["deliveries_accrual"]["2026-09"]
     assert accrual_rows == [{"id": dv, "name": "テスト社 / D", "confidence": "確定",
                               "inflow": 100, "cost": 30}]
+
+
+def test_cashflow_forecast_by_confidence_breaks_down_inflow_by_business_type_l1(con, acc_id):
+    """2026-10-03ユーザー要望「収支状況のトップライン側を事業種別L1単位で分割して積み上げ
+    棒グラフで表示」の集計側。同月・同確度内で事業種別L1が異なる複数Deliveryがあれば、
+    inflow_by_l1でL1別に内訳が取れること。Delivery側のbusiness_type_l1_overrideが未設定なら
+    商談のbusiness_type_l1を継承し、どちらも空なら"未設定"になること。"""
+    d1 = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D1", stage="受注", business_type_l1="コスト削減")
+    dv1 = sfa_db.create_delivery(con, deal_id=d1, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dv1, payment_cycle_months=0)
+    sfa_db.set_delivery_receipt(con, dv1, "2026-09", 100)
+
+    d2 = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D2", stage="受注", business_type_l1="コスト削減")
+    dv2 = sfa_db.create_delivery(con, deal_id=d2, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dv2, payment_cycle_months=0, business_type_l1_override="AI導入")
+    sfa_db.set_delivery_receipt(con, dv2, "2026-09", 50)
+
+    d3 = sfa_db.upsert_deal(con, account_id=acc_id, deal_name="D3", stage="受注")
+    dv3 = sfa_db.create_delivery(con, deal_id=d3, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dv3, payment_cycle_months=0)
+    sfa_db.set_delivery_receipt(con, dv3, "2026-09", 20)
+
+    result = webapp.cashflow_forecast_by_confidence(con)
+    by_l1 = result["by_confidence"]["確定"]["2026-09"]["inflow_by_l1"]
+    assert by_l1 == {"コスト削減": 100, "AI導入": 50, "未設定": 20}
 
 
 def _run_server(db_path):

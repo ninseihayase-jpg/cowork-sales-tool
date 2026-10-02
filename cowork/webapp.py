@@ -4292,10 +4292,15 @@ def cashflow_forecast_by_confidence(con) -> dict:
     cf["receipts"](売上計上額)・cf["cost_receipts"](外注費検収額)をそのまま使う。無効(終了)の
     Deliveryはキャンセル済みで将来の入出金に寄与しないため除外する。
     戻り値: {"months": [...],
-             "by_confidence": {確度ラベル: {月: {"inflow":合計入金予定,"cost":合計外注費}}},
+             "by_confidence": {確度ラベル: {月: {"inflow":合計入金予定,"cost":合計外注費,
+                                             "inflow_by_l1":{事業種別L1:入金予定}}}},
              "deliveries": {月: [{"id","name","confidence","inflow","cost"}, ...]},
-             "by_confidence_accrual": {確度ラベル: {月: {"inflow":合計売上,"cost":合計外注費検収}}},
+             "by_confidence_accrual": {確度ラベル: {月: {"inflow":合計売上,"cost":合計外注費検収,
+                                                     "inflow_by_l1":{事業種別L1:売上}}}},
              "deliveries_accrual": {月: [{"id","name","confidence","inflow","cost"}, ...]}}
+    "inflow_by_l1"（2026-10-03追加）はHisho側「収支状況」タブのトップライン(入金予定/売上)
+    棒グラフを事業種別L1単位の積み上げ棒として描画するための内訳。L1はDeliveryの
+    business_type_l1_override（未設定なら商談のbusiness_type_l1を継承、どちらも空なら"未設定"）。
     Hishoの資金繰りタブは、ユーザーが選んだ確度フィルタ（確定のみ/クロージングまで含む/
     提案中まで含む）とベース（実収支/計上、2026-09-30追加のタブ切替）に応じて、該当する
     確度別内訳を合算して使う。"months"は両ベースを合わせてSFA上でさかのぼれる最も古い月まで
@@ -4313,6 +4318,10 @@ def cashflow_forecast_by_confidence(con) -> dict:
                                            dv.get("confidence_override"))
         if conf_lbl == "無効(終了)":
             continue
+        # トップライン(入金予定/売上)の事業種別L1別内訳用（2026-10-03ユーザー要望「収支状況の
+        # トップライン側を事業種別L1単位で分割して積み上げ棒グラフで表示」）。Deliveryの
+        # business_type_l1_override未設定時は商談のL1を継承（_delivery_biz_l1_optsと同じ解決順）。
+        l1 = (dv.get("business_type_l1_override") or dv.get("deal_business_type_l1") or "").strip() or "未設定"
         cf = sfa_db.delivery_cashflow(con, dv["id"])
         bucket = by_conf.setdefault(conf_lbl, {})
         bucket_accrual = by_conf_accrual.setdefault(conf_lbl, {})
@@ -4322,9 +4331,11 @@ def cashflow_forecast_by_confidence(con) -> dict:
             cost = cf["cost_payments"].get(m) or 0.0
             if inflow or cost:
                 months_set.add(m)
-                entry = bucket.setdefault(m, {"inflow": 0.0, "cost": 0.0})
+                entry = bucket.setdefault(m, {"inflow": 0.0, "cost": 0.0, "inflow_by_l1": {}})
                 entry["inflow"] += inflow
                 entry["cost"] += cost
+                if inflow:
+                    entry["inflow_by_l1"][l1] = entry["inflow_by_l1"].get(l1, 0.0) + inflow
                 by_delivery.setdefault(m, []).append({
                     "id": dv["id"], "name": name, "confidence": conf_lbl,
                     "inflow": round(inflow, 1), "cost": round(cost, 1),
@@ -4333,9 +4344,11 @@ def cashflow_forecast_by_confidence(con) -> dict:
             cost_receipt = cf["cost_receipts"].get(m) or 0.0
             if receipt or cost_receipt:
                 months_set.add(m)
-                entry_a = bucket_accrual.setdefault(m, {"inflow": 0.0, "cost": 0.0})
+                entry_a = bucket_accrual.setdefault(m, {"inflow": 0.0, "cost": 0.0, "inflow_by_l1": {}})
                 entry_a["inflow"] += receipt
                 entry_a["cost"] += cost_receipt
+                if receipt:
+                    entry_a["inflow_by_l1"][l1] = entry_a["inflow_by_l1"].get(l1, 0.0) + receipt
                 by_delivery_accrual.setdefault(m, []).append({
                     "id": dv["id"], "name": name, "confidence": conf_lbl,
                     "inflow": round(receipt, 1), "cost": round(cost_receipt, 1),
