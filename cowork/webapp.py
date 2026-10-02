@@ -4685,17 +4685,30 @@ _MR_CSS = """<style>
 .mr-table{width:100%;border-collapse:collapse;margin-top:6px}
 .mr-table th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);
   font-size:11px;color:#8A8578;text-transform:uppercase;letter-spacing:.04em}
-.mr-table td{border:1px solid var(--border);padding:10px;vertical-align:top;width:21%}
+.mr-table td{padding:14px 10px;vertical-align:top;width:21%;border-bottom:1px solid #EFEBE1}
+.mr-table tr:last-child td{border-bottom:none}
 .mr-table td:first-child{width:13%;font-weight:700}
-.mr-plist{list-style:none;margin:0;padding:0;max-height:360px;overflow-y:auto}
-.mr-plist li{display:flex;gap:8px;align-items:baseline;padding:7px 2px;border-bottom:1px solid var(--border)}
+.mr-plist{list-style:none;margin:0;padding:0;overflow-y:auto}
+.mr-plist li{display:flex;gap:10px;align-items:baseline;padding:9px 2px;border-bottom:1px solid var(--border)}
 .mr-plist li:last-child{border-bottom:none}
-.mr-plist .acc{font-size:12px;white-space:nowrap;flex-shrink:0}
-.mr-plist .deal{font-size:11px;color:#8A8578;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mr-plist .acc{font-size:14px;white-space:nowrap;flex-shrink:0}
+.mr-plist .deal{font-size:13px;color:#8A8578;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mr-floating{position:fixed;z-index:500;width:360px;background:#fff;border:1px solid var(--border);
   border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.25);padding:14px;display:none}
 .mr-floating textarea{width:100%;box-sizing:border-box;height:110px;border:1px solid var(--border);
   border-radius:6px;padding:8px;font-size:12px;font-family:inherit;resize:vertical}
+.mr-tabbar{display:flex;gap:20px;border-bottom:1px solid var(--border);margin:14px 0 16px}
+.mr-tab-btn{border:none;background:transparent;color:#8A8578;font-size:13px;font-weight:600;
+  padding:10px 2px;cursor:pointer;font-family:inherit;border-bottom:2px solid transparent}
+.mr-tab-btn:hover{color:#2B2723}
+.mr-tab-btn.active{color:#2B2723;border-color:var(--blue)}
+.mr-tab-panel{display:none}
+.mr-tab-panel.active{display:block}
+.mr-tab-panel .card{display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden}
+.mr-tab-panel .card>.mr-fill{flex:1;min-height:0;display:flex;flex-direction:column}
+.mr-pipeline-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:18px}
+.mr-pipeline-col{display:flex;flex-direction:column;min-height:0}
+.mr-table-scroll{flex:1;min-height:0;overflow-y:auto}
 </style>"""
 
 
@@ -4761,16 +4774,16 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
             f'<span class="deal">{_esc(it["name"])}</span></li>' for it in items)
     pipeline_html = f"""
     <div class="card">
-      <h3 style="margin:0 0 10px;font-size:14px">❷ Pipeline（Sales / Closing / Delivery）</h3>
-      <div style="display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:18px">
-        <div><div style="font-size:12px;font-weight:700;margin-bottom:6px">Sales（見込み・提案中）</div>
+      <h3 style="margin:0 0 10px;font-size:14px;flex-shrink:0">❷ Pipeline（Sales / Closing / Delivery）</h3>
+      <div class="mr-pipeline-grid">
+        <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Sales（見込み・提案中）</div>
           <ul class="mr-plist">{_plist(pipeline["Sales"])}</ul></div>
-        <div><div style="font-size:12px;font-weight:700;margin-bottom:6px">Closing（クロージング）</div>
+        <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Closing（クロージング）</div>
           <ul class="mr-plist">{_plist(pipeline["Closing"])}</ul></div>
-        <div><div style="font-size:12px;font-weight:700;margin-bottom:6px">Delivery（受注済み）</div>
+        <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Delivery（受注済み）</div>
           <ul class="mr-plist">{_plist(pipeline["Delivery"])}</ul></div>
       </div>
-      <div class="muted" style="font-size:10px;margin-top:10px">金額は表示しません。各列ともSFA登録日の新しい順・全件表示（縦スクロール）。</div>
+      <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">金額は表示しません。各列ともSFA登録日の新しい順・全件表示（縦スクロール）。</div>
     </div>"""
 
     # ❸ テーマ別の足元状況・戦略方針
@@ -4808,15 +4821,17 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
 
     track_b_html = f"""
     <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;flex-shrink:0">
         <h3 style="margin:0;font-size:14px">❸ テーマ別の足元状況・戦略方針</h3>
         <div style="display:flex;align-items:center;gap:8px">{llm_bulk_btn}{download_btn}{fix_controls}</div>
       </div>
-      <div style="margin-bottom:8px">{status_badge} {sp_note}</div>
-      <table class="mr-table">
-        <tr><th>Area</th><th>Status</th><th>Findings</th><th>Strategy</th></tr>
-        {"".join(rows)}
-      </table>
+      <div style="margin-bottom:8px;flex-shrink:0">{status_badge} {sp_note}</div>
+      <div class="mr-table-scroll">
+        <table class="mr-table">
+          <tr><th>Area</th><th>Status</th><th>Findings</th><th>Strategy</th></tr>
+          {"".join(rows)}
+        </table>
+      </div>
     </div>"""
 
     floating_editor = f"""
@@ -4873,6 +4888,19 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
          location.reload();
        }}).catch(function(){{ alert('通信エラー'); }});
     }}
+    function mrSyncTabHeight() {{
+      var active = document.querySelector('.mr-tab-panel.active .card');
+      if (!active) return;
+      var top = active.getBoundingClientRect().top;
+      var h = window.innerHeight - top - 20;
+      active.style.height = Math.max(h, 240) + 'px';
+    }}
+    function mrSwitchTab(n) {{
+      document.querySelectorAll('.mr-tab-panel').forEach(function(p, i) {{ p.classList.toggle('active', i === n - 1); }});
+      document.querySelectorAll('.mr-tab-btn').forEach(function(b, i) {{ b.classList.toggle('active', i === n - 1); }});
+      mrSyncTabHeight();
+    }}
+    window.addEventListener('resize', mrSyncTabHeight);
     document.addEventListener('DOMContentLoaded', function() {{
       document.querySelectorAll('.mr-cell[contenteditable]').forEach(function(el) {{
         el.addEventListener('blur', function() {{
@@ -4881,26 +4909,67 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
           mrSaveField(area, col);
         }});
       }});
+      mrSyncTabHeight();
     }});
     </script>"""
 
-    return header + track_a_html + pipeline_html + track_b_html + floating_editor + _MR_CSS + script
+    tabbar = """
+    <div class="mr-tabbar">
+      <button type="button" class="mr-tab-btn active" onclick="mrSwitchTab(1)">❶ 業績推移</button>
+      <button type="button" class="mr-tab-btn" onclick="mrSwitchTab(2)">❷ Pipeline</button>
+      <button type="button" class="mr-tab-btn" onclick="mrSwitchTab(3)">❸ テーマ別状況</button>
+    </div>"""
+    tab_panels = f"""
+    <div class="mr-tab-panel active" id="mrTabPanel1">{track_a_html}</div>
+    <div class="mr-tab-panel" id="mrTabPanel2">{pipeline_html}</div>
+    <div class="mr-tab-panel" id="mrTabPanel3">{track_b_html}</div>"""
+
+    return header + tabbar + tab_panels + floating_editor + _MR_CSS + script
+
+
+def _mr_add_months(year: int, month: int, n: int) -> tuple:
+    idx = year * 12 + (month - 1) + n
+    return idx // 12, idx % 12 + 1
 
 
 def monthly_report_targets_page(con, year: int, quarter: int) -> str:
-    months = [f"{year}-{str((quarter - 1) * 3 + 1 + i).zfill(2)}" for i in range(3)]
+    """業績目標の入力画面。ユーザー確定仕様（2026-10-03）:
+    - 受注高/売上で横に2表（指標ごとに別テーブル、1本の表にまとめない）。
+    - 各表、月×L1の入力欄＋自動計算の合計列（JSでリアルタイム集計）。
+    - 表示・入力対象は「当該四半期＋2四半期」＝3四半期・9ヶ月分（例: 第4四半期なら
+      翌年度第2四半期まで）。四半期ナビは1四半期単位でスライドする（ローリングウィンドウ）。
+    """
+    start_month = (quarter - 1) * 3 + 1
+    months = []
+    for i in range(9):
+        yy, mm = _mr_add_months(year, start_month, i)
+        months.append(f"{yy}-{mm:02d}")
     existing = sfa_db.get_monthly_targets_range(con, months)
     l1_list = sfa_db.get_master_list(con, "business_type_l1") or list(sfa_db.BUSINESS_TYPE_L1)
-    rows = []
-    for m in months:
-        for metric, metric_label in (("order_value", "受注高"), ("sales", "売上")):
+    l1_headers = "".join(f"<th>{_esc(l1)}</th>" for l1 in l1_list)
+
+    def _metric_table(metric: str, metric_label: str) -> str:
+        rows = []
+        for m in months:
             cells = "".join(
                 f'<td><input class="goal-input" name="t_{m}_{metric}_{_esc(l1)}" '
                 f'value="{_esc(existing.get(m, {}).get(metric, {}).get(l1, "") or "")}" '
-                f'style="width:70px"></td>'
+                f'oninput="mrCalcTotal(\'{metric}\',\'{m}\')"></td>'
                 for l1 in l1_list)
-            rows.append(f'<tr><td>{_esc(m)}</td><td>{_esc(metric_label)}</td>{cells}</tr>')
-    l1_headers = "".join(f"<th>{_esc(l1)}</th>" for l1 in l1_list)
+            total = sum((existing.get(m, {}).get(metric, {}) or {}).values())
+            rows.append(
+                f'<tr><td>{_esc(m)}</td>{cells}'
+                f'<td class="mono" id="mrTotal_{metric}_{m}" style="font-weight:700">'
+                f'{round(total):,}</td></tr>')
+        return f"""
+        <div>
+          <div style="font-size:13px;font-weight:700;margin-bottom:8px">{_esc(metric_label)}</div>
+          <table class="mr-table" style="width:auto">
+            <tr><th>月</th>{l1_headers}<th>合計</th></tr>
+            {"".join(rows)}
+          </table>
+        </div>"""
+
     prev_q, prev_y = (quarter - 1, year) if quarter > 1 else (4, year - 1)
     next_q, next_y = (quarter + 1, year) if quarter < 4 else (1, year + 1)
     hidden_l1 = "".join(f'<input type="hidden" name="l1_list[]" value="{_esc(l1)}">' for l1 in l1_list)
@@ -4908,24 +4977,37 @@ def monthly_report_targets_page(con, year: int, quarter: int) -> str:
     return f"""
     <div class="card"><p style="margin:0;display:flex;gap:8px;align-items:center">
       <a class="btn sec" href="/monthly-report">← 一覧へ戻る</a>
-      <span style="font-weight:700;font-size:15px;margin-left:8px">🎯 業績目標（{year}年 第{quarter}四半期）</span>
+      <span style="font-weight:700;font-size:15px;margin-left:8px">🎯 業績目標（{year}年 第{quarter}四半期 〜 {months[-1][:4]}年 {int(months[-1][5:])}月）</span>
     </p></div>
     <div class="card">
-      <p class="muted" style="font-size:12px">目標は原則四半期ごとに更新します（月次の数値をL1別に直接入力）。</p>
+      <p class="muted" style="font-size:12px">目標は原則四半期ごとに更新します（月次の数値をL1別に直接入力、合計は自動計算）。
+        当該四半期＋2四半期（3四半期・9ヶ月分）を入力します。</p>
       <p style="display:flex;gap:8px">
         <a class="btn sec" href="/monthly-report/targets?year={prev_y}&quarter={prev_q}">◀ 前四半期</a>
         <a class="btn sec" href="/monthly-report/targets?year={next_y}&quarter={next_q}">翌四半期 ▶</a>
       </p>
       <form method="post" action="/monthly-report/targets/save">
         {hidden_l1}{hidden_months}
-        <table class="mr-table" style="width:auto">
-          <tr><th>月</th><th>指標</th>{l1_headers}</tr>
-          {"".join(rows)}
-        </table>
+        <div style="display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:24px">
+          {_metric_table("order_value", "受注高")}
+          {_metric_table("sales", "売上")}
+        </div>
         <div style="margin-top:12px"><button class="btn" type="submit">保存</button></div>
       </form>
     </div>
-    <style>.goal-input{{border:1px solid var(--border);border-radius:6px;padding:5px 6px;font-size:11px;text-align:right}}</style>"""
+    <style>
+    .goal-input{{width:72px;box-sizing:border-box;border:1px solid var(--border);border-radius:6px;
+      padding:5px 6px;font-size:11px;text-align:right;font-family:inherit}}
+    </style>
+    <script>
+    function mrCalcTotal(metric, month) {{
+      var inputs = document.querySelectorAll('input[name^="t_' + month + '_' + metric + '_"]');
+      var sum = 0;
+      inputs.forEach(function(el) {{ var v = parseFloat(el.value); if (!isNaN(v)) sum += v; }});
+      var totalEl = document.getElementById('mrTotal_' + metric + '_' + month);
+      if (totalEl) totalEl.textContent = Math.round(sum).toLocaleString();
+    }}
+    </script>"""
 
 
 def _upload_report_to_sharepoint(html_content: str, report_month: str) -> dict:
