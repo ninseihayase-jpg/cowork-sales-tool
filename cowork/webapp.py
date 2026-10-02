@@ -4559,7 +4559,7 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
     描画崩壊した実例があったため）。各月＝実績(塗り)の隣に目標(点線枠)を並べたグループ棒。
     l1_orderの先頭(コスト削減)が視覚的に一番上に来るよう、積み上げはl1_orderの逆順
     （末尾から）で描画する（ゼロ線側＝一番下に末尾のL1が来る）。"""
-    plot_h = 255
+    plot_h = 340
     vals = []
     for m in months:
         vals.append(sum((actual_by_month.get(m) or {}).values()))
