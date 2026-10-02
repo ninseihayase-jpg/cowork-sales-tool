@@ -13919,9 +13919,16 @@ _SETTINGS_REQUIRED_FIELD_LABELS_ACCOUNT = {
 
 def _settings_hl_section_rows(con, master_key, prefix, candidates, labels):
     _enabled = set(sfa_db.get_master_list(con, master_key) or candidates)
+    # チェックボックスはwidth:auto;flex:0 0 auto;margin:0でリセットする。ページ共通CSSの
+    # input,select,textarea{width:100%;...}（グローバルなinputセレクタ、740行目付近）が
+    # type=checkboxのinputにも無差別にかかり、flexコンテナ内でcheckboxがほぼ行幅いっぱいに
+    # 広がってラベルテキストを圧迫・右へ押し出す不具合があった（2026-10-03ユーザー報告
+    # 「優先入力項目設定画面のビューが崩壊している」）。同種の対策は.ap-checklist-row
+    # input[type=checkbox]（2750行目付近）で既に実施済みのパターンをここにも適用する。
     return "".join(
         f'<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">'
-        f'<input type="checkbox" name="hl_{prefix}_{k}" value="1"{" checked" if k in _enabled else ""}>'
+        f'<input type="checkbox" name="hl_{prefix}_{k}" value="1"{" checked" if k in _enabled else ""} '
+        f'style="width:auto;flex:0 0 auto;margin:0">'
         f'{_esc(labels[k])}</label>'
         for k in candidates)
 
@@ -13939,6 +13946,18 @@ def settings_page(con) -> str:
     _rows_account = _settings_hl_section_rows(
         con, "required_field_highlights_accounts", "account",
         _SETTINGS_REQUIRED_FIELD_CANDIDATES_ACCOUNT, _SETTINGS_REQUIRED_FIELD_LABELS_ACCOUNT)
+    # 4セクション（商談/Delivery/社内PJ/アカウント）を横並びのカラムに（2026-10-03ユーザー要望
+    # 「画面は横に並べて、それぞれ縦に項目がずらっと並ぶUI」）。各カラムは最小幅を確保しつつ
+    # 画面幅に応じて折り返す（auto-fitグリッド）。
+    _sections = [
+        ("商談", _rows_deal),
+        ("Delivery", _rows_delivery),
+        ("社内PJ", _rows_issue),
+        ("アカウント", _rows_account),
+    ]
+    _cols = "".join(
+        f'<div><h3 style="margin:0 0 8px;font-size:14px">優先入力項目設定（{_esc(_title)}）</h3>{_rows}</div>'
+        for _title, _rows in _sections)
     return f"""
     <div class="card">
       <h2 style="margin:0 0 6px">⚙ 設定</h2>
@@ -13948,15 +13967,10 @@ def settings_page(con) -> str:
         ONにした項目は、各画面で未入力の間だけ入力欄（または該当セクション）の背景を黄色くハイライトします
         （保存はブロックしません。あくまで視覚的な注意喚起）。</p>
       <form method="post" action="/settings/save">
-        <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（商談）</h3>
-        {_rows_deal}
-        <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（Delivery）</h3>
-        {_rows_delivery}
-        <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（社内PJ）</h3>
-        {_rows_issue}
-        <h3 style="margin:16px 0 4px;font-size:14px">優先入力項目設定（アカウント）</h3>
-        {_rows_account}
-        <div style="margin-top:12px"><button class="btn" type="submit">保存</button></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:24px;align-items:start">
+          {_cols}
+        </div>
+        <div style="margin-top:16px"><button class="btn" type="submit">保存</button></div>
       </form>
     </div>"""
 

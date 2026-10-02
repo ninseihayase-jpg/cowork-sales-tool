@@ -1671,6 +1671,18 @@ def test_settings_page_renders_all_four_sections(server):
     assert 'name="hl_account_industry"' in body
 
 
+def test_settings_page_checkbox_width_is_reset(server):
+    """2026-10-03ユーザー報告「優先入力項目設定画面のビューが崩壊している」の回帰テスト。
+    ページ共通CSSのinput,select,textarea{width:100%}がtype=checkboxにも無差別にかかり、
+    flexコンテナ内でcheckboxが行幅いっぱいに広がってラベルテキストを圧迫・右へ押し出して
+    いた（チェックボックスとラベルが縦に揃わない「崩壊」表示）。各checkboxにwidth:auto;
+    flex:0 0 auto;margin:0のインラインリセットが入っていることを確認する。"""
+    code, resp = _get(server + "/settings", headers=_auth_header())
+    assert code == 200
+    body = resp.read().decode("utf-8")
+    assert 'name="hl_deal_stage" value="1" checked style="width:auto;flex:0 0 auto;margin:0"' in body
+
+
 def test_settings_roles_save_updates_and_adds_role(server, db_path):
     code, _ = _post(server + "/settings/roles/save", {
         "role_email[]": ["ninsei.hayase@inproc.org"], "role_name[]": ["早瀬"], "role_value[]": ["経営"],
