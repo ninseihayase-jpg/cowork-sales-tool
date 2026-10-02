@@ -4590,22 +4590,33 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
                 f'box-sizing:border-box"></div>')
         return "".join(parts)
 
-    cols = []
+    _ACTUAL_NUM_COLOR = "#2B2723"
+    _TARGET_NUM_COLOR = "#2563eb"
+    grid_cols_style = f"grid-template-columns:repeat({len(months)}, minmax(0, 1fr))"
+
+    label_cells = []
+    bar_cells = []
+    month_cells = []
     for m in months:
         actual = actual_by_month.get(m) or {}
         target = target_by_month.get(m) or {}
         actual_total = sum(actual.values())
-        total_label = f"{round(actual_total):,}" if actual_total > 0 else "—"
-        _, mo = m.split("-")
-        cols.append(f"""
-        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0">
-          <div style="display:flex;align-items:flex-end;gap:4px">
-            <div style="display:flex;flex-direction:column;width:22px">{_segs_html(actual)}</div>
-            <div style="display:flex;flex-direction:column;width:22px">{_target_segs_html(target)}</div>
-          </div>
-          <div class="mono" style="font-size:10px;color:#8A8578">{_esc(total_label)}</div>
-          <div class="muted" style="font-size:11px;color:#8A8578">{int(mo)}月</div>
+        target_total = sum(target.values())
+        actual_label = f"{round(actual_total):,}" if actual_total > 0 else "—"
+        target_label = f"{round(target_total):,}" if target_total > 0 else "—"
+        label_cells.append(f"""
+        <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+          <div class="mono" style="font-size:14px;font-weight:800;color:{_ACTUAL_NUM_COLOR}">{_esc(actual_label)}</div>
+          <div class="mono" style="font-size:13px;font-weight:700;color:{_TARGET_NUM_COLOR}">{_esc(target_label)}</div>
         </div>""")
+        bar_cells.append(f"""
+        <div style="display:flex;align-items:flex-end;justify-content:center;gap:4px;height:100%">
+          <div style="display:flex;flex-direction:column;width:22px">{_segs_html(actual)}</div>
+          <div style="display:flex;flex-direction:column;width:22px">{_target_segs_html(target)}</div>
+        </div>""")
+        _, mo = m.split("-")
+        month_cells.append(
+            f'<div class="muted" style="font-size:11px;color:#8A8578;text-align:center">{int(mo)}月</div>')
 
     legend = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">'
@@ -4620,10 +4631,22 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
         {legend}
         <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">
           <span style="display:inline-block;width:14px;border-top:2px dashed #94a3b8"></span>目標</span>
+        <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px">
+          <span style="width:8px;height:8px;border-radius:2px;background:{_ACTUAL_NUM_COLOR}"></span>
+          <span style="color:#8A8578">実績値</span>
+          <span style="width:8px;height:8px;border-radius:2px;background:{_TARGET_NUM_COLOR};margin-left:6px"></span>
+          <span style="color:#8A8578">目標値</span>
+        </span>
       </div>
-      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:10px;
-        border-bottom:1px solid #E8E3D9;padding-bottom:2px;overflow-x:auto">
-        {"".join(cols)}
+      <div style="display:grid;{grid_cols_style};column-gap:10px;margin-bottom:8px">
+        {"".join(label_cells)}
+      </div>
+      <div style="display:grid;{grid_cols_style};column-gap:10px;height:{plot_h}px;
+        border-bottom:1px solid #E8E3D9;padding-bottom:2px">
+        {"".join(bar_cells)}
+      </div>
+      <div style="display:grid;{grid_cols_style};column-gap:10px;margin-top:6px">
+        {"".join(month_cells)}
       </div>
     </div>"""
 
