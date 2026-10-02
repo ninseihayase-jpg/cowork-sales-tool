@@ -1460,6 +1460,71 @@ CREATE TABLE IF NOT EXISTS numbering_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_numbering_requests_thread
     ON numbering_requests(slack_channel, slack_ts, status);
+
+-- 全社定例レポート（2026-10、③本番実装）。月次で1レコード(report_month一意)。
+-- ❶❷(Track A)はDBに保存しない（SFAデータから都度再計算。常に最新）。Fixした瞬間だけ
+-- track_a_snapshot_htmlにその時点の描画結果をキャッシュし、過去月を開いた時の表示用に使う
+-- （再計算結果とズレてもFix時点の記録として残すのが目的）。
+-- ❸(Track B)はArea(product/marketing_sales/delivery/development)×Col(status/findings/
+-- strategy)の12セル、各セルを<area>_<col>_html(整形後の本文)と<area>_<col>_draft
+-- (フローティング入力に書いた元の自由記述。LLM整形後も保持)の2カラムに分ける
+-- （deal_issue_progress_reportsと同じ「1本の巨大HTMLにしない」設計。MONTHLY_REPORT_FIELD_KEYS
+-- 参照）。
+-- バージョニング規則（進捗報告機能とは意図的に異なる。ユーザー確定）: fixed_atがNULLの間は
+-- 常に編集可能（同一行をその場で上書き）。「Fix」でfixed_at/fixed_byをセットし読み取り専用に
+-- なるが、「再オープン」でfixed_at/fixed_byをNULLに戻すだけで同一行の編集を再開できる
+-- （進捗報告機能のような「新verを複製」方式ではない。履歴ログも持たない）。
+-- 翌月作成時は前月の<area>_<col>_html/_draftをそのままコピーして初期値にする
+-- （create_monthly_report()のcarry_forward_from参照）。
+CREATE TABLE IF NOT EXISTS monthly_reports (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_month                    TEXT NOT NULL UNIQUE,  -- YYYY-MM
+    product_status_html             TEXT NOT NULL DEFAULT '',
+    product_status_draft            TEXT NOT NULL DEFAULT '',
+    product_findings_html           TEXT NOT NULL DEFAULT '',
+    product_findings_draft          TEXT NOT NULL DEFAULT '',
+    product_strategy_html           TEXT NOT NULL DEFAULT '',
+    product_strategy_draft          TEXT NOT NULL DEFAULT '',
+    marketing_sales_status_html     TEXT NOT NULL DEFAULT '',
+    marketing_sales_status_draft    TEXT NOT NULL DEFAULT '',
+    marketing_sales_findings_html   TEXT NOT NULL DEFAULT '',
+    marketing_sales_findings_draft  TEXT NOT NULL DEFAULT '',
+    marketing_sales_strategy_html   TEXT NOT NULL DEFAULT '',
+    marketing_sales_strategy_draft  TEXT NOT NULL DEFAULT '',
+    delivery_status_html            TEXT NOT NULL DEFAULT '',
+    delivery_status_draft           TEXT NOT NULL DEFAULT '',
+    delivery_findings_html          TEXT NOT NULL DEFAULT '',
+    delivery_findings_draft         TEXT NOT NULL DEFAULT '',
+    delivery_strategy_html          TEXT NOT NULL DEFAULT '',
+    delivery_strategy_draft         TEXT NOT NULL DEFAULT '',
+    development_status_html         TEXT NOT NULL DEFAULT '',
+    development_status_draft        TEXT NOT NULL DEFAULT '',
+    development_findings_html       TEXT NOT NULL DEFAULT '',
+    development_findings_draft      TEXT NOT NULL DEFAULT '',
+    development_strategy_html       TEXT NOT NULL DEFAULT '',
+    development_strategy_draft      TEXT NOT NULL DEFAULT '',
+    track_a_snapshot_html           TEXT NOT NULL DEFAULT '',
+    fixed_at                        TEXT,          -- NULL=編集可（ドラフト）、値あり=確定済み
+    fixed_by                        TEXT,          -- 都度上書き。履歴ログは持たない
+    sharepoint_uploaded_at          TEXT,          -- ③時点はスタブのため常にNULL
+    created_at                      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 業績目標（四半期ごとに月次の数値をL1別に入力。ユーザー確定仕様）。実績側
+-- (order_value_by_l1/inflow_by_l1)と同じ{month:{l1:金額}}の粒度に正規化しておくことで、
+-- Track A組み立て時に実績と目標を同じロジックで突き合わせられるようにする。
+CREATE TABLE IF NOT EXISTS monthly_report_targets (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    year             INTEGER NOT NULL,
+    month            INTEGER NOT NULL,             -- 1-12
+    metric           TEXT NOT NULL,                 -- 'order_value' | 'sales'
+    business_type_l1 TEXT NOT NULL,
+    target_value     REAL NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by       TEXT,
+    UNIQUE(year, month, metric, business_type_l1)
+);
 """
 
 # 進捗報告の本文セクションキー（DB列は<key>_html）。表示順・docxエクスポート順もこの並びに従う。
@@ -1467,6 +1532,12 @@ PROGRESS_REPORT_SECTION_KEYS = [
     "summary", "progress", "decision", "risk_schedule", "risk_budget",
     "risk_quality", "risk_external", "risk_compliance", "risk_other", "next_steps",
 ]
+
+# 全社定例レポート（❸テーマ別の足元状況・戦略方針）のArea×Col。DB列は
+# <area>_<col>_html / <area>_<col>_draft。表示順もこの並びに従う。
+MONTHLY_REPORT_AREAS = ["product", "marketing_sales", "delivery", "development"]
+MONTHLY_REPORT_COLS = ["status", "findings", "strategy"]
+MONTHLY_REPORT_FIELD_KEYS = [f"{a}_{c}" for a in MONTHLY_REPORT_AREAS for c in MONTHLY_REPORT_COLS]
 
 
 def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -7562,6 +7633,124 @@ def open_progress_report_for_edit(con, issue_id: int, *, today: str,
 def delete_progress_report(con, report_id: int) -> None:
     con.execute("DELETE FROM deal_issue_progress_reports WHERE id=?", (int(report_id),))
     con.commit()
+
+
+# ── 全社定例レポート（2026-10、③本番実装）。バージョニング規則はSCHEMA内のコメント参照。 ──
+
+def get_monthly_report(con, report_month: str) -> dict | None:
+    r = con.execute("SELECT * FROM monthly_reports WHERE report_month=?", (report_month,)).fetchone()
+    return dict(r) if r else None
+
+
+def list_monthly_reports(con) -> list[dict]:
+    """新しい月順（report_month降順）。一覧画面向け。"""
+    rows = con.execute("SELECT * FROM monthly_reports ORDER BY report_month DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_latest_monthly_report_before(con, report_month: str) -> dict | None:
+    """指定月より前で最も新しいレコード（翌月作成時の引き継ぎ元。暦上の直前月とは限らない
+    ＝間の月が未作成でも、実際に存在する直近のレコードを引き継ぎ元にする）。"""
+    r = con.execute(
+        "SELECT * FROM monthly_reports WHERE report_month<? ORDER BY report_month DESC LIMIT 1",
+        (report_month,)).fetchone()
+    return dict(r) if r else None
+
+
+def create_monthly_report(con, report_month: str, *, carry_forward_from: dict | None = None) -> dict:
+    """carry_forward_fromが渡されれば、そのレコードの<area>_<col>_html/_draftをそのまま
+    初期値としてコピーする（ユーザー確定仕様「翌月は前月のTrack B内容を引き継ぐ」）。
+    渡されなければ全セル空文字で新規作成する。"""
+    cols = ["report_month"]
+    vals: list = [report_month]
+    for key in MONTHLY_REPORT_FIELD_KEYS:
+        for suffix in ("html", "draft"):
+            cols.append(f"{key}_{suffix}")
+            vals.append((carry_forward_from or {}).get(f"{key}_{suffix}", ""))
+    placeholders = ",".join("?" * len(vals))
+    cur = con.execute(f"INSERT INTO monthly_reports ({','.join(cols)}) VALUES ({placeholders})", vals)
+    con.commit()
+    return get_monthly_report(con, report_month)
+
+
+def update_monthly_report_field(con, report_month: str, field_key: str, value: str) -> bool:
+    """1セル分の部分更新（fieldは"<area>_<col>_html"または"<area>_<col>_draft"）。確定済み
+    （fixed_atが設定済み）の月は何もせずFalseを返す——ROUTE_ACCESSはロールしか見ないため、
+    行単位のFix状態はここで必ずサーバー側に再チェックする（権限があっても確定済みの月は
+    上書きさせない）。フィールド名が不正な場合もFalseを返す（想定外のSQLカラム名注入防止）。"""
+    base_keys = {f"{k}_html" for k in MONTHLY_REPORT_FIELD_KEYS} | {f"{k}_draft" for k in MONTHLY_REPORT_FIELD_KEYS}
+    if field_key not in base_keys:
+        return False
+    report = get_monthly_report(con, report_month)
+    if not report or report.get("fixed_at"):
+        return False
+    con.execute(
+        f"UPDATE monthly_reports SET {field_key}=?, updated_at=datetime('now') WHERE report_month=?",
+        (value, report_month))
+    con.commit()
+    return True
+
+
+def fix_monthly_report(con, report_month: str, *, fixed_by: str, snapshot_html: str) -> None:
+    con.execute(
+        "UPDATE monthly_reports SET fixed_at=datetime('now'), fixed_by=?, "
+        "track_a_snapshot_html=?, updated_at=datetime('now') WHERE report_month=?",
+        (fixed_by, snapshot_html, report_month))
+    con.commit()
+
+
+def reopen_monthly_report(con, report_month: str) -> None:
+    """Fixを解除し同一行を編集可状態に戻す（進捗報告機能のような新ver複製は行わない。
+    ユーザー確定仕様「Fix後も再オープン可能」）。track_a_snapshot_htmlは再Fix時に上書き
+    されるまでそのまま残す（履歴表示に使うものではなく、単なる作業中キャッシュ）。"""
+    con.execute(
+        "UPDATE monthly_reports SET fixed_at=NULL, fixed_by=NULL, updated_at=datetime('now') "
+        "WHERE report_month=?", (report_month,))
+    con.commit()
+
+
+def get_monthly_targets_range(con, months: list[str]) -> dict:
+    """{month: {"order_value": {l1: 値}, "sales": {l1: 値}}}。order_value_by_l1/inflow_by_l1と
+    同じ形状にしておき、Track A組み立て側で実績と同じロジックで突き合わせられるようにする。"""
+    if not months:
+        return {}
+    placeholders = ",".join("?" * len(months))
+    year_months = []
+    for m in months:
+        y, mo = m.split("-")
+        year_months.append((int(y), int(mo)))
+    out: dict = {m: {"order_value": {}, "sales": {}} for m in months}
+    rows = con.execute(
+        f"SELECT year, month, metric, business_type_l1, target_value FROM monthly_report_targets "
+        f"WHERE (year || '-' || substr('0' || month, -2, 2)) IN ({placeholders})",
+        months).fetchall()
+    for r in rows:
+        key = f"{r['year']}-{str(r['month']).zfill(2)}"
+        if key in out:
+            out[key][r["metric"]][r["business_type_l1"]] = r["target_value"]
+    return out
+
+
+def upsert_monthly_targets(con, entries: list[dict], *, updated_by: str | None = None) -> None:
+    """entries = [{"year":int,"month":int,"metric":"order_value"|"sales",
+    "business_type_l1":str,"target_value":float}, ...]。四半期入力フォームの一括保存。"""
+    for e in entries:
+        con.execute(
+            "INSERT INTO monthly_report_targets (year, month, metric, business_type_l1, target_value, "
+            "updated_at, updated_by) VALUES (?,?,?,?,?,datetime('now'),?) "
+            "ON CONFLICT(year, month, metric, business_type_l1) DO UPDATE SET "
+            "target_value=excluded.target_value, updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+            (int(e["year"]), int(e["month"]), e["metric"], e["business_type_l1"],
+             float(e["target_value"]), updated_by))
+    con.commit()
+
+
+def get_monthly_targets_for_quarter(con, year: int, quarter: int) -> dict:
+    """四半期入力フォームの初期値取得。{month:{"order_value":{l1:v},"sales":{l1:v}}}
+    （monthはYYYY-MM文字列、その四半期に属する3ヶ月分）。"""
+    start_month = (int(quarter) - 1) * 3 + 1
+    months = [f"{year}-{str(start_month + i).zfill(2)}" for i in range(3)]
+    return get_monthly_targets_range(con, months)
 
 
 # ── 採番Bot（見積書・請求書・契約書番号の自動発行、2026-09-17） ──────────────

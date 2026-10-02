@@ -117,6 +117,11 @@ ROUTE_ACCESS: dict[str, dict[str, str]] = {
     # 横断表示するため、/deliveriesと同じ権限方針にする（外部のみ非表示）。
     "/assign-planning": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "full", "外部": "hidden"},
     "/assign-planning-plan": {"経営": "full", "マネージャー": "full", "メンバー": "full", "事務": "full", "外部": "hidden"},
+    # 全社定例レポート（2026-10）: 閲覧は全社員（社内ロール全員"view"）、編集・Fix等の書き込みは
+    # 経営/マネージャーロールのみ"full"（ユーザー確定仕様「パートナー＝マネジャー」）。
+    # 外部（社外パートナーアカウント）はhidden——Findings/戦略方針に社内限定のコメントが
+    # 入る想定のため、「全社員閲覧可」は社内メンバーを指す表現と解釈した（ユーザー確認済み）。
+    "/monthly-report": {"経営": "full", "マネージャー": "full", "メンバー": "view", "事務": "view", "外部": "hidden"},
 }
 
 
@@ -1183,6 +1188,7 @@ _NAV_MAIN_GROUPS = [
      ("/docs", '<a href="/docs" style="opacity:.85;font-size:13px">資料庫</a>'),
      ("/intake-inbox", '<a href="/intake-inbox" style="opacity:.85;font-size:13px" '
       'title="Jamie/Zoom等から自動受信した会議の取り込み">取り込み</a>')],
+    [("/monthly-report", '<a href="/monthly-report" style="opacity:.85;font-size:13px">全社定例</a>')],
 ]
 _NAV_ADMIN_GROUPS = [
     ("数字・品質チェック", [
@@ -4426,6 +4432,543 @@ def order_value_by_month(con) -> dict:
         deliveries[_m].sort(key=lambda e: -e["amount"])
     return {"months": sorted(order_value.keys()), "order_value": order_value,
             "order_value_by_l1": order_value_by_l1, "deliveries": deliveries}
+
+
+# ── 全社定例レポート（2026-10、③本番実装） ──────────────────────────────
+
+_MONTHLY_REPORT_L1_PRIORITY = ["コスト削減", "AX", "コンサルティング"]
+_MONTHLY_REPORT_AREA_LABELS = {
+    "product": "Product", "marketing_sales": "Marketing/Sales",
+    "delivery": "Delivery", "development": "Development",
+}
+_MONTHLY_REPORT_COL_LABELS = {"status": "Status", "findings": "Findings", "strategy": "Strategy"}
+
+
+def _is_yyyymm(s: str) -> bool:
+    """パスのURLセグメントがYYYY-MM形式か（ルーティング分岐の判定専用、厳密な暦検証はしない）。"""
+    return bool(re.match(r"^\d{4}-\d{2}$", s or ""))
+
+
+def _monthly_report_l1_order(l1_values) -> list:
+    """L1の積み上げ順。_MONTHLY_REPORT_L1_PRIORITYを優先し、それ以外は安定ソートで続け、
+    "未設定"は最後に回す（Hisho経営ダッシュボード「収支状況」タブのCF_L1_PRIORITYと視覚的に
+    統一する。クロスリポジトリ依存は作らずこちら側に複製している）。"""
+    seen = set()
+    order = []
+    for l1 in _MONTHLY_REPORT_L1_PRIORITY:
+        if l1 in l1_values and l1 not in seen:
+            order.append(l1); seen.add(l1)
+    rest = sorted(v for v in l1_values if v not in seen and v != "未設定")
+    order.extend(rest)
+    if "未設定" in l1_values and "未設定" not in seen:
+        order.append("未設定")
+    return order
+
+
+def _monthly_report_period_months(anchor_month: str, qoffset: int = 0) -> list:
+    """anchor_month(YYYY-MM)が属する四半期を基準に、前四半期+当四半期+翌四半期＝9ヶ月分の
+    YYYY-MM配列を返す。qoffsetで四半期単位に前後へスライドできる（既定0＝
+    前四半期〜翌四半期、ユーザー確定仕様）。表示期間の基準はreport_monthの四半期であり、
+    実行時点の実日付ではない（過去月のレポートを開いた時に常に同じ窓が再現されるように）。"""
+    y, m = (int(x) for x in anchor_month.split("-"))
+    q_start_month = (m - 1) // 3 * 3 + 1   # そのanchor_monthが属する四半期の開始月(1/4/7/10)
+    base_y, base_m = y, q_start_month - 3 + qoffset * 3
+    while base_m < 1:
+        base_m += 12; base_y -= 1
+    while base_m > 12:
+        base_m -= 12; base_y += 1
+    months = []
+    yy, mm = base_y, base_m
+    for _ in range(9):
+        months.append(f"{yy}-{mm:02d}")
+        mm += 1
+        if mm > 12:
+            mm = 1; yy += 1
+    return months
+
+
+def monthly_report_track_a(con, report_month: str, qoffset: int = 0) -> dict:
+    """❶受注高/売上の2パネル分のデータを組み立てる。既存の集計関数をそのまま呼ぶだけで
+    独自の再集計はしない（週次レポートツールの「ダッシュボードKPIを重視」方針を踏襲）。
+    売上(実績)は実収支ベースの"確定"のみを使う（見込み(クロージング)/見込み(提案中)を混ぜた
+    シミュレーション的な数値ではなく、過去月の実績として一意に定まる値にするため）。"""
+    months = _monthly_report_period_months(report_month, qoffset)
+    ov = order_value_by_month(con)
+    ov_by_l1 = ov.get("order_value_by_l1") or {}
+    cf = cashflow_forecast_by_confidence(con)
+    sales_kakutei = (cf.get("by_confidence") or {}).get("確定") or {}
+
+    l1_values = set()
+    for m in months:
+        l1_values.update((ov_by_l1.get(m) or {}).keys())
+        l1_values.update((sales_kakutei.get(m) or {}).get("inflow_by_l1", {}).keys())
+    targets = sfa_db.get_monthly_targets_range(con, months)
+    for m in months:
+        l1_values.update((targets.get(m, {}).get("order_value") or {}).keys())
+        l1_values.update((targets.get(m, {}).get("sales") or {}).keys())
+    l1_order = _monthly_report_l1_order(l1_values)
+
+    order_value_actual = {m: (ov_by_l1.get(m) or {}) for m in months}
+    sales_actual = {m: (sales_kakutei.get(m) or {}).get("inflow_by_l1", {}) for m in months}
+    order_value_target = {m: (targets.get(m, {}).get("order_value") or {}) for m in months}
+    sales_target = {m: (targets.get(m, {}).get("sales") or {}) for m in months}
+
+    return {
+        "months": months, "l1_order": l1_order,
+        "order_value_actual": order_value_actual, "order_value_target": order_value_target,
+        "sales_actual": sales_actual, "sales_target": sales_target,
+    }
+
+
+def _monthly_report_pipeline_lists(con) -> dict:
+    """❷Pipeline（Sales/Closing/Delivery）。list_deliveries()は既にcreated_at DESCで
+    返るため、ここでは確度バケット振り分けだけ行う（並べ替えは不要）。"""
+    buckets: dict = {"Sales": [], "Closing": [], "Delivery": []}
+    label_to_bucket = {"見込み(提案中)": "Sales", "見込み(クロージング)": "Closing", "確定": "Delivery"}
+    for dv in sfa_db.list_deliveries(con):
+        label, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
+                                        dv.get("confidence_override"))
+        bucket = label_to_bucket.get(label)
+        if not bucket:
+            continue
+        buckets[bucket].append({
+            "account_name": dv.get("account_name") or "",
+            "name": dv.get("title") or dv.get("deal_name") or "",
+        })
+    return buckets
+
+
+_MONTHLY_REPORT_L1_COLORS = {
+    "コスト削減": "#334155", "AX": "#64748b", "コンサルティング": "#94a3b8",
+}
+_MONTHLY_REPORT_L1_FALLBACK_COLORS = ["#cbd5e1", "#e2e8f0", "#f1f5f9"]
+
+
+def _monthly_report_l1_color(l1: str, l1_order: list) -> str:
+    if l1 in _MONTHLY_REPORT_L1_COLORS:
+        return _MONTHLY_REPORT_L1_COLORS[l1]
+    idx = l1_order.index(l1) if l1 in l1_order else 0
+    return _MONTHLY_REPORT_L1_FALLBACK_COLORS[idx % len(_MONTHLY_REPORT_L1_FALLBACK_COLORS)]
+
+
+def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: list,
+                                           actual_by_month: dict, target_by_month: dict) -> str:
+    """❶受注高/売上パネル共通の積み上げ棒グラフ。Artifactモックアップ（承認済み、
+    https://claude.ai/artifact/721h63wwgQy64Y4jis1hPu）と同じ考え方で、**flexboxの通常フロー
+    でセグメントを積む**（position:absoluteは使わない。モックアップの初版がposition:absoluteで
+    描画崩壊した実例があったため）。各月＝実績(塗り)の隣に目標(点線枠)を並べたグループ棒。
+    l1_orderの先頭(コスト削減)が視覚的に一番上に来るよう、積み上げはl1_orderの逆順
+    （末尾から）で描画する（ゼロ線側＝一番下に末尾のL1が来る）。"""
+    plot_h = 170
+    vals = []
+    for m in months:
+        vals.append(sum((actual_by_month.get(m) or {}).values()))
+        vals.append(sum((target_by_month.get(m) or {}).values()))
+    max_val = max([1.0] + vals) * 1.15
+
+    def _segs_html(by_l1: dict) -> str:
+        parts = []
+        for l1 in reversed(l1_order):
+            v = by_l1.get(l1) or 0
+            if v <= 0:
+                continue
+            h = round(v / max_val * plot_h, 1)
+            color = _monthly_report_l1_color(l1, l1_order)
+            parts.append(f'<div style="height:{h}px;border-radius:2px;background:{color}"></div>')
+        return "".join(parts)
+
+    def _target_segs_html(by_l1: dict) -> str:
+        parts = []
+        for l1 in reversed(l1_order):
+            v = by_l1.get(l1) or 0
+            if v <= 0:
+                continue
+            h = round(v / max_val * plot_h, 1)
+            color = _monthly_report_l1_color(l1, l1_order)
+            parts.append(
+                f'<div style="height:{h}px;border-radius:2px;border:1.5px dashed {color};'
+                f'box-sizing:border-box"></div>')
+        return "".join(parts)
+
+    cols = []
+    for m in months:
+        actual = actual_by_month.get(m) or {}
+        target = target_by_month.get(m) or {}
+        actual_total = sum(actual.values())
+        total_label = f"{round(actual_total):,}" if actual_total > 0 else "—"
+        _, mo = m.split("-")
+        cols.append(f"""
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0">
+          <div style="display:flex;align-items:flex-end;gap:4px">
+            <div style="display:flex;flex-direction:column;width:22px">{_segs_html(actual)}</div>
+            <div style="display:flex;flex-direction:column;width:22px">{_target_segs_html(target)}</div>
+          </div>
+          <div class="mono" style="font-size:10px;color:#8A8578">{_esc(total_label)}</div>
+          <div class="muted" style="font-size:11px;color:#8A8578">{int(mo)}月</div>
+        </div>""")
+
+    legend = "".join(
+        f'<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">'
+        f'<span style="display:inline-block;width:10px;height:10px;border-radius:2px;'
+        f'background:{_monthly_report_l1_color(l1, l1_order)}"></span>{_esc(l1)}</span>'
+        for l1 in l1_order)
+
+    return f"""
+    <div style="display:flex;flex-direction:column;min-height:0;flex:1 1 0">
+      <div style="font-size:12px;font-weight:700;color:#2B2723;margin-bottom:8px">{_esc(title)}</div>
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap">
+        {legend}
+        <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">
+          <span style="display:inline-block;width:14px;border-top:2px dashed #94a3b8"></span>目標</span>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:10px;border-bottom:1px solid #E8E3D9;
+        padding-bottom:2px;overflow-x:auto">
+        {"".join(cols)}
+      </div>
+    </div>"""
+
+
+def _monthly_report_cell_html(report_month: str, area: str, col: str, html_val: str,
+                              draft_val: str, editable: bool) -> str:
+    """❸の1セル。rn-editクラスを流用（独自のcontenteditableスタイルを再定義しない）。
+    元の自由記述は<details>で既定折りたたみ（_issue_memo_panel_htmlと同じ素のHTML要素、
+    JS不要の挙動）、自由記述も記録として保持する（LLM整形後も消さない、ユーザー確定仕様）。"""
+    key = f"{area}_{col}"
+    val = html_val or ""
+    draft_label = (
+        f'<details style="margin-top:6px"><summary style="font-size:10px;color:#8A8578;'
+        f'cursor:pointer">元の自由記述</summary>'
+        f'<div style="margin-top:4px;padding:8px 10px;background:#F3F1EA;border-radius:6px;'
+        f'font-size:11px;color:#8A8578;white-space:pre-line">{_esc(draft_val)}</div></details>'
+    ) if draft_val else ""
+    if editable:
+        body = (
+            f'<div class="rn-edit mr-cell" id="mrCell-{key}" contenteditable="true" '
+            f'data-ph="（空欄でも構いません）">{val}</div>'
+            f'<button type="button" class="btn sec" style="font-size:11px;margin-top:6px" '
+            f'onclick="mrOpenEditor(\'{report_month}\',\'{area}\',\'{col}\')">✏️ 自由記述から整形</button>'
+            f'{draft_label}'
+        )
+    else:
+        inner = val or '<span class="muted">（空欄）</span>'
+        body = f'<div class="rn-edit mr-cell mr-readonly">{inner}</div>{draft_label}'
+    return body
+
+
+def monthly_report_index_page(con) -> str:
+    reports = sfa_db.list_monthly_reports(con)
+    today_month = _today_jst().isoformat()[:7]
+    has_current = any(r["report_month"] == today_month for r in reports)
+    rows = "".join(
+        f'<tr><td><a href="/monthly-report/{_esc(r["report_month"])}">{_esc(r["report_month"])}</a></td>'
+        f'<td>{"✅ 確定済み" if r["fixed_at"] else "📝 ドラフト"}</td></tr>'
+        for r in reports)
+    create_btn = "" if has_current else f"""
+    <form method="post" action="/monthly-report/{today_month}/create">
+      <button class="btn" type="submit">＋ {_esc(today_month)}分を作成</button>
+    </form>"""
+    return f"""
+    <div class="card">
+      <h2 style="margin:0 0 10px">📊 全社定例レポート</h2>
+      {create_btn}
+      <table style="width:100%;border-collapse:collapse;margin-top:12px">
+        <tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">対象月</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">状態</th></tr>
+        {rows}
+      </table>
+    </div>"""
+
+
+_MR_CSS = """<style>
+.mr-cell{min-height:36px;font-size:13px;outline:none}
+.mr-cell.mr-readonly{background:#F3F1EA;cursor:default}
+.mr-table{width:100%;border-collapse:collapse;margin-top:6px}
+.mr-table th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);
+  font-size:11px;color:#8A8578;text-transform:uppercase;letter-spacing:.04em}
+.mr-table td{border:1px solid var(--border);padding:10px;vertical-align:top;width:21%}
+.mr-table td:first-child{width:13%;font-weight:700}
+.mr-plist{list-style:none;margin:0;padding:0;max-height:360px;overflow-y:auto}
+.mr-plist li{display:flex;gap:8px;align-items:baseline;padding:7px 2px;border-bottom:1px solid var(--border)}
+.mr-plist li:last-child{border-bottom:none}
+.mr-plist .acc{font-size:12px;white-space:nowrap;flex-shrink:0}
+.mr-plist .deal{font-size:11px;color:#8A8578;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mr-floating{position:fixed;z-index:500;width:360px;background:#fff;border:1px solid var(--border);
+  border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.25);padding:14px;display:none}
+.mr-floating textarea{width:100%;box-sizing:border-box;height:110px;border:1px solid var(--border);
+  border-radius:6px;padding:8px;font-size:12px;font-family:inherit;resize:vertical}
+</style>"""
+
+
+def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
+    role = getattr(_request_ctx, "role", None)
+    editable_role = role in ("経営", "マネージャー")
+    report = sfa_db.get_monthly_report(con, report_month)
+
+    header = f"""
+    <div class="card"><p style="margin:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <a class="btn sec" href="/monthly-report">← 一覧へ戻る</a>
+      <span style="font-weight:700;font-size:15px;margin-left:8px">📊 全社定例レポート：{_esc(report_month)}</span>
+    </p></div>"""
+
+    if not report:
+        if not editable_role:
+            return header + '<div class="card"><p class="muted">この月のレポートはまだ作成されていません。</p></div>'
+        prev = sfa_db.get_latest_monthly_report_before(con, report_month)
+        return header + f"""
+    <div class="card">
+      <p class="muted">この月のレポートはまだありません。</p>
+      <form method="post" action="/monthly-report/{report_month}/create">
+        <button class="btn" type="submit">＋ 今月分を作成{"（前月の内容を引き継ぎます）" if prev else ""}</button>
+      </form>
+    </div>"""
+
+    is_fixed = bool(report.get("fixed_at"))
+    editable = editable_role and not is_fixed
+
+    # ❶ 業績推移
+    ta = monthly_report_track_a(con, report_month, qoffset=qoffset)
+    prev_qs = f"?qoffset={qoffset - 1}"
+    next_qs = f"?qoffset={qoffset + 1}"
+    first_m, last_m = ta["months"][0], ta["months"][-1]
+    period_label = f"{first_m[:4]}年{int(first_m[5:])}月 〜 {last_m[:4]}年{int(last_m[5:])}月"
+    ov_panel = _monthly_report_stacked_bar_panel_html(
+        "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"])
+    sales_panel = _monthly_report_stacked_bar_panel_html(
+        "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"])
+    track_a_html = f"""
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h3 style="margin:0;font-size:14px">❶ 業績推移（受注高 / 売上）</h3>
+        <div style="display:flex;align-items:center;gap:10px">
+          <a class="btn sec" style="font-size:11px" href="/monthly-report/{report_month}{prev_qs}">◀ 前四半期</a>
+          <span class="mono muted" style="font-size:12px">{_esc(period_label)}</span>
+          <a class="btn sec" style="font-size:11px" href="/monthly-report/{report_month}{next_qs}">翌四半期 ▶</a>
+          <a class="btn sec" style="font-size:11px" href="/monthly-report/targets">🎯 目標値を確認・編集</a>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:24px">
+        {ov_panel}{sales_panel}
+      </div>
+      <div class="muted" style="font-size:10px;margin-top:10px">単位：万円。各月＝左が実績（事業種別L1積み上げ）、
+        右が目標（四半期ごとに入力した月次目標値、L1別の点線枠）。</div>
+    </div>"""
+
+    # ❷ Pipeline
+    pipeline = _monthly_report_pipeline_lists(con)
+    def _plist(items):
+        return "".join(
+            f'<li><span class="acc">{_esc(it["account_name"])}</span>'
+            f'<span class="deal">{_esc(it["name"])}</span></li>' for it in items)
+    pipeline_html = f"""
+    <div class="card">
+      <h3 style="margin:0 0 10px;font-size:14px">❷ Pipeline（Sales / Closing / Delivery）</h3>
+      <div style="display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:18px">
+        <div><div style="font-size:12px;font-weight:700;margin-bottom:6px">Sales（見込み・提案中）</div>
+          <ul class="mr-plist">{_plist(pipeline["Sales"])}</ul></div>
+        <div><div style="font-size:12px;font-weight:700;margin-bottom:6px">Closing（クロージング）</div>
+          <ul class="mr-plist">{_plist(pipeline["Closing"])}</ul></div>
+        <div><div style="font-size:12px;font-weight:700;margin-bottom:6px">Delivery（受注済み）</div>
+          <ul class="mr-plist">{_plist(pipeline["Delivery"])}</ul></div>
+      </div>
+      <div class="muted" style="font-size:10px;margin-top:10px">金額は表示しません。各列ともSFA登録日の新しい順・全件表示（縦スクロール）。</div>
+    </div>"""
+
+    # ❸ テーマ別の足元状況・戦略方針
+    rows = []
+    for area in sfa_db.MONTHLY_REPORT_AREAS:
+        label = _MONTHLY_REPORT_AREA_LABELS[area]
+        cells = []
+        for col in sfa_db.MONTHLY_REPORT_COLS:
+            _cell = _monthly_report_cell_html(
+                report_month, area, col,
+                report.get(f"{area}_{col}_html"), report.get(f"{area}_{col}_draft"), editable)
+            cells.append(f'<td>{_cell}</td>')
+        rows.append(f'<tr><td>{_esc(label)}</td>{"".join(cells)}</tr>')
+    llm_bulk_btn = (
+        '<button type="button" class="btn sec" style="font-size:12px" onclick="mrRegenerateAll()">'
+        '🪄 LLMで下書き更新</button>') if editable else ""
+    fix_controls = ""
+    if editable_role:
+        if is_fixed:
+            fix_controls = f"""
+            <form method="post" action="/monthly-report/{report_month}/reopen" style="display:inline">
+              <button class="btn sec" type="submit">🔓 再オープン</button></form>"""
+        else:
+            fix_controls = f"""
+            <form method="post" action="/monthly-report/{report_month}/fix" style="display:inline"
+              onsubmit="return confirm('この月のレポートをFixします。よろしいですか？')">
+              <button class="btn" type="submit">✅ Fixする</button></form>"""
+    status_badge = (
+        f'<span class="pill" style="background:#EAF1E3;color:#44603A">確定済み（{_esc(report.get("fixed_by") or "")}）</span>'
+        if is_fixed else '<span class="pill" style="background:#F5E6DD;color:#A8492C">ドラフト</span>')
+    download_btn = f'<a class="btn sec" style="font-size:12px" href="/monthly-report/{report_month}/download.html">📥 HTMLをダウンロード</a>'
+    sp_note = (
+        '<span class="muted" style="font-size:10px">SharePoint自動アップロードは準備中のため、'
+        '現在は上の「HTMLをダウンロード」から手動で配布してください。</span>' if not is_fixed else "")
+
+    track_b_html = f"""
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+        <h3 style="margin:0;font-size:14px">❸ テーマ別の足元状況・戦略方針</h3>
+        <div style="display:flex;align-items:center;gap:8px">{llm_bulk_btn}{download_btn}{fix_controls}</div>
+      </div>
+      <div style="margin-bottom:8px">{status_badge} {sp_note}</div>
+      <table class="mr-table">
+        <tr><th>Area</th><th>Status</th><th>Findings</th><th>Strategy</th></tr>
+        {"".join(rows)}
+      </table>
+    </div>"""
+
+    floating_editor = f"""
+    <div id="mrFloating" class="mr-floating">
+      <div style="font-size:10px;font-weight:700;color:#8A8578;text-transform:uppercase;margin-bottom:8px">自由記述 → LLMで整形</div>
+      <textarea id="mrDraftText" placeholder="気づいたことを自由に書く…"></textarea>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+        <button type="button" class="btn sec" onclick="mrCloseEditor()">閉じる</button>
+        <button type="button" class="btn" onclick="mrRunLLM()">LLMで整形</button>
+      </div>
+    </div>"""
+
+    script = f"""
+    <script>
+    var MR_MONTH = {json.dumps(report_month, ensure_ascii=False)};
+    var mrCurArea = null, mrCurCol = null;
+    function mrOpenEditor(month, area, col) {{
+      mrCurArea = area; mrCurCol = col;
+      var box = document.getElementById('mrFloating');
+      var cell = document.getElementById('mrCell-' + area + '_' + col);
+      var r = cell.getBoundingClientRect();
+      box.style.top = (r.bottom + 6) + 'px'; box.style.left = r.left + 'px';
+      box.style.display = 'block';
+      document.getElementById('mrDraftText').value = '';
+      document.getElementById('mrDraftText').focus();
+    }}
+    function mrCloseEditor() {{ document.getElementById('mrFloating').style.display = 'none'; }}
+    function mrRunLLM() {{
+      var draft = document.getElementById('mrDraftText').value;
+      fetch('/monthly-report/' + MR_MONTH + '/llm-format', {{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'area=' + encodeURIComponent(mrCurArea) + '&col=' + encodeURIComponent(mrCurCol)
+             + '&draft=' + encodeURIComponent(draft)}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok) {{ alert('整形エラー: ' + (d.error || '')); return; }}
+         location.reload();
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function mrSaveField(area, col) {{
+      var el = document.getElementById('mrCell-' + area + '_' + col); if (!el) return;
+      fetch('/monthly-report/' + MR_MONTH + '/field', {{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field=' + encodeURIComponent(area + '_' + col + '_html')
+             + '&value=' + encodeURIComponent(el.innerHTML)}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok) alert('保存エラー: ' + (d.error || ''));
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function mrRegenerateAll() {{
+      if (!confirm('現在の自由記述から全セルを再整形します。手動で直接編集したセルも上書きされます。よろしいですか？')) return;
+      fetch('/monthly-report/' + MR_MONTH + '/llm-format-all', {{method:'POST'}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok) {{ alert('整形エラー: ' + (d.error || '')); return; }}
+         location.reload();
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    document.addEventListener('DOMContentLoaded', function() {{
+      document.querySelectorAll('.mr-cell[contenteditable]').forEach(function(el) {{
+        el.addEventListener('blur', function() {{
+          var parts = el.id.replace('mrCell-', '').split('_');
+          var col = parts.pop(); var area = parts.join('_');
+          mrSaveField(area, col);
+        }});
+      }});
+    }});
+    </script>"""
+
+    return header + track_a_html + pipeline_html + track_b_html + floating_editor + _MR_CSS + script
+
+
+def monthly_report_targets_page(con, year: int, quarter: int) -> str:
+    months = [f"{year}-{str((quarter - 1) * 3 + 1 + i).zfill(2)}" for i in range(3)]
+    existing = sfa_db.get_monthly_targets_range(con, months)
+    l1_list = sfa_db.get_master_list(con, "business_type_l1") or list(sfa_db.BUSINESS_TYPE_L1)
+    rows = []
+    for m in months:
+        for metric, metric_label in (("order_value", "受注高"), ("sales", "売上")):
+            cells = "".join(
+                f'<td><input class="goal-input" name="t_{m}_{metric}_{_esc(l1)}" '
+                f'value="{_esc(existing.get(m, {}).get(metric, {}).get(l1, "") or "")}" '
+                f'style="width:70px"></td>'
+                for l1 in l1_list)
+            rows.append(f'<tr><td>{_esc(m)}</td><td>{_esc(metric_label)}</td>{cells}</tr>')
+    l1_headers = "".join(f"<th>{_esc(l1)}</th>" for l1 in l1_list)
+    prev_q, prev_y = (quarter - 1, year) if quarter > 1 else (4, year - 1)
+    next_q, next_y = (quarter + 1, year) if quarter < 4 else (1, year + 1)
+    hidden_l1 = "".join(f'<input type="hidden" name="l1_list[]" value="{_esc(l1)}">' for l1 in l1_list)
+    hidden_months = "".join(f'<input type="hidden" name="months[]" value="{_esc(m)}">' for m in months)
+    return f"""
+    <div class="card"><p style="margin:0;display:flex;gap:8px;align-items:center">
+      <a class="btn sec" href="/monthly-report">← 一覧へ戻る</a>
+      <span style="font-weight:700;font-size:15px;margin-left:8px">🎯 業績目標（{year}年 第{quarter}四半期）</span>
+    </p></div>
+    <div class="card">
+      <p class="muted" style="font-size:12px">目標は原則四半期ごとに更新します（月次の数値をL1別に直接入力）。</p>
+      <p style="display:flex;gap:8px">
+        <a class="btn sec" href="/monthly-report/targets?year={prev_y}&quarter={prev_q}">◀ 前四半期</a>
+        <a class="btn sec" href="/monthly-report/targets?year={next_y}&quarter={next_q}">翌四半期 ▶</a>
+      </p>
+      <form method="post" action="/monthly-report/targets/save">
+        {hidden_l1}{hidden_months}
+        <table class="mr-table" style="width:auto">
+          <tr><th>月</th><th>指標</th>{l1_headers}</tr>
+          {"".join(rows)}
+        </table>
+        <div style="margin-top:12px"><button class="btn" type="submit">保存</button></div>
+      </form>
+    </div>
+    <style>.goal-input{{border:1px solid var(--border);border-radius:6px;padding:5px 6px;font-size:11px;text-align:right}}</style>"""
+
+
+def _upload_report_to_sharepoint(html_content: str, report_month: str) -> dict:
+    """SharePoint自動アップロードのスタブ（③実装時点ではAzure ADアプリ登録が未準備のため）。
+    実アップロードはせずログ出力のみ。戻り値に関係なくFix自体は常に成功させる（呼び出し側
+    /fixハンドラ参照）。Azure AD（テナントID・クライアントID・シークレット、Graph API
+    権限付与）が用意でき次第、Graph APIでのアップロード処理に差し替える。"""
+    print(f"[monthly-report] SharePoint upload stub for {report_month} "
+          f"({len(html_content)} bytes) — Azure AD integration pending", flush=True)
+    return {"ok": False, "stub": True}
+
+
+def _monthly_report_standalone_html(con, report_month: str, report: dict) -> str:
+    """ダウンロード/Fixスナップショット用の単体HTML（CRMのナビ枠なし）。"""
+    if report.get("fixed_at") and report.get("track_a_snapshot_html"):
+        track_a = report["track_a_snapshot_html"]
+    else:
+        ta = monthly_report_track_a(con, report_month)
+        ov_panel = _monthly_report_stacked_bar_panel_html(
+            "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"])
+        sales_panel = _monthly_report_stacked_bar_panel_html(
+            "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"])
+        track_a = f'<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px">{ov_panel}{sales_panel}</div>'
+    pipeline = _monthly_report_pipeline_lists(con)
+    def _plist(items):
+        return "".join(f'<li>{_esc(it["account_name"])} / {_esc(it["name"])}</li>' for it in items)
+    rows = []
+    for area in sfa_db.MONTHLY_REPORT_AREAS:
+        label = _MONTHLY_REPORT_AREA_LABELS[area]
+        cells = "".join(f'<td>{report.get(f"{area}_{col}_html") or ""}</td>' for col in sfa_db.MONTHLY_REPORT_COLS)
+        rows.append(f'<tr><td>{_esc(label)}</td>{cells}</tr>')
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
+    <title>全社定例レポート {_esc(report_month)}</title></head><body style="font-family:sans-serif;padding:24px">
+    <h1>全社定例レポート：{_esc(report_month)}</h1>
+    <h2>❶ 業績推移</h2>{track_a}
+    <h2>❷ Pipeline</h2>
+    <div style="display:flex;gap:24px"><div><h3>Sales</h3><ul>{_plist(pipeline["Sales"])}</ul></div>
+    <div><h3>Closing</h3><ul>{_plist(pipeline["Closing"])}</ul></div>
+    <div><h3>Delivery</h3><ul>{_plist(pipeline["Delivery"])}</ul></div></div>
+    <h2>❸ テーマ別の足元状況・戦略方針</h2>
+    <table border="1" cellpadding="8" style="border-collapse:collapse">
+    <tr><th>Area</th><th>Status</th><th>Findings</th><th>Strategy</th></tr>{"".join(rows)}</table>
+    </body></html>"""
 
 
 def _delivery_new_confidence_opts() -> str:
@@ -23622,6 +24165,39 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     # 認証とROUTE_ACCESS（外部ロール非表示）を両方そのまま適用させる。
                     self._send(json.dumps(_assign_planning_deliveries(con), ensure_ascii=False).encode(),
                                ctype="application/json")
+                elif path == "/monthly-report":
+                    self._send(render(monthly_report_index_page(con), wide=True))
+                elif path == "/monthly-report/targets":
+                    _qs_mr = self._qs()
+                    try:
+                        _mr_year = int(_qs_mr.get("year", [str(_today_jst().year)])[0])
+                        _mr_quarter = int(_qs_mr.get("quarter", [str((_today_jst().month - 1) // 3 + 1)])[0])
+                    except (ValueError, TypeError):
+                        _mr_year, _mr_quarter = _today_jst().year, (_today_jst().month - 1) // 3 + 1
+                    self._send(render(monthly_report_targets_page(con, _mr_year, _mr_quarter), wide=True))
+                elif (path.startswith("/monthly-report/") and path.endswith("/download.html")
+                      and _is_yyyymm(path.split("/")[2] if len(path.split("/")) > 2 else "")):
+                    _mr_month = path.split("/")[2]
+                    _mr_report = sfa_db.get_monthly_report(con, _mr_month)
+                    if not _mr_report:
+                        self._send(render('<div class="card">レポートが見つかりません。</div>'), 404)
+                    else:
+                        _mr_html = _monthly_report_standalone_html(con, _mr_month, _mr_report).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/html; charset=utf-8")
+                        self.send_header("Content-Disposition",
+                                          _content_disposition(f"全社定例_{_mr_month}.html"))
+                        self.send_header("Content-Length", str(len(_mr_html)))
+                        self.end_headers()
+                        self.wfile.write(_mr_html)
+                elif (path.startswith("/monthly-report/") and len(path.split("/")) == 3
+                      and _is_yyyymm(path.split("/")[2])):
+                    _mr_month = path.split("/")[2]
+                    try:
+                        _mr_qoffset = int(self._qs().get("qoffset", ["0"])[0])
+                    except (ValueError, TypeError):
+                        _mr_qoffset = 0
+                    self._send(render(monthly_report_page(con, _mr_month, qoffset=_mr_qoffset), wide=True))
                 elif path == "/reports":
                     self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":
@@ -26533,6 +27109,146 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(
                         render(progress_report_page(con, _iss_for_render) if _iss_for_render
                                else "<div class=card>社内PJが見つかりません</div>", flash=_flash))
+
+                # ── 全社定例レポート（2026-10、③本番実装）。編集系は全てROUTE_ACCESSで
+                #    経営/マネージャーロールのみに絞られる（"/monthly-report"のfull/view設定、
+                #    write=Trueでviewロールは403）。加えて確定済み(fixed_at設定済み)の月は
+                #    update_monthly_report_field()がサーバー側でも必ず拒否する（行単位の状態は
+                #    ロールチェックだけでは分からないため）。 ──
+                elif path == "/monthly-report/targets/save":
+                    # 注意: do_POST()は自前でボディをparse_qsしてf/f_listをローカル変数に
+                    # 格納しており、self._form()/_form_list()は使っていない（self._form_raw も
+                    # 設定されない）。複数値フィールド(l1_list[]/months[])はf_listから読む。
+                    _l1_list = f_list.get("l1_list[]", [])
+                    _months = f_list.get("months[]", [])
+                    _entries = []
+                    for _m in _months:
+                        _y, _mo = _m.split("-")
+                        for _metric in ("order_value", "sales"):
+                            for _l1 in _l1_list:
+                                _raw = f.get(f"t_{_m}_{_metric}_{_l1}", "")
+                                if (_raw or "").strip() == "":
+                                    continue
+                                try:
+                                    _val = float(_raw)
+                                except ValueError:
+                                    continue
+                                _entries.append({"year": int(_y), "month": int(_mo), "metric": _metric,
+                                                 "business_type_l1": _l1, "target_value": _val})
+                    if _entries:
+                        sfa_db.upsert_monthly_targets(
+                            con, _entries, updated_by=getattr(_request_ctx, "email", None))
+                    _back_year = _months[0].split("-")[0] if _months else str(_today_jst().year)
+                    _back_q = str((int(_months[0].split("-")[1]) - 1) // 3 + 1) if _months else "1"
+                    self._redirect(f"/monthly-report/targets?year={_back_year}&quarter={_back_q}")
+                elif (path.startswith("/monthly-report/") and path.endswith("/create")
+                      and len(path.split("/")) == 4 and _is_yyyymm(path.split("/")[2])):
+                    _mr_month = path.split("/")[2]
+                    if not sfa_db.get_monthly_report(con, _mr_month):
+                        _prev = sfa_db.get_latest_monthly_report_before(con, _mr_month)
+                        sfa_db.create_monthly_report(con, _mr_month, carry_forward_from=_prev)
+                    self._redirect(f"/monthly-report/{_mr_month}")
+                elif (path.startswith("/monthly-report/") and path.endswith("/field")
+                      and len(path.split("/")) == 4 and _is_yyyymm(path.split("/")[2])):
+                    _mr_month = path.split("/")[2]
+                    _field = f.get("field", "")
+                    _value = f.get("value", "")
+                    _base_keys = ({f"{k}_html" for k in sfa_db.MONTHLY_REPORT_FIELD_KEYS}
+                                  | {f"{k}_draft" for k in sfa_db.MONTHLY_REPORT_FIELD_KEYS})
+                    _ok, _err = False, ""
+                    if _field not in _base_keys:
+                        _err = "不正なフィールド"
+                    else:
+                        _clean = _sanitize_rich_html(_value) if _field.endswith("_html") else _value
+                        _ok = sfa_db.update_monthly_report_field(con, _mr_month, _field, _clean)
+                        if not _ok:
+                            _err = "確定済みのため編集できません（再オープンしてください）"
+                    _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}, ensure_ascii=False)
+                    self._send(_resp.encode("utf-8"), ctype="application/json")
+                elif (path.startswith("/monthly-report/") and path.endswith("/llm-format")
+                      and not path.endswith("/llm-format-all")
+                      and len(path.split("/")) == 4 and _is_yyyymm(path.split("/")[2])):
+                    _mr_month = path.split("/")[2]
+                    _area, _col, _draft = f.get("area", ""), f.get("col", ""), f.get("draft", "")
+                    _ok, _err, _html_out = False, "", ""
+                    _field_key = f"{_area}_{_col}"
+                    if _field_key not in sfa_db.MONTHLY_REPORT_FIELD_KEYS:
+                        _err = "不正なフィールド"
+                    elif not (_draft or "").strip():
+                        _err = "自由記述が空です"
+                    else:
+                        _area_label = _MONTHLY_REPORT_AREA_LABELS.get(_area, _area)
+                        _col_label = _MONTHLY_REPORT_COL_LABELS.get(_col, _col)
+                        _prompt = (
+                            f"以下は社内の全社定例レポートの「{_area_label}」領域・「{_col_label}」欄に"
+                            f"書かれた自由記述です。表のセル幅に収まるよう、簡潔な箇条書き（「・」始まり、"
+                            f"2〜4行程度）に整形してください。HTMLタグは使わず、プレーンテキストの"
+                            f"箇条書きのみを出力してください。\n\n---\n{_draft}")
+                        _llm_out = _call_claude_haiku(_prompt, timeout=30, max_wait=35, max_tokens=500)
+                        if not _llm_out:
+                            _err = "LLM呼び出しに失敗しました（しばらくしてから再度お試しください）"
+                        else:
+                            _html_out = _sanitize_rich_html(
+                                "".join(f"<div>{_esc(line)}</div>" for line in _llm_out.splitlines() if line.strip()))
+                            _ok = sfa_db.update_monthly_report_field(con, _mr_month, f"{_field_key}_html", _html_out)
+                            if _ok:
+                                sfa_db.update_monthly_report_field(con, _mr_month, f"{_field_key}_draft", _draft)
+                            else:
+                                _err = "確定済みのため編集できません（再オープンしてください）"
+                    _resp = json.dumps({"ok": _ok, "html": _html_out} if _ok else {"ok": False, "error": _err},
+                                       ensure_ascii=False)
+                    self._send(_resp.encode("utf-8"), ctype="application/json")
+                elif (path.startswith("/monthly-report/") and path.endswith("/llm-format-all")
+                      and len(path.split("/")) == 4 and _is_yyyymm(path.split("/")[2])):
+                    _mr_month = path.split("/")[2]
+                    _report = sfa_db.get_monthly_report(con, _mr_month)
+                    _ok, _err = False, ""
+                    if not _report:
+                        _err = "レポートが見つかりません"
+                    elif _report.get("fixed_at"):
+                        _err = "確定済みのため編集できません（再オープンしてください）"
+                    else:
+                        for _key in sfa_db.MONTHLY_REPORT_FIELD_KEYS:
+                            _draft = _report.get(f"{_key}_draft") or ""
+                            if not _draft.strip():
+                                continue
+                            _area_part, _, _col_part = _key.rpartition("_")
+                            _area_label = _MONTHLY_REPORT_AREA_LABELS.get(_area_part, _area_part)
+                            _col_label = _MONTHLY_REPORT_COL_LABELS.get(_col_part, _col_part)
+                            _prompt = (
+                                f"以下は社内の全社定例レポートの「{_area_label}」領域・「{_col_label}」欄に"
+                                f"書かれた自由記述です。表のセル幅に収まるよう、簡潔な箇条書き（「・」始まり、"
+                                f"2〜4行程度）に整形してください。HTMLタグは使わず、プレーンテキストの"
+                                f"箇条書きのみを出力してください。\n\n---\n{_draft}")
+                            _llm_out = _call_claude_haiku(_prompt, timeout=30, max_wait=35, max_tokens=500)
+                            if not _llm_out:
+                                continue
+                            _html_out = _sanitize_rich_html(
+                                "".join(f"<div>{_esc(line)}</div>" for line in _llm_out.splitlines() if line.strip()))
+                            sfa_db.update_monthly_report_field(con, _mr_month, f"{_key}_html", _html_out)
+                        _ok = True
+                    _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}, ensure_ascii=False)
+                    self._send(_resp.encode("utf-8"), ctype="application/json")
+                elif (path.startswith("/monthly-report/") and path.endswith("/fix")
+                      and len(path.split("/")) == 4 and _is_yyyymm(path.split("/")[2])):
+                    _mr_month = path.split("/")[2]
+                    _report = sfa_db.get_monthly_report(con, _mr_month)
+                    if _report and not _report.get("fixed_at"):
+                        _snapshot = _monthly_report_standalone_html(con, _mr_month, _report)
+                        sfa_db.fix_monthly_report(
+                            con, _mr_month, fixed_by=getattr(_request_ctx, "email", None) or "",
+                            snapshot_html=_snapshot)
+                        try:
+                            _upload_report_to_sharepoint(_snapshot, _mr_month)  # スタブ。戻り値は無視
+                        except Exception as _sp_exc:  # noqa: BLE001 — SharePoint連携の失敗でFix自体を失敗させない
+                            print(f"[monthly-report] SharePoint upload failed (ignored): {_sp_exc}", flush=True)
+                    self._redirect(f"/monthly-report/{_mr_month}")
+                elif (path.startswith("/monthly-report/") and path.endswith("/reopen")
+                      and len(path.split("/")) == 4 and _is_yyyymm(path.split("/")[2])):
+                    _mr_month = path.split("/")[2]
+                    if sfa_db.get_monthly_report(con, _mr_month):
+                        sfa_db.reopen_monthly_report(con, _mr_month)
+                    self._redirect(f"/monthly-report/{_mr_month}")
 
                 # ── 社内PJ管理（#163、2026-09-06） ──
                 elif path == "/deal-issue-subitem/new":
