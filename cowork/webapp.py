@@ -4294,13 +4294,15 @@ def cashflow_forecast_by_confidence(con) -> dict:
     戻り値: {"months": [...],
              "by_confidence": {確度ラベル: {月: {"inflow":合計入金予定,"cost":合計外注費,
                                              "inflow_by_l1":{事業種別L1:入金予定}}}},
-             "deliveries": {月: [{"id","name","confidence","inflow","cost"}, ...]},
+             "deliveries": {月: [{"id","name","confidence","l1","inflow","cost"}, ...]},
              "by_confidence_accrual": {確度ラベル: {月: {"inflow":合計売上,"cost":合計外注費検収,
                                                      "inflow_by_l1":{事業種別L1:売上}}}},
-             "deliveries_accrual": {月: [{"id","name","confidence","inflow","cost"}, ...]}}
+             "deliveries_accrual": {月: [{"id","name","confidence","l1","inflow","cost"}, ...]}}
     "inflow_by_l1"（2026-10-03追加）はHisho側「収支状況」タブのトップライン(入金予定/売上)
     棒グラフを事業種別L1単位の積み上げ棒として描画するための内訳。L1はDeliveryの
     business_type_l1_override（未設定なら商談のbusiness_type_l1を継承、どちらも空なら"未設定"）。
+    各明細の"l1"（2026-10-03追加）は、トップライン・外注費支払のL1別ホバー内訳
+    （ホバーしたセグメントのL1だけに絞り込んだ案件一覧を表示する）に使う。
     Hishoの資金繰りタブは、ユーザーが選んだ確度フィルタ（確定のみ/クロージングまで含む/
     提案中まで含む）とベース（実収支/計上、2026-09-30追加のタブ切替）に応じて、該当する
     確度別内訳を合算して使う。"months"は両ベースを合わせてSFA上でさかのぼれる最も古い月まで
@@ -4337,7 +4339,7 @@ def cashflow_forecast_by_confidence(con) -> dict:
                 if inflow:
                     entry["inflow_by_l1"][l1] = entry["inflow_by_l1"].get(l1, 0.0) + inflow
                 by_delivery.setdefault(m, []).append({
-                    "id": dv["id"], "name": name, "confidence": conf_lbl,
+                    "id": dv["id"], "name": name, "confidence": conf_lbl, "l1": l1,
                     "inflow": round(inflow, 1), "cost": round(cost, 1),
                 })
             receipt = cf["receipts"].get(m) or 0.0
@@ -4350,7 +4352,7 @@ def cashflow_forecast_by_confidence(con) -> dict:
                 if receipt:
                     entry_a["inflow_by_l1"][l1] = entry_a["inflow_by_l1"].get(l1, 0.0) + receipt
                 by_delivery_accrual.setdefault(m, []).append({
-                    "id": dv["id"], "name": name, "confidence": conf_lbl,
+                    "id": dv["id"], "name": name, "confidence": conf_lbl, "l1": l1,
                     "inflow": round(receipt, 1), "cost": round(cost_receipt, 1),
                 })
     for _m in by_delivery:
@@ -4394,9 +4396,14 @@ def order_value_by_month(con) -> dict:
     明細（2026-10-01ユーザー要望。受注件数集計の主担当別カウントもHisho側でこの明細から
     算出する）。主担当は商談(deals.owner)を使う（Deliveryのresponsible_owner＝納品責任者とは
     別概念。受注高は受注＝営業活動の成果のため、案件を獲得した主担当に紐づける）。
+    "order_value_by_l1"・各明細の"l1"（2026-10-03追加、ユーザー要望「受注高タブも、他2タブと
+    同様、事業種別別に積み上げ表示」）: L1の解決順はcashflow_forecast_by_confidence()と同じ
+    （business_type_l1_override未設定なら商談のbusiness_type_l1を継承、どちらも空なら"未設定"）。
     戻り値: {"months": [...], "order_value": {月: 合計金額},
-             "deliveries": {月: [{"id","name","amount","owner"}, ...]}}"""
+             "order_value_by_l1": {月: {事業種別L1: 金額}},
+             "deliveries": {月: [{"id","name","amount","owner","l1"}, ...]}}"""
     order_value: dict[str, float] = {}
+    order_value_by_l1: dict[str, dict] = {}
     deliveries: dict[str, list] = {}
     for dv in sfa_db.list_deliveries(con):
         order_date = (dv.get("order_date") or "").strip()
@@ -4405,16 +4412,20 @@ def order_value_by_month(con) -> dict:
         fee_total = _delivery_fee_grand_total(dv)
         if not fee_total:
             continue
+        l1 = (dv.get("business_type_l1_override") or dv.get("deal_business_type_l1") or "").strip() or "未設定"
         ym = order_date[:7]
         order_value[ym] = (order_value.get(ym) or 0.0) + fee_total
+        by_l1 = order_value_by_l1.setdefault(ym, {})
+        by_l1[l1] = by_l1.get(l1, 0.0) + fee_total
         name = f'{dv.get("account_name") or ""} / {dv.get("title") or dv.get("deal_name") or ""}'.strip("／ /")
         deliveries.setdefault(ym, []).append({
             "id": dv["id"], "name": name, "amount": round(fee_total, 1),
-            "owner": dv.get("deal_owner") or "",
+            "owner": dv.get("deal_owner") or "", "l1": l1,
         })
     for _m in deliveries:
         deliveries[_m].sort(key=lambda e: -e["amount"])
-    return {"months": sorted(order_value.keys()), "order_value": order_value, "deliveries": deliveries}
+    return {"months": sorted(order_value.keys()), "order_value": order_value,
+            "order_value_by_l1": order_value_by_l1, "deliveries": deliveries}
 
 
 def _delivery_new_confidence_opts() -> str:

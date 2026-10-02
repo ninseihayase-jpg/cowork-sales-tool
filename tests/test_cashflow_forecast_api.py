@@ -79,7 +79,7 @@ def test_cashflow_forecast_by_confidence_buckets_by_confidence_and_excludes_inva
     deliveries = result["deliveries"]["2026-09"]
     assert len(deliveries) == 3  # 無効(終了)は除外される
     kakutei_row = next(d for d in deliveries if d["confidence"] == "確定")
-    assert kakutei_row == {"id": dv_kakutei, "name": "テスト社 / D", "confidence": "確定",
+    assert kakutei_row == {"id": dv_kakutei, "name": "テスト社 / D", "confidence": "確定", "l1": "未設定",
                             "inflow": 100, "cost": 30}
     assert {d["confidence"] for d in deliveries} == {"確定", "見込み(クロージング)", "見込み(提案中)"}
 
@@ -107,7 +107,7 @@ def test_cashflow_forecast_by_confidence_accrual_basis_uses_unshifted_receipts(c
     assert "2026-11" not in result["by_confidence_accrual"]["確定"]
 
     accrual_rows = result["deliveries_accrual"]["2026-09"]
-    assert accrual_rows == [{"id": dv, "name": "テスト社 / D", "confidence": "確定",
+    assert accrual_rows == [{"id": dv, "name": "テスト社 / D", "confidence": "確定", "l1": "未設定",
                               "inflow": 100, "cost": 30}]
 
 
@@ -169,7 +169,7 @@ def test_cashflow_forecast_route_requires_dedicated_token_not_sfa_api_token(monk
         data = json.loads(resp.read())
         assert data == {"months": [], "by_confidence": {}, "deliveries": {},
                          "by_confidence_accrual": {}, "deliveries_accrual": {},
-                         "order_value": {"months": [], "order_value": {}, "deliveries": {}}}
+                         "order_value": {"months": [], "order_value": {}, "order_value_by_l1": {}, "deliveries": {}}}
     finally:
         srv.shutdown()
         srv.server_close()

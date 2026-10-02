@@ -55,7 +55,8 @@ def _delivery(con, acc_name="A社", order_date=None, fee_total=None, owner=None,
 # ── webapp.order_value_by_month ──
 
 def test_order_value_by_month_empty_db_returns_empty(con):
-    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
+    assert webapp.order_value_by_month(con) == {
+        "months": [], "order_value": {}, "order_value_by_l1": {}, "deliveries": {}}
 
 
 def test_order_value_by_month_sums_fee_total_by_order_date_month(con):
@@ -63,7 +64,9 @@ def test_order_value_by_month_sums_fee_total_by_order_date_month(con):
     result = webapp.order_value_by_month(con)
     assert result["months"] == ["2026-09"]
     assert result["order_value"] == {"2026-09": 300}
-    assert result["deliveries"]["2026-09"] == [{"id": dv, "name": "A社 / D", "amount": 300, "owner": "岩崎"}]
+    assert result["order_value_by_l1"] == {"2026-09": {"未設定": 300}}
+    assert result["deliveries"]["2026-09"] == [
+        {"id": dv, "name": "A社 / D", "amount": 300, "owner": "岩崎", "l1": "未設定"}]
 
 
 def test_order_value_by_month_combines_multiple_deliveries_in_same_month(con):
@@ -80,12 +83,14 @@ def test_order_value_by_month_combines_multiple_deliveries_in_same_month(con):
 
 def test_order_value_by_month_excludes_deliveries_without_order_date(con):
     _delivery(con, order_date=None, fee_total=999)
-    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
+    assert webapp.order_value_by_month(con) == {
+        "months": [], "order_value": {}, "order_value_by_l1": {}, "deliveries": {}}
 
 
 def test_order_value_by_month_excludes_deliveries_without_fee_total(con):
     _delivery(con, order_date="2026-09-01")  # 受注日はあるが報酬総額/月額とも未入力
-    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
+    assert webapp.order_value_by_month(con) == {
+        "months": [], "order_value": {}, "order_value_by_l1": {}, "deliveries": {}}
 
 
 def test_order_value_by_month_ignores_monthly_receipts_entirely(con):
@@ -93,7 +98,8 @@ def test_order_value_by_month_ignores_monthly_receipts_entirely(con):
     （ユーザー確認2026-10-01: 受注日入力時点で金額を即反映したいため報酬総額へ切替）。"""
     dv = _delivery(con, order_date="2026-09-15", fee_total=None)
     sfa_db.set_delivery_receipt(con, dv, "2026-09", 9999)
-    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
+    assert webapp.order_value_by_month(con) == {
+        "months": [], "order_value": {}, "order_value_by_l1": {}, "deliveries": {}}
 
 
 def test_order_value_by_month_uses_deal_owner_not_delivery_responsible_owner(con):
@@ -102,6 +108,30 @@ def test_order_value_by_month_uses_deal_owner_not_delivery_responsible_owner(con
     sfa_db.update_delivery(con, dv, responsible_owner="山崎")  # 納品責任者は別の人
     result = webapp.order_value_by_month(con)
     assert result["deliveries"]["2026-09"][0]["owner"] == "岩崎"
+
+
+def test_order_value_by_month_breaks_down_by_business_type_l1(con):
+    """2026-10-03ユーザー要望「受注高タブも、他2タブと同様、事業種別別に積み上げ表示」。
+    order_value_by_l1でL1別内訳が取れ、各明細にも解決済みのl1が付くこと。
+    business_type_l1_override未設定なら商談のbusiness_type_l1を継承、どちらも空なら"未設定"。"""
+    aid = sfa_db.upsert_account(con, name="A社")
+    d1 = sfa_db.upsert_deal(con, account_id=aid, deal_name="D1", stage="受注", business_type_l1="コスト削減")
+    dv1 = sfa_db.create_delivery(con, deal_id=d1, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dv1, order_date="2026-09-01", fee_mode="total", fee_total=100)
+
+    d2 = sfa_db.upsert_deal(con, account_id=aid, deal_name="D2", stage="受注", business_type_l1="コスト削減")
+    dv2 = sfa_db.create_delivery(con, deal_id=d2, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dv2, order_date="2026-09-02", fee_mode="total", fee_total=50,
+                            business_type_l1_override="AX")
+
+    d3 = sfa_db.upsert_deal(con, account_id=aid, deal_name="D3", stage="受注")
+    dv3 = sfa_db.create_delivery(con, deal_id=d3, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dv3, order_date="2026-09-03", fee_mode="total", fee_total=20)
+
+    result = webapp.order_value_by_month(con)
+    assert result["order_value_by_l1"]["2026-09"] == {"コスト削減": 100, "AX": 50, "未設定": 20}
+    l1_by_id = {d["id"]: d["l1"] for d in result["deliveries"]["2026-09"]}
+    assert l1_by_id == {dv1: "コスト削減", dv2: "AX", dv3: "未設定"}
 
 
 def test_order_value_by_month_includes_performance_fee_only_delivery(con):
@@ -121,7 +151,8 @@ def test_order_value_by_month_excludes_when_performance_fee_flag_not_yes(con):
     入っていても成果報酬額は加算しない（JS側の#dvFeeGrandTotalの判定と同じ）。"""
     dv = _delivery(con, order_date="2026-09-01", fee_total=0.0)
     sfa_db.update_delivery(con, dv, performance_fee="無", performance_fee_ratio=10.0, expected_impact=348.0)
-    assert webapp.order_value_by_month(con) == {"months": [], "order_value": {}, "deliveries": {}}
+    assert webapp.order_value_by_month(con) == {
+        "months": [], "order_value": {}, "order_value_by_l1": {}, "deliveries": {}}
 
 
 def test_delivery_fee_grand_total_adds_fixed_and_performance_fee(con):
