@@ -4522,7 +4522,8 @@ def monthly_report_track_a(con, report_month: str, qoffset: int = 0) -> dict:
 
 def _monthly_report_pipeline_lists(con) -> dict:
     """❷Pipeline（Sales/Closing/Delivery）。list_deliveries()は既にcreated_at DESCで
-    返るため、ここでは確度バケット振り分けだけ行う（並べ替えは不要）。"""
+    返るため、ここでは確度バケット振り分けだけ行う（並べ替えは不要）。
+    start_week/end_week（2026-10-05追加）はClosing/Deliveryの開始日・終了日表示用。"""
     buckets: dict = {"Sales": [], "Closing": [], "Delivery": []}
     label_to_bucket = {"見込み(提案中)": "Sales", "見込み(クロージング)": "Closing", "確定": "Delivery"}
     for dv in sfa_db.list_deliveries(con):
@@ -4534,8 +4535,25 @@ def _monthly_report_pipeline_lists(con) -> dict:
         buckets[bucket].append({
             "account_name": dv.get("account_name") or "",
             "name": dv.get("title") or dv.get("deal_name") or "",
+            "start_week": dv.get("start_week") or "",
+            "end_week": dv.get("end_week") or "",
         })
     return buckets
+
+
+def _mr_fmt_week_range(start_week: str, end_week: str) -> str:
+    """「mm/dd~mm/dd」形式（スペースが限られるPipeline一覧向けの簡易表記、2026-10-05）。
+    どちらか欠けていれば空文字（呼び出し側で非表示にする）。"""
+    def _mmdd(s: str) -> str:
+        try:
+            d = date.fromisoformat(s)
+            return f"{d.month:02d}/{d.day:02d}"
+        except (ValueError, TypeError):
+            return ""
+    a, b = _mmdd(start_week or ""), _mmdd(end_week or "")
+    if not a or not b:
+        return ""
+    return f"{a}~{b}"
 
 
 _MONTHLY_REPORT_L1_COLORS = {
@@ -4720,7 +4738,9 @@ _MR_CSS = """<style>
 .mr-plist li{display:flex;gap:10px;align-items:baseline;padding:9px 2px;border-bottom:1px solid var(--border)}
 .mr-plist li:last-child{border-bottom:none}
 .mr-plist .acc{font-size:14px;white-space:nowrap;flex-shrink:0}
-.mr-plist .deal{font-size:13px;color:#8A8578;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mr-plist .deal{font-size:13px;color:#2B2723;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  background:rgba(217,119,87,.12);padding:1px 6px;border-radius:4px}
+.mr-plist-date{font-size:11px;color:#8A8578;white-space:nowrap;flex-shrink:0;margin-left:auto}
 .mr-floating{position:fixed;z-index:500;width:360px;background:#fff;border:1px solid var(--border);
   border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.25);padding:14px;display:none}
 .mr-floating textarea{width:100%;box-sizing:border-box;height:110px;border:1px solid var(--border);
@@ -4799,10 +4819,20 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
 
     # ❷ Pipeline
     pipeline = _monthly_report_pipeline_lists(con)
-    def _plist(items):
-        return "".join(
-            f'<li><span class="acc">{_esc(it["account_name"])}</span>'
-            f'<span class="deal">{_esc(it["name"])}</span></li>' for it in items)
+    def _plist(items, *, with_dates: bool = False):
+        # Closing/Deliveryのみ開始日・終了日(mm/dd~mm/dd)を付記（2026-10-05ユーザー要望。
+        # スペースが限られるため簡易表記）。案件名(.deal)は薄いハイライトで視認性を上げる。
+        parts = []
+        for it in items:
+            date_html = ""
+            if with_dates:
+                rng = _mr_fmt_week_range(it.get("start_week", ""), it.get("end_week", ""))
+                if rng:
+                    date_html = f'<span class="mr-plist-date">{_esc(rng)}</span>'
+            parts.append(
+                f'<li><span class="acc">{_esc(it["account_name"])}</span>'
+                f'<span class="deal">{_esc(it["name"])}</span>{date_html}</li>')
+        return "".join(parts)
     pipeline_html = f"""
     <div class="card">
       <h3 style="margin:0 0 10px;font-size:14px;flex-shrink:0">❷ Pipeline（Sales / Closing / Delivery）</h3>
@@ -4810,9 +4840,9 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
         <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Sales（見込み・提案中）</div>
           <ul class="mr-plist">{_plist(pipeline["Sales"])}</ul></div>
         <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Closing（クロージング）</div>
-          <ul class="mr-plist">{_plist(pipeline["Closing"])}</ul></div>
+          <ul class="mr-plist">{_plist(pipeline["Closing"], with_dates=True)}</ul></div>
         <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Delivery（受注済み）</div>
-          <ul class="mr-plist">{_plist(pipeline["Delivery"])}</ul></div>
+          <ul class="mr-plist">{_plist(pipeline["Delivery"], with_dates=True)}</ul></div>
       </div>
       <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">金額は表示しません。各列ともSFA登録日の新しい順・全件表示（縦スクロール）。</div>
     </div>"""
