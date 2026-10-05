@@ -267,3 +267,20 @@ def test_inbox_assign_js_is_syntactically_present():
     assert "function assignFilter" in webapp._INBOX_ASSIGN_JS
     assert "function hearingCommitSubmit" in webapp._HEARING_COMMIT_JS
     assert "mailto" in webapp._HEARING_COMMIT_JS
+
+
+def test_inbox_card_has_docx_download_link():
+    """回帰テスト(2026-10-05): 取り込みインボックス(割り当て前)の各カードにも、
+    エンティティ詳細側(_intake_originals_html)と同じ「📥 docx」ダウンロードリンクがあること。
+    以前はインボックスに本文表示のみで、割り当てる前にdocxで保存する手段が無かった。"""
+    d, con = _fresh()
+    try:
+        sfa_db.add_inbox_transcript(con, external_source="jamie", external_id="m1",
+                                    title="面談", occurred_on="2026-08-14",
+                                    transcript="本文", attendees_json="[]")
+        html = _s(webapp.intake_inbox_page(con))
+        assert "/docx" in html
+        assert "📥 docx" in html
+    finally:
+        con.close()
+        shutil.rmtree(d, ignore_errors=True)

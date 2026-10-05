@@ -20412,6 +20412,8 @@ def intake_inbox_page(con) -> str:
                   f'<option value="">割り当て先を選択…</option>{_tgt_opts}</select>'
                   f'<button class="btn" type="submit">この会議を割り当てる</button>'
                   f'<a class="btn sec" href="/intake-transcript/{t["id"]}/view" target="_blank" style="font-size:12px">本文</a>'
+                  f'<a class="btn sec" href="/intake-transcript/{t["id"]}/docx" style="font-size:12px" '
+                  f'title="文字起こしをWord(docx)でダウンロード">📥 docx</a>'
                   f'</form>'
                 f'</div>')
         rows = (
