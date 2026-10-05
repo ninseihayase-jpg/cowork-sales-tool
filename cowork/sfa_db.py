@@ -1525,6 +1525,45 @@ CREATE TABLE IF NOT EXISTS monthly_report_targets (
     updated_by       TEXT,
     UNIQUE(year, month, metric, business_type_l1)
 );
+
+-- 週次タスク設計（2026-10、直近タスク設計の簡素化版。docs/09_直近タスク設計_簡素化_設計構想.md）。
+-- 「テーマ」は新規マスタではなく、既存のタスク紐づけ(task_entity_links/link_type+link_id、
+-- Delivery/商談/社内PJ)をそのまま使う。1タスクが複数テーマに紐づく場合はtask_link_summary()
+-- と同じ「全ての紐づけ先に重複してカウント/表示する」方針を踏襲する（本テーブル側では
+-- 重複を作らず、表示側で同じ配置を複数テーマブロックに描画するだけ）。
+CREATE TABLE IF NOT EXISTS theme_milestones (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    link_type   TEXT NOT NULL,            -- 'delivery'|'deal'|'issue'
+    link_id     INTEGER NOT NULL,
+    due_date    TEXT NOT NULL,            -- YYYY-MM-DD
+    title       TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT '未達成',  -- '未達成'|'達成'
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_theme_milestones_link ON theme_milestones(link_type, link_id);
+
+-- 週次プラン本体。現行の直近タスク設計(daily_task_plans、確定ごとに新規スナップショットを
+-- 追記)とは異なり、1行を継続的に編集し続ける永続オブジェクト（ユーザー確定仕様）。
+CREATE TABLE IF NOT EXISTS weekly_task_plans (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner       TEXT NOT NULL,
+    label       TEXT NOT NULL DEFAULT '',
+    week_start  TEXT NOT NULL,            -- 当該週の月曜日 YYYY-MM-DD
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS weekly_task_plan_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id     INTEGER NOT NULL REFERENCES weekly_task_plans(id) ON DELETE CASCADE,
+    task_id     INTEGER NOT NULL,
+    week_offset INTEGER NOT NULL DEFAULT 0,   -- 0=当該週、1=翌週（「▶次週」での配置先）
+    day_index   INTEGER,                      -- 0=月..4=金、NULL=割り振り前
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(plan_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_weekly_task_plan_items_plan ON weekly_task_plan_items(plan_id);
 """
 
 # 進捗報告の本文セクションキー（DB列は<key>_html）。表示順・docxエクスポート順もこの並びに従う。
@@ -7751,6 +7790,221 @@ def get_monthly_targets_for_quarter(con, year: int, quarter: int) -> dict:
     start_month = (int(quarter) - 1) * 3 + 1
     months = [f"{year}-{str(start_month + i).zfill(2)}" for i in range(3)]
     return get_monthly_targets_range(con, months)
+
+
+# ── 週次タスク設計（2026-10、直近タスク設計の簡素化版） ──────────────────────
+# 「テーマ」= 既存のタスク紐づけ(link_type/link_id、Delivery/商談/社内PJ)をそのまま使う。
+# 新規マスタは持たない。大分類（Delivery/商談/社内PJ(会社機能)）の判定ロジックは
+# task_link_bucket_order() として共通化し、看板(/tasks)側の表示ロジックと重複させない
+# （webapp.pyの`for _lt, _lbl_prefix, _lt_icon in (...)`ループと同じ判定基準）。
+
+def task_link_bucket_order(con, link_summary: dict | None = None) -> list[tuple[str, str, list[dict]]]:
+    """task_link_summary()の結果を大分類バケット順に並べ替える。戻り値は
+    [(バケットラベル, アイコン, [entry, ...]), ...]のリスト（表示順＝Delivery→商談→
+    社内PJ(会社機能マスタ順)→社内PJ(商談共通・機能未設定)→社内PJ(商談個別)）。
+    /tasks看板（webapp.py tasks_page()）の紐づけ一覧と全く同じ判定基準を共有する
+    （2026-10・週次タスク設計機能の新設にあたり、看板側の元ロジックから切り出した）。"""
+    _link_summary = link_summary if link_summary is not None else task_link_summary(con)
+    _UNSET_GRP, _DEAL_GRP = "商談共通（機能未設定）", "商談個別"
+    out: list[tuple[str, str, list[dict]]] = []
+    for _lt, _lbl_prefix, _icon in (("delivery", "Delivery", "🚚"), ("deal", "商談", "🤝"), ("issue", "社内PJ", "📌")):
+        _entries = _link_summary.get(_lt) or []
+        if not _entries:
+            continue
+        if _lt != "issue":
+            out.append((_lbl_prefix, _icon, sorted(_entries, key=lambda x: -x["open_n"])))
+            continue
+        _cf_order = get_master_list(con, "company_functions") or list(COMPANY_FUNCTIONS)
+        _groups: dict[str, list[dict]] = {}
+        for e in _entries:
+            _grp = _DEAL_GRP if e.get("has_deal") else (e.get("company_function") or _UNSET_GRP)
+            _groups.setdefault(_grp, []).append(e)
+        _grp_order = [g for g in _cf_order if g in _groups] + \
+            [g for g in (_UNSET_GRP, _DEAL_GRP) if g in _groups]
+        _grp_order += [g for g in _groups if g not in _grp_order]
+        for _grp in _grp_order:
+            out.append((f"{_lbl_prefix}（{_grp}）", _icon, sorted(_groups[_grp], key=lambda x: -x["open_n"])))
+    return out
+
+
+def task_link_bucket_label(con, link_type: str, link_id: int) -> str:
+    """単一の(link_type,link_id)に対する大分類ラベル。task_link_bucket_order()の集計版とは
+    別に、週次タスク設計（本プランに含まれるテーマだけを対象にする場面）用の単発版として用意。
+    判定基準はtask_link_bucket_order()と完全に揃える（二重管理にしない）。"""
+    if link_type == "delivery":
+        return "Delivery"
+    if link_type == "deal":
+        return "商談"
+    if link_type == "issue":
+        it = get_deal_issue(con, link_id)
+        if it and it.get("deal_id"):
+            return "社内PJ（商談個別）"
+        cf = (it or {}).get("company_function")
+        return f"社内PJ（{cf}）" if cf else "社内PJ（商談共通（機能未設定））"
+    return "その他"
+
+
+def task_link_bucket_sort_key(con, link_type: str, link_id: int) -> tuple:
+    """task_link_bucket_label()と同じ判定基準で、表示順（Delivery→商談→社内PJ(会社機能
+    マスタ順)→社内PJ(商談共通・機能未設定)→社内PJ(商談個別)）に並べ替えるためのソートキー。"""
+    if link_type == "delivery":
+        return (0, "")
+    if link_type == "deal":
+        return (1, "")
+    if link_type == "issue":
+        it = get_deal_issue(con, link_id)
+        if it and it.get("deal_id"):
+            return (2, "zzz_商談個別")
+        cf = (it or {}).get("company_function") if it else None
+        if cf:
+            cf_order = get_master_list(con, "company_functions") or list(COMPANY_FUNCTIONS)
+            idx = cf_order.index(cf) if cf in cf_order else 900
+            return (2, f"{idx:04d}_{cf}")
+        return (2, "zzy_機能未設定")
+    return (3, "")
+
+
+def add_theme_milestone(con, link_type: str, link_id: int, due_date: str, title: str) -> int:
+    cur = con.execute(
+        "INSERT INTO theme_milestones (link_type, link_id, due_date, title) VALUES (?,?,?,?)",
+        (link_type, int(link_id), due_date, title))
+    con.commit()
+    return cur.lastrowid
+
+
+def list_theme_milestones(con, link_type: str, link_id: int, *, include_done: bool = True) -> list[dict]:
+    sql = "SELECT * FROM theme_milestones WHERE link_type=? AND link_id=?"
+    args: list = [link_type, int(link_id)]
+    if not include_done:
+        sql += " AND status!='達成'"
+    sql += " ORDER BY due_date, id"
+    return [dict(r) for r in con.execute(sql, args)]
+
+
+def list_theme_milestones_map(con, keys: list[tuple[str, int]], *, include_done: bool = True) -> dict:
+    """複数テーマ分のマイルストンをまとめて取得（N+1回避）。{(link_type,link_id): [milestone, ...]}。"""
+    out: dict = {k: [] for k in keys}
+    if not keys:
+        return out
+    by_type: dict[str, list[int]] = {}
+    for lt, lid in keys:
+        by_type.setdefault(lt, []).append(int(lid))
+    for lt, lids in by_type.items():
+        qmarks = ",".join("?" * len(lids))
+        sql = f"SELECT * FROM theme_milestones WHERE link_type=? AND link_id IN ({qmarks})"
+        args = [lt] + lids
+        if not include_done:
+            sql += " AND status!='達成'"
+        sql += " ORDER BY due_date, id"
+        for r in con.execute(sql, args):
+            out.setdefault((lt, r["link_id"]), []).append(dict(r))
+    return out
+
+
+def update_theme_milestone(con, milestone_id: int, *, due_date: str | None = None,
+                           title: str | None = None, status: str | None = None) -> None:
+    sets, args = [], []
+    if due_date is not None:
+        sets.append("due_date=?"); args.append(due_date)
+    if title is not None:
+        sets.append("title=?"); args.append(title)
+    if status is not None:
+        sets.append("status=?"); args.append(status)
+    if not sets:
+        return
+    sets.append("updated_at=datetime('now')")
+    args.append(int(milestone_id))
+    con.execute(f"UPDATE theme_milestones SET {', '.join(sets)} WHERE id=?", args)
+    con.commit()
+
+
+def delete_theme_milestone(con, milestone_id: int) -> None:
+    con.execute("DELETE FROM theme_milestones WHERE id=?", (int(milestone_id),))
+    con.commit()
+
+
+def create_weekly_task_plan(con, owner: str, label: str, week_start: str) -> int:
+    cur = con.execute(
+        "INSERT INTO weekly_task_plans (owner, label, week_start) VALUES (?,?,?)",
+        (owner, label or "", week_start))
+    con.commit()
+    return cur.lastrowid
+
+
+def get_weekly_task_plan(con, plan_id: int) -> dict | None:
+    r = con.execute("SELECT * FROM weekly_task_plans WHERE id=?", (int(plan_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def list_weekly_task_plans(con, owner: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM weekly_task_plans"
+    args: list = []
+    if owner:
+        sql += " WHERE owner=?"
+        args.append(owner)
+    sql += " ORDER BY updated_at DESC"
+    return [dict(r) for r in con.execute(sql, args)]
+
+
+def update_weekly_task_plan(con, plan_id: int, *, label: str | None = None,
+                            week_start: str | None = None) -> None:
+    sets, args = [], []
+    if label is not None:
+        sets.append("label=?"); args.append(label)
+    if week_start is not None:
+        sets.append("week_start=?"); args.append(week_start)
+    if not sets:
+        return
+    sets.append("updated_at=datetime('now')")
+    args.append(int(plan_id))
+    con.execute(f"UPDATE weekly_task_plans SET {', '.join(sets)} WHERE id=?", args)
+    con.commit()
+
+
+def delete_weekly_task_plan(con, plan_id: int) -> None:
+    con.execute("DELETE FROM weekly_task_plans WHERE id=?", (int(plan_id),))
+    con.commit()
+
+
+def list_weekly_task_plan_items(con, plan_id: int) -> list[dict]:
+    """プラン内の全タスク配置（タスク本体の主要フィールドも併せて返す、表示用）。"""
+    sql = (
+        "SELECT wtpi.id AS item_id, wtpi.plan_id, wtpi.task_id, wtpi.week_offset, "
+        "wtpi.day_index, wtpi.sort_order, t.title, t.next_action, t.due_date, "
+        "t.status, t.effort_level, t.assignee "
+        "FROM weekly_task_plan_items wtpi JOIN tasks t ON t.id = wtpi.task_id "
+        "WHERE wtpi.plan_id=? ORDER BY wtpi.week_offset, wtpi.day_index, wtpi.sort_order, wtpi.id")
+    return [dict(r) for r in con.execute(sql, (int(plan_id),))]
+
+
+def add_weekly_task_plan_item(con, plan_id: int, task_id: int) -> None:
+    """プランへタスクを追加（既に入っていれば何もしない＝割り振り前のまま）。"""
+    con.execute(
+        "INSERT OR IGNORE INTO weekly_task_plan_items (plan_id, task_id, week_offset, day_index) "
+        "VALUES (?,?,0,NULL)", (int(plan_id), int(task_id)))
+    con.execute("UPDATE weekly_task_plans SET updated_at=datetime('now') WHERE id=?", (int(plan_id),))
+    con.commit()
+
+
+def remove_weekly_task_plan_item(con, plan_id: int, task_id: int) -> None:
+    con.execute(
+        "DELETE FROM weekly_task_plan_items WHERE plan_id=? AND task_id=?",
+        (int(plan_id), int(task_id)))
+    con.execute("UPDATE weekly_task_plans SET updated_at=datetime('now') WHERE id=?", (int(plan_id),))
+    con.commit()
+
+
+def set_weekly_task_plan_item_placement(con, plan_id: int, task_id: int, *,
+                                        week_offset: int, day_index: int | None,
+                                        sort_order: int = 0) -> None:
+    """ドラッグ&ドロップでの曜日/週移動・「割り振り前」への差し戻し（day_index=None）に使う。"""
+    con.execute(
+        "UPDATE weekly_task_plan_items SET week_offset=?, day_index=?, sort_order=? "
+        "WHERE plan_id=? AND task_id=?",
+        (int(week_offset), day_index if day_index is None else int(day_index),
+         int(sort_order), int(plan_id), int(task_id)))
+    con.execute("UPDATE weekly_task_plans SET updated_at=datetime('now') WHERE id=?", (int(plan_id),))
+    con.commit()
 
 
 # ── 採番Bot（見積書・請求書・契約書番号の自動発行、2026-09-17） ──────────────

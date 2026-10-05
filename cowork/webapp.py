@@ -11465,6 +11465,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
             <a href="/tasks/daily-plan" onclick="return tcToggleDailyPick()" id="navDailyPickBtn"
                style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 直近タスク設計</a>
+            <a href="/tasks/weekly-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗓️ 週次タスク設計</a>
           </span>
           <a class="btn sec" href="/tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
           {seed_btn}
@@ -12960,6 +12961,7 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
             <a href="/tasks/gantt" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📊 ガント</a>
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
             <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 直近タスク設計</a>
+            <a href="/tasks/weekly-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗓️ 週次タスク設計</a>
           </span>
           <a class="btn" href="/tasks/new">＋新規コンサルタスク</a>
         </span>
@@ -13025,6 +13027,7 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
           <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
           <a href="/tasks/capacity" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📅 容量</a>
           <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 直近タスク設計</a>
+          <a href="/tasks/weekly-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗓️ 週次タスク設計</a>
         </span>
       </h2>
       <p class="muted" style="font-size:12px;margin:0 0 10px">担当者ごとの1日あたり作業可能時間（打ち合わせ除く）を、当日〜直近{horizon_days}営業日分で
@@ -14353,6 +14356,534 @@ def send_task_digests(con, only: str | None = None) -> str:
         except Exception as e:  # noqa: BLE001
             results.append(f"{owner}: 例外 {e}")
     return " ／ ".join(results) or "送信対象がありませんでした。"
+
+
+# ── 週次タスク設計（簡素化版、2026-10。docs/09_直近タスク設計_簡素化_設計構想.md） ──────
+# 「テーマ」は新規マスタではなく既存のタスク紐づけ(task_entity_links/link_type+link_id、
+# Delivery/商談/社内PJ)をそのまま使う。既存の「直近タスク設計」(/tasks/daily-plan、時間軸
+# +GCal連携+容量管理)とは完全に別の新機能として併存させる（ユーザー確定）。
+
+_WP_DAY_LABELS = ["月", "火", "水", "木", "金"]
+
+
+def _wp_monday_of(d) -> object:
+    return d - timedelta(days=d.weekday())
+
+
+def _wp_week_dates(week_start: str, week_offset: int) -> list[str]:
+    base = date.fromisoformat(week_start) + timedelta(weeks=week_offset)
+    return [(base + timedelta(days=i)).isoformat() for i in range(5)]
+
+
+def _wp_mmdd(s: str) -> str:
+    """YYYY-MM-DD文字列を"M/D"表記へ（先頭ゼロ無し、既存の_mmdd系ヘルパーと同じ流儀）。"""
+    try:
+        d = date.fromisoformat(s)
+        return f"{d.month}/{d.day}"
+    except (ValueError, TypeError):
+        return s
+
+
+def weekly_task_plan_list_page(con) -> str:
+    owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
+    plans = sfa_db.list_weekly_task_plans(con)
+    rows = "".join(
+        f'<tr><td><a href="/tasks/weekly-plan/{p["id"]}">{_esc(p["label"] or "(無題)")}</a></td>'
+        f'<td>{_esc(p["owner"])}</td><td class="mono">{_esc(p["week_start"])}〜</td>'
+        f'<td class="muted" style="font-size:11px">{_esc((p.get("updated_at") or "")[:16])}</td>'
+        f'<td><form method="post" action="/tasks/weekly-plan/{p["id"]}/delete" style="margin:0" '
+        f'onsubmit="return confirm(\'このプランを削除しますか？\')">'
+        f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer" title="削除">✕</button>'
+        f'</form></td></tr>'
+        for p in plans) or '<tr><td colspan="5" class="muted">まだプランがありません。</td></tr>'
+    _today_mon = _wp_monday_of(_today_jst()).isoformat()
+    return f"""
+    <div class="card">
+      <h2 style="margin-top:0">🗓️ 週次タスク設計</h2>
+      <p class="muted" style="font-size:13px">テーマ（Delivery/商談/社内PJ）ごとにマイルストンと今週のタスクを整理し、
+        Slackメモ・日別タスク表として出力できます。既存の「直近タスク設計」（時間軸・Googleカレンダー連携）とは別の機能です。</p>
+      <form method="post" action="/tasks/weekly-plan/new" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select name="owner" required><option value="">担当を選択</option>{_opt(owners, None)}</select>
+        <input type="text" name="label" placeholder="プラン名（例: 通常業務）" style="width:220px">
+        <input type="hidden" name="week_start" value="{_today_mon}">
+        <button class="btn" type="submit">＋ 新規プラン作成</button>
+      </form>
+      <table style="width:100%;border-collapse:collapse;margin-top:16px">
+        <tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">プラン名</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">担当</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">対象週(月曜)</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">更新</th>
+            <th style="border-bottom:1px solid var(--border)"></th></tr>
+        {rows}
+      </table>
+    </div>"""
+
+
+def _wp_theme_grouping(con, items: list[dict]) -> tuple[list[tuple], dict, list[dict]]:
+    """プラン内タスクをテーマ((link_type,link_id))ごとにグルーピングする。1タスクが複数テーマに
+    紐づく場合は該当する全テーマへ重複して入れる（task_link_summary()と同じ確定仕様）。
+    戻り値: (テーマkeyの表示順リスト, {key: [item,...]}, 未紐付タスクのitemリスト)。"""
+    links_map = sfa_db.get_task_links_map(con, [it["task_id"] for it in items])
+    theme_items: dict[tuple, list] = {}
+    theme_label: dict[tuple, str] = {}
+    unlinked: list[dict] = []
+    for it in items:
+        links = links_map.get(it["task_id"]) or []
+        if not links:
+            unlinked.append(it)
+            continue
+        for lk in links:
+            key = (lk["link_type"], lk["link_id"])
+            theme_items.setdefault(key, []).append(it)
+            theme_label[key] = lk["label"]
+    theme_keys = sorted(
+        theme_items.keys(),
+        key=lambda k: (sfa_db.task_link_bucket_sort_key(con, *k), theme_label[k]))
+    return theme_keys, {"items": theme_items, "label": theme_label}, unlinked
+
+
+_WP_COLS = [("unassigned", "割り振り前")] + [(str(i), _WP_DAY_LABELS[i]) for i in range(5)] + [("next", "翌週以降")]
+
+
+def weekly_task_plan_board_page(con, plan_id: int, *, week_offset: int = 0) -> str:
+    plan = sfa_db.get_weekly_task_plan(con, plan_id)
+    if not plan:
+        return '<div class="card">プランが見つかりません。</div>'
+    items = sfa_db.list_weekly_task_plan_items(con, plan_id)
+    theme_keys, grouping, unlinked = _wp_theme_grouping(con, items)
+    theme_items, theme_label = grouping["items"], grouping["label"]
+    milestones_map = sfa_db.list_theme_milestones_map(con, theme_keys, include_done=False)
+
+    week_dates = _wp_week_dates(plan["week_start"], week_offset)
+    week_date_objs = [date.fromisoformat(d) for d in week_dates]
+    col_labels = [("unassigned", "割り振り前")] + [
+        (str(i), f'{_WP_DAY_LABELS[i]} {int(week_dates[i][5:7])}/{int(week_dates[i][8:10])}')
+        for i in range(5)] + [("next", "翌週以降")]
+
+    def _col_for_item(it: dict) -> str:
+        if it["week_offset"] > week_offset:
+            return "next"
+        if it["week_offset"] < week_offset or it["day_index"] is None:
+            return "unassigned"
+        return str(it["day_index"])
+
+    def _col_for_milestone(ms: dict) -> str:
+        try:
+            d = date.fromisoformat(ms["due_date"])
+        except ValueError:
+            return "next"
+        if d < week_date_objs[0]:
+            return "0"  # 超過分は保険的に月曜へ（運用上は毎回更新する前提で発生しない想定）
+        for i, wd in enumerate(week_date_objs):
+            if d == wd:
+                return str(i)
+        return "next"
+
+    def _task_card_html(it: dict) -> str:
+        due = it.get("due_date") or ""
+        done = (it.get("status") == "完了")
+        due_html = f'<span class="wp-card-due">〆{_esc(_wp_mmdd(due))}</span>' if due else ""
+        return (f'<div class="wp-card{" wp-done" if done else ""}" draggable="true" '
+                f'data-task-id="{it["task_id"]}" onclick="wpOpenTask({it["task_id"]})">'
+                f'{_esc(it.get("title") or "(無題)")}{due_html}</div>')
+
+    def _milestone_chip_html(ms: dict, lt: str, lid: int) -> str:
+        _mid = ms["id"]
+        _due = ms["due_date"]
+        # マイルストン名はユーザー自由入力のため"（二重引用符）を含みうる。json.dumpsが生成する
+        # 文字列はそれ自体は正しいJSリテラルだが、onclick=""属性の区切り文字とかち合うので、
+        # onclick属性値全体を_esc()でHTMLエスケープしてから埋め込む（ブラウザがHTML属性を
+        # 解釈する時点で&quot;等を実体参照からもとの文字へ戻してからJSへ渡すため、両立できる）。
+        _title_js = json.dumps(ms["title"], ensure_ascii=False)
+        _onclick = f"wpOpenMilestone({_mid},'{lt}',{lid},'{_due}',{_title_js})"
+        return (f'<div class="wp-milestone" onclick="{_esc(_onclick)}" '
+                f'title="クリックで編集">🚩{_esc(_wp_mmdd(_due))} {_esc(ms["title"])}</div>')
+
+    theme_blocks = []
+    for key in theme_keys:
+        lt, lid = key
+        its = theme_items[key]
+        mss = milestones_map.get(key) or []
+        by_col: dict[str, list] = {c: [] for c, _ in col_labels}
+        for it in its:
+            by_col[_col_for_item(it)].append(it)
+        ms_by_col: dict[str, list] = {c: [] for c, _ in col_labels}
+        for ms in mss:
+            ms_by_col[_col_for_milestone(ms)].append(ms)
+        cells = "".join(
+            f'<div class="wp-cell" data-col="{c}" '
+            f'ondragover="event.preventDefault()" ondrop="wpDrop(event,\'{c}\')">'
+            + "".join(_milestone_chip_html(ms, lt, lid) for ms in ms_by_col[c])
+            + "".join(_task_card_html(it) for it in by_col[c])
+            + '</div>'
+            for c, _ in col_labels)
+        theme_blocks.append(
+            f'<div class="wp-theme-row" data-theme="{lt}:{lid}">'
+            f'<div class="wp-theme-head"><span>{_esc(theme_label[key])}</span>'
+            f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px" '
+            f'onclick="wpOpenMilestone(null,\'{lt}\',{lid},\'\',\'\')">＋マイルストン</button></div>'
+            f'<div class="wp-grid">{cells}</div></div>')
+
+    _unlinked_html = ""
+    if unlinked:
+        _chips = "".join(
+            f'<span class="wp-unlinked-chip">{_esc(it.get("title") or "(無題)")}'
+            f'<button type="button" class="btn sec" style="font-size:10px;padding:1px 5px;margin-left:6px" '
+            f'onclick="wpOpenLink({it["task_id"]})">紐づける</button></span>'
+            for it in unlinked)
+        _unlinked_html = (
+            '<div class="card" style="background:#fef9ec;border-left:3px solid #d97706;margin-bottom:12px">'
+            '<b style="font-size:13px">⚠ テーマに紐づいていないタスクがあります</b>'
+            f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">{_chips}</div></div>')
+
+    _col_header = "".join(f'<div class="wp-col-head">{_esc(lbl)}</div>' for _, lbl in col_labels)
+    _plan_tasks_json = json.dumps(
+        {str(it["task_id"]): {"title": it.get("title") or "(無題)", "due_date": it.get("due_date") or "",
+                              "next_action": it.get("next_action") or "", "status": it.get("status") or ""}
+         for it in items}, ensure_ascii=False)
+
+    return f"""
+    <div class="wp-board" data-plan-id="{plan_id}" data-week-offset="{week_offset}">
+      <div class="card" style="flex-shrink:0;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <a class="btn sec" href="/tasks/weekly-plan">← 一覧へ</a>
+            <input id="wpLabelInput" value="{_esc(plan.get('label') or '')}" placeholder="(無題)"
+                   style="font-weight:700;font-size:15px;border:1px solid transparent;background:transparent"
+                   onchange="wpSaveLabel(this.value)" onfocus="this.style.borderColor='var(--border)'">
+            <span class="muted" style="font-size:12px">担当: {_esc(plan['owner'])}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <a class="btn sec" href="/tasks/weekly-plan/{plan_id}?week={week_offset - 1}">◀ 前週</a>
+            <span class="mono muted" style="font-size:12px">{week_dates[0]} 〜 {week_dates[-1]}</span>
+            <a class="btn sec" href="/tasks/weekly-plan/{plan_id}?week={week_offset + 1}">▶ 次週</a>
+            <button type="button" class="btn sec" onclick="wpOpenAddTask()">＋ タスク追加</button>
+            <a class="btn" href="/tasks/weekly-plan/{plan_id}/output?week={week_offset}">✅ 確定・出力</a>
+          </div>
+        </div>
+      </div>
+      {_unlinked_html}
+      <div class="card wp-scroll">
+        <div class="wp-grid wp-grid-header">{_col_header}</div>
+        {"".join(theme_blocks) or '<p class="muted" style="padding:8px">タスクがありません。「＋ タスク追加」から追加してください。</p>'}
+      </div>
+    </div>
+    {_wp_add_task_modal_html(con, plan)}
+    {_wp_milestone_modal_html()}
+    {_wp_task_modal_html()}
+    <script>
+    window.WP_PLAN_ID = {plan_id};
+    window.WP_WEEK_OFFSET = {week_offset};
+    window.WP_TASKS = {_plan_tasks_json};
+    </script>
+    {_WP_CSS}
+    {_WP_JS}"""
+
+
+def _wp_add_task_modal_html(con, plan: dict) -> str:
+    """プランへ既存タスクを追加するモーダル。担当者の未完了タスクのうち、まだこのプランに
+    含まれていないものを検索・複数選択できる（新規タスク自体は既存の/taskページで作成する）。"""
+    existing_ids = {it["task_id"] for it in sfa_db.list_weekly_task_plan_items(con, plan["id"])}
+    candidates = [
+        t for t in sfa_db.list_tasks(con, assignee=plan["owner"], admin=False)
+        if t["id"] not in existing_ids and (t.get("status") or "") != "完了"]
+    rows = "".join(
+        f'<label class="wp-pick-row"><input type="checkbox" name="task_ids" value="{t["id"]}">'
+        f'{_esc(t.get("title") or "(無題)")}'
+        f'<span class="muted" style="font-size:11px">{_esc(t.get("due_date") or "")}</span></label>'
+        for t in candidates)
+    return f"""
+    <div id="wpAddTaskModal" class="wp-modal" style="display:none">
+      <div class="wp-modal-box">
+        <h3 style="margin-top:0">＋ タスクを追加</h3>
+        <form method="post" action="/tasks/weekly-plan/{plan['id']}/add-tasks">
+          <div style="max-height:360px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px">
+            {rows or '<p class="muted">追加できるタスクがありません。先に<a href="/tasks/new" target="_blank">新規タスクを作成</a>してください。</p>'}
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button class="btn" type="submit">追加</button>
+            <button type="button" class="btn sec" onclick="wpCloseModal('wpAddTaskModal')">キャンセル</button>
+            <a class="btn sec" href="/tasks/new" target="_blank">＋ 新規タスクを作成</a>
+          </div>
+        </form>
+      </div>
+    </div>"""
+
+
+def _wp_milestone_modal_html() -> str:
+    return """
+    <div id="wpMilestoneModal" class="wp-modal" style="display:none">
+      <div class="wp-modal-box" style="max-width:360px">
+        <h3 id="wpMsTitle" style="margin-top:0">マイルストン</h3>
+        <input type="hidden" id="wpMsId"><input type="hidden" id="wpMsLinkType"><input type="hidden" id="wpMsLinkId">
+        <label>日付</label><input type="date" id="wpMsDate" style="width:100%">
+        <label>名称</label><input type="text" id="wpMsName" style="width:100%">
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn" type="button" onclick="wpSaveMilestone()">保存</button>
+          <button class="btn sec" type="button" id="wpMsDeleteBtn" onclick="wpDeleteMilestone()" style="display:none">削除</button>
+          <button class="btn sec" type="button" onclick="wpCloseModal('wpMilestoneModal')">閉じる</button>
+        </div>
+      </div>
+    </div>"""
+
+
+def _wp_task_modal_html() -> str:
+    """タスクカードクリックで出すフローティング編集パネル。既存の/task/{id}/fieldを
+    そのまま叩く（新規の更新エンドポイントは作らない）。"""
+    return """
+    <div id="wpTaskModal" class="wp-modal" style="display:none">
+      <div class="wp-modal-box" style="max-width:380px">
+        <h3 id="wpTaskTitle" style="margin-top:0"></h3>
+        <input type="hidden" id="wpTaskId">
+        <label>次アクション</label><input type="text" id="wpTaskNext" style="width:100%"
+               onchange="wpTaskField('next_action', this.value)">
+        <label>期限</label><input type="date" id="wpTaskDue" style="width:100%"
+               onchange="wpTaskField('due_date', this.value)">
+        <label><input type="checkbox" id="wpTaskDone" style="width:auto" onchange="wpTaskToggleDone(this.checked)"> 完了にする</label>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn sec" type="button" onclick="wpRemoveFromPlan()">プランから外す</button>
+          <button class="btn sec" type="button" onclick="wpCloseModal('wpTaskModal')">閉じる</button>
+        </div>
+      </div>
+    </div>"""
+
+
+_WP_CSS = """<style>
+.wp-board{display:flex;flex-direction:column;min-height:0;height:calc(100vh - 120px)}
+.wp-scroll{flex:1;min-height:0;overflow-y:auto}
+.wp-grid{display:grid;grid-template-columns:repeat(7, minmax(0,1fr));gap:6px}
+.wp-grid-header{position:sticky;top:0;background:var(--surface);z-index:2;padding:4px 0;border-bottom:1px solid var(--border)}
+.wp-col-head{font-size:11px;font-weight:700;color:#8A8578;text-align:center}
+.wp-theme-row{border-top:1px solid #EFEBE1;padding:8px 0}
+.wp-theme-head{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:700;margin-bottom:6px}
+.wp-cell{min-height:40px;background:#F8F7F3;border-radius:6px;padding:4px;display:flex;flex-direction:column;gap:4px}
+.wp-card{background:#fff;border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:11px;cursor:grab}
+.wp-card.wp-done{opacity:.45;text-decoration:line-through}
+.wp-card-due{display:block;font-size:10px;color:#8A8578}
+.wp-milestone{background:#FFF3D6;border:1px solid #F2C879;border-radius:6px;padding:3px 5px;font-size:10px;cursor:pointer}
+.wp-unlinked-chip{display:inline-flex;align-items:center;background:#fff;border:1px solid #F2C879;border-radius:6px;padding:4px 8px;font-size:12px}
+.wp-pick-row{display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:13px}
+.wp-modal{position:fixed;inset:0;z-index:2000;background:rgba(15,23,42,.35);display:flex;align-items:center;justify-content:center}
+.wp-modal-box{background:#fff;border-radius:10px;padding:18px;width:420px;max-width:92vw;box-shadow:0 16px 48px rgba(0,0,0,.25)}
+</style>"""
+
+
+_WP_JS = """<script>
+function wpCloseModal(id){ document.getElementById(id).style.display='none'; }
+function wpOpenAddTask(){ document.getElementById('wpAddTaskModal').style.display='flex'; }
+function wpSaveLabel(v){
+  fetch('/tasks/weekly-plan/'+window.WP_PLAN_ID+'/label', {method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'label='+encodeURIComponent(v)});
+}
+function wpDrop(ev, col){
+  ev.preventDefault();
+  var taskId = ev.dataTransfer.getData('text/plain');
+  if (!taskId) return;
+  wpPlaceTask(taskId, col);
+}
+function wpPlaceTask(taskId, col){
+  document.querySelectorAll('.wp-card[data-task-id="'+taskId+'"]').forEach(function(card){
+    var row = card.closest('.wp-theme-row');
+    if (!row) return;
+    var cell = row.querySelector('.wp-cell[data-col="'+col+'"]');
+    if (cell) cell.appendChild(card);
+  });
+  fetch('/tasks/weekly-plan/'+window.WP_PLAN_ID+'/place', {method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'task_id='+encodeURIComponent(taskId)+'&col='+encodeURIComponent(col)
+         +'&week_offset='+window.WP_WEEK_OFFSET});
+}
+document.addEventListener('dragstart', function(e){
+  var card = e.target.closest('.wp-card');
+  if (!card) return;
+  e.dataTransfer.setData('text/plain', card.getAttribute('data-task-id'));
+});
+function wpOpenMilestone(id, linkType, linkId, due, title){
+  document.getElementById('wpMsId').value = id || '';
+  document.getElementById('wpMsLinkType').value = linkType;
+  document.getElementById('wpMsLinkId').value = linkId;
+  document.getElementById('wpMsDate').value = due || '';
+  document.getElementById('wpMsName').value = title || '';
+  document.getElementById('wpMsTitle').textContent = id ? 'マイルストンを編集' : 'マイルストンを追加';
+  document.getElementById('wpMsDeleteBtn').style.display = id ? '' : 'none';
+  document.getElementById('wpMilestoneModal').style.display = 'flex';
+}
+function wpSaveMilestone(){
+  var due = document.getElementById('wpMsDate').value;
+  var title = document.getElementById('wpMsName').value.trim();
+  if (!due || !title){ alert('日付と名称を入力してください'); return; }
+  fetch('/tasks/weekly-plan/'+window.WP_PLAN_ID+'/milestone/save', {method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'milestone_id='+encodeURIComponent(document.getElementById('wpMsId').value)
+         +'&link_type='+encodeURIComponent(document.getElementById('wpMsLinkType').value)
+         +'&link_id='+encodeURIComponent(document.getElementById('wpMsLinkId').value)
+         +'&due_date='+encodeURIComponent(due)+'&title='+encodeURIComponent(title)})
+    .then(function(){ location.reload(); });
+}
+function wpDeleteMilestone(){
+  if (!confirm('このマイルストンを削除しますか？')) return;
+  fetch('/tasks/weekly-plan/'+window.WP_PLAN_ID+'/milestone/delete', {method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'milestone_id='+encodeURIComponent(document.getElementById('wpMsId').value)})
+    .then(function(){ location.reload(); });
+}
+function wpOpenTask(taskId){
+  var t = (window.WP_TASKS||{})[String(taskId)] || {};
+  document.getElementById('wpTaskId').value = taskId;
+  document.getElementById('wpTaskTitle').textContent = t.title || '(無題)';
+  document.getElementById('wpTaskNext').value = t.next_action || '';
+  document.getElementById('wpTaskDue').value = t.due_date || '';
+  document.getElementById('wpTaskDone').checked = (t.status === '完了');
+  document.getElementById('wpTaskModal').style.display = 'flex';
+}
+function wpTaskField(field, value){
+  var tid = document.getElementById('wpTaskId').value;
+  fetch('/task/'+tid+'/field', {method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'field='+encodeURIComponent(field)+'&value='+encodeURIComponent(value)});
+}
+function wpTaskToggleDone(checked){
+  wpTaskField('status', checked ? '完了' : '未着手');
+  var tid = document.getElementById('wpTaskId').value;
+  document.querySelectorAll('.wp-card[data-task-id="'+tid+'"]').forEach(function(card){
+    card.classList.toggle('wp-done', checked);
+  });
+}
+function wpRemoveFromPlan(){
+  var tid = document.getElementById('wpTaskId').value;
+  if (!confirm('このタスクをプランから外しますか（タスク自体は削除されません）？')) return;
+  fetch('/tasks/weekly-plan/'+window.WP_PLAN_ID+'/remove-task', {method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'task_id='+encodeURIComponent(tid)}).then(function(){ location.reload(); });
+}
+function wpOpenLink(taskId){
+  window.location.href = '/tasks/' + taskId + '/edit';
+}
+</script>"""
+
+
+def weekly_task_plan_output_page(con, plan_id: int, *, week_offset: int = 0) -> str:
+    """確定・出力画面。Output1(Slackメモ)・Output2(日別タスク表、画面表示のみ・横幅いっぱい・
+    縦も1画面に収める設計——❶業績推移グラフのflex-grow方針を踏襲、ユーザー確定仕様)。"""
+    plan = sfa_db.get_weekly_task_plan(con, plan_id)
+    if not plan:
+        return '<div class="card">プランが見つかりません。</div>'
+    items = sfa_db.list_weekly_task_plan_items(con, plan_id)
+    theme_keys, grouping, _unlinked = _wp_theme_grouping(con, items)
+    theme_items, theme_label = grouping["items"], grouping["label"]
+    milestones_map = sfa_db.list_theme_milestones_map(con, theme_keys, include_done=False)
+    week_dates = _wp_week_dates(plan["week_start"], week_offset)
+    week_date_objs = [date.fromisoformat(d) for d in week_dates]
+
+    # Output1（Slackメモ）: 大分類ごとに改行、テーマ=直近マイルストン1件併記、配下に全タスク列挙
+    bucket_order: list[tuple] = []
+    seen_buckets: set[str] = set()
+    for key in theme_keys:
+        label = sfa_db.task_link_bucket_label(con, *key)
+        if label not in seen_buckets:
+            seen_buckets.add(label)
+            bucket_order.append(label)
+    lines: list[str] = []
+    for bucket in bucket_order:
+        keys_in_bucket = [k for k in theme_keys if sfa_db.task_link_bucket_label(con, *k) == bucket]
+        if not keys_in_bucket:
+            continue
+        lines.append(bucket)
+        for key in keys_in_bucket:
+            mss = sorted(milestones_map.get(key) or [], key=lambda m: m["due_date"])
+            ms_txt = f' - {_wp_mmdd(mss[0]["due_date"])} {mss[0]["title"]}' if mss else ''
+            lines.append(f'• {theme_label[key]}{ms_txt}')
+            for it in theme_items[key]:
+                lines.append(f'  ◦ {it.get("title") or "(無題)"}')
+    output1_text = "\n".join(lines)
+
+    # Output2（日別タスク表）: ライブ画面(weekly_task_plan_board_page)と同じ列定義・同じ
+    # グルーピングを使い、読み取り専用の表として表示する。
+    col_labels = [("unassigned", "割り振り前")] + [
+        (str(i), f'{_WP_DAY_LABELS[i]} {int(week_dates[i][5:7])}/{int(week_dates[i][8:10])}')
+        for i in range(5)] + [("next", "翌週以降")]
+
+    def _col_for_item(it: dict) -> str:
+        if it["week_offset"] > week_offset:
+            return "next"
+        if it["week_offset"] < week_offset or it["day_index"] is None:
+            return "unassigned"
+        return str(it["day_index"])
+
+    def _col_for_milestone(ms: dict) -> str:
+        try:
+            d = date.fromisoformat(ms["due_date"])
+        except ValueError:
+            return "next"
+        if d < week_date_objs[0]:
+            return "0"
+        for i, wd in enumerate(week_date_objs):
+            if d == wd:
+                return str(i)
+        return "next"
+
+    theme_rows = []
+    for key in theme_keys:
+        its = theme_items[key]
+        mss = milestones_map.get(key) or []
+        by_col: dict[str, list] = {c: [] for c, _ in col_labels}
+        for it in its:
+            by_col[_col_for_item(it)].append(it)
+        ms_by_col: dict[str, list] = {c: [] for c, _ in col_labels}
+        for ms in mss:
+            ms_by_col[_col_for_milestone(ms)].append(ms)
+        cells = "".join(
+            '<td class="wp-out-cell">'
+            + "".join(f'<div class="wp-out-ms">🚩{_esc(_wp_mmdd(ms["due_date"]))} {_esc(ms["title"])}</div>'
+                      for ms in ms_by_col[c])
+            + "".join(f'<div class="wp-out-task">{_esc(it.get("title") or "(無題)")}</div>' for it in by_col[c])
+            + '</td>'
+            for c, _ in col_labels)
+        theme_rows.append(f'<tr><td class="wp-out-theme">{_esc(theme_label[key])}</td>{cells}</tr>')
+
+    col_header = "".join(f'<th>{_esc(lbl)}</th>' for _, lbl in col_labels)
+    output2_table = f"""
+    <table class="wp-out-table">
+      <tr><th>テーマ</th>{col_header}</tr>
+      {"".join(theme_rows) or '<tr><td colspan="8" class="muted">タスクがありません。</td></tr>'}
+    </table>"""
+
+    return f"""
+    <div class="card" style="flex-shrink:0;margin-bottom:10px">
+      <a class="btn sec" href="/tasks/weekly-plan/{plan_id}?week={week_offset}">← ボードへ戻る</a>
+      <span style="font-weight:700;font-size:15px;margin-left:8px">✅ {_esc(plan.get('label') or '(無題)')}（{week_dates[0]} 〜 {week_dates[-1]}）</span>
+    </div>
+    <div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3 style="margin:0">Output1: Slackメモ</h3>
+        <button class="btn sec" type="button" onclick="wpCopyOutput1()">📋 コピー</button>
+      </div>
+      <textarea id="wpOutput1" readonly style="width:100%;box-sizing:border-box;height:220px;margin-top:8px;
+        font-family:inherit;font-size:13px;white-space:pre;border:1px solid var(--border);border-radius:8px;
+        padding:10px">{_esc(output1_text)}</textarea>
+    </div>
+    <div class="card wp-out-wrap">
+      <h3 style="margin:0 0 8px">Output2: 日別タスク表</h3>
+      <div class="wp-out-scroll">{output2_table}</div>
+    </div>
+    <style>
+    .wp-out-wrap{{display:flex;flex-direction:column;min-height:0;height:calc(100vh - 420px);min-height:300px}}
+    .wp-out-scroll{{flex:1;min-height:0;overflow-y:auto}}
+    .wp-out-table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+    .wp-out-table th{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);
+      font-size:11px;color:#8A8578;text-transform:uppercase}}
+    .wp-out-theme{{font-weight:700;font-size:12px;vertical-align:top;padding:8px}}
+    .wp-out-cell{{vertical-align:top;padding:6px;border-bottom:1px solid #EFEBE1}}
+    .wp-out-task{{font-size:11px;padding:2px 0}}
+    .wp-out-ms{{font-size:10px;color:#d97706;font-weight:700;padding:2px 0}}
+    </style>
+    <script>
+    function wpCopyOutput1(){{
+      var el = document.getElementById('wpOutput1');
+      el.select(); document.execCommand('copy');
+    }}
+    </script>"""
 
 
 def tasks_digest_page(con, result: str | None = None) -> str:
@@ -24284,6 +24815,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                 elif (path.startswith("/tasks/daily-plan/plan/")
                       and path.split("/")[-1].isdigit()):
                     self._send(render(daily_task_plan_view_page(con, int(path.split("/")[-1]))))
+                elif path == "/tasks/weekly-plan":
+                    self._send(render(weekly_task_plan_list_page(con)))
+                elif (path.startswith("/tasks/weekly-plan/") and path.endswith("/output")
+                      and path.split("/")[3].isdigit()):
+                    _wpo_week = int((self._qs().get("week", ["0"])[0] or "0"))
+                    self._send(render(weekly_task_plan_output_page(
+                        con, int(path.split("/")[3]), week_offset=_wpo_week), wide=True))
+                elif (path.startswith("/tasks/weekly-plan/") and len(path.split("/")) == 4
+                      and path.split("/")[3].isdigit()):
+                    _wpb_week = int((self._qs().get("week", ["0"])[0] or "0"))
+                    self._send(render(weekly_task_plan_board_page(
+                        con, int(path.split("/")[3]), week_offset=_wpb_week), wide=True))
                 elif path == "/desk-tasks":
                     _dq = self._qs()
                     self._send(render(desk_tasks_page(
@@ -25395,6 +25938,84 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                                 label=_dp_label, items=_dp_clean)
                             self._send(json.dumps({"ok": True, "plan_id": _dp_plan_id}).encode(),
                                        ctype="application/json")
+
+                elif path == "/tasks/weekly-plan/new":
+                    _wp_owner = (f.get("owner") or "").strip()
+                    _wp_label = (f.get("label") or "").strip()
+                    _wp_week_start = (f.get("week_start") or "").strip() or _wp_monday_of(_today_jst()).isoformat()
+                    if not _wp_owner:
+                        self._send(render(weekly_task_plan_list_page(con), flash="⚠ 担当を選択してください"))
+                    else:
+                        _wp_pid = sfa_db.create_weekly_task_plan(con, _wp_owner, _wp_label, _wp_week_start)
+                        self._redirect(f"/tasks/weekly-plan/{_wp_pid}")
+                elif (path.startswith("/tasks/weekly-plan/") and path.endswith("/delete")
+                      and len(path.split("/")) == 5 and path.split("/")[3].isdigit()):
+                    # len==5の厳密一致が必須（/milestone/deleteも"/delete"で終わるため、
+                    # セグメント数チェックが無いとこちらに誤ってマッチしプラン自体が
+                    # 削除されてしまうバグがあった。実テストで発見・修正）。
+                    sfa_db.delete_weekly_task_plan(con, int(path.split("/")[3]))
+                    self._redirect("/tasks/weekly-plan")
+                elif (path.startswith("/tasks/weekly-plan/") and path.endswith("/add-tasks")
+                      and path.split("/")[3].isdigit()):
+                    _wp_pid = int(path.split("/")[3])
+                    for _tid_s in f_list.get("task_ids", []):
+                        if _tid_s.isdigit():
+                            sfa_db.add_weekly_task_plan_item(con, _wp_pid, int(_tid_s))
+                    self._redirect(f"/tasks/weekly-plan/{_wp_pid}")
+                elif (path.startswith("/tasks/weekly-plan/") and path.endswith("/remove-task")
+                      and path.split("/")[3].isdigit()):
+                    _wp_pid = int(path.split("/")[3])
+                    _wp_tid = (f.get("task_id") or "").strip()
+                    if _wp_tid.isdigit():
+                        sfa_db.remove_weekly_task_plan_item(con, _wp_pid, int(_wp_tid))
+                    self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                elif (path.startswith("/tasks/weekly-plan/") and path.endswith("/place")
+                      and path.split("/")[3].isdigit()):
+                    _wp_pid = int(path.split("/")[3])
+                    _wp_tid = (f.get("task_id") or "").strip()
+                    _wp_col = (f.get("col") or "").strip()
+                    try:
+                        _wp_cur_week = int(f.get("week_offset") or "0")
+                    except (TypeError, ValueError):
+                        _wp_cur_week = 0
+                    if not _wp_tid.isdigit() or _wp_col not in ("unassigned", "next", "0", "1", "2", "3", "4"):
+                        self._send(json.dumps({"ok": False}).encode(), ctype="application/json")
+                    else:
+                        if _wp_col == "unassigned":
+                            _place_week, _place_day = _wp_cur_week, None
+                        elif _wp_col == "next":
+                            _place_week, _place_day = _wp_cur_week + 1, None
+                        else:
+                            _place_week, _place_day = _wp_cur_week, int(_wp_col)
+                        sfa_db.set_weekly_task_plan_item_placement(
+                            con, _wp_pid, int(_wp_tid), week_offset=_place_week, day_index=_place_day)
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                elif (path.startswith("/tasks/weekly-plan/") and path.endswith("/label")
+                      and path.split("/")[3].isdigit()):
+                    sfa_db.update_weekly_task_plan(con, int(path.split("/")[3]), label=(f.get("label") or "").strip())
+                    self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                elif (path.startswith("/tasks/weekly-plan/") and path.endswith("/milestone/save")
+                      and path.split("/")[3].isdigit()):
+                    _ms_lt = (f.get("link_type") or "").strip()
+                    _ms_li = (f.get("link_id") or "").strip()
+                    _ms_due = (f.get("due_date") or "").strip()
+                    _ms_title = (f.get("title") or "").strip()
+                    _ms_id = (f.get("milestone_id") or "").strip()
+                    if _ms_lt in ("delivery", "deal", "issue") and _ms_li.isdigit() and _ms_due and _ms_title:
+                        if _ms_id.isdigit():
+                            sfa_db.update_theme_milestone(con, int(_ms_id), due_date=_ms_due, title=_ms_title)
+                        else:
+                            sfa_db.add_theme_milestone(con, _ms_lt, int(_ms_li), _ms_due, _ms_title)
+                        self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
+                    else:
+                        self._send(json.dumps({"ok": False, "error": "入力が不正です"},
+                                              ensure_ascii=False).encode(), ctype="application/json")
+                elif (path.startswith("/tasks/weekly-plan/") and path.endswith("/milestone/delete")
+                      and path.split("/")[3].isdigit()):
+                    _ms_id = (f.get("milestone_id") or "").strip()
+                    if _ms_id.isdigit():
+                        sfa_db.delete_theme_milestone(con, int(_ms_id))
+                    self._send(json.dumps({"ok": True}).encode(), ctype="application/json")
 
                 elif path == "/tasks/seed-test":
                     _n = sfa_db.seed_sample_tasks(con)
