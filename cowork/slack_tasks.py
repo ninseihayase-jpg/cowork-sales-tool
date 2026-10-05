@@ -1043,10 +1043,15 @@ def _handle_split_decision(con, split_id: int, decision: str, response_url: str 
 # ── ボタン付きブロック（消込UI） ───────────────────────────────────────────
 
 def _task_action_block(task_id: int) -> dict:
-    """タスクカード返信の基本アクション行。期限クイック設定は当日/+1営業日/+3営業日の3種
-    （ユーザー要望2026-08-26。Web側/tasksカードの当日/+1営/+3営/+5営/+8営と揃え、Slackでは
-    ボタン数を抑えるため主要な3種のみ）。各ボタンのaction_idは末尾にオフセットを付けて
-    一意にする（task_effortボタンで踏んだ重複action_id→invalid_blocksの再発防止）。"""
+    """タスクカード返信の基本アクション行。期限クイック設定は当日/明日/3日後の3種
+    （ユーザー要望2026-08-26、2026-10-05にラベル・計算方法を改訂）。各ボタンのaction_idは
+    末尾にオフセットを付けて一意にする（task_effortボタンで踏んだ重複action_id→
+    invalid_blocksの再発防止）。
+    2026-10-05: 以前は「+1営業日」「+3営業日」という表記で、かつ計算も現在のdue_date
+    （起票時の提案期限等）を起点に営業日を加算していたため、「今日から見て+3営業日の
+    つもりで押したら、提案期限からさらに3営業日後にされた」という混乱が発生した。
+    常に今日(JST)起点の暦日加算に統一し、ラベルも曖昧さのない「当日/明日/3日後」に
+    変更した（実装はtask_snoozeハンドラ側）。"""
     return {"type": "actions", "block_id": f"tab_{task_id}", "elements": [
         {"type": "button", "action_id": f"task_done:{task_id}", "value": str(task_id),
          "style": "primary", "text": {"type": "plain_text", "text": "✓完了"}},
@@ -1057,9 +1062,9 @@ def _task_action_block(task_id: int) -> dict:
         {"type": "button", "action_id": f"task_snooze:{task_id}:0", "value": "0",
          "text": {"type": "plain_text", "text": "⏰当日"}},
         {"type": "button", "action_id": f"task_snooze:{task_id}:1", "value": "1",
-         "text": {"type": "plain_text", "text": "⏰+1営業日"}},
+         "text": {"type": "plain_text", "text": "⏰明日"}},
         {"type": "button", "action_id": f"task_snooze:{task_id}:3", "value": "3",
-         "text": {"type": "plain_text", "text": "⏰+3営業日"}},
+         "text": {"type": "plain_text", "text": "⏰3日後"}},
     ]}
 
 
@@ -1215,25 +1220,24 @@ def _handle_block_action(con, payload: dict) -> None:
         sfa_db.set_task_status(con, tid, "対応中")
         _respond_url(resp_url, f"▶ 対応中にしました: {tk.get('title')}")
     elif name == "task_snooze":
-        # valueにオフセット(営業日数)。0=当日（現在の期限に関係なく今日にリセット）、
-        # 1/3等は現在の期限（無ければ今日）からその営業日数だけ後ろへずらす（従来の+3営業日と
-        # 同じ「押すたびにさらに延ばせる」挙動）。旧形式(action_id="task_snooze:{tid}"の
+        # valueに「今日から何日後か」(暦日)。常にTODAY基準で計算する
+        # （2026-10-05修正: 以前は現在のdue_date=起票時の提案期限(例: 3営業日後)を起点に
+        # 営業日を足していたため、「期限は10/8でいいですか？」に対して+3営業日を押すと
+        # 「今日から3営業日後」ではなく「10/8からさらに3営業日後」になってしまうバグがあった。
+        # ボタンの意味を「当日/明日/3日後」という曖昧さのない暦日ラベルに変更し、計算も
+        # 常に今日起点の暦日加算に統一した）。旧形式(action_id="task_snooze:{tid}"の
         # 1本のみ・valueがtask_id文字列)のメッセージを万一クリックした場合はデフォルト3扱い。
         try:
             _n = int(act.get("value") or "3")
         except (TypeError, ValueError):
             _n = 3
-        if _n <= 0:
-            nd = date.today().isoformat()
-        else:
-            due = (tk.get("due_date") or "").strip()
-            base = date.fromisoformat(due) if due else date.today()
-            nd = sfa_db.add_business_days(base, _n).isoformat()
+        from datetime import timedelta
+        nd = (date.today() + timedelta(days=max(_n, 0))).isoformat()
         # ボタンでの期限設定も人間による明示的な確定として扱う（事務タスクの期限確認プロセス）。
         con.execute("UPDATE tasks SET due_date=?, due_date_confirmed=1, updated_at=datetime('now') "
                    "WHERE id=?", (nd, tid))
         con.commit()
-        _label = "当日" if _n <= 0 else f"+{_n}営業日"
+        _label = {0: "当日", 1: "明日", 3: "3日後"}.get(_n, f"{_n}日後")
         _respond_url(resp_url, f"⏰ 期限を {nd}（{_label}）に変更しました: {tk.get('title')}")
     elif name == "task_progress":
         view = build_progress_modal(tid, "progress", tk.get("title", ""))

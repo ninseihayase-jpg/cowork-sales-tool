@@ -2,7 +2,7 @@
 
 ユーザー要望: 事務タスクは起票したスレッド内で「期限はxxxでよろしいですか」→
 「ok」or「xxx」→確定、SFA更新、というプロセスを経て確実に期限を設定する。
-既存の期限クイックボタン（当日/+1営業日/+3営業日）はそのまま維持し、それに加えて
+既存の期限クイックボタン（当日/明日/3日後）はそのまま維持し、それに加えて
 スレッド返信でも確定できるようにする。人間の返信は表記揺れ（オッケー/了解/大丈夫です等、
 9/5・来週金曜・明後日等）に耐えられること。
 """
@@ -249,7 +249,7 @@ def test_top_level_message_is_not_treated_as_a_reply(con, monkeypatch):
 
 
 def test_task_snooze_button_click_also_confirms_due_date(con):
-    """既存の期限クイックボタン（当日/+1営業日/+3営業日）はそのまま維持しつつ、
+    """既存の期限クイックボタン（当日/明日/3日後）はそのまま維持しつつ、
     ボタンでの明示的な期限設定も確定扱いにする。"""
     tid = slack_tasks.create_task_from_fields(
         con, title="X", is_admin=1, due_date="2026-09-05", slack_channel="C1", slack_ts="100.1")
