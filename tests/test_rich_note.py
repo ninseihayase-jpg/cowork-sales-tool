@@ -311,3 +311,39 @@ def test_rich_note_roundtrip_via_column():
         con.close()
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_rich_note_assets_norm_repairs_orphan_sublists():
+    """ユーザー報告(2026-10-05):「インデントを落とせない行がある」「折りたたみができない行が
+    ある(三角が出ない)」。根本原因: execCommand(ツールバー操作)・ドラッグ&ドロップ等により、
+    ul/olがli（またはエディタ直下）の直接の子でない不正ネストが生成されることがある。
+    折りたたみ矢印のCSS(.rn-edit li:has(>ul)::before)と独自indent/outdent(rnDoIndent/
+    rnDoOutdent)はいずれも「ul/olはli直下 or ルート直下」という構造を前提にしているため、
+    これが崩れると矢印が出ない・Shift+Tabが無反応になる。
+    修正: 以前は「現在は独自indent/outdentで構造を保つため何もしない」no-opだったrnNormに、
+    不正ネストを検出して直前の兄弟liへ再配置する実装を追加し、rnCmd()後(既存の呼び出し箇所)・
+    メモ読み込み時(rnLoadCur、過去に不正ネストのまま保存された既存メモも開いた時点で自動修復)・
+    ドロップ後(rnDrop、新設)で呼ぶようにした。Playwrightでの実機検証で、不正ネストを与えた
+    状態からrnNorm()後に折りたたみ矢印が復活しrnDoOutdent()が正しく動作することを確認済み。"""
+    js = webapp._RICH_NOTE_ASSETS
+    assert "function rnNorm(){" in js
+    # 旧no-opコメントが残っていないこと（実装を差し替えたことの確認）
+    assert "現在は独自indent/outdentで構造を保つため何もしない" not in js
+    # 不正ネスト検出・再配置ロジックの核
+    assert "p!==root && p.nodeName!=='LI'" in js
+    assert "while(prevLi && prevLi.nodeName!=='LI')prevLi=prevLi.previousElementSibling;" in js
+    # 呼び出し箇所: rnCmd(既存)・rnLoadCur(新設)・rnDrop(新設)
+    assert "document.execCommand(cmd,false,val||null); rnNorm();" in js
+    assert "_rnEl().innerHTML=n.body||'';\n  rnNorm();" in js
+    assert "function rnDrop(ev){" in js
+
+
+def test_rich_note_assets_drop_is_wired_and_forces_plain_text():
+    """ドラッグ&ドロップ経由だとrnPaste（貼付時にHTMLを強制プレーンテキスト化する既存の
+    2026-08-23修正）を素通りしてしまい、Word/Notion等からの生のul/li構造が混ざり込んで同種の
+    不正ネスト（上記rnNormのテスト参照）を再発させうる。ondrop属性でrnDropへ配線し、
+    rnDrop自身もrnPasteと同じくinsertText(プレーンテキスト)を使うことを確認する。"""
+    js = webapp._RICH_NOTE_ASSETS
+    assert 'ondrop="return rnDrop(event)"' in js
+    assert 'ondragover="event.preventDefault()"' in js
+    assert "document.execCommand('insertText', false, txt);" in js

@@ -16825,7 +16825,8 @@ _RICH_NOTE_ASSETS = """
       <input id="rnNoteTitle" class="rn-ntitle" placeholder="無題（タイトルを付けられます）" oninput="rnTitleInput()">
       <div class="rn-edit" id="rnEdit" contenteditable="true"
            data-ph="ここにメモ…（🅷見出し / • 箇条書き / ☑ チェック / Tabで階層 / 子項目は▾で折りたたみ / 画像は貼付OK）"
-           oninput="rnDirty()" onclick="rnEditClick(event)" onkeydown="rnKey(event)" onpaste="rnPaste(event)"></div>
+           oninput="rnDirty()" onclick="rnEditClick(event)" onkeydown="rnKey(event)" onpaste="rnPaste(event)"
+           ondragover="event.preventDefault()" ondrop="return rnDrop(event)"></div>
       <div class="rn-hint">
         <kbd>Tab</kbd> 字下げ ／ <kbd>Shift</kbd>+<kbd>Tab</kbd> 戻す
         　<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> 行移動
@@ -16892,6 +16893,7 @@ function rnStash(){ if(_rnCur<0||_rnCur>=_rnNotes.length)return;
   _rnNotes[_rnCur].title=_rnTitleEl().value; _rnNotes[_rnCur].body=_rnEl().innerHTML; }
 function rnLoadCur(){ if(typeof rnDeselectImg==='function')rnDeselectImg(); rnLinkPopClose(); var n=_rnNotes[_rnCur]||{title:'',body:''};
   _rnTitleEl().value=n.title||''; _rnEl().innerHTML=n.body||'';
+  rnNorm();  // 過去に不正ネスト(ul/olがliの直下でない)のまま保存されたメモを開いた時点で自動修復する
   var sl=document.getElementById('rnSrcLink');
   if(sl){ if(n.intake_transcript_id){ sl.href='/intake-transcript/'+n.intake_transcript_id+'/view'; sl.style.display='inline'; }
     else { sl.style.display='none'; } } }
@@ -16999,7 +17001,55 @@ function rnLinkPopSave(){
   rnDirty();
   rnLinkPopClose();
 }
-function rnNorm(){ /* 互換用: 現在は独自indent/outdentで構造を保つため何もしない */ }
+// 2026-10-05追加: execCommand(ツールバーの•/1./🅷等)・ドラッグ&ドロップ・古いバージョンで
+// 保存されたメモ等により、ul/olがli（またはエディタ直下）の直接の子でない不正ネストが
+// 生じることがある。独自indent/outdent(rnDoIndent/rnDoOutdent)や折りたたみ矢印のCSS
+// (.rn-edit li:has(>ul)::before)はいずれも「ul/olはli直下 or ルート直下」という構造を
+// 前提にしているため、これが崩れると「矢印が出ない」「Shift+Tabでインデントが戻らない
+// (無反応)」症状になる（ユーザー報告2026-10-05）。該当するul/olを見つけ、直前の兄弟liの
+// 既存サブリストへ統合（無ければそのliへ新設）、直前liが無ければ中身をその位置へ繰り上げる
+// ことで構造を復元する。rnCmd()後・メモ読み込み時(rnLoadCur)・ドロップ後(rnDrop)に呼ぶ。
+function rnNorm(){
+  var root=_rnEl(); if(!root)return;
+  var guard=0, fixedAny=false;
+  while(guard<200){
+    guard++;
+    var lists=root.querySelectorAll('ul,ol'), ul=null, i;
+    for(i=0;i<lists.length;i++){
+      var p=lists[i].parentNode;
+      if(p!==root && p.nodeName!=='LI'){ ul=lists[i]; break; }
+    }
+    if(!ul)break;
+    fixedAny=true;
+    var parent=ul.parentNode;
+    var prevLi=ul.previousElementSibling;
+    while(prevLi && prevLi.nodeName!=='LI')prevLi=prevLi.previousElementSibling;
+    if(prevLi){
+      var sub=null,k=prevLi.children,j;
+      for(j=0;j<k.length;j++){ if(k[j].nodeName==='UL'||k[j].nodeName==='OL'){sub=k[j];break;} }
+      if(sub&&sub!==ul){ while(ul.firstChild)sub.appendChild(ul.firstChild); ul.remove(); }
+      else{ prevLi.appendChild(ul); }
+    } else {
+      while(ul.firstChild)parent.insertBefore(ul.firstChild, ul);
+      ul.remove();
+    }
+  }
+  return fixedAny;
+}
+function rnDrop(ev){
+  ev.preventDefault();
+  var dt=ev.dataTransfer; var txt=dt?(dt.getData('text/plain')||''):'';
+  if(!txt)return false;
+  _rnEl().focus();
+  var trimmed=txt.trim();
+  if(RN_URL_RE.test(trimmed)){
+    document.execCommand('insertHTML', false, rnLinkChipHtml(trimmed, ''));
+  } else {
+    document.execCommand('insertText', false, txt);
+  }
+  rnNorm(); rnDirty();
+  return false;
+}
 function rnCurrentLi(){ var s=window.getSelection(); if(!s.rangeCount)return null;
   var n=s.anchorNode,e=_rnEl(); while(n&&n!==e){ if(n.nodeName==='LI')return n; n=n.parentNode; } return null; }
 // liの「自分のテキスト末尾」（子リストの手前）へキャレットを戻す
