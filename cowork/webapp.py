@@ -4491,12 +4491,19 @@ def monthly_report_track_a(con, report_month: str, qoffset: int = 0) -> dict:
     """❶受注高/売上の2パネル分のデータを組み立てる。既存の集計関数をそのまま呼ぶだけで
     独自の再集計はしない（週次レポートツールの「ダッシュボードKPIを重視」方針を踏襲）。
     売上(実績)は実収支ベースの"確定"のみを使う（見込み(クロージング)/見込み(提案中)を混ぜた
-    シミュレーション的な数値ではなく、過去月の実績として一意に定まる値にするため）。"""
+    シミュレーション的な数値ではなく、過去月の実績として一意に定まる値にするため）。
+    order_value_deliveries/sales_deliveries（2026-10-05追加、Hisho経営ダッシュボード
+    「収支状況」タブのホバー内訳と同仕様）: {月: [{"name","l1","value"}, ...]}。
+    order_value_by_month()/cashflow_forecast_by_confidence()の既存の案件別明細
+    （"amount"/"inflow"キー）を"value"に正規化して統一する。売上側はsales_actualと
+    同じ"確定"のみに絞り込む（実績の棒とホバー内訳で基準がズレないように）。"""
     months = _monthly_report_period_months(report_month, qoffset)
     ov = order_value_by_month(con)
     ov_by_l1 = ov.get("order_value_by_l1") or {}
+    ov_deliveries = ov.get("deliveries") or {}
     cf = cashflow_forecast_by_confidence(con)
     sales_kakutei = (cf.get("by_confidence") or {}).get("確定") or {}
+    cf_deliveries = cf.get("deliveries") or {}
 
     l1_values = set()
     for m in months:
@@ -4512,11 +4519,20 @@ def monthly_report_track_a(con, report_month: str, qoffset: int = 0) -> dict:
     sales_actual = {m: (sales_kakutei.get(m) or {}).get("inflow_by_l1", {}) for m in months}
     order_value_target = {m: (targets.get(m, {}).get("order_value") or {}) for m in months}
     sales_target = {m: (targets.get(m, {}).get("sales") or {}) for m in months}
+    order_value_deliveries = {
+        m: [{"name": d["name"], "l1": d.get("l1") or "未設定", "value": d["amount"]}
+            for d in (ov_deliveries.get(m) or [])]
+        for m in months}
+    sales_deliveries = {
+        m: [{"name": d["name"], "l1": d.get("l1") or "未設定", "value": d["inflow"]}
+            for d in (cf_deliveries.get(m) or []) if d.get("confidence") == "確定"]
+        for m in months}
 
     return {
         "months": months, "l1_order": l1_order,
         "order_value_actual": order_value_actual, "order_value_target": order_value_target,
         "sales_actual": sales_actual, "sales_target": sales_target,
+        "order_value_deliveries": order_value_deliveries, "sales_deliveries": sales_deliveries,
     }
 
 
@@ -4571,7 +4587,8 @@ def _monthly_report_l1_color(l1: str, l1_order: list) -> str:
 
 def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: list,
                                            actual_by_month: dict, target_by_month: dict, *,
-                                           show_month_labels: bool = True) -> str:
+                                           metric: str = "", deliveries_by_month: dict | None = None,
+                                           show_month_labels: bool = True, interactive: bool = True) -> str:
     """❶受注高/売上パネル共通の積み上げ棒グラフ。Artifactモックアップ（承認済み、
     https://claude.ai/artifact/721h63wwgQy64Y4jis1hPu）と同じ考え方で、**flexboxの通常フロー
     でセグメントを積む**（position:absoluteは使わない。モックアップの初版がposition:absoluteで
@@ -4582,14 +4599,29 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
     ではなく**flex-growの比率**で表現する（headroom用のダミーdiv＋各L1セグメントを
     同じflex-basis:0の兄弟として並べ、親のheight:100%に対する比率で自動分配）。
     これにより棒グラフ行の実高さは呼び出し側が与える任意の高さ（画面に収まるよう
-    JSで動的計算された高さ）にそのまま追従し、pxのハードコードが不要になる。"""
+    JSで動的計算された高さ）にそのまま追従し、pxのハードコードが不要になる。
+
+    2026-10-05追加（ユーザー要望「カーソルをあわせた時に案件が表示される仕様。dashboard側の
+    仕様を参照して」「案件を表示/非表示できる仕様」）:
+    - 実績(塗り)セグメントのみにホバーを付ける（目標は手入力の集計値で案件の裏付けが無いため
+      対象外）。Hisho経営ダッシュボードの`cfShowDeliveryTooltip`と同じ設計（生のL1文字列を
+      属性に埋め込まずindex経由、ホバーしたセグメントのL1だけに絞り込んで表示）を踏襲し、
+      実データはmonthly_report_page側で`window.MR_DELIVERIES[metric][month]`としてJSON埋め込み
+      済みのものを参照する（metric引数はそのキー名）。
+    - 「表示/非表示」トグル用に、各月の案件名一覧を**常にDOMへレンダリングしHTML/CSSでdisplay
+      切替**する行(`.mr-deal-list`)を追加。既定はdisplay:none（`.mr-show-deals`クラスが付いた
+      祖先の中でのみ表示）。この行はflex-shrink:0・内部max-height+overflow-yのため、
+      トグルONでも棒グラフ行(flex:1)が縮むだけで画面1枚に収まる仕様は崩れない。
+    interactive=False（ダウンロード/Fixスナップショット等、呼び出し元にJSが無い静止
+    ドキュメント用）ではホバー属性・トグルボタン・案件一覧行自体を出力しない。"""
+    deliveries_by_month = deliveries_by_month or {}
     vals = []
     for m in months:
         vals.append(sum((actual_by_month.get(m) or {}).values()))
         vals.append(sum((target_by_month.get(m) or {}).values()))
     max_val = max([1.0] + vals) * 1.15
 
-    def _flex_segs_html(by_l1: dict, *, dashed: bool) -> str:
+    def _flex_segs_html(by_l1: dict, *, dashed: bool, month: str) -> str:
         total = sum(by_l1.values())
         headroom = max_val - total
         parts = []
@@ -4600,10 +4632,16 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
             if v <= 0:
                 continue
             color = _monthly_report_l1_color(l1, l1_order)
+            l1idx = l1_order.index(l1)
             if dashed:
                 parts.append(
                     f'<div style="flex:{v} 1 0;min-height:0;border-radius:2px;'
                     f'border:1.5px dashed {color};box-sizing:border-box"></div>')
+            elif interactive:
+                parts.append(
+                    f'<div style="flex:{v} 1 0;min-height:0;border-radius:2px;background:{color};'
+                    f'cursor:pointer" onmousemove="mrShowDeliveryTooltip(event,{_esc(json.dumps(metric))},'
+                    f'{_esc(json.dumps(month))},{l1idx})" onmouseleave="mrHideTooltip()"></div>')
             else:
                 parts.append(f'<div style="flex:{v} 1 0;min-height:0;border-radius:2px;background:{color}"></div>')
         return "".join(parts)
@@ -4615,6 +4653,7 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
     label_cells = []
     bar_cells = []
     month_cells = []
+    deal_list_cells = []
     for m in months:
         actual = actual_by_month.get(m) or {}
         target = target_by_month.get(m) or {}
@@ -4629,14 +4668,24 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
         </div>""")
         bar_cells.append(f"""
         <div style="display:flex;justify-content:center;gap:8px;height:100%">
-          <div style="display:flex;flex-direction:column;width:44px;height:100%">{_flex_segs_html(actual, dashed=False)}</div>
-          <div style="display:flex;flex-direction:column;width:44px;height:100%">{_flex_segs_html(target, dashed=True)}</div>
+          <div style="display:flex;flex-direction:column;width:44px;height:100%">{_flex_segs_html(actual, dashed=False, month=m)}</div>
+          <div style="display:flex;flex-direction:column;width:44px;height:100%">{_flex_segs_html(target, dashed=True, month=m)}</div>
         </div>""")
         if show_month_labels:
             _, mo = m.split("-")
             month_cells.append(
                 f'<div class="muted" style="font-size:17px;font-weight:600;color:#8A8578;'
                 f'text-align:center">{int(mo)}月</div>')
+        if interactive:
+            deals = sorted(deliveries_by_month.get(m) or [], key=lambda d: -(d.get("value") or 0))
+            if deals:
+                items = "".join(
+                    f'<div class="mr-deal-item" title="{_esc(d["name"])}">'
+                    f'{_esc(d["name"])} <span class="mr-deal-amt">{round(d["value"]):,}万</span></div>'
+                    for d in deals)
+            else:
+                items = '<div class="mr-deal-item mr-deal-empty">—</div>'
+            deal_list_cells.append(f'<div class="mr-deal-list-month">{items}</div>')
 
     legend = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">'
@@ -4649,9 +4698,19 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
         {"".join(month_cells)}
       </div>""" if show_month_labels else ""
 
+    toggle_btn_html = (
+        '<button type="button" class="btn sec mr-deal-toggle-btn" style="font-size:10px;padding:3px 8px" '
+        'onclick="mrToggleDealList(this)">📋 案件を表示</button>') if interactive else ""
+    deal_list_html = (
+        f'<div class="mr-deal-list" style="{grid_cols_style};column-gap:10px;'
+        f'margin-top:6px;flex-shrink:0">{"".join(deal_list_cells)}</div>') if interactive else ""
+
     return f"""
-    <div style="display:flex;flex-direction:column;min-height:0;flex:1 1 0;height:100%">
-      <div style="font-size:12px;font-weight:700;color:#2B2723;margin-bottom:8px;flex-shrink:0">{_esc(title)}</div>
+    <div class="mr-bar-panel" style="display:flex;flex-direction:column;min-height:0;flex:1 1 0;height:100%">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0">
+        <div style="font-size:12px;font-weight:700;color:#2B2723">{_esc(title)}</div>
+        {toggle_btn_html}
+      </div>
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap;flex-shrink:0">
         {legend}
         <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">
@@ -4671,6 +4730,7 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
         {"".join(bar_cells)}
       </div>
       {month_row_html}
+      {deal_list_html}
     </div>"""
 
 
@@ -4757,6 +4817,14 @@ _MR_CSS = """<style>
 .mr-pipeline-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:18px}
 .mr-pipeline-col{display:flex;flex-direction:column;min-height:0}
 .mr-table-scroll{flex:1;min-height:0;overflow-y:auto}
+.mr-deal-list{display:none}
+.mr-bar-panel.mr-show-deals .mr-deal-list{display:grid}
+.mr-deal-list-month{max-height:72px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+.mr-deal-item{font-size:10px;color:#2B2723;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  background:rgba(217,119,87,.10);padding:1px 5px;border-radius:3px}
+.mr-deal-item.mr-deal-empty{background:none;color:#c8c3b8;text-align:center}
+.mr-deal-amt{color:#8A8578;font-weight:600}
+.mr-deal-toggle-btn{white-space:nowrap}
 </style>"""
 
 
@@ -4794,9 +4862,13 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     period_label = f"{first_m[:4]}年{int(first_m[5:])}月 〜 {last_m[:4]}年{int(last_m[5:])}月"
     ov_panel = _monthly_report_stacked_bar_panel_html(
         "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"],
-        show_month_labels=False)
+        metric="order_value", deliveries_by_month=ta["order_value_deliveries"], show_month_labels=False)
     sales_panel = _monthly_report_stacked_bar_panel_html(
-        "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"])
+        "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"],
+        metric="sales", deliveries_by_month=ta["sales_deliveries"])
+    mr_deliveries_json = json.dumps(
+        {"order_value": ta["order_value_deliveries"], "sales": ta["sales_deliveries"]}, ensure_ascii=False)
+    mr_l1_names_json = json.dumps(ta["l1_order"], ensure_ascii=False)
     track_a_html = f"""
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0">
@@ -4908,6 +4980,47 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     script = f"""
     <script>
     var MR_MONTH = {json.dumps(report_month, ensure_ascii=False)};
+    var MR_DELIVERIES = {mr_deliveries_json};
+    var MR_L1_NAMES = {mr_l1_names_json};
+    // ホバーで案件内訳を表示（2026-10-05、Hisho経営ダッシュボードcfShowDeliveryTooltipと
+    // 同じ設計: l1idxはMR_L1_NAMESの添字、生のL1文字列を属性に直接埋め込まない）。
+    function mrL1NameOf(l1idx) {{ return (l1idx === null || l1idx === undefined) ? null : MR_L1_NAMES[l1idx]; }}
+    function mrShowDeliveryTooltip(evt, metric, month, l1idx) {{
+      var tip = document.getElementById('mrTooltip');
+      if (!tip) return;
+      var l1 = mrL1NameOf(l1idx);
+      var list = ((MR_DELIVERIES[metric] || {{}})[month] || []);
+      var rows = l1 ? list.filter(function(d) {{ return (d.l1 || '未設定') === l1; }}) : list;
+      var fmt = function(v) {{ return Math.round(v).toLocaleString(); }};
+      var esc = function(s) {{ var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }};
+      if (!rows.length) {{
+        tip.innerHTML = '<div style="padding:8px 10px;color:#8A8578;font-size:11px">' + esc(month) + (l1 ? ' ' + esc(l1) : '') + ' 案件データなし</div>';
+      }} else {{
+        tip.innerHTML = '<div style="padding:8px 10px;font-size:11px;color:#2B2723;font-weight:700;border-bottom:1px solid #E8E3D9;margin-bottom:2px">' +
+          esc(month) + (l1 ? ' ' + esc(l1) : '') + '</div>' +
+          rows.map(function(d) {{
+            return '<div style="padding:4px 10px;font-size:11px;color:#2B2723;white-space:nowrap">' +
+              esc(d.name) + ' <b>' + fmt(d.value) + '万</b></div>';
+          }}).join('') + '<div style="height:6px"></div>';
+      }}
+      tip.style.display = 'block';
+      var x = evt.clientX + 14, y = evt.clientY + 14;
+      if (x + 420 > window.innerWidth) x = evt.clientX - 420;
+      if (y + 160 > window.innerHeight) y = evt.clientY - 160;
+      tip.style.left = Math.max(4, x) + 'px';
+      tip.style.top = Math.max(4, y) + 'px';
+    }}
+    function mrHideTooltip() {{
+      var tip = document.getElementById('mrTooltip');
+      if (tip) tip.style.display = 'none';
+    }}
+    function mrToggleDealList(btn) {{
+      var panel = btn.closest('.mr-bar-panel');
+      if (!panel) return;
+      var on = panel.classList.toggle('mr-show-deals');
+      btn.textContent = on ? '📋 案件を隠す' : '📋 案件を表示';
+      mrSyncTabHeight();
+    }}
     var mrCurArea = null, mrCurCol = null;
     function mrOpenEditor(month, area, col) {{
       mrCurArea = area; mrCurCol = col;
@@ -4985,7 +5098,10 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     <div class="mr-tab-panel" id="mrTabPanel2">{pipeline_html}</div>
     <div class="mr-tab-panel" id="mrTabPanel3">{track_b_html}</div>"""
 
-    return header + tabbar + tab_panels + floating_editor + _MR_CSS + script
+    mr_tooltip_html = ('<div id="mrTooltip" style="position:fixed;display:none;z-index:500;'
+                       'background:#fff;border:1px solid #E8E3D9;border-radius:8px;'
+                       'box-shadow:0 16px 48px rgba(0,0,0,.18);max-width:420px;pointer-events:none"></div>')
+    return header + tabbar + tab_panels + floating_editor + mr_tooltip_html + _MR_CSS + script
 
 
 def _mr_add_months(year: int, month: int, n: int) -> tuple:
@@ -5088,9 +5204,10 @@ def _monthly_report_standalone_html(con, report_month: str, report: dict) -> str
     else:
         ta = monthly_report_track_a(con, report_month)
         ov_panel = _monthly_report_stacked_bar_panel_html(
-            "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"])
+            "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"],
+            interactive=False)
         sales_panel = _monthly_report_stacked_bar_panel_html(
-            "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"])
+            "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"], interactive=False)
         # 静止ドキュメント（画面サイズに追従させるJSが無い）なので、flex-growで比率分配される
         # 棒グラフ行に確定した親高さを与えるため、ここだけ固定pxの枠で包む。
         track_a = (
