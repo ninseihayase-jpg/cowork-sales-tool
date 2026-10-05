@@ -4552,42 +4552,42 @@ def _monthly_report_l1_color(l1: str, l1_order: list) -> str:
 
 
 def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: list,
-                                           actual_by_month: dict, target_by_month: dict) -> str:
+                                           actual_by_month: dict, target_by_month: dict, *,
+                                           show_month_labels: bool = True) -> str:
     """❶受注高/売上パネル共通の積み上げ棒グラフ。Artifactモックアップ（承認済み、
     https://claude.ai/artifact/721h63wwgQy64Y4jis1hPu）と同じ考え方で、**flexboxの通常フロー
     でセグメントを積む**（position:absoluteは使わない。モックアップの初版がposition:absoluteで
     描画崩壊した実例があったため）。各月＝実績(塗り)の隣に目標(点線枠)を並べたグループ棒。
     l1_orderの先頭(コスト削減)が視覚的に一番上に来るよう、積み上げはl1_orderの逆順
-    （末尾から）で描画する（ゼロ線側＝一番下に末尾のL1が来る）。"""
-    plot_h = 340
+    （末尾から）で描画する（ゼロ線側＝一番下に末尾のL1が来る）。
+    受注高/売上を上下2段で表示する構成（2026-10-05確定）のため、棒の高さは固定px
+    ではなく**flex-growの比率**で表現する（headroom用のダミーdiv＋各L1セグメントを
+    同じflex-basis:0の兄弟として並べ、親のheight:100%に対する比率で自動分配）。
+    これにより棒グラフ行の実高さは呼び出し側が与える任意の高さ（画面に収まるよう
+    JSで動的計算された高さ）にそのまま追従し、pxのハードコードが不要になる。"""
     vals = []
     for m in months:
         vals.append(sum((actual_by_month.get(m) or {}).values()))
         vals.append(sum((target_by_month.get(m) or {}).values()))
     max_val = max([1.0] + vals) * 1.15
 
-    def _segs_html(by_l1: dict) -> str:
+    def _flex_segs_html(by_l1: dict, *, dashed: bool) -> str:
+        total = sum(by_l1.values())
+        headroom = max_val - total
         parts = []
+        if headroom > 0:
+            parts.append(f'<div style="flex:{headroom} 1 0"></div>')
         for l1 in reversed(l1_order):
             v = by_l1.get(l1) or 0
             if v <= 0:
                 continue
-            h = round(v / max_val * plot_h, 1)
             color = _monthly_report_l1_color(l1, l1_order)
-            parts.append(f'<div style="height:{h}px;border-radius:2px;background:{color}"></div>')
-        return "".join(parts)
-
-    def _target_segs_html(by_l1: dict) -> str:
-        parts = []
-        for l1 in reversed(l1_order):
-            v = by_l1.get(l1) or 0
-            if v <= 0:
-                continue
-            h = round(v / max_val * plot_h, 1)
-            color = _monthly_report_l1_color(l1, l1_order)
-            parts.append(
-                f'<div style="height:{h}px;border-radius:2px;border:1.5px dashed {color};'
-                f'box-sizing:border-box"></div>')
+            if dashed:
+                parts.append(
+                    f'<div style="flex:{v} 1 0;min-height:0;border-radius:2px;'
+                    f'border:1.5px dashed {color};box-sizing:border-box"></div>')
+            else:
+                parts.append(f'<div style="flex:{v} 1 0;min-height:0;border-radius:2px;background:{color}"></div>')
         return "".join(parts)
 
     _ACTUAL_NUM_COLOR = "#2B2723"
@@ -4610,13 +4610,15 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
           <div class="mono" style="font-size:13px;font-weight:700;color:{_TARGET_NUM_COLOR}">{_esc(target_label)}</div>
         </div>""")
         bar_cells.append(f"""
-        <div style="display:flex;align-items:flex-end;justify-content:center;gap:4px;height:100%">
-          <div style="display:flex;flex-direction:column;width:22px">{_segs_html(actual)}</div>
-          <div style="display:flex;flex-direction:column;width:22px">{_target_segs_html(target)}</div>
+        <div style="display:flex;justify-content:center;gap:8px;height:100%">
+          <div style="display:flex;flex-direction:column;width:44px;height:100%">{_flex_segs_html(actual, dashed=False)}</div>
+          <div style="display:flex;flex-direction:column;width:44px;height:100%">{_flex_segs_html(target, dashed=True)}</div>
         </div>""")
-        _, mo = m.split("-")
-        month_cells.append(
-            f'<div class="muted" style="font-size:11px;color:#8A8578;text-align:center">{int(mo)}月</div>')
+        if show_month_labels:
+            _, mo = m.split("-")
+            month_cells.append(
+                f'<div class="muted" style="font-size:17px;font-weight:600;color:#8A8578;'
+                f'text-align:center">{int(mo)}月</div>')
 
     legend = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">'
@@ -4624,10 +4626,15 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
         f'background:{_monthly_report_l1_color(l1, l1_order)}"></span>{_esc(l1)}</span>'
         for l1 in l1_order)
 
+    month_row_html = f"""
+      <div style="display:grid;{grid_cols_style};column-gap:10px;margin-top:8px;flex-shrink:0">
+        {"".join(month_cells)}
+      </div>""" if show_month_labels else ""
+
     return f"""
-    <div style="display:flex;flex-direction:column;min-height:0;flex:1 1 0">
-      <div style="font-size:12px;font-weight:700;color:#2B2723;margin-bottom:8px">{_esc(title)}</div>
-      <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap">
+    <div style="display:flex;flex-direction:column;min-height:0;flex:1 1 0;height:100%">
+      <div style="font-size:12px;font-weight:700;color:#2B2723;margin-bottom:8px;flex-shrink:0">{_esc(title)}</div>
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap;flex-shrink:0">
         {legend}
         <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">
           <span style="display:inline-block;width:14px;border-top:2px dashed #94a3b8"></span>目標</span>
@@ -4638,16 +4645,14 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
           <span style="color:#8A8578">目標値</span>
         </span>
       </div>
-      <div style="display:grid;{grid_cols_style};column-gap:10px;margin-bottom:8px">
+      <div style="display:grid;{grid_cols_style};column-gap:10px;margin-bottom:8px;flex-shrink:0">
         {"".join(label_cells)}
       </div>
-      <div style="display:grid;{grid_cols_style};column-gap:10px;height:{plot_h}px;
+      <div style="display:grid;{grid_cols_style};column-gap:10px;flex:1;min-height:0;
         border-bottom:1px solid #E8E3D9;padding-bottom:2px">
         {"".join(bar_cells)}
       </div>
-      <div style="display:grid;{grid_cols_style};column-gap:10px;margin-top:6px">
-        {"".join(month_cells)}
-      </div>
+      {month_row_html}
     </div>"""
 
 
@@ -4768,12 +4773,13 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     first_m, last_m = ta["months"][0], ta["months"][-1]
     period_label = f"{first_m[:4]}年{int(first_m[5:])}月 〜 {last_m[:4]}年{int(last_m[5:])}月"
     ov_panel = _monthly_report_stacked_bar_panel_html(
-        "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"])
+        "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"],
+        show_month_labels=False)
     sales_panel = _monthly_report_stacked_bar_panel_html(
         "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"])
     track_a_html = f"""
     <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0">
         <h3 style="margin:0;font-size:14px">❶ 業績推移（受注高 / 売上）</h3>
         <div style="display:flex;align-items:center;gap:10px">
           <a class="btn sec" style="font-size:11px" href="/monthly-report/{report_month}{prev_qs}">◀ 前四半期</a>
@@ -4782,11 +4788,13 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
           <a class="btn sec" style="font-size:11px" href="/monthly-report/targets">🎯 目標値を確認・編集</a>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:24px">
-        {ov_panel}{sales_panel}
+      <div style="display:flex;flex-direction:column;gap:18px;flex:1;min-height:0">
+        <div style="flex:1;min-height:0;display:flex;flex-direction:column">{ov_panel}</div>
+        <div style="flex:1;min-height:0;display:flex;flex-direction:column">{sales_panel}</div>
       </div>
-      <div class="muted" style="font-size:10px;margin-top:10px">単位：万円。各月＝左が実績（事業種別L1積み上げ）、
-        右が目標（四半期ごとに入力した月次目標値、L1別の点線枠）。</div>
+      <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">単位：万円。各月＝左が実績（事業種別L1積み上げ）、
+        右が目標（四半期ごとに入力した月次目標値、L1別の点線枠）。月表示は下段（売上）のみ、
+        上下のグラフで列位置を揃えています。</div>
     </div>"""
 
     # ❷ Pipeline
@@ -5053,7 +5061,12 @@ def _monthly_report_standalone_html(con, report_month: str, report: dict) -> str
             "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"])
         sales_panel = _monthly_report_stacked_bar_panel_html(
             "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"])
-        track_a = f'<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px">{ov_panel}{sales_panel}</div>'
+        # 静止ドキュメント（画面サイズに追従させるJSが無い）なので、flex-growで比率分配される
+        # 棒グラフ行に確定した親高さを与えるため、ここだけ固定pxの枠で包む。
+        track_a = (
+            '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px">'
+            f'<div style="height:320px;display:flex;flex-direction:column">{ov_panel}</div>'
+            f'<div style="height:320px;display:flex;flex-direction:column">{sales_panel}</div></div>')
     pipeline = _monthly_report_pipeline_lists(con)
     def _plist(items):
         return "".join(f'<li>{_esc(it["account_name"])} / {_esc(it["name"])}</li>' for it in items)
