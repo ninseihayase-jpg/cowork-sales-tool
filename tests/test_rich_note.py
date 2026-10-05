@@ -321,21 +321,41 @@ def test_rich_note_assets_norm_repairs_orphan_sublists():
     rnDoOutdent)はいずれも「ul/olはli直下 or ルート直下」という構造を前提にしているため、
     これが崩れると矢印が出ない・Shift+Tabが無反応になる。
     修正: 以前は「現在は独自indent/outdentで構造を保つため何もしない」no-opだったrnNormに、
-    不正ネストを検出して直前の兄弟liへ再配置する実装を追加し、rnCmd()後(既存の呼び出し箇所)・
-    メモ読み込み時(rnLoadCur、過去に不正ネストのまま保存された既存メモも開いた時点で自動修復)・
-    ドロップ後(rnDrop、新設)で呼ぶようにした。Playwrightでの実機検証で、不正ネストを与えた
-    状態からrnNorm()後に折りたたみ矢印が復活しrnDoOutdent()が正しく動作することを確認済み。"""
+    不正ネストを検出して再配置する実装を追加し、rnCmd()後・ドロップ後(rnDrop、新設)に呼ぶ。
+
+    【再修正の経緯・重要】初版は「直前の兄弟liを探してその子にする」実装だったが、本来フラットな
+    並びの複数行が連続して孤立ul/olになっているケースで、1行目を正しい親の子に直した直後、
+    2行目以降もすべて同じ親の子として連鎖的にネストされ、フラットなはずの兄弟関係が壊れて
+    階層化される実データ上の不具合が発覚した（ユーザー報告・実データで確認）。再修正で
+    「直前の兄弟が孤立ul/olならその孤立ul/olへ中身を統合する（新しい親子関係を作らずフラットな
+    並びのまま1つへ合流）」を追加し、直前が正規のliの場合のみ子としてネストするよう変更。
+    また、保存済みメモへの自動適用(rnLoadCurでの自動rnNorm呼び出し)は、未知の形の既存データを
+    都度このヒューリスティックで書き換えるリスクが高いと判断し撤回した（新規入力時のみに限定）。"""
     js = webapp._RICH_NOTE_ASSETS
     assert "function rnNorm(){" in js
     # 旧no-opコメントが残っていないこと（実装を差し替えたことの確認）
     assert "現在は独自indent/outdentで構造を保つため何もしない" not in js
-    # 不正ネスト検出・再配置ロジックの核
+    # 不正ネスト検出ロジックの核
     assert "p!==root && p.nodeName!=='LI'" in js
-    assert "while(prevLi && prevLi.nodeName!=='LI')prevLi=prevLi.previousElementSibling;" in js
-    # 呼び出し箇所: rnCmd(既存)・rnLoadCur(新設)・rnDrop(新設)
+    # 直前が孤立ul/olの場合はフラットに統合する（親子関係を新設しない、再修正のポイント）
+    assert "prevEl.nodeName==='UL'||prevEl.nodeName==='OL'" in js
+    assert "while(ul.firstChild)prevEl.appendChild(ul.firstChild);" in js
+    # 呼び出し箇所: rnCmd(既存)・rnDrop(新設)のみ。rnLoadCurでの自動適用はしない（安全優先で撤回）
     assert "document.execCommand(cmd,false,val||null); rnNorm();" in js
-    assert "_rnEl().innerHTML=n.body||'';\n  rnNorm();" in js
     assert "function rnDrop(ev){" in js
+    assert "_rnEl().innerHTML=n.body||'';\n  rnNorm();" not in js
+
+
+def test_rich_note_assets_norm_flattens_chained_orphans_instead_of_deepening():
+    """回帰テスト(2026-10-05、上記テストの再修正と対になる): 連続する複数の孤立ul/olを
+    rnNormにかけると、1つ目を正しい親(直前の正規li)の子にした後、2つ目以降は『1つ目が
+    できた新しい親』の孫などへ連鎖的に深くネストしてはいけない——元々フラットな並びだった
+    行は、正しい親の直下でフラットな兄弟のまま統合されること。"""
+    js = webapp._RICH_NOTE_ASSETS
+    # 「直前が孤立ul/olならその孤立ul/olへ統合する」分岐がelse-ifの形で
+    # 「直前が正規liならその子にする」分岐の次に存在すること（優先順位の確認）
+    assert "if(prevEl && prevEl.nodeName==='LI'){" in js
+    assert "} else if(prevEl && (prevEl.nodeName==='UL'||prevEl.nodeName==='OL')){" in js
 
 
 def test_rich_note_assets_drop_is_wired_and_forces_plain_text():

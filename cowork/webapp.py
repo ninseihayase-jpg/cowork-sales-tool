@@ -16893,7 +16893,11 @@ function rnStash(){ if(_rnCur<0||_rnCur>=_rnNotes.length)return;
   _rnNotes[_rnCur].title=_rnTitleEl().value; _rnNotes[_rnCur].body=_rnEl().innerHTML; }
 function rnLoadCur(){ if(typeof rnDeselectImg==='function')rnDeselectImg(); rnLinkPopClose(); var n=_rnNotes[_rnCur]||{title:'',body:''};
   _rnTitleEl().value=n.title||''; _rnEl().innerHTML=n.body||'';
-  rnNorm();  // 過去に不正ネスト(ul/olがliの直下でない)のまま保存されたメモを開いた時点で自動修復する
+  // 2026-10-05: 読み込み時の自動rnNorm()はここでは呼ばない。rnNormの「直前の兄弟liへ
+  // 再配置」は、本来フラットな並びだった複数行を誤って親子関係へ再構成してしまう実例が
+  // 判明した（ユーザー報告・実データで確認）。未知の形の既存データを都度このヒューリスティック
+  // で書き換えるのはリスクが高いため、保存済みメモへの自動適用はやめ、新規入力時のみ
+  // （rnCmd/rnDrop経由）に限定する。
   var sl=document.getElementById('rnSrcLink');
   if(sl){ if(n.intake_transcript_id){ sl.href='/intake-transcript/'+n.intake_transcript_id+'/view'; sl.style.display='inline'; }
     else { sl.style.display='none'; } } }
@@ -17001,14 +17005,21 @@ function rnLinkPopSave(){
   rnDirty();
   rnLinkPopClose();
 }
-// 2026-10-05追加: execCommand(ツールバーの•/1./🅷等)・ドラッグ&ドロップ・古いバージョンで
-// 保存されたメモ等により、ul/olがli（またはエディタ直下）の直接の子でない不正ネストが
-// 生じることがある。独自indent/outdent(rnDoIndent/rnDoOutdent)や折りたたみ矢印のCSS
-// (.rn-edit li:has(>ul)::before)はいずれも「ul/olはli直下 or ルート直下」という構造を
-// 前提にしているため、これが崩れると「矢印が出ない」「Shift+Tabでインデントが戻らない
-// (無反応)」症状になる（ユーザー報告2026-10-05）。該当するul/olを見つけ、直前の兄弟liの
-// 既存サブリストへ統合（無ければそのliへ新設）、直前liが無ければ中身をその位置へ繰り上げる
-// ことで構造を復元する。rnCmd()後・メモ読み込み時(rnLoadCur)・ドロップ後(rnDrop)に呼ぶ。
+// 2026-10-05追加・同日中に再修正: execCommand(ツールバーの•/1./🅷等)・ドラッグ&ドロップ等により、
+// ul/olがli（またはエディタ直下）の直接の子でない不正ネストが生じることがある。独自indent/
+// outdent(rnDoIndent/rnDoOutdent)や折りたたみ矢印のCSS(.rn-edit li:has(>ul)::before)は
+// いずれも「ul/olはli直下 or ルート直下」という構造を前提にしているため、これが崩れると
+// 「矢印が出ない」「Shift+Tabでインデントが戻らない」症状になる。
+// 【重要・再修正の経緯】初版は「直前の兄弟liを(他の孤立ul/olを飛び越えてでも)探してその子に
+// する」実装だったが、本来フラットな並びの複数行が連続して孤立ul/olになっているケースで、
+// 1行目を正しい親の子に直した直後、2行目以降もすべて同じ親(または1行目)の子として連鎖的に
+// ネストされてしまい、フラットなはずの兄弟関係が壊れて階層化される実データ上の不具合が
+// 発覚した（ユーザー報告・実データで確認、2026-10-05）。
+// 再修正: 直前の兄弟が孤立ul/olの場合は「その孤立ul/olへ中身を統合する」（新しい親子関係を
+// 作らずフラットな並びを保ったまま1つのリストへ合流）。直前の兄弟が正規のliの場合のみ、
+// その子として正しくネストする。直前に要素が無ければ中身をその位置へ繰り上げる。
+// rnCmd()後・ドロップ後(rnDrop)の新規入力時のみ呼ぶ（保存済みメモへの自動適用はrnLoadCurでは
+// 行わない——未知の形の既存データを都度このヒューリスティックで書き換えるのはリスクが高いため）。
 function rnNorm(){
   var root=_rnEl(); if(!root)return;
   var guard=0, fixedAny=false;
@@ -17022,13 +17033,16 @@ function rnNorm(){
     if(!ul)break;
     fixedAny=true;
     var parent=ul.parentNode;
-    var prevLi=ul.previousElementSibling;
-    while(prevLi && prevLi.nodeName!=='LI')prevLi=prevLi.previousElementSibling;
-    if(prevLi){
-      var sub=null,k=prevLi.children,j;
+    var prevEl=ul.previousElementSibling;
+    if(prevEl && prevEl.nodeName==='LI'){
+      var sub=null,k=prevEl.children,j;
       for(j=0;j<k.length;j++){ if(k[j].nodeName==='UL'||k[j].nodeName==='OL'){sub=k[j];break;} }
       if(sub&&sub!==ul){ while(ul.firstChild)sub.appendChild(ul.firstChild); ul.remove(); }
-      else{ prevLi.appendChild(ul); }
+      else{ prevEl.appendChild(ul); }
+    } else if(prevEl && (prevEl.nodeName==='UL'||prevEl.nodeName==='OL')){
+      // 直前も孤立ul/ol: 新たな親子関係を作らず、フラットな並びとして1つに統合する
+      while(ul.firstChild)prevEl.appendChild(ul.firstChild);
+      ul.remove();
     } else {
       while(ul.firstChild)parent.insertBefore(ul.firstChild, ul);
       ul.remove();
