@@ -10271,10 +10271,40 @@ function tcEffortDefaultHours(id,level){
 // #101「今日明日のタスク」: 別画面へ遷移せず、看板のまま各カードにチェックボックスを出して
 // ピックする（ユーザー要望2026-08-27）。picked=タスクid群を持って/tasks/daily-planへ進み、
 // そちらで仕分け(軽い/重い)→カレンダー配置を行う。
-function tcPickChanged(){
-  var n=document.querySelectorAll('.tc-pick-cb:checked').length;
+// 2026-10-06: テーマ等のフィルタを変えるとフォームGETでページが再読み込みされ、チェック状態が
+// 消えてしまう（フィルタを絞った上でタスクを選べない）バグ報告を受け、選択中のタスクIDは
+// sessionStorageへモード別に退避し、フィルタを跨いでも累積できるようにする。「次へ」実行後・
+// ピック中止後・ピック新規開始時にのみクリアし、フィルタ変更（素のフォームsubmit）では
+// クリアしない（tcToggleDailyPick/tcToggleWeeklyPick/tcGoDailyPlan/tcGoWeeklyPlan参照）。
+function _tcPickStorageKey(){ return 'tc_picked_'+(window.TC_PICK_MODE||'daily'); }
+function _tcPickSet(){
+  try{ return new Set(JSON.parse(sessionStorage.getItem(_tcPickStorageKey())||'[]')); }
+  catch(e){ return new Set(); }
+}
+function _tcPickSave(set){
+  try{ sessionStorage.setItem(_tcPickStorageKey(), JSON.stringify(Array.from(set))); }catch(e){}
+}
+function _tcPickClear(){
+  try{ sessionStorage.removeItem(_tcPickStorageKey()); }catch(e){}
+}
+function tcPickChanged(cb){
+  var set=_tcPickSet();
+  if(cb){
+    if(cb.checked) set.add(cb.dataset.tid); else set.delete(cb.dataset.tid);
+    _tcPickSave(set);
+  }
+  var n=set.size;
   var el=document.getElementById('dpPickCount');
   if(el) el.textContent=n;
+}
+// フィルタ変更後の再描画時、同じタスクが画面上に残っていればチェック状態を復元する
+// （フィルタで一時的に隠れたタスクの選択もsessionStorage側には保持され続ける）。
+function tcPickRestore(){
+  var set=_tcPickSet();
+  document.querySelectorAll('.tc-pick-cb').forEach(function(cb){
+    if(set.has(cb.dataset.tid)) cb.checked=true;
+  });
+  tcPickChanged();
 }
 // 「今日明日」ボタン(#navDailyPickBtn)真下にフローティング要素を配置する共通関数
 // （ユーザー要望2026-08-31: 担当未選択ゲート(#dpGatePop)と同じ位置に統一）。
@@ -10296,7 +10326,7 @@ function dpPositionPop(el){
 function dpRefreshPickBarLabel(){
   var lbl=document.getElementById('dpPickBarLabel'), btn=document.getElementById('dpPickGoBtn');
   var isWeekly=(window.TC_PICK_MODE==='weekly');
-  var n=document.querySelectorAll('.tc-pick-cb:checked').length;
+  var n=_tcPickSet().size;
   if(lbl) lbl.innerHTML=(isWeekly?'🗓️ 週次タスク設計':'📆 直近タスク設計')+' — 対象を選択中（担当: '+
     _tcEsc(window.TC_ASSIGNEE||'')+'）: <span id="dpPickCount">'+n+'</span>件';
   if(btn) btn.textContent=isWeekly?'次へ（ボードへ）':'次へ（仕分けへ）';
@@ -10314,15 +10344,18 @@ function tcToggleDailyPick(){
   var on=!already;
   board.classList.toggle('picking',on);
   bar.style.display=on?'flex':'none';
-  if(on){ dpPositionPop(bar); dpRefreshPickBarLabel(); }
-  if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); tcPickChanged(); }
+  // ピックを新規に開始する時だけクリア（フィルタ変更によるページ再読み込みはこの関数を
+  // 経由しないため、その場合はクリアされず選択が引き継がれる）。
+  if(on){ _tcPickClear(); dpPositionPop(bar); dpRefreshPickBarLabel(); }
+  if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); _tcPickClear(); tcPickChanged(); }
   return false;
 }
 function tcGoDailyPlan(){
-  var ids=Array.prototype.map.call(document.querySelectorAll('.tc-pick-cb:checked'),function(cb){return cb.dataset.tid;});
+  var ids=Array.from(_tcPickSet());
   if(!ids.length){ alert('タスクを1つ以上選んでください'); return; }
   var owner=window.TC_ASSIGNEE||'';
   if(!owner){ alert('担当が未選択です'); return; }
+  _tcPickClear();
   location.href='/tasks/daily-plan?assignee='+encodeURIComponent(owner)+'&picked='+ids.join(',');
 }
 // 2026-10-06: 「週次タスク設計」の最初のタスク選択も、上のtcToggleDailyPick/tcGoDailyPlanと
@@ -10339,15 +10372,16 @@ function tcToggleWeeklyPick(){
   var on=!already;
   board.classList.toggle('picking',on);
   bar.style.display=on?'flex':'none';
-  if(on){ dpPositionPop(bar); dpRefreshPickBarLabel(); }
-  if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); tcPickChanged(); }
+  if(on){ _tcPickClear(); dpPositionPop(bar); dpRefreshPickBarLabel(); }
+  if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); _tcPickClear(); tcPickChanged(); }
   return false;
 }
 function tcGoWeeklyPlan(){
-  var ids=Array.prototype.map.call(document.querySelectorAll('.tc-pick-cb:checked'),function(cb){return cb.dataset.tid;});
+  var ids=Array.from(_tcPickSet());
   if(!ids.length){ alert('タスクを1つ以上選んでください'); return; }
   var owner=window.TC_ASSIGNEE||'';
   if(!owner){ alert('担当が未選択です'); return; }
+  _tcPickClear();
   location.href='/tasks/weekly-plan/new?assignee='+encodeURIComponent(owner)+'&picked='+ids.join(',');
 }
 // ピックバーの「次へ」ボタンは1つを共有しているため、現在どちらのモードでピック中かを
@@ -10567,7 +10601,8 @@ document.addEventListener('DOMContentLoaded',function(){ document.querySelectorA
   // 「今日明日」のフローティングポップアップ(#dpGatePop/#dpPickBar)は、サーバー側で最初から
   // 表示状態(?pick=1)でレンダリングされることがあるため、読み込み時にも位置合わせする。
   var dpGate=document.getElementById('dpGatePop'); if(dpGate) dpPositionPop(dpGate);
-  var dpBar=document.getElementById('dpPickBar'); if(dpBar && dpBar.style.display==='flex') dpPositionPop(dpBar);
+  var dpBar=document.getElementById('dpPickBar');
+  if(dpBar && dpBar.style.display==='flex'){ dpPositionPop(dpBar); tcPickRestore(); }
   var bd=document.getElementById('notesBackdrop'); if(bd)bd.addEventListener('click',closeNotes);
   // 「当該カードの外」をクリックしたら、そのカードを閉じる（他カードをクリックした時も閉じる）
   document.addEventListener('click',function(e){ if(e.target.closest('#notesPop'))return;
@@ -11277,7 +11312,7 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         pick_cb = "" if status == "完了" else (
             f'<label class="tc-pick" onclick="event.stopPropagation()" '
             f'title="直近タスク設計の対象として選択"><input type="checkbox" class="tc-pick-cb" '
-            f'data-tid="{tid}" onchange="tcPickChanged()"></label>')
+            f'data-tid="{tid}" onchange="tcPickChanged(this)"></label>')
         return (
             f'<div class="task-card{" pinned" if pinned else ""}" id="tc-{tid}" '
             f'style="{_urg_border}" '
@@ -11416,8 +11451,16 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     _cf_fopt = '<option value="">会社機能:全て</option>' + "".join(
         f'<option value="{html.escape(cf)}"{" selected" if cf == issue_company_function else ""}>{html.escape(cf)}</option>'
         for cf in _company_functions)
+    # ピック中(直近/週次タスク設計)にテーマ等でフィルタを変えると、このフォームのGET submitで
+    # pick/pickmodeパラメータが失われ、ピック機構から抜けてしまっていた（ユーザー報告
+    # 2026-10-06）。ピック中はhiddenで引き継ぎ、フィルタを跨いでもピックを継続できるようにする
+    # （選択済みタスクIDの引き継ぎはJS側sessionStorageで対応、tcPickChanged/tcPickRestore参照）。
+    _pick_hidden = (
+        f'<input type="hidden" name="pick" value="1">'
+        f'<input type="hidden" name="pickmode" value="{_pick_mode}">' if pick else "")
     filter_row = f"""<form method="get" action="/tasks" class="filter-row" id="tasksFilterForm">
       <input type="hidden" name="project" value="{_esc(','.join(sel_projects))}">
+      {_pick_hidden}
       <select name="assignee" onchange="this.form.submit()">{_asg_fopt}</select>
       <select name="category" onchange="this.form.submit()"><option value="">種類:全て</option>{_task_cat_optgroups(cats, category)}</select>
       <select name="urgency" onchange="this.form.submit()">{_urg_opts}</select>
@@ -11473,8 +11516,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             f'<div id="dpGateBackdrop" onclick="location.href=&#39;/tasks&#39;"></div>'
             f'<div id="dpGatePop">'
             f'<b style="display:block;margin-bottom:6px;font-size:13px">{_pick_label}<br>まず担当を選んでください</b>'
-            f'<select onchange="if(this.value) location.href=&#39;/tasks?assignee=&#39;+'
-            f'encodeURIComponent(this.value)+&#39;&pick=1&pickmode={_pick_mode}&#39;" style="width:100%">'
+            f'<select onchange="if(this.value){{ _tcPickClear(); location.href=&#39;/tasks?assignee=&#39;+'
+            f'encodeURIComponent(this.value)+&#39;&pick=1&pickmode={_pick_mode}&#39;; }}" style="width:100%">'
             f'<option value="">担当を選択</option>{_gate_owner_opts}</select>'
             f'<button class="btn sec" type="button" style="margin-top:8px;width:100%" '
             f'onclick="location.href=&#39;/tasks&#39;">キャンセル</button></div>')
@@ -14548,6 +14591,16 @@ def weekly_task_plan_board_page(con, plan_id: int, *, week_offset: int = 0) -> s
         return (f'<div class="wp-milestone" onclick="{_esc(_onclick)}" '
                 f'title="クリックで編集">🚩{_esc(_wp_mmdd(_due))} {_esc(ms["title"])}</div>')
 
+    def _ms_add_due_for_col(c: str) -> str | None:
+        # 「割り振り前」列はマイルストンの日付概念と対応しないため、追加ボタンを出さない。
+        # 「翌週以降」列は単一の日付に対応しないため、日付未入力のまま追加モーダルを開く
+        # （ユーザーが任意の日付を入力する、従来のテーマ見出し「+マイルストン」と同じ挙動）。
+        if c == "unassigned":
+            return None
+        if c == "next":
+            return ""
+        return week_dates[int(c)]
+
     theme_blocks = []
     for key in theme_keys:
         lt, lid = key
@@ -14559,18 +14612,27 @@ def weekly_task_plan_board_page(con, plan_id: int, *, week_offset: int = 0) -> s
         ms_by_col: dict[str, list] = {c: [] for c, _ in col_labels}
         for ms in mss:
             ms_by_col[_col_for_milestone(ms)].append(ms)
+        # マイルストンは2026-10-06よりタスクカードと同じセル内ではなく、テーマ名と同じ高さの
+        # 専用行（曜日ごとの「+」ボタン付き）に分離して表示する（ユーザー報告:
+        # 「マイルストンはタスク枠の上」「各日程にプラスボタンがあって追加できる仕様」）。
+        ms_cells = "".join(
+            f'<div class="wp-ms-cell" data-col="{c}">'
+            + "".join(_milestone_chip_html(ms, lt, lid) for ms in ms_by_col[c])
+            + (f'<button type="button" class="wp-ms-add" title="マイルストンを追加" '
+               f'onclick="wpOpenMilestone(null,\'{lt}\',{lid},\'{_ms_add_due_for_col(c)}\',\'\')">＋</button>'
+               if _ms_add_due_for_col(c) is not None else "")
+            + '</div>'
+            for c, _ in col_labels)
         cells = "".join(
             f'<div class="wp-cell" data-col="{c}" '
             f'ondragover="event.preventDefault()" ondrop="wpDrop(event,\'{c}\')">'
-            + "".join(_milestone_chip_html(ms, lt, lid) for ms in ms_by_col[c])
             + "".join(_task_card_html(it) for it in by_col[c])
             + '</div>'
             for c, _ in col_labels)
         theme_blocks.append(
             f'<div class="wp-theme-row" data-theme="{lt}:{lid}">'
-            f'<div class="wp-theme-head"><span>{_esc(theme_label[key])}</span>'
-            f'<button type="button" class="btn sec" style="font-size:10px;padding:2px 6px" '
-            f'onclick="wpOpenMilestone(null,\'{lt}\',{lid},\'\',\'\')">＋マイルストン</button></div>'
+            f'<div class="wp-theme-head"><span>{_esc(theme_label[key])}</span></div>'
+            f'<div class="wp-grid wp-grid-ms">{ms_cells}</div>'
             f'<div class="wp-grid">{cells}</div></div>')
 
     _unlinked_html = ""
@@ -14704,7 +14766,11 @@ _WP_CSS = """<style>
 .wp-grid-header{position:sticky;top:0;background:var(--surface);z-index:2;padding:4px 0;border-bottom:1px solid var(--border)}
 .wp-col-head{font-size:11px;font-weight:700;color:#8A8578;text-align:center}
 .wp-theme-row{border-top:1px solid #EFEBE1;padding:8px 0}
-.wp-theme-head{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:700;margin-bottom:6px}
+.wp-theme-head{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:700;margin-bottom:4px}
+.wp-grid-ms{margin-bottom:4px}
+.wp-ms-cell{min-height:20px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.wp-ms-add{background:#fff;border:1px dashed #D8D2C2;border-radius:4px;font-size:10px;line-height:1.4;padding:1px 5px;cursor:pointer;color:#8A8578}
+.wp-ms-add:hover{background:#F8F7F3;border-color:#C7C0AC}
 .wp-cell{min-height:40px;background:#F8F7F3;border-radius:6px;padding:4px;display:flex;flex-direction:column;gap:4px}
 .wp-card{background:#fff;border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:11px;cursor:grab}
 .wp-card.wp-done{opacity:.45;text-decoration:line-through}
@@ -18390,7 +18456,12 @@ def deal_form(con, deal=None, return_to: str | None = None) -> str:
           </form>
         </div>"""
         _rn_links_html = _rich_note_links_html(con, "deal", _did)
-    acc_req = "required" if deal.get("id") else ""
+    # 2026-10-06ユーザー報告の修正: 新規作成時のみrequiredを外していたため、「新規アカウントを
+    # 追加」チェックボックスに一度も触れないまま送信すると、アカウント未選択のまま商談が
+    # 登録できてしまっていた（toggleNewAcc()はチェックボックスonchange時にしかrequiredを
+    # 操作しないため、初期状態のrequired欠落がそのまま素通りしていた）。常にrequiredにし、
+    # 「新規アカウントを追加」チェック時だけtoggleNewAcc()がrequiredを外す（既存の挙動のまま）。
+    acc_req = "required"
     new_acc_html = ""
     new_acc_js = ""
     # 固定保存バーに表示する「SFA#・アカウント・案件名」（編集時のみ）。

@@ -201,6 +201,51 @@ def test_milestone_beyond_week_goes_to_next_column(con):
     assert "来週MS" in html
 
 
+def test_board_page_milestone_row_has_per_day_add_button(con):
+    """2026-10-06ユーザー報告の回帰テスト:
+    (1) マイルストンは各日程(列)に「+」ボタンがあり、クリックでその日付を引き継いで追加できる。
+    (2) マイルストンはタスクカードより前（テーマ名と同じ高さの専用行）に表示される。
+    「割り振り前」列はマイルストンの日付概念が無いため+ボタンを出さない。"""
+    acc = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-10-05", end_week="2026-10-12")
+    sfa_db.add_theme_milestone(con, "delivery", dvid, "2026-10-07", "打ち合わせ")
+    tid = sfa_db.upsert_task(con, title="T", assignee="早瀬")
+    sfa_db.set_task_links(con, tid, [("delivery", dvid)])
+    pid = sfa_db.create_weekly_task_plan(con, "早瀬", "T", "2026-10-05")
+    sfa_db.add_weekly_task_plan_item(con, pid, tid)
+    html = webapp.weekly_task_plan_board_page(con, pid, week_offset=0)
+    # 月(0)〜金(4)の5列 + 翌週以降(next)列 = 6箇所に+ボタン。割り振り前(unassigned)列には出ない。
+    assert html.count('class="wp-ms-add"') == 6
+    assert 'data-col="unassigned">' in html  # マイルストン行自体はunassigned列も出力するが中身は空
+    unassigned_ms_cell = html.split('<div class="wp-grid wp-grid-ms">', 1)[1].split('data-col="unassigned">', 1)[1].split("</div>", 1)[0]
+    assert "wp-ms-add" not in unassigned_ms_cell
+    # 水10/7列の+ボタンはその日付(2026-10-07)をプリフィルして開く
+    assert "wpOpenMilestone(null,'delivery',%d,'2026-10-07','')" % dvid in html
+    # マイルストン行(wp-grid-ms)がタスク行(素のwp-grid)より前に出現する＝タスクより上に位置する
+    ms_row_pos = html.index('class="wp-grid wp-grid-ms"')
+    task_row_pos = html.index('class="wp-grid">', ms_row_pos)
+    assert ms_row_pos < task_row_pos
+    # マイルストンチップ自体もタスクカードより前に出現する
+    assert html.index("🚩") < html.index(">T<")
+
+
+def test_tasks_page_filter_form_preserves_pick_state(con):
+    """2026-10-06ユーザー報告の回帰テスト: テーマ等の絞り込み(紐づけ先フィルタ)を変えると
+    フォームのGET submitでpick/pickmodeパラメータが失われ、週次/直近タスク設計のピック機構から
+    抜けてしまっていた。ピック中はhiddenフィールドで引き継ぐことを確認する。"""
+    html_not_picking = webapp.tasks_page(con)
+    assert 'name="pick" value="1"' not in html_not_picking
+
+    html_weekly = webapp.tasks_page(con, pick=True, assignee="早瀬", pick_mode="weekly")
+    assert 'name="pick" value="1"' in html_weekly
+    assert 'name="pickmode" value="weekly"' in html_weekly
+
+    html_daily = webapp.tasks_page(con, pick=True, assignee="早瀬", pick_mode="daily")
+    assert 'name="pick" value="1"' in html_daily
+    assert 'name="pickmode" value="daily"' in html_daily
+
+
 def test_milestone_chip_onclick_survives_special_characters(con):
     """回帰テスト: マイルストン名に二重引用符/&/'を含むと、onclick属性(json.dumps由来の
     二重引用符をそのまま埋め込んでいた旧実装)がHTML属性境界と衝突し属性が破損していた。
