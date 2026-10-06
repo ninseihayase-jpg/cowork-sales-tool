@@ -223,15 +223,99 @@ def test_sales_bucket_is_union_of_stage_and_importance(db_path):
 def test_sales_sort_order_owner_then_stage_then_value_then_id(db_path):
     con = sfa_db.connect(db_path)
     aid = sfa_db.upsert_account(con, name="A社")
-    # owner=吉江(マスタ順0)、ステージ=提案(ランク2) と 受注(ランク0)
+    # owner=吉江(マスタ順0)、ステージ=提案(ランク2) と クロージング(ランク1)
     d_a = sfa_db.upsert_deal(con, account_id=aid, deal_name="吉江_提案", stage="提案", owner="吉江", value_lumpsum=100)
-    d_b = sfa_db.upsert_deal(con, account_id=aid, deal_name="吉江_受注", stage="受注", owner="吉江", value_lumpsum=100)
+    d_b = sfa_db.upsert_deal(con, account_id=aid, deal_name="吉江_クロージング", stage="クロージング",
+                              owner="吉江", value_lumpsum=100)
     # owner=中島(マスタ順1、吉江より後)
     d_c = sfa_db.upsert_deal(con, account_id=aid, deal_name="中島_提案", stage="提案", owner="中島", value_lumpsum=900)
     pl = webapp._partner_meeting_pipeline_lists(con)
     order = [it["name"] for it in pl["Sales"]]
-    # 吉江(マスタ順が先)の中では受注(ランク0)が提案(ランク2)より先、その後に中島
-    assert order == ["吉江_受注", "吉江_提案", "中島_提案"]
+    # 吉江(マスタ順が先)の中ではクロージング(ランク1)が提案(ランク2)より先、その後に中島
+    assert order == ["吉江_クロージング", "吉江_提案", "中島_提案"]
+
+
+def test_sales_excludes_won_deals(db_path):
+    """2026-10-07実機フィードバック「Salesに受注分は不要」の回帰テスト。
+    重要度が高でもstage='受注'なら対象外。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    sfa_db.upsert_deal(con, account_id=aid, deal_name="受注済み", stage="受注", owner="吉江", importance="高")
+    pl = webapp._partner_meeting_pipeline_lists(con)
+    assert "受注済み" not in {it["name"] for it in pl["Sales"]}
+
+
+def test_sales_two_tier_grouping(db_path):
+    """2026-10-07実機フィードバック: 上段=[提案以上 or 重要度高]、下段=[提案未満 and 重要度中]、
+    に分けてまとめ、各段の中では既存の並び順を維持する。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    # 上段: ステージ提案(stage条件のみ)
+    sfa_db.upsert_deal(con, account_id=aid, deal_name="上段_提案", stage="提案", owner="高橋")
+    # 上段: 重要度高(ステージは初回アポ実施でも該当)
+    sfa_db.upsert_deal(con, account_id=aid, deal_name="上段_重要度高", stage="初回アポ実施",
+                        owner="吉江", importance="高")
+    # 下段: 提案未満 かつ 重要度中
+    sfa_db.upsert_deal(con, account_id=aid, deal_name="下段_重要度中", stage="要件詰め",
+                        owner="吉江", importance="中")
+    pl = webapp._partner_meeting_pipeline_lists(con)
+    order = [it["name"] for it in pl["Sales"]]
+    assert order.index("上段_提案") < order.index("下段_重要度中")
+    assert order.index("上段_重要度高") < order.index("下段_重要度中")
+
+
+# ── 10. Deliveryの並び順は開始日新しい順のみ（主担当順は入れない、2026-10-07単純化） ──
+
+def test_delivery_sort_is_pure_start_date_descending(db_path):
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    base = date.fromisoformat(THIS_MONDAY)
+    # owner順では逆転するが、開始日降順では正しい順になることを確認する
+    d1 = sfa_db.upsert_deal(con, account_id=aid, deal_name="古い開始_高橋", stage="受注", owner="高橋")
+    sfa_db.create_delivery(con, deal_id=d1, start_week=sfa_db._monday_of(base - timedelta(weeks=4)),
+                            end_week=sfa_db._monday_of(base + timedelta(weeks=10)))
+    d2 = sfa_db.upsert_deal(con, account_id=aid, deal_name="新しい開始_吉江", stage="受注", owner="吉江")
+    sfa_db.create_delivery(con, deal_id=d2, start_week=sfa_db._monday_of(base - timedelta(weeks=1)),
+                            end_week=sfa_db._monday_of(base + timedelta(weeks=10)))
+    pl = webapp._partner_meeting_pipeline_lists(con)
+    order = [it["name"] for it in pl["Delivery"]]
+    assert order.index("新しい開始_吉江") < order.index("古い開始_高橋")
+
+
+# ── 11. 開始週=当該週の場合はWeek1（開始間近ではない） ──
+
+def test_week1_badge_when_start_week_is_this_week():
+    html = webapp._delivery_near_badges_html(THIS_MONDAY, "")
+    assert "Week1" in html
+    assert "開始間近" not in html
+
+
+def test_near_start_badge_when_start_is_within_window_but_not_this_week():
+    near = (date.fromisoformat(THIS_MONDAY) + timedelta(days=7)).isoformat()
+    html = webapp._delivery_near_badges_html(near, "")
+    assert "開始間近" in html
+    assert "Week1" not in html
+
+
+# ── 12. ④生産性: 件数がPipeline Deliveryより少なくならない（overflow:hiddenクリップ回帰） ──
+
+def test_productivity_html_contains_all_rows_and_is_scrollable(db_path):
+    """2026-10-07実機フィードバック「生産性に載ってるプロジェクトが、PipelineのDeliveryに
+    載ってる数より少ない」の回帰テスト。原因はデータ側の抽出漏れではなく、固定高+
+    overflow:hiddenのカードに大量行を流し込むと画面に収まらない分がCSSで物理的に
+    見えなくなっていたこと（内部スクロール領域が無かった）。十分な件数(20件)のDeliveryを
+    用意し、生成されたHTMLに全件の名前が含まれ、かつスクロール領域(.mr-table-scroll)で
+    ラップされていることを確認する。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    names = [f"案件{i:02d}" for i in range(20)]
+    for name in names:
+        did = sfa_db.upsert_deal(con, account_id=aid, deal_name=name, stage="受注", owner="吉江")
+        sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                                end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=4)))
+    html = webapp._partner_meeting_productivity_html(con)
+    assert all(name in html for name in names)
+    assert 'class="mr-table-scroll"' in html
 
 
 # ── 6. ①Pipeline(Delivery): 全社定例と同じ抽出条件+開始間近/終了間近ワッペン ──

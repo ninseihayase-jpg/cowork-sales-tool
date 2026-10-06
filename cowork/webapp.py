@@ -4454,7 +4454,7 @@ _PARTNER_MEETING_AREA_LABELS = {
 _PARTNER_MEETING_COL_LABELS = {"comment": "Comment"}
 # Pipeline(Sales)の「ステージ降順」＝受注が最上位（ユーザー確定、2026-10-07）。
 _PARTNER_STAGE_RANK = {"受注": 0, "クロージング": 1, "提案": 2, "要件詰め": 3, "初回アポ実施": 4, "保留中": 5}
-_PARTNER_SALES_STAGES = {"提案", "クロージング", "受注"}
+_PARTNER_SALES_TIER0_STAGES = {"提案", "クロージング"}  # 「提案以上」。受注は対象外(2026-10-07)
 # 生産性ページの縦の閾値線（固定定数。将来変更要望が出た場合のみ設定化を検討する）。
 _PARTNER_PRODUCTIVITY_THRESHOLDS = [
     (150, "赤字ライン", "#dc2626"), (350, "最低目標", "#d97706"),
@@ -4617,26 +4617,30 @@ def _mr_fmt_week_range(start_week: str, end_week: str) -> str:
 
 
 def _delivery_near_badges_html(start_week: str, end_week: str) -> str:
-    """「開始間近」「終了間近」ワッペン（当該週+2週間以内に開始日/終了日が来るDelivery。
-    2026-10-07、パートナー定例❶Pipeline・全社定例❷Pipelineの両方のDelivery一覧で使う
-    共通ヘルパー。ユーザー確定「両方に適用」）。"""
+    """「Week1」「開始間近」「終了間近」ワッペン（当該週+2週間以内に開始日/終了日が来る
+    Delivery。2026-10-07、パートナー定例❶Pipeline・全社定例❷Pipelineの両方のDelivery一覧
+    で使う共通ヘルパー。ユーザー確定「両方に適用」）。
+    当該週がちょうど開始週の場合は「開始間近」ではなく「Week1」を表示する
+    （2026-10-07実機フィードバック）。"""
     try:
         this_monday = date.fromisoformat(sfa_db._monday_of(_today_jst()))
     except (ValueError, TypeError):
         return ""
     window_end = this_monday + timedelta(days=14)
 
-    def _in_window(s: str) -> bool:
+    def _parse(s: str):
         try:
-            d = date.fromisoformat(s)
+            return date.fromisoformat(s)
         except (ValueError, TypeError):
-            return False
-        return this_monday <= d <= window_end
+            return None
 
+    sd, ed = _parse(start_week or ""), _parse(end_week or "")
     badges = []
-    if _in_window(start_week or ""):
+    if sd == this_monday:
+        badges.append('<span class="mr-near-badge mr-near-week1">Week1</span>')
+    elif sd is not None and this_monday < sd <= window_end:
         badges.append('<span class="mr-near-badge mr-near-start">開始間近</span>')
-    if _in_window(end_week or ""):
+    if ed is not None and this_monday <= ed <= window_end:
         badges.append('<span class="mr-near-badge mr-near-end">終了間近</span>')
     return "".join(badges)
 
@@ -4645,15 +4649,20 @@ def _partner_meeting_pipeline_lists(con) -> dict:
     """パートナー定例❶Pipeline（Sales / Deliveryの2バケットのみ。全社定例のSales/Closing/
     Deliveryとは別物）。
 
-    Sales（確定・ユーザー回答2026-10-07）: dealsテーブルを直接参照し、
-    「ステージが提案/クロージング/受注のいずれか」OR「重要度が高/中」のOR(和集合)。
+    Sales（確定・2026-10-07実機フィードバックで再確定）: dealsテーブルを直接参照し、
+    受注済み（stage='受注'）の商談は対象外（Deliveryで既に追えているため）。残りを2段組で
+    表示する: 上段＝「ステージが提案/クロージングのいずれか」OR「重要度が高」、
+    下段＝「ステージが提案/クロージング未満（初回アポ実施・要件詰め・保留中）」AND
+    「重要度が中」。どちらにも該当しない商談（提案未満かつ重要度低/未設定）は対象外。
     open（status='open'）の商談のみ対象（クローズ済みは除外）。Pipeline金額は
     value_lumpsum（単発総額）のみ・未入力はNone（呼び出し側でna表示）。
-    並び順: 主担当のマスタ順→ステージ降順(_PARTNER_STAGE_RANK)→Pipeline金額降順→Noの古い順。
+    並び順: 上段/下段の段→主担当のマスタ順→ステージ降順(_PARTNER_STAGE_RANK)→
+    Pipeline金額降順→Noの古い順。
 
     Delivery: 全社定例❷と同じ抽出条件（confidence_override考慮の確度='確定'、
-    status!='完了'）。並び順: 主担当のマスタ順→開始日新しい順（全社定例とは主担当キーが
-    追加される点のみ異なる）。開始間近/終了間近ワッペン・ホバー用の体制/報酬総額も付与する。
+    status!='完了'）。並び順（2026-10-07実機フィードバックで単純化）: 開始日新しい順のみ
+    （主担当順は入れない。全社定例❷と同じ並び方に揃える）。開始間近/終了間近/Week1
+    ワッペン・ホバー用の体制/報酬総額も付与する。
     """
     sales_rows = con.execute(
         "SELECT d.id, d.stage, d.owner, d.importance, d.value_lumpsum, a.name AS account_name, "
@@ -4670,15 +4679,21 @@ def _partner_meeting_pipeline_lists(con) -> dict:
     sales = []
     for r in sales_rows:
         stage, importance = r["stage"] or "", r["importance"] or ""
-        if not (stage in _PARTNER_SALES_STAGES or importance in ("高", "中")):
+        if stage == "受注":
+            continue
+        if stage in _PARTNER_SALES_TIER0_STAGES or importance == "高":
+            tier = 0
+        elif importance == "中":
+            tier = 1
+        else:
             continue
         sales.append({
-            "id": r["id"], "stage": stage, "owner": r["owner"] or "",
+            "id": r["id"], "stage": stage, "owner": r["owner"] or "", "tier": tier,
             "account_name": r["account_name"] or "", "name": r["deal_name"] or "",
             "pipeline_value": r["value_lumpsum"],
         })
     sales.sort(key=lambda it: (
-        _owner_rank(it["owner"]), _PARTNER_STAGE_RANK.get(it["stage"], 99),
+        it["tier"], _owner_rank(it["owner"]), _PARTNER_STAGE_RANK.get(it["stage"], 99),
         -it["pipeline_value"] if it["pipeline_value"] is not None else float("inf"),
         it["id"]))
 
@@ -4710,7 +4725,7 @@ def _partner_meeting_pipeline_lists(con) -> dict:
         except (ValueError, TypeError):
             return (1, 0)
 
-    delivery.sort(key=lambda it: (_owner_rank(it["owner"]), _start_desc_key(it)))
+    delivery.sort(key=_start_desc_key)
     return {"Sales": sales, "Delivery": delivery}
 
 
@@ -4989,6 +5004,7 @@ _MR_CSS = """<style>
 .mr-near-badge{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;white-space:nowrap;flex-shrink:0}
 .mr-near-start{color:#2563eb;background:#DBEAFE}
 .mr-near-end{color:#B91C1C;background:#FEE2E2}
+.mr-near-week1{color:#166534;background:#DCFCE7}
 .mr-floating{position:fixed;z-index:500;width:480px;background:#fff;border:1px solid var(--border);
   border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.25);padding:14px;display:none}
 .mr-floating textarea{width:100%;box-sizing:border-box;height:220px;border:1px solid var(--border);
@@ -5650,21 +5666,23 @@ def _partner_meeting_productivity_html(con) -> str:
 
     return f"""
     <div class="card">
-      <h3 style="margin:0 0 10px;font-size:14px">④ 生産性</h3>
+      <h3 style="margin:0 0 10px;font-size:14px;flex-shrink:0">④ 生産性</h3>
       <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding-bottom:10px;
-        border-bottom:1px solid #EEEAE1">
+        border-bottom:1px solid #EEEAE1;flex-shrink:0">
         <div></div>
         <div style="font-size:13px;font-weight:700;color:#2B2723">案件別生産性</div>
         <div style="font-size:13px;font-weight:700;color:#2B2723">案件別売上総額</div>
       </div>
-      <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding:10px 0 2px">
-        <div></div><div style="position:relative;height:14px">{axis_row}</div><div></div>
+      <div class="mr-table-scroll">
+        <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding:10px 0 2px">
+          <div></div><div style="position:relative;height:14px">{axis_row}</div><div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding-bottom:6px">
+          <div></div><div style="position:relative;height:24px">{threshold_label_row}</div><div></div>
+        </div>
+        {rows_wrap}
       </div>
-      <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding-bottom:6px">
-        <div></div><div style="position:relative;height:24px">{threshold_label_row}</div><div></div>
-      </div>
-      {rows_wrap}
-      <div style="display:flex;gap:22px;padding-top:16px;font-size:11px;color:#8A8578;align-items:center;flex-wrap:wrap">
+      <div style="display:flex;gap:22px;padding-top:16px;font-size:11px;color:#8A8578;align-items:center;flex-wrap:wrap;flex-shrink:0">
         <div style="display:flex;gap:6px;align-items:center">
           <div style="width:12px;height:12px;border-radius:50%;background:#2F8F7A;border:2px solid #2F8F7A"></div>
           当該週時点</div>
@@ -5676,7 +5694,7 @@ def _partner_meeting_productivity_html(con) -> str:
           売上総額（報酬総額・万円）</div>
         <div style="width:1px;height:14px;background:#E7E3DA"></div>{legend_items}
       </div>
-      <div class="muted" style="font-size:10px;margin-top:10px">生産性はsfa_db.delivery_weekly_productivity()
+      <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">生産性はsfa_db.delivery_weekly_productivity()
         （累計限界利益×400÷累計稼働率）をそのまま使用。並び順は当該週時点の生産性降順。</div>
     </div>"""
 
@@ -5748,8 +5766,9 @@ def partner_meeting_page(con, week_start: str, *, qoffset: int = 0) -> str:
           <ul class="mr-plist">{_delivery_rows_html(pipeline["Delivery"])}</ul></div>
       </div>
       <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">
-        Salesはステージ提案以降または重要度中以上の商談（OR）。Pipeline金額は単発総額(value_lumpsum)、未入力はna。
-        Deliveryにカーソルを合わせると期間・体制・報酬総額を表示します。
+        Salesは受注済みを除く商談のうち、上段＝ステージ提案以降または重要度高、
+        下段＝提案未満かつ重要度中（まとめて下部表示）。Pipeline金額は単発総額(value_lumpsum)、未入力はna。
+        Deliveryは開始日の新しい順。カーソルを合わせると期間・体制・報酬総額を表示します。
       </div>
     </div>"""
 
