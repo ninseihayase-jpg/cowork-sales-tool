@@ -4608,34 +4608,32 @@ def _monthly_report_l1_color(l1: str, l1_order: list) -> str:
 
 def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: list,
                                            actual_by_month: dict, target_by_month: dict, *,
-                                           metric: str = "", deliveries_by_month: dict | None = None,
+                                           metric: str = "",
                                            show_month_labels: bool = True, interactive: bool = True) -> str:
     """❶受注高/売上パネル共通の積み上げ棒グラフ。Artifactモックアップ（承認済み、
     https://claude.ai/artifact/721h63wwgQy64Y4jis1hPu）と同じ考え方で、**flexboxの通常フロー
     でセグメントを積む**（position:absoluteは使わない。モックアップの初版がposition:absoluteで
-    描画崩壊した実例があったため）。各月＝実績(塗り)の隣に目標(点線枠)を並べたグループ棒。
-    l1_orderの先頭(コスト削減)が視覚的に一番上に来るよう、積み上げはl1_orderの逆順
-    （末尾から）で描画する（ゼロ線側＝一番下に末尾のL1が来る）。
+    描画崩壊した実例があったため）。各月＝実績(塗り)の隣に目標(薄い水色の単色ブロック)を
+    並べたグループ棒。l1_orderの先頭(コスト削減)が視覚的に一番上に来るよう、積み上げは
+    l1_orderの逆順（末尾から）で描画する（ゼロ線側＝一番下に末尾のL1が来る）。
     受注高/売上を上下2段で表示する構成（2026-10-05確定）のため、棒の高さは固定px
     ではなく**flex-growの比率**で表現する（headroom用のダミーdiv＋各L1セグメントを
     同じflex-basis:0の兄弟として並べ、親のheight:100%に対する比率で自動分配）。
     これにより棒グラフ行の実高さは呼び出し側が与える任意の高さ（画面に収まるよう
     JSで動的計算された高さ）にそのまま追従し、pxのハードコードが不要になる。
 
-    2026-10-05追加（ユーザー要望「カーソルをあわせた時に案件が表示される仕様。dashboard側の
-    仕様を参照して」「案件を表示/非表示できる仕様」）:
-    - 実績(塗り)セグメントのみにホバーを付ける（目標は手入力の集計値で案件の裏付けが無いため
-      対象外）。Hisho経営ダッシュボードの`cfShowDeliveryTooltip`と同じ設計（生のL1文字列を
-      属性に埋め込まずindex経由、ホバーしたセグメントのL1だけに絞り込んで表示）を踏襲し、
-      実データはmonthly_report_page側で`window.MR_DELIVERIES[metric][month]`としてJSON埋め込み
-      済みのものを参照する（metric引数はそのキー名）。
-    - 「表示/非表示」トグル用に、各月の案件名一覧を**常にDOMへレンダリングしHTML/CSSでdisplay
-      切替**する行(`.mr-deal-list`)を追加。既定はdisplay:none（`.mr-show-deals`クラスが付いた
-      祖先の中でのみ表示）。この行はflex-shrink:0・内部max-height+overflow-yのため、
-      トグルONでも棒グラフ行(flex:1)が縮むだけで画面1枚に収まる仕様は崩れない。
+    2026-10-05追加・2026-10-06改訂（案件内訳の表示方法）:
+    実績(塗り)セグメントのみクリックで案件内訳を複数同時に固定(ピン留め)表示できる
+    （目標は手入力の集計値で案件の裏付けが無いため対象外）。Hisho経営ダッシュボードの
+    `cfShowDeliveryTooltip`と同じ設計（生のL1文字列を属性に埋め込まずindex経由、クリックした
+    セグメントのL1だけに絞り込んで表示）を踏襲し、実データはmonthly_report_page側で
+    `window.MR_DELIVERIES[metric][month]`としてJSON埋め込み済みのものを参照する
+    （metric引数はそのキー名）。ピン留めされた各ボックスはドラッグで移動・✕で個別に閉じられる
+    （`mrPinTooltip`/`mrPinnedBoxes`、webapp.py内JS参照）。旧「📋 案件を表示」トグル機能
+    （全月の案件名一覧を常時表示するボタン）はこのピン留め機能と役割が重複するため撤去した
+    （2026-10-06ユーザー要望）。
     interactive=False（ダウンロード/Fixスナップショット等、呼び出し元にJSが無い静止
-    ドキュメント用）ではホバー属性・トグルボタン・案件一覧行自体を出力しない。"""
-    deliveries_by_month = deliveries_by_month or {}
+    ドキュメント用）ではホバー/クリック属性を出力しない。"""
     vals = []
     for m in months:
         vals.append(sum((actual_by_month.get(m) or {}).values()))
@@ -4680,7 +4678,6 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
     label_cells = []
     bar_cells = []
     month_cells = []
-    deal_list_cells = []
     for m in months:
         actual = actual_by_month.get(m) or {}
         target = target_by_month.get(m) or {}
@@ -4703,16 +4700,6 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
             month_cells.append(
                 f'<div class="muted" style="font-size:17px;font-weight:600;color:#8A8578;'
                 f'text-align:center">{int(mo)}月</div>')
-        if interactive:
-            deals = sorted(deliveries_by_month.get(m) or [], key=lambda d: -(d.get("value") or 0))
-            if deals:
-                items = "".join(
-                    f'<div class="mr-deal-item" title="{_esc(d["name"])}">'
-                    f'{_esc(d["name"])} <span class="mr-deal-amt">{round(d["value"]):,}万</span></div>'
-                    for d in deals)
-            else:
-                items = '<div class="mr-deal-item mr-deal-empty">—</div>'
-            deal_list_cells.append(f'<div class="mr-deal-list-month">{items}</div>')
 
     legend = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">'
@@ -4731,18 +4718,10 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
         </div>
       </div>""" if show_month_labels else ""
 
-    toggle_btn_html = (
-        '<button type="button" class="btn sec mr-deal-toggle-btn" style="font-size:10px;padding:3px 8px" '
-        'onclick="mrToggleDealList(this)">📋 案件を表示</button>') if interactive else ""
-    deal_list_html = (
-        f'<div class="mr-deal-list" style="{grid_cols_style};column-gap:10px;'
-        f'margin-top:6px;flex-shrink:0">{"".join(deal_list_cells)}</div>') if interactive else ""
-
     return f"""
     <div class="mr-bar-panel" style="display:flex;flex-direction:column;min-height:0;flex:1 1 0;height:100%">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-shrink:0">
-        <div style="font-size:12px;font-weight:700;color:#2B2723">{_esc(title)}</div>
-        {toggle_btn_html}
+        <div style="font-size:14px;font-weight:800;color:#2B2723">{_esc(title)}</div>
       </div>
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap;flex-shrink:0">
         {legend}
@@ -4773,7 +4752,6 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
         </div>
       </div>
       {month_row_html}
-      {deal_list_html}
     </div>"""
 
 
@@ -4860,14 +4838,6 @@ _MR_CSS = """<style>
 .mr-pipeline-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:18px}
 .mr-pipeline-col{display:flex;flex-direction:column;min-height:0}
 .mr-table-scroll{flex:1;min-height:0;overflow-y:auto}
-.mr-deal-list{display:none}
-.mr-bar-panel.mr-show-deals .mr-deal-list{display:grid}
-.mr-deal-list-month{max-height:72px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
-.mr-deal-item{font-size:10px;color:#2B2723;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  background:rgba(217,119,87,.10);padding:1px 5px;border-radius:3px}
-.mr-deal-item.mr-deal-empty{background:none;color:#c8c3b8;text-align:center}
-.mr-deal-amt{color:#8A8578;font-weight:600}
-.mr-deal-toggle-btn{white-space:nowrap}
 </style>"""
 
 
@@ -4905,10 +4875,10 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     period_label = f"{first_m[:4]}年{int(first_m[5:])}月 〜 {last_m[:4]}年{int(last_m[5:])}月"
     ov_panel = _monthly_report_stacked_bar_panel_html(
         "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"],
-        metric="order_value", deliveries_by_month=ta["order_value_deliveries"], show_month_labels=False)
+        metric="order_value")
     sales_panel = _monthly_report_stacked_bar_panel_html(
         "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"],
-        metric="sales", deliveries_by_month=ta["sales_deliveries"])
+        metric="sales")
     mr_deliveries_json = json.dumps(
         {"order_value": ta["order_value_deliveries"], "sales": ta["sales_deliveries"]}, ensure_ascii=False)
     mr_l1_names_json = json.dumps(ta["l1_order"], ensure_ascii=False)
@@ -4928,8 +4898,8 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
         <div style="flex:1;min-height:0;display:flex;flex-direction:column">{sales_panel}</div>
       </div>
       <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">単位：万円。各月＝左が実績（事業種別L1積み上げ）、
-        右が目標（四半期ごとに入力した月次目標値の合計、薄い水色）。月表示は下段（売上）のみ、
-        上下のグラフで列位置を揃えています。</div>
+        右が目標（四半期ごとに入力した月次目標値の合計、薄い水色）。上下のグラフで列位置を
+        揃えています。</div>
     </div>"""
 
     # ❷ Pipeline
@@ -4937,8 +4907,9 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     def _plist(items, *, with_dates: bool = False):
         # Closing/Deliveryのみ開始日・終了日(mm/dd~mm/dd)を付記（2026-10-05ユーザー要望。
         # スペースが限られるため簡易表記）。案件名(.deal)は薄いハイライトで視認性を上げる。
-        # 2026-10-06: 日付は案件名の左（アカウント名の直後）に配置する（ユーザー要望
-        # 「スケジュールは案件の左に配置」）。
+        # 2026-10-06: 日付はアカウント名の前（行の一番左）に配置する（ユーザー要望
+        # 「日付はアカウントの前に表示」。当初は案件名の左＝アカウント名の直後だったが、
+        # さらにアカウント名より前へ変更）。
         parts = []
         for it in items:
             date_html = ""
@@ -4947,7 +4918,7 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
                 if rng:
                     date_html = f'<span class="mr-plist-date">{_esc(rng)}</span>'
             parts.append(
-                f'<li><span class="acc">{_esc(it["account_name"])}</span>{date_html}'
+                f'<li>{date_html}<span class="acc">{_esc(it["account_name"])}</span>'
                 f'<span class="deal">{_esc(it["name"])}</span></li>')
         return "".join(parts)
     pipeline_html = f"""
@@ -5027,92 +4998,107 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     var MR_MONTH = {json.dumps(report_month, ensure_ascii=False)};
     var MR_DELIVERIES = {mr_deliveries_json};
     var MR_L1_NAMES = {mr_l1_names_json};
-    // ホバーで案件内訳を表示（2026-10-05、Hisho経営ダッシュボードcfShowDeliveryTooltipと
-    // 同じ設計: l1idxはMR_L1_NAMESの添字、生のL1文字列を属性に直接埋め込まない）。
-    // 2026-10-06ユーザー要望「クリックするとこのフローティングを固定できる仕様」「はみ出し補正」:
-    // クリックで固定(mrPinned)すると、以後のホバー(mousemove/mouseleave)では内容を変えず、
-    // 同じセグメントを再クリックするか✕ボタン・枠外クリックで固定解除する。はみ出しは
-    // 各行のwhite-space:nowrapを外しmax-widthの範囲で折り返すことで解決（従来は折り返し
-    // 無効のまま横に突き抜けていた）。
-    var mrPinned = false;
+    // ホバーで案件内訳をプレビュー表示（2026-10-05、Hisho経営ダッシュボードcfShowDeliveryTooltip
+    // と同じ設計: l1idxはMR_L1_NAMESの添字、生のL1文字列を属性に直接埋め込まない）。
+    // 2026-10-06改訂（ユーザー要望「ドラッグして動かせるように」「複数固定表示できるように」）:
+    // クリックすると、そのセグメント専用の独立したボックスを新規生成して画面に固定する
+    // （#mrTooltipはホバー専用のプレビューのまま・単一要素）。固定ボックスは
+    // mrPinnedBoxes（キー=metric|month|l1idx）で管理し、いくつでも同時に開ける。
+    // ドラッグ（見出し部分をマウスでつかんで移動）・✕ボタンでの個別クローズに対応。
+    // 同じセグメントを再クリックすると、そのボックスだけ閉じる（トグル）。
     function mrL1NameOf(l1idx) {{ return (l1idx === null || l1idx === undefined) ? null : MR_L1_NAMES[l1idx]; }}
-    function mrRenderTooltipContent(metric, month, l1idx, pinned) {{
-      var tip = document.getElementById('mrTooltip');
-      if (!tip) return;
+    function _mrDeliveryRows(metric, month, l1idx) {{
       var l1 = mrL1NameOf(l1idx);
       var list = ((MR_DELIVERIES[metric] || {{}})[month] || []);
-      var rows = l1 ? list.filter(function(d) {{ return (d.l1 || '未設定') === l1; }}) : list;
+      return {{l1: l1, rows: l1 ? list.filter(function(d) {{ return (d.l1 || '未設定') === l1; }}) : list}};
+    }}
+    function _mrDeliveryBoxHtml(metric, month, l1idx, closable) {{
+      var r = _mrDeliveryRows(metric, month, l1idx), l1 = r.l1, rows = r.rows;
       var fmt = function(v) {{ return Math.round(v).toLocaleString(); }};
       var esc = function(s) {{ var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }};
-      var closeBtn = pinned
-        ? '<span onclick="mrUnpinTooltip()" style="cursor:pointer;color:#8A8578;font-weight:400;margin-left:8px">✕</span>' : '';
-      var head = '<div style="padding:8px 10px;font-size:11px;color:#2B2723;font-weight:700;' +
-        'border-bottom:1px solid #E8E3D9;margin-bottom:2px;display:flex;justify-content:space-between;align-items:center">' +
+      var closeBtn = closable
+        ? '<span class="mr-tip-close" style="cursor:pointer;color:#8A8578;font-weight:400;margin-left:8px">✕</span>' : '';
+      var head = '<div class="mr-tip-head" style="padding:8px 10px;font-size:11px;color:#2B2723;font-weight:700;' +
+        'border-bottom:1px solid #E8E3D9;margin-bottom:2px;display:flex;justify-content:space-between;align-items:center;' +
+        (closable ? 'cursor:move' : '') + '">' +
         '<span>' + esc(month) + (l1 ? ' ' + esc(l1) : '') + '</span>' + closeBtn + '</div>';
       if (!rows.length) {{
-        tip.innerHTML = head + '<div style="padding:8px 10px;color:#8A8578;font-size:11px">案件データなし</div>';
-      }} else {{
-        tip.innerHTML = head + rows.map(function(d) {{
-            return '<div style="padding:4px 10px;font-size:11px;color:#2B2723;white-space:normal;word-break:break-word">' +
-              esc(d.name) + ' <b>' + fmt(d.value) + '万</b></div>';
-          }}).join('') + '<div style="height:6px"></div>';
+        return head + '<div style="padding:8px 10px;color:#8A8578;font-size:11px">案件データなし</div>';
       }}
-      tip.dataset.metric = metric; tip.dataset.month = month;
-      tip.dataset.l1idx = (l1idx === null || l1idx === undefined) ? '' : String(l1idx);
+      return head + rows.map(function(d) {{
+          return '<div style="padding:4px 10px;font-size:11px;color:#2B2723;white-space:normal;word-break:break-word">' +
+            esc(d.name) + ' <b>' + fmt(d.value) + '万</b></div>';
+        }}).join('') + '<div style="height:6px"></div>';
     }}
-    function mrPositionTooltip(x0, y0) {{
-      var tip = document.getElementById('mrTooltip');
-      if (!tip) return;
+    function _mrClampPos(x0, y0, w, h) {{
       var x = x0 + 14, y = y0 + 14;
-      var w = tip.offsetWidth || 320, h = tip.offsetHeight || 120;
       if (x + w > window.innerWidth) x = x0 - w;
       if (y + h > window.innerHeight) y = y0 - h;
-      tip.style.left = Math.max(4, x) + 'px';
-      tip.style.top = Math.max(4, y) + 'px';
+      return {{x: Math.max(4, x), y: Math.max(4, y)}};
     }}
     function mrShowDeliveryTooltip(evt, metric, month, l1idx) {{
-      if (mrPinned) return;
-      mrRenderTooltipContent(metric, month, l1idx, false);
       var tip = document.getElementById('mrTooltip');
+      if (!tip) return;
+      tip.innerHTML = _mrDeliveryBoxHtml(metric, month, l1idx, false);
       tip.style.display = 'block';
-      mrPositionTooltip(evt.clientX, evt.clientY);
+      var p = _mrClampPos(evt.clientX, evt.clientY, tip.offsetWidth || 320, tip.offsetHeight || 120);
+      tip.style.left = p.x + 'px'; tip.style.top = p.y + 'px';
     }}
     function mrHideTooltip() {{
-      if (mrPinned) return;
       var tip = document.getElementById('mrTooltip');
       if (tip) tip.style.display = 'none';
     }}
+    var mrPinnedBoxes = {{}};
+    var mrPinZ = 500;
+    function _mrPinKey(metric, month, l1idx) {{
+      return metric + '|' + month + '|' + (l1idx === null || l1idx === undefined ? '' : l1idx);
+    }}
     function mrPinTooltip(evt, metric, month, l1idx) {{
       evt.stopPropagation();
-      var tip = document.getElementById('mrTooltip');
-      if (!tip) return;
-      var l1key = (l1idx === null || l1idx === undefined) ? '' : String(l1idx);
-      if (mrPinned && tip.dataset.metric === metric && tip.dataset.month === month && tip.dataset.l1idx === l1key) {{
-        mrUnpinTooltip();  // 固定中の同一セグメントを再クリック→固定解除
-        return;
-      }}
-      mrRenderTooltipContent(metric, month, l1idx, true);
-      tip.style.display = 'block';
-      tip.style.pointerEvents = 'auto';
-      mrPositionTooltip(evt.clientX, evt.clientY);
-      mrPinned = true;
+      mrHideTooltip();  // 固定した瞬間、ホバープレビューと重複表示しない
+      var key = _mrPinKey(metric, month, l1idx);
+      if (mrPinnedBoxes[key]) {{ mrUnpinBox(key); return; }}  // 同じセグメント再クリック→閉じる
+      var box = document.createElement('div');
+      box.className = 'mr-pinned-tip';
+      box.dataset.key = key;
+      box.style.cssText = 'position:fixed;z-index:' + (++mrPinZ) + ';background:#fff;' +
+        'border:1px solid #E8E3D9;border-radius:8px;box-shadow:0 16px 48px rgba(0,0,0,.18);' +
+        'max-width:320px;overflow:hidden';
+      box.innerHTML = _mrDeliveryBoxHtml(metric, month, l1idx, true);
+      document.body.appendChild(box);
+      var n = Object.keys(mrPinnedBoxes).length;
+      var p = _mrClampPos(evt.clientX + n * 16, evt.clientY + n * 16, 320, 140);
+      box.style.left = p.x + 'px'; box.style.top = p.y + 'px';
+      mrPinnedBoxes[key] = box;
+      var closeEl = box.querySelector('.mr-tip-close');
+      if (closeEl) closeEl.addEventListener('click', function() {{ mrUnpinBox(key); }});
+      _mrMakeDraggable(box);
     }}
-    function mrUnpinTooltip() {{
-      mrPinned = false;
-      var tip = document.getElementById('mrTooltip');
-      if (tip) {{ tip.style.display = 'none'; tip.style.pointerEvents = 'none'; }}
+    function mrUnpinBox(key) {{
+      var box = mrPinnedBoxes[key];
+      if (box) {{ box.remove(); delete mrPinnedBoxes[key]; }}
     }}
-    document.addEventListener('click', function(e) {{
-      if (!mrPinned) return;
-      if (e.target.closest('#mrTooltip')) return;
-      mrUnpinTooltip();
-    }});
-    function mrToggleDealList(btn) {{
-      var panel = btn.closest('.mr-bar-panel');
-      if (!panel) return;
-      var on = panel.classList.toggle('mr-show-deals');
-      btn.textContent = on ? '📋 案件を隠す' : '📋 案件を表示';
-      mrSyncTabHeight();
+    function _mrMakeDraggable(box) {{
+      var handle = box.querySelector('.mr-tip-head');
+      if (!handle) return;
+      handle.addEventListener('mousedown', function(e) {{
+        if (e.target.closest('.mr-tip-close')) return;  // ✕クリックはドラッグ開始しない
+        e.preventDefault();
+        box.style.zIndex = ++mrPinZ;
+        var startX = e.clientX, startY = e.clientY;
+        var rect = box.getBoundingClientRect();
+        var origLeft = rect.left, origTop = rect.top;
+        function onMove(ev) {{
+          box.style.left = (origLeft + (ev.clientX - startX)) + 'px';
+          box.style.top = (origTop + (ev.clientY - startY)) + 'px';
+        }}
+        function onUp() {{
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        }}
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      }});
     }}
     var mrCurArea = null, mrCurCol = null;
     function mrOpenEditor(month, area, col) {{

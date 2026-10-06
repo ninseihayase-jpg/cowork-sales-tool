@@ -264,8 +264,10 @@ def test_pipeline_sorted_by_start_date_ascending(db_path):
     assert [it["name"] for it in pl["Delivery"]] == ["古い開始", "中間開始", "新しい開始", "日付未設定"]
 
 
-def test_pipeline_schedule_appears_before_deal_name_in_html(server, db_path):
-    """2026-10-06ユーザー要望「スケジュールは案件の左に配置」の回帰テスト。"""
+def test_pipeline_schedule_appears_before_account_name_in_html(server, db_path):
+    """2026-10-06ユーザー要望「日付はアカウントの前に表示」の回帰テスト
+    （当初「スケジュールは案件の左に配置」でアカウント名の直後に置いたが、さらに
+    アカウント名より前（行の一番左）へ変更した）。"""
     con = sfa_db.connect(db_path)
     sfa_db.create_monthly_report(con, "2026-10")
     aid = sfa_db.upsert_account(con, name="A社")
@@ -277,8 +279,9 @@ def test_pipeline_schedule_appears_before_deal_name_in_html(server, db_path):
     assert code == 200
     html = body.decode("utf-8")
     date_pos = html.index('class="mr-plist-date"')
+    acc_pos = html.index('class="acc"')
     deal_pos = html.index('class="deal"')
-    assert date_pos < deal_pos
+    assert date_pos < acc_pos < deal_pos
 
 
 def test_chart_target_bar_is_light_blue_not_dashed(server, db_path):
@@ -322,8 +325,60 @@ def test_chart_tooltip_supports_click_to_pin(server, db_path):
     assert code == 200
     html = body.decode("utf-8")
     assert "onclick=\"mrPinTooltip(event," in html
-    assert "function mrUnpinTooltip" in html
-    assert "white-space:nowrap" not in html.split("function mrRenderTooltipContent", 1)[1].split("function mrPositionTooltip", 1)[0]
+    assert "function mrUnpinBox" in html
+    assert "white-space:nowrap" not in html.split("function _mrDeliveryBoxHtml", 1)[1].split("function _mrClampPos", 1)[0]
+
+
+def test_chart_tooltip_supports_multiple_draggable_pins(server, db_path):
+    """2026-10-06ユーザー要望「ドラッグして動かせるように」「複数固定表示できるように」の
+    回帰テスト。固定ボックスはキー別に管理され(複数同時固定可能)、見出しにドラッグ用の
+    cursor:moveが付いていることを確認する。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, "2026-10")
+    con.close()
+
+    code, body = _get(server + "/monthly-report/2026-10", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    assert "var mrPinnedBoxes" in html
+    assert "function _mrMakeDraggable" in html
+    assert "mr-tip-head" in html and "cursor:move" in html
+    # 同じセグメントの再クリックだけトグルし、他の固定ボックスには影響しない設計
+    # （mrPinnedBoxes[key]で個別管理、mrUnpinToolTip的な単一グローバル状態は使わない）。
+    assert "mrPinned = false" not in html
+    assert "mrPinned &&" not in html
+
+
+def test_chart_deal_display_toggle_feature_removed(server, db_path):
+    """2026-10-06ユーザー要望「『案件を表示』機能は削除」の回帰テスト。
+    クリック固定(ピン留め)機能と役割が重複するため撤去した。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, "2026-10")
+    con.close()
+
+    code, body = _get(server + "/monthly-report/2026-10", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    assert "案件を表示" not in html
+    assert "mrToggleDealList" not in html
+    assert "mr-deal-list" not in html
+
+
+def test_chart_panel_title_is_more_prominent_and_order_value_shows_months(server, db_path):
+    """2026-10-06ユーザー要望「『受注高』『売上』の表示をもう1~2割目立つように」
+    「受注高グラフにも月を表示」の回帰テスト。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, "2026-10")
+    con.close()
+
+    code, body = _get(server + "/monthly-report/2026-10", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    # タイトル「受注高」「売上」は14px/800（旧12px/700から約17%拡大）
+    assert 'font-size:14px;font-weight:800;color:#2B2723">受注高<' in html
+    assert 'font-size:14px;font-weight:800;color:#2B2723">売上<' in html
+    # 月ラベルが2回（受注高・売上の両方）出現する（従来は売上のみの1回だった）
+    assert html.count(">7月<") == 2
 
 
 # ── 8. 目標値の保存・読み出し ──
