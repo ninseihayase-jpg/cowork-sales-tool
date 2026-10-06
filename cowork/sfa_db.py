@@ -1511,6 +1511,33 @@ CREATE TABLE IF NOT EXISTS monthly_reports (
     updated_at                      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- パートナー定例レポート（2026-10、週次。全社定例❸「テーマ別の足元状況・戦略方針」と
+-- 同じUI/操作感（フローティング入力→LLM整形→セル直接編集→Fix/再オープン）を流用するが、
+-- 全社定例は月次(report_month一意)・Area4区分(product/marketing_sales/delivery/development)・
+-- 3列(status/findings/strategy)なのに対し、本テーブルは週次(week_start一意)・
+-- Area4区分(marketing/development/product/finance、区分名が異なりdeliveryの代わりに
+-- financeが入る)・1列(comment)と cadence/Area/列数のいずれも異なるため、monthly_reportsとは
+-- 独立したテーブルとして新設する（docs/10_パートナー定例レポート機能_設計構想.md §3-2参照）。
+-- バージョニング規則はmonthly_reportsと同型（fixed_atがNULLの間は常時編集可・再オープン可、
+-- 新verは複製しない）。
+CREATE TABLE IF NOT EXISTS partner_meeting_reports (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_start                 TEXT NOT NULL UNIQUE,  -- 当該週の月曜 YYYY-MM-DD
+    marketing_comment_html     TEXT NOT NULL DEFAULT '',
+    marketing_comment_draft    TEXT NOT NULL DEFAULT '',
+    development_comment_html   TEXT NOT NULL DEFAULT '',
+    development_comment_draft  TEXT NOT NULL DEFAULT '',
+    product_comment_html       TEXT NOT NULL DEFAULT '',
+    product_comment_draft      TEXT NOT NULL DEFAULT '',
+    finance_comment_html       TEXT NOT NULL DEFAULT '',
+    finance_comment_draft      TEXT NOT NULL DEFAULT '',
+    track_a_snapshot_html      TEXT NOT NULL DEFAULT '',
+    fixed_at                   TEXT,
+    fixed_by                   TEXT,
+    created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                 TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 業績目標（四半期ごとに月次の数値をL1別に入力。ユーザー確定仕様）。実績側
 -- (order_value_by_l1/inflow_by_l1)と同じ{month:{l1:金額}}の粒度に正規化しておくことで、
 -- Track A組み立て時に実績と目標を同じロジックで突き合わせられるようにする。
@@ -1577,6 +1604,12 @@ PROGRESS_REPORT_SECTION_KEYS = [
 MONTHLY_REPORT_AREAS = ["product", "marketing_sales", "delivery", "development"]
 MONTHLY_REPORT_COLS = ["status", "findings", "strategy"]
 MONTHLY_REPORT_FIELD_KEYS = [f"{a}_{c}" for a in MONTHLY_REPORT_AREAS for c in MONTHLY_REPORT_COLS]
+
+# パートナー定例レポート（❷テーマ別状況、週次）のArea×Col。全社定例とAreaの区分・列数が
+# 異なるため別定数（上記partner_meeting_reportsのコメント参照）。
+PARTNER_MEETING_AREAS = ["marketing", "development", "product", "finance"]
+PARTNER_MEETING_COLS = ["comment"]
+PARTNER_MEETING_FIELD_KEYS = [f"{a}_{c}" for a in PARTNER_MEETING_AREAS for c in PARTNER_MEETING_COLS]
 
 
 def connect(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -7814,6 +7847,74 @@ def get_monthly_targets_for_quarter(con, year: int, quarter: int) -> dict:
     start_month = (int(quarter) - 1) * 3 + 1
     months = [f"{year}-{str(start_month + i).zfill(2)}" for i in range(3)]
     return get_monthly_targets_range(con, months)
+
+
+# ── パートナー定例レポート（2026-10、週次。CRUDはmonthly_reports系と同型） ──────────
+
+def get_partner_meeting_report(con, week_start: str) -> dict | None:
+    r = con.execute("SELECT * FROM partner_meeting_reports WHERE week_start=?", (week_start,)).fetchone()
+    return dict(r) if r else None
+
+
+def list_partner_meeting_reports(con) -> list[dict]:
+    """新しい週順（week_start降順）。一覧画面向け。"""
+    rows = con.execute("SELECT * FROM partner_meeting_reports ORDER BY week_start DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_latest_partner_meeting_report_before(con, week_start: str) -> dict | None:
+    """指定週より前で最も新しいレコード（翌週作成時の引き継ぎ元）。"""
+    r = con.execute(
+        "SELECT * FROM partner_meeting_reports WHERE week_start<? ORDER BY week_start DESC LIMIT 1",
+        (week_start,)).fetchone()
+    return dict(r) if r else None
+
+
+def create_partner_meeting_report(con, week_start: str, *, carry_forward_from: dict | None = None) -> dict:
+    """carry_forward_fromが渡されれば、そのレコードの<area>_comment_html/_draftをそのまま
+    初期値としてコピーする（全社定例と同じ「前の回の内容を引き継ぐ」仕様）。"""
+    cols = ["week_start"]
+    vals: list = [week_start]
+    for key in PARTNER_MEETING_FIELD_KEYS:
+        for suffix in ("html", "draft"):
+            cols.append(f"{key}_{suffix}")
+            vals.append((carry_forward_from or {}).get(f"{key}_{suffix}", ""))
+    placeholders = ",".join("?" * len(vals))
+    con.execute(f"INSERT INTO partner_meeting_reports ({','.join(cols)}) VALUES ({placeholders})", vals)
+    con.commit()
+    return get_partner_meeting_report(con, week_start)
+
+
+def update_partner_meeting_report_field(con, week_start: str, field_key: str, value: str) -> bool:
+    """1セル分の部分更新（fieldは"<area>_comment_html"または"<area>_comment_draft"）。確定済み
+    の週は何もせずFalseを返す（monthly_reportsと同じサーバー側再チェック方針）。"""
+    base_keys = ({f"{k}_html" for k in PARTNER_MEETING_FIELD_KEYS}
+                 | {f"{k}_draft" for k in PARTNER_MEETING_FIELD_KEYS})
+    if field_key not in base_keys:
+        return False
+    report = get_partner_meeting_report(con, week_start)
+    if not report or report.get("fixed_at"):
+        return False
+    con.execute(
+        f"UPDATE partner_meeting_reports SET {field_key}=?, updated_at=datetime('now') WHERE week_start=?",
+        (value, week_start))
+    con.commit()
+    return True
+
+
+def fix_partner_meeting_report(con, week_start: str, *, fixed_by: str, snapshot_html: str) -> None:
+    con.execute(
+        "UPDATE partner_meeting_reports SET fixed_at=datetime('now'), fixed_by=?, "
+        "track_a_snapshot_html=?, updated_at=datetime('now') WHERE week_start=?",
+        (fixed_by, snapshot_html, week_start))
+    con.commit()
+
+
+def reopen_partner_meeting_report(con, week_start: str) -> None:
+    con.execute(
+        "UPDATE partner_meeting_reports SET fixed_at=NULL, fixed_by=NULL, updated_at=datetime('now') "
+        "WHERE week_start=?", (week_start,))
+    con.commit()
 
 
 # ── 週次タスク設計（2026-10、直近タスク設計の簡素化版） ──────────────────────

@@ -122,6 +122,9 @@ ROUTE_ACCESS: dict[str, dict[str, str]] = {
     # 外部（社外パートナーアカウント）はhidden——Findings/戦略方針に社内限定のコメントが
     # 入る想定のため、「全社員閲覧可」は社内メンバーを指す表現と解釈した（ユーザー確認済み）。
     "/monthly-report": {"経営": "full", "マネージャー": "full", "メンバー": "view", "事務": "view", "外部": "hidden"},
+    # 「定例」ランディング（2026-10）・パートナー定例（週次）。全社定例と同じ閲覧・編集方針。
+    "/regular-meeting": {"経営": "full", "マネージャー": "full", "メンバー": "view", "事務": "view", "外部": "hidden"},
+    "/partner-meeting": {"経営": "full", "マネージャー": "full", "メンバー": "view", "事務": "view", "外部": "hidden"},
 }
 
 
@@ -1188,7 +1191,7 @@ _NAV_MAIN_GROUPS = [
      ("/docs", '<a href="/docs" style="opacity:.85;font-size:13px">資料庫</a>'),
      ("/intake-inbox", '<a href="/intake-inbox" style="opacity:.85;font-size:13px" '
       'title="Jamie/Zoom等から自動受信した会議の取り込み">取り込み</a>')],
-    [("/monthly-report", '<a href="/monthly-report" style="opacity:.85;font-size:13px">全社定例</a>')],
+    [("/regular-meeting", '<a href="/regular-meeting" style="opacity:.85;font-size:13px">定例</a>')],
 ]
 _NAV_ADMIN_GROUPS = [
     ("数字・品質チェック", [
@@ -4443,10 +4446,30 @@ _MONTHLY_REPORT_AREA_LABELS = {
 }
 _MONTHLY_REPORT_COL_LABELS = {"status": "Status", "findings": "Findings", "strategy": "Strategy"}
 
+# ── パートナー定例（2026-10、週次） ──────────────────────────────────────
+_PARTNER_MEETING_AREA_LABELS = {
+    "marketing": "Marketing", "development": "Development",
+    "product": "Product", "finance": "Finance",
+}
+_PARTNER_MEETING_COL_LABELS = {"comment": "Comment"}
+# Pipeline(Sales)の「ステージ降順」＝受注が最上位（ユーザー確定、2026-10-07）。
+_PARTNER_STAGE_RANK = {"受注": 0, "クロージング": 1, "提案": 2, "要件詰め": 3, "初回アポ実施": 4, "保留中": 5}
+_PARTNER_SALES_STAGES = {"提案", "クロージング", "受注"}
+# 生産性ページの縦の閾値線（固定定数。将来変更要望が出た場合のみ設定化を検討する）。
+_PARTNER_PRODUCTIVITY_THRESHOLDS = [
+    (150, "赤字ライン", "#dc2626"), (350, "最低目標", "#d97706"),
+    (400, "目標", "#2563eb"), (500, "優良", "#16a34a"),
+]
+
 
 def _is_yyyymm(s: str) -> bool:
     """パスのURLセグメントがYYYY-MM形式か（ルーティング分岐の判定専用、厳密な暦検証はしない）。"""
     return bool(re.match(r"^\d{4}-\d{2}$", s or ""))
+
+
+def _is_yyyymmdd(s: str) -> bool:
+    """パスのURLセグメントがYYYY-MM-DD形式か（パートナー定例のweek_start判定専用）。"""
+    return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", s or ""))
 
 
 def _monthly_report_l1_order(l1_values) -> list:
@@ -4591,6 +4614,141 @@ def _mr_fmt_week_range(start_week: str, end_week: str) -> str:
     if not a or not b:
         return ""
     return f"{a}~{b}"
+
+
+def _delivery_near_badges_html(start_week: str, end_week: str) -> str:
+    """「開始間近」「終了間近」ワッペン（当該週+2週間以内に開始日/終了日が来るDelivery。
+    2026-10-07、パートナー定例❶Pipeline・全社定例❷Pipelineの両方のDelivery一覧で使う
+    共通ヘルパー。ユーザー確定「両方に適用」）。"""
+    try:
+        this_monday = date.fromisoformat(sfa_db._monday_of(_today_jst()))
+    except (ValueError, TypeError):
+        return ""
+    window_end = this_monday + timedelta(days=14)
+
+    def _in_window(s: str) -> bool:
+        try:
+            d = date.fromisoformat(s)
+        except (ValueError, TypeError):
+            return False
+        return this_monday <= d <= window_end
+
+    badges = []
+    if _in_window(start_week or ""):
+        badges.append('<span class="mr-near-badge mr-near-start">開始間近</span>')
+    if _in_window(end_week or ""):
+        badges.append('<span class="mr-near-badge mr-near-end">終了間近</span>')
+    return "".join(badges)
+
+
+def _partner_meeting_pipeline_lists(con) -> dict:
+    """パートナー定例❶Pipeline（Sales / Deliveryの2バケットのみ。全社定例のSales/Closing/
+    Deliveryとは別物）。
+
+    Sales（確定・ユーザー回答2026-10-07）: dealsテーブルを直接参照し、
+    「ステージが提案/クロージング/受注のいずれか」OR「重要度が高/中」のOR(和集合)。
+    open（status='open'）の商談のみ対象（クローズ済みは除外）。Pipeline金額は
+    value_lumpsum（単発総額）のみ・未入力はNone（呼び出し側でna表示）。
+    並び順: 主担当のマスタ順→ステージ降順(_PARTNER_STAGE_RANK)→Pipeline金額降順→Noの古い順。
+
+    Delivery: 全社定例❷と同じ抽出条件（confidence_override考慮の確度='確定'、
+    status!='完了'）。並び順: 主担当のマスタ順→開始日新しい順（全社定例とは主担当キーが
+    追加される点のみ異なる）。開始間近/終了間近ワッペン・ホバー用の体制/報酬総額も付与する。
+    """
+    sales_rows = con.execute(
+        "SELECT d.id, d.stage, d.owner, d.importance, d.value_lumpsum, a.name AS account_name, "
+        "d.deal_name FROM deals d LEFT JOIN accounts a ON a.id=d.account_id "
+        "WHERE (d.status='open' OR d.status IS NULL)").fetchall()
+    owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)  # 社員マスタ連動
+
+    def _owner_rank(owner: str) -> int:
+        try:
+            return owners.index(owner or "")
+        except ValueError:
+            return len(owners)
+
+    sales = []
+    for r in sales_rows:
+        stage, importance = r["stage"] or "", r["importance"] or ""
+        if not (stage in _PARTNER_SALES_STAGES or importance in ("高", "中")):
+            continue
+        sales.append({
+            "id": r["id"], "stage": stage, "owner": r["owner"] or "",
+            "account_name": r["account_name"] or "", "name": r["deal_name"] or "",
+            "pipeline_value": r["value_lumpsum"],
+        })
+    sales.sort(key=lambda it: (
+        _owner_rank(it["owner"]), _PARTNER_STAGE_RANK.get(it["stage"], 99),
+        -it["pipeline_value"] if it["pipeline_value"] is not None else float("inf"),
+        it["id"]))
+
+    delivery = []
+    for dv in sfa_db.list_deliveries(con):
+        if (dv.get("status") or "") == "完了":
+            continue
+        label, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
+                                        dv.get("confidence_override"))
+        if label != "確定":
+            continue
+        start_week, end_week = dv.get("start_week") or "", dv.get("end_week") or ""
+        team = sorted({f'{a.get("owner") or ""}（{a.get("role") or ""}）'
+                       for a in sfa_db.list_delivery_assignments(con, dv["id"]) if a.get("owner")})
+        delivery.append({
+            "id": dv["id"], "owner": dv.get("deal_owner") or "",
+            "account_name": dv.get("account_name") or "",
+            "name": dv.get("title") or dv.get("deal_name") or "",
+            "start_week": start_week, "end_week": end_week,
+            "responsible_owner": dv.get("responsible_owner") or "",
+            "near_badges": _delivery_near_badges_html(start_week, end_week),
+            "team": "、".join(team),
+            "fee_total": _delivery_fee_grand_total(dv),
+        })
+
+    def _start_desc_key(it: dict):
+        try:
+            return (0, -date.fromisoformat(it["start_week"]).toordinal())
+        except (ValueError, TypeError):
+            return (1, 0)
+
+    delivery.sort(key=lambda it: (_owner_rank(it["owner"]), _start_desc_key(it)))
+    return {"Sales": sales, "Delivery": delivery}
+
+
+def _partner_meeting_productivity_rows(con) -> list:
+    """パートナー定例④生産性ページ。Pipeline❶のDeliveryバケットと同じ抽出条件
+    （確度='確定'・status!='完了'）のDeliveryについて、sfa_db.delivery_weekly_productivity()
+    の既存ロジックをそのまま使って「当該週時点」「着地予想」を算出する（Delivery詳細ページの
+    既存呼び出しパターン=weeksを契約終了週まで延長してから渡す、を踏襲）。
+    並び順（確定・2026-10-07ユーザー要望）: 当該週時点の生産性(current)降順、未算出(None)は末尾。"""
+    this_monday = sfa_db._monday_of(_today_jst())
+    rows = []
+    for dv in sfa_db.list_deliveries(con):
+        if (dv.get("status") or "") == "完了":
+            continue
+        label, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
+                                        dv.get("confidence_override"))
+        if label != "確定":
+            continue
+        start_week, end_week = dv.get("start_week"), dv.get("end_week")
+        try:
+            sd = date.fromisoformat(str(start_week)[:10]) if start_week else date.fromisoformat(this_monday)
+            ed = date.fromisoformat(str(end_week)[:10]) if end_week else sd
+            n = max((ed - sd).days // 7 + 1, 1)
+            weeks = sorted(set(sfa_db._weeks_from(sfa_db._monday_of(sd), n)) | {this_monday})
+        except (ValueError, TypeError):
+            weeks = [this_monday]
+        prod = sfa_db.delivery_weekly_productivity(con, dv["id"], weeks)
+        current = prod["productivity"].get(this_monday)
+        forecast = prod["productivity"].get(weeks[-1])
+        rows.append({
+            "id": dv["id"],
+            "owner": dv.get("responsible_owner") or "",
+            "name": dv.get("title") or dv.get("deal_name") or "",
+            "current": current, "forecast": forecast,
+            "revenue": _delivery_fee_grand_total(dv),
+        })
+    rows.sort(key=lambda r: (0, -r["current"]) if r["current"] is not None else (1, 0))
+    return rows
 
 
 _MONTHLY_REPORT_L1_COLORS = {
@@ -4828,6 +4986,9 @@ _MR_CSS = """<style>
 .mr-plist-date{font-size:11px;color:#8A8578;white-space:nowrap;flex-shrink:0}
 .mr-plist-owner{font-size:10px;color:#2B2723;background:#EEF1F6;padding:1px 6px;border-radius:4px;
   white-space:nowrap;flex-shrink:0}
+.mr-near-badge{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;white-space:nowrap;flex-shrink:0}
+.mr-near-start{color:#2563eb;background:#DBEAFE}
+.mr-near-end{color:#B91C1C;background:#FEE2E2}
 .mr-floating{position:fixed;z-index:500;width:480px;background:#fff;border:1px solid var(--border);
   border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.25);padding:14px;display:none}
 .mr-floating textarea{width:100%;box-sizing:border-box;height:220px;border:1px solid var(--border);
@@ -4910,14 +5071,16 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
 
     # ❷ Pipeline
     pipeline = _monthly_report_pipeline_lists(con)
-    def _plist(items, *, with_dates: bool = False, with_owner: bool = False):
+    def _plist(items, *, with_dates: bool = False, with_owner: bool = False, with_badges: bool = False):
         # Closing/Deliveryのみ開始日・終了日(mm/dd~mm/dd)を付記（2026-10-05ユーザー要望。
         # スペースが限られるため簡易表記）。案件名(.deal)は薄いハイライトで視認性を上げる。
         # 2026-10-06: 日付はアカウント名の前（行の一番左）に配置する（ユーザー要望
         # 「日付はアカウントの前に表示」。当初は案件名の左＝アカウント名の直後だったが、
         # さらにアカウント名より前へ変更）。
         # 2026-10-07: Deliveryのみ、期間(date_html)の直後に責任者バッジを付記する
-        # （ユーザー要望「Delivery案件に責任者も表示してほしい、期間の横に」）。
+        # （ユーザー要望「Delivery案件に責任者も表示してほしい、期間の横に」）。さらに
+        # パートナー定例❶の新設にあわせ「開始間近」「終了間近」ワッペンを全社定例側にも
+        # 遡って適用する（ユーザー確定「両方に適用」）。
         parts = []
         for it in items:
             date_html = ""
@@ -4928,8 +5091,10 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
             owner_html = ""
             if with_owner and (it.get("responsible_owner") or ""):
                 owner_html = f'<span class="mr-plist-owner">{_esc(it["responsible_owner"])}</span>'
+            badges_html = (_delivery_near_badges_html(it.get("start_week", ""), it.get("end_week", ""))
+                           if with_badges else "")
             parts.append(
-                f'<li>{date_html}{owner_html}<span class="acc">{_esc(it["account_name"])}</span>'
+                f'<li>{date_html}{owner_html}{badges_html}<span class="acc">{_esc(it["account_name"])}</span>'
                 f'<span class="deal">{_esc(it["name"])}</span></li>')
         return "".join(parts)
     pipeline_html = f"""
@@ -4941,7 +5106,7 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
         <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Closing（クロージング）</div>
           <ul class="mr-plist">{_plist(pipeline["Closing"], with_dates=True)}</ul></div>
         <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Delivery（受注済み）</div>
-          <ul class="mr-plist">{_plist(pipeline["Delivery"], with_dates=True, with_owner=True)}</ul></div>
+          <ul class="mr-plist">{_plist(pipeline["Delivery"], with_dates=True, with_owner=True, with_badges=True)}</ul></div>
       </div>
       <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">金額は表示しません。全件表示（縦スクロール）。完了済みのDeliveryは表示しません。開始日はSales/Closingが古い順、Deliveryは新しい順です。</div>
     </div>"""
@@ -5334,6 +5499,543 @@ def _monthly_report_standalone_html(con, report_month: str, report: dict) -> str
     <h2>❸ テーマ別の足元状況・戦略方針</h2>
     <table border="1" cellpadding="8" style="border-collapse:collapse">
     <tr><th>Area</th><th>Status</th><th>Findings</th><th>Strategy</th></tr>{"".join(rows)}</table>
+    </body></html>"""
+
+
+def regular_meeting_landing_page(con) -> str:
+    """「定例」ランディング（2026-10新設）。全社定例(月次)/パートナー定例(週次)の2択を
+    大きく表示し、クリックで各機能へ遷移するだけの単純なページ（docs/10 §2-1）。"""
+    return """
+    <div class="card" style="text-align:center;padding:48px 24px">
+      <h2 style="margin:0 0 28px">📋 定例</h2>
+      <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap">
+        <a class="btn" href="/monthly-report" style="font-size:16px;padding:28px 48px;text-decoration:none">
+          📊 全社定例<br><span style="font-size:12px;font-weight:400;opacity:.85">月次</span></a>
+        <a class="btn" href="/partner-meeting" style="font-size:16px;padding:28px 48px;text-decoration:none">
+          🤝 パートナー定例<br><span style="font-size:12px;font-weight:400;opacity:.85">週次</span></a>
+      </div>
+    </div>"""
+
+
+def partner_meeting_index_page(con) -> str:
+    reports = sfa_db.list_partner_meeting_reports(con)
+    this_monday = sfa_db._monday_of(_today_jst())
+    has_current = any(r["week_start"] == this_monday for r in reports)
+    rows = "".join(
+        f'<tr><td><a href="/partner-meeting/{_esc(r["week_start"])}">{_esc(r["week_start"])}</a></td>'
+        f'<td>{"✅ 確定済み" if r["fixed_at"] else "📝 ドラフト"}</td></tr>'
+        for r in reports)
+    create_btn = "" if has_current else f"""
+    <form method="post" action="/partner-meeting/{this_monday}/create">
+      <button class="btn" type="submit">＋ 今週（{_esc(this_monday)}）分を作成</button>
+    </form>"""
+    return f"""
+    <div class="card">
+      <p style="margin:0 0 10px"><a class="btn sec" href="/regular-meeting">← 定例選択に戻る</a></p>
+      <h2 style="margin:0 0 10px">🤝 パートナー定例レポート</h2>
+      {create_btn}
+      <table style="width:100%;border-collapse:collapse;margin-top:12px">
+        <tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">対象週</th>
+            <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">状態</th></tr>
+        {rows}
+      </table>
+    </div>"""
+
+
+def _partner_meeting_cell_html(area: str, col: str, html_val: str, draft_val: str, editable: bool) -> str:
+    """パートナー定例②の1セル。全社定例❸の_monthly_report_cell_htmlと同じUI/操作感
+    （rn-edit/mr-cellクラス・フローティング入力→LLM整形→セル直接編集の流れを流用）だが、
+    JS関数名(pm*)・POSTエンドポイントが異なる別実装（docs/10 §3-2の設計判断参照）。"""
+    key = f"{area}_{col}"
+    val = html_val or ""
+    draft_label = (
+        f'<details style="margin-top:6px"><summary style="font-size:10px;color:#8A8578;'
+        f'cursor:pointer">元の自由記述</summary>'
+        f'<div style="margin-top:4px;padding:8px 10px;background:#F3F1EA;border-radius:6px;'
+        f'font-size:11px;color:#8A8578;white-space:pre-line">{_esc(draft_val)}</div></details>'
+    ) if draft_val else ""
+    if editable:
+        body = (
+            f'<div class="rn-edit mr-cell" id="pmCell-{key}" contenteditable="true" '
+            f'data-ph="（空欄でも構いません）">{val}</div>'
+            f'<button type="button" class="btn sec" style="font-size:11px;margin-top:6px" '
+            f'onclick="pmOpenEditor(\'{area}\',\'{col}\')">✏️ 自由記述から整形</button>'
+            f'{draft_label}'
+        )
+    else:
+        inner = val or '<span class="muted">（空欄）</span>'
+        body = f'<div class="rn-edit mr-cell mr-readonly">{inner}</div>{draft_label}'
+    return body
+
+
+def _partner_meeting_productivity_html(con) -> str:
+    """④生産性ページ。モックアップ（Artifact確認済み、2026-10-07）通り: Delivery一覧を
+    縦に並べ、左=生産性（当該週時点=実線丸・着地予想=点線丸）、右=売上(報酬総額)の横棒。
+    縦の閾値線(_PARTNER_PRODUCTIVITY_THRESHOLDS)は行リスト全体を貫通する1枚のオーバーレイ
+    として描画し、各行はそのオーバーレイより手前(z順で上)にレンダリングする（ユーザー要望
+    「閾値の線は、縦に貫通する線で引く」）。"""
+    rows = _partner_meeting_productivity_rows(con)
+    thresholds = _PARTNER_PRODUCTIVITY_THRESHOLDS
+
+    def _pct(v) -> float:
+        return max(0.0, min(100.0, (v or 0) / 1000 * 100))
+
+    axis_row = "".join(
+        f'<div style="position:absolute;top:0;transform:translateX(-50%);left:{v / 10}%;'
+        f'font-size:10px;color:#a8a296">{v}</div>' for v in (0, 250, 500, 750, 1000))
+    threshold_label_row = "".join(
+        f'<div style="position:absolute;top:{0 if i % 2 == 0 else 12}px;transform:translateX(-50%);'
+        f'left:{val / 10}%;font-size:9px;font-weight:700;color:{color};white-space:nowrap">{val}</div>'
+        for i, (val, _label, color) in enumerate(thresholds))
+    threshold_overlay = "".join(
+        f'<div style="position:absolute;top:0;bottom:0;left:{val / 10}%;width:0;'
+        f'border-left:1.5px dashed {color};opacity:.6"></div>'
+        for val, _label, color in thresholds)
+
+    if not rows:
+        rows_wrap = '<p class="muted" style="padding:14px 0">対象のDeliveryがありません。</p>'
+    else:
+        max_rev = max((r["revenue"] or 0) for r in rows) or 1.0
+        max_rev_scaled = max_rev * 1.15
+
+        def _row_html(r) -> str:
+            cur_pct, fc_pct = _pct(r["current"]), _pct(r["forecast"])
+            track_left, track_width = min(cur_pct, fc_pct), abs(fc_pct - cur_pct)
+            rev_pct = max(0.0, min(100.0, (r["revenue"] or 0) / max_rev_scaled * 100))
+            owner_html = (
+                f'<span style="flex:0 0 auto;font-size:10px;color:#2B2723;background:#EEF1F6;'
+                f'padding:1px 6px;border-radius:4px;white-space:nowrap">{_esc(r["owner"])}</span>'
+                if r["owner"] else "")
+            cur_label = f'{r["current"]:.0f}' if r["current"] is not None else "未算出"
+            fc_label = f'{r["forecast"]:.0f}' if r["forecast"] is not None else "未算出"
+            tip = f'当該週 {cur_label} ／ 着地予想 {fc_label}'
+            return f"""
+            <div style="position:relative;display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;
+              align-items:center;padding:14px 0;border-bottom:1px solid #F3F0E9">
+              <div style="display:flex;align-items:center;gap:8px;min-width:0">{owner_html}
+                <span style="font-size:13px;font-weight:600;color:#2B2723;white-space:nowrap;
+                  overflow:hidden;text-overflow:ellipsis">{_esc(r["name"])}</span></div>
+              <div style="position:relative;height:28px" title="{_esc(tip)}">
+                <div style="position:absolute;top:13px;height:2px;background:#D9D3C7;
+                  left:{track_left}%;width:{track_width}%"></div>
+                <div style="position:absolute;top:6px;left:{cur_pct}%;transform:translateX(-50%);
+                  width:16px;height:16px;border-radius:50%;background:#2F8F7A;border:2px solid #2F8F7A"></div>
+                <div style="position:absolute;top:6px;left:{fc_pct}%;transform:translateX(-50%);
+                  width:16px;height:16px;border-radius:50%;background:#fff;border:2px dashed #2F8F7A"></div>
+              </div>
+              <div style="position:relative;height:28px;display:flex;align-items:center">
+                <div style="position:relative;flex:1 1 auto;height:16px;background:#F3F0E9;border-radius:3px">
+                  <div style="position:absolute;top:0;left:0;bottom:0;width:{rev_pct}%;
+                    background:#D97757;border-radius:3px"></div>
+                </div>
+                <div style="width:60px;text-align:right;font-size:12px;font-weight:700;color:#2B2723;
+                  padding-left:8px">{r["revenue"]:,.0f}</div>
+              </div>
+            </div>"""
+
+        rows_wrap = f"""
+        <div style="position:relative">
+          <div style="position:absolute;inset:0;display:grid;grid-template-columns:200px 1fr 1fr;
+            gap:28px;pointer-events:none">
+            <div></div><div style="position:relative;height:100%">{threshold_overlay}</div><div></div>
+          </div>
+          {"".join(_row_html(r) for r in rows)}
+        </div>"""
+
+    legend_items = "".join(
+        f'<div style="display:flex;gap:6px;align-items:center"><div style="width:10px;height:0;'
+        f'border-top:1.5px dashed {color}"></div><span><span style="color:{color};font-weight:600">'
+        f'{val}</span>: {_esc(label)}</span></div>'
+        for val, label, color in thresholds)
+
+    return f"""
+    <div class="card">
+      <h3 style="margin:0 0 10px;font-size:14px">④ 生産性</h3>
+      <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding-bottom:10px;
+        border-bottom:1px solid #EEEAE1">
+        <div></div>
+        <div style="font-size:13px;font-weight:700;color:#2B2723">案件別生産性</div>
+        <div style="font-size:13px;font-weight:700;color:#2B2723">案件別売上総額</div>
+      </div>
+      <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding:10px 0 2px">
+        <div></div><div style="position:relative;height:14px">{axis_row}</div><div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding-bottom:6px">
+        <div></div><div style="position:relative;height:24px">{threshold_label_row}</div><div></div>
+      </div>
+      {rows_wrap}
+      <div style="display:flex;gap:22px;padding-top:16px;font-size:11px;color:#8A8578;align-items:center;flex-wrap:wrap">
+        <div style="display:flex;gap:6px;align-items:center">
+          <div style="width:12px;height:12px;border-radius:50%;background:#2F8F7A;border:2px solid #2F8F7A"></div>
+          当該週時点</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <div style="width:12px;height:12px;border-radius:50%;background:#fff;border:2px dashed #2F8F7A"></div>
+          着地予想</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <div style="width:12px;height:12px;border-radius:2px;background:#D97757"></div>
+          売上総額（報酬総額・万円）</div>
+        <div style="width:1px;height:14px;background:#E7E3DA"></div>{legend_items}
+      </div>
+      <div class="muted" style="font-size:10px;margin-top:10px">生産性はsfa_db.delivery_weekly_productivity()
+        （累計限界利益×400÷累計稼働率）をそのまま使用。並び順は当該週時点の生産性降順。</div>
+    </div>"""
+
+
+def partner_meeting_page(con, week_start: str, *, qoffset: int = 0) -> str:
+    role = getattr(_request_ctx, "role", None)
+    editable_role = role in ("経営", "マネージャー")
+    report = sfa_db.get_partner_meeting_report(con, week_start)
+
+    header = f"""
+    <div class="card"><p style="margin:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <a class="btn sec" href="/partner-meeting">← 一覧へ戻る</a>
+      <span style="font-weight:700;font-size:15px;margin-left:8px">🤝 パートナー定例：{_esc(week_start)}週</span>
+    </p></div>"""
+
+    if not report:
+        if not editable_role:
+            return header + '<div class="card"><p class="muted">この週のレポートはまだ作成されていません。</p></div>'
+        prev = sfa_db.get_latest_partner_meeting_report_before(con, week_start)
+        return header + f"""
+    <div class="card">
+      <p class="muted">この週のレポートはまだありません。</p>
+      <form method="post" action="/partner-meeting/{week_start}/create">
+        <button class="btn" type="submit">＋ 今週分を作成{"（前回の内容を引き継ぎます）" if prev else ""}</button>
+      </form>
+    </div>"""
+
+    is_fixed = bool(report.get("fixed_at"))
+    editable = editable_role and not is_fixed
+
+    # ① Pipeline（Sales / Delivery）
+    pipeline = _partner_meeting_pipeline_lists(con)
+
+    def _sales_rows_html(items) -> str:
+        parts = []
+        for it in items:
+            pv = f'{it["pipeline_value"]:,.0f}' if it["pipeline_value"] is not None else "na"
+            parts.append(
+                f'<li style="display:flex;gap:8px;align-items:baseline">'
+                f'<span class="mr-plist-date" style="width:64px;flex-shrink:0">{_esc(it["stage"])}</span>'
+                f'<span class="mr-plist-owner">{_esc(it["owner"])}</span>'
+                f'<span class="acc">{_esc(it["account_name"])}</span>'
+                f'<span class="deal">{_esc(it["name"])}</span>'
+                f'<span class="mono muted" style="margin-left:auto;font-size:11px;flex-shrink:0">{pv}</span></li>')
+        return "".join(parts)
+
+    def _delivery_rows_html(items) -> str:
+        parts = []
+        for it in items:
+            rng = _mr_fmt_week_range(it["start_week"], it["end_week"])
+            date_html = f'<span class="mr-plist-date">{_esc(rng)}</span>' if rng else ""
+            resp_html = (f'<span class="mr-plist-owner">{_esc(it["responsible_owner"])}</span>'
+                         if it["responsible_owner"] else "")
+            tip = f'期間: {rng or "未設定"} ／ 体制: {it["team"] or "未設定"} ／ 報酬総額: {it["fee_total"]:,.0f}万'
+            parts.append(
+                f'<li title="{_esc(tip)}">{date_html}{resp_html}{it["near_badges"]}'
+                f'<span class="mr-plist-owner" style="background:#F3EFE7">{_esc(it["owner"])}</span>'
+                f'<span class="acc">{_esc(it["account_name"])}</span>'
+                f'<span class="deal">{_esc(it["name"])}</span></li>')
+        return "".join(parts)
+
+    pipeline_html = f"""
+    <div class="card">
+      <h3 style="margin:0 0 10px;font-size:14px;flex-shrink:0">① Pipeline（Sales / Delivery）</h3>
+      <div class="mr-pipeline-grid" style="grid-template-columns:repeat(2, minmax(0, 1fr))">
+        <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Sales</div>
+          <ul class="mr-plist">{_sales_rows_html(pipeline["Sales"])}</ul></div>
+        <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Delivery</div>
+          <ul class="mr-plist">{_delivery_rows_html(pipeline["Delivery"])}</ul></div>
+      </div>
+      <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">
+        Salesはステージ提案以降または重要度中以上の商談（OR）。Pipeline金額は単発総額(value_lumpsum)、未入力はna。
+        Deliveryにカーソルを合わせると期間・体制・報酬総額を表示します。
+      </div>
+    </div>"""
+
+    # ② テーマ別状況
+    tb_rows = []
+    for area in sfa_db.PARTNER_MEETING_AREAS:
+        label = _PARTNER_MEETING_AREA_LABELS[area]
+        cell = _partner_meeting_cell_html(
+            area, "comment", report.get(f"{area}_comment_html"), report.get(f"{area}_comment_draft"), editable)
+        tb_rows.append(f'<tr><td>{_esc(label)}</td><td>{cell}</td></tr>')
+    fix_controls = ""
+    if editable_role:
+        if is_fixed:
+            fix_controls = f"""
+            <form method="post" action="/partner-meeting/{week_start}/reopen" style="display:inline">
+              <button class="btn sec" type="submit">🔓 再オープン</button></form>"""
+        else:
+            fix_controls = f"""
+            <form method="post" action="/partner-meeting/{week_start}/fix" style="display:inline"
+              onsubmit="return confirm('この週のレポートをFixします。よろしいですか？')">
+              <button class="btn" type="submit">✅ Fixする</button></form>"""
+    status_badge = (
+        f'<span class="pill" style="background:#EAF1E3;color:#44603A">確定済み（{_esc(report.get("fixed_by") or "")}）</span>'
+        if is_fixed else '<span class="pill" style="background:#F5E6DD;color:#A8492C">ドラフト</span>')
+    track_b_html = f"""
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;flex-shrink:0">
+        <h3 style="margin:0;font-size:14px">② テーマ別状況</h3>
+        <div style="display:flex;align-items:center;gap:8px">{fix_controls}</div>
+      </div>
+      <div style="margin-bottom:8px;flex-shrink:0">{status_badge}</div>
+      <div class="mr-table-scroll">
+        <table class="mr-table">
+          <tr><th>Area</th><th>Comment</th></tr>
+          {"".join(tb_rows)}
+        </table>
+      </div>
+    </div>"""
+
+    # ③ 業績推移（全社定例❶をそのまま流用。アンカー月＝この週が属する暦月）
+    anchor_month = week_start[:7]
+    ta = monthly_report_track_a(con, anchor_month, qoffset=qoffset)
+    prev_qs, next_qs = f"?qoffset={qoffset - 1}", f"?qoffset={qoffset + 1}"
+    first_m, last_m = ta["months"][0], ta["months"][-1]
+    period_label = f"{first_m[:4]}年{int(first_m[5:])}月 〜 {last_m[:4]}年{int(last_m[5:])}月"
+    ov_panel = _monthly_report_stacked_bar_panel_html(
+        "受注高", ta["months"], ta["l1_order"], ta["order_value_actual"], ta["order_value_target"], metric="order_value")
+    sales_panel = _monthly_report_stacked_bar_panel_html(
+        "売上", ta["months"], ta["l1_order"], ta["sales_actual"], ta["sales_target"], metric="sales")
+    mr_deliveries_json = json.dumps(
+        {"order_value": ta["order_value_deliveries"], "sales": ta["sales_deliveries"]}, ensure_ascii=False)
+    mr_l1_names_json = json.dumps(ta["l1_order"], ensure_ascii=False)
+    track_a_html = f"""
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-shrink:0">
+        <h3 style="margin:0;font-size:14px">③ 業績推移（受注高 / 売上）</h3>
+        <div style="display:flex;align-items:center;gap:10px">
+          <a class="btn sec" style="font-size:11px" href="/partner-meeting/{week_start}{prev_qs}">◀ 前四半期</a>
+          <span class="mono muted" style="font-size:12px">{_esc(period_label)}</span>
+          <a class="btn sec" style="font-size:11px" href="/partner-meeting/{week_start}{next_qs}">翌四半期 ▶</a>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:18px;flex:1;min-height:0">
+        <div style="flex:1;min-height:0;display:flex;flex-direction:column">{ov_panel}</div>
+        <div style="flex:1;min-height:0;display:flex;flex-direction:column">{sales_panel}</div>
+      </div>
+    </div>"""
+
+    # ④ 生産性
+    productivity_html = _partner_meeting_productivity_html(con)
+
+    floating_editor = f"""
+    <div id="pmFloating" class="mr-floating">
+      <div style="font-size:10px;font-weight:700;color:#8A8578;text-transform:uppercase;margin-bottom:8px">自由記述 → LLMで整形</div>
+      <textarea id="pmDraftText" placeholder="気づいたことを自由に書く…"></textarea>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+        <button type="button" class="btn sec" onclick="pmCloseEditor()">閉じる</button>
+        <button type="button" class="btn" onclick="pmRunLLM()">LLMで整形</button>
+      </div>
+    </div>"""
+
+    script = f"""
+    <script>
+    var PM_WEEK = {json.dumps(week_start, ensure_ascii=False)};
+    var MR_DELIVERIES = {mr_deliveries_json};
+    var MR_L1_NAMES = {mr_l1_names_json};
+    // ③業績推移は全社定例❶の_monthly_report_stacked_bar_panel_html()をそのまま呼んでいるため、
+    // 生成されたonclick/onmousemove属性が参照するmrShowDeliveryTooltip/mrHideTooltip/
+    // mrPinTooltip等のJS関数名は変更できない（全社定例monthly_report_page()のscriptから
+    // 同名のまま複製。ページが同時に1つしか読み込まれないため名前衝突は起きない）。
+    function mrL1NameOf(l1idx) {{ return (l1idx === null || l1idx === undefined) ? null : MR_L1_NAMES[l1idx]; }}
+    function _mrDeliveryRows(metric, month, l1idx) {{
+      var l1 = mrL1NameOf(l1idx);
+      var list = ((MR_DELIVERIES[metric] || {{}})[month] || []);
+      return {{l1: l1, rows: l1 ? list.filter(function(d) {{ return (d.l1 || '未設定') === l1; }}) : list}};
+    }}
+    function _mrDeliveryBoxHtml(metric, month, l1idx, closable) {{
+      var r = _mrDeliveryRows(metric, month, l1idx), l1 = r.l1, rows = r.rows;
+      var fmt = function(v) {{ return Math.round(v).toLocaleString(); }};
+      var esc = function(s) {{ var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }};
+      var closeBtn = closable
+        ? '<span class="mr-tip-close" style="cursor:pointer;color:#8A8578;font-weight:400;margin-left:8px">✕</span>' : '';
+      var head = '<div class="mr-tip-head" style="padding:8px 10px;font-size:11px;color:#2B2723;font-weight:700;' +
+        'border-bottom:1px solid #E8E3D9;margin-bottom:2px;display:flex;justify-content:space-between;align-items:center;' +
+        (closable ? 'cursor:move' : '') + '">' +
+        '<span>' + esc(month) + (l1 ? ' ' + esc(l1) : '') + '</span>' + closeBtn + '</div>';
+      if (!rows.length) {{
+        return head + '<div style="padding:8px 10px;color:#8A8578;font-size:11px">案件データなし</div>';
+      }}
+      return head + rows.map(function(d) {{
+          return '<div style="padding:4px 10px;font-size:11px;color:#2B2723;white-space:normal;word-break:break-word">' +
+            esc(d.name) + ' <b>' + fmt(d.value) + '万</b></div>';
+        }}).join('') + '<div style="height:6px"></div>';
+    }}
+    function _mrClampPos(x0, y0, w, h) {{
+      var x = x0 + 14, y = y0 + 14;
+      if (x + w > window.innerWidth) x = x0 - w;
+      if (y + h > window.innerHeight) y = y0 - h;
+      return {{x: Math.max(4, x), y: Math.max(4, y)}};
+    }}
+    function mrShowDeliveryTooltip(evt, metric, month, l1idx) {{
+      var tip = document.getElementById('mrTooltip');
+      if (!tip) return;
+      tip.innerHTML = _mrDeliveryBoxHtml(metric, month, l1idx, false);
+      tip.style.display = 'block';
+      var p = _mrClampPos(evt.clientX, evt.clientY, tip.offsetWidth || 320, tip.offsetHeight || 120);
+      tip.style.left = p.x + 'px'; tip.style.top = p.y + 'px';
+    }}
+    function mrHideTooltip() {{
+      var tip = document.getElementById('mrTooltip');
+      if (tip) tip.style.display = 'none';
+    }}
+    var mrPinnedBoxes = {{}};
+    var mrPinZ = 500;
+    function _mrPinKey(metric, month, l1idx) {{
+      return metric + '|' + month + '|' + (l1idx === null || l1idx === undefined ? '' : l1idx);
+    }}
+    function mrPinTooltip(evt, metric, month, l1idx) {{
+      evt.stopPropagation();
+      mrHideTooltip();
+      var key = _mrPinKey(metric, month, l1idx);
+      if (mrPinnedBoxes[key]) {{ mrUnpinBox(key); return; }}
+      var box = document.createElement('div');
+      box.className = 'mr-pinned-tip';
+      box.dataset.key = key;
+      box.style.cssText = 'position:fixed;z-index:' + (++mrPinZ) + ';background:#fff;' +
+        'border:1px solid #E8E3D9;border-radius:8px;box-shadow:0 16px 48px rgba(0,0,0,.18);' +
+        'max-width:320px;overflow:hidden';
+      box.innerHTML = _mrDeliveryBoxHtml(metric, month, l1idx, true);
+      document.body.appendChild(box);
+      var n = Object.keys(mrPinnedBoxes).length;
+      var p = _mrClampPos(evt.clientX + n * 16, evt.clientY + n * 16, 320, 140);
+      box.style.left = p.x + 'px'; box.style.top = p.y + 'px';
+      mrPinnedBoxes[key] = box;
+      var closeEl = box.querySelector('.mr-tip-close');
+      if (closeEl) closeEl.addEventListener('click', function() {{ mrUnpinBox(key); }});
+      _mrMakeDraggable(box);
+    }}
+    function mrUnpinBox(key) {{
+      var box = mrPinnedBoxes[key];
+      if (box) {{ box.remove(); delete mrPinnedBoxes[key]; }}
+    }}
+    function _mrMakeDraggable(box) {{
+      var handle = box.querySelector('.mr-tip-head');
+      if (!handle) return;
+      handle.addEventListener('mousedown', function(e) {{
+        if (e.target.closest('.mr-tip-close')) return;
+        e.preventDefault();
+        box.style.zIndex = ++mrPinZ;
+        var startX = e.clientX, startY = e.clientY;
+        var rect = box.getBoundingClientRect();
+        var origLeft = rect.left, origTop = rect.top;
+        function onMove(ev) {{
+          box.style.left = (origLeft + (ev.clientX - startX)) + 'px';
+          box.style.top = (origTop + (ev.clientY - startY)) + 'px';
+        }}
+        function onUp() {{
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        }}
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      }});
+    }}
+    var pmCurArea = null, pmCurCol = null;
+    function pmOpenEditor(area, col) {{
+      pmCurArea = area; pmCurCol = col;
+      var box = document.getElementById('pmFloating');
+      var cell = document.getElementById('pmCell-' + area + '_' + col);
+      var r = cell.getBoundingClientRect();
+      box.style.display = 'block';
+      var w = box.offsetWidth || 480, h = box.offsetHeight || 220;
+      var left = Math.min(r.left, window.innerWidth - w - 8);
+      var top = r.bottom + 6;
+      if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8);
+      box.style.left = Math.max(8, left) + 'px'; box.style.top = top + 'px';
+      document.getElementById('pmDraftText').value = '';
+      document.getElementById('pmDraftText').focus();
+    }}
+    function pmCloseEditor() {{ document.getElementById('pmFloating').style.display = 'none'; }}
+    function pmRunLLM() {{
+      var draft = document.getElementById('pmDraftText').value;
+      fetch('/partner-meeting/' + PM_WEEK + '/llm-format', {{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'area=' + encodeURIComponent(pmCurArea) + '&col=' + encodeURIComponent(pmCurCol)
+             + '&draft=' + encodeURIComponent(draft)}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok) {{ alert('整形エラー: ' + (d.error || '')); return; }}
+         location.reload();
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function pmSaveField(area, col) {{
+      var el = document.getElementById('pmCell-' + area + '_' + col); if (!el) return;
+      fetch('/partner-meeting/' + PM_WEEK + '/field', {{method:'POST',
+        headers:{{'Content-Type':'application/x-www-form-urlencoded'}},
+        body:'field=' + encodeURIComponent(area + '_' + col + '_html')
+             + '&value=' + encodeURIComponent(el.innerHTML)}})
+       .then(function(r){{return r.json();}}).then(function(d){{
+         if(!d.ok) alert('保存エラー: ' + (d.error || ''));
+       }}).catch(function(){{ alert('通信エラー'); }});
+    }}
+    function mrSyncTabHeight() {{
+      var active = document.querySelector('.mr-tab-panel.active .card');
+      if (!active) return;
+      var top = active.getBoundingClientRect().top;
+      var h = window.innerHeight - top - 20;
+      active.style.height = Math.max(h, 240) + 'px';
+    }}
+    function pmSwitchTab(n) {{
+      document.querySelectorAll('.mr-tab-panel').forEach(function(p, i) {{ p.classList.toggle('active', i === n - 1); }});
+      document.querySelectorAll('.mr-tab-btn').forEach(function(b, i) {{ b.classList.toggle('active', i === n - 1); }});
+      Object.keys(mrPinnedBoxes).forEach(mrUnpinBox);
+      mrHideTooltip();
+      mrSyncTabHeight();
+    }}
+    window.addEventListener('resize', mrSyncTabHeight);
+    document.addEventListener('DOMContentLoaded', function() {{
+      document.querySelectorAll('.mr-cell[contenteditable]').forEach(function(el) {{
+        el.addEventListener('blur', function() {{
+          var parts = el.id.replace('pmCell-', '').split('_');
+          var col = parts.pop(); var area = parts.join('_');
+          pmSaveField(area, col);
+        }});
+      }});
+      mrSyncTabHeight();
+    }});
+    </script>"""
+
+    tabbar = """
+    <div class="mr-tabbar">
+      <button type="button" class="mr-tab-btn active" onclick="pmSwitchTab(1)">① Pipeline</button>
+      <button type="button" class="mr-tab-btn" onclick="pmSwitchTab(2)">② テーマ別状況</button>
+      <button type="button" class="mr-tab-btn" onclick="pmSwitchTab(3)">③ 業績推移</button>
+      <button type="button" class="mr-tab-btn" onclick="pmSwitchTab(4)">④ 生産性</button>
+    </div>"""
+    tab_panels = f"""
+    <div class="mr-tab-panel active" id="pmTabPanel1">{pipeline_html}</div>
+    <div class="mr-tab-panel" id="pmTabPanel2">{track_b_html}</div>
+    <div class="mr-tab-panel" id="pmTabPanel3">{track_a_html}</div>
+    <div class="mr-tab-panel" id="pmTabPanel4">{productivity_html}</div>"""
+
+    mr_tooltip_html = ('<div id="mrTooltip" style="position:fixed;display:none;z-index:500;'
+                       'background:#fff;border:1px solid #E8E3D9;border-radius:8px;'
+                       'box-shadow:0 16px 48px rgba(0,0,0,.18);max-width:320px;overflow:hidden;'
+                       'pointer-events:none"></div>')
+    return header + tabbar + tab_panels + floating_editor + mr_tooltip_html + _MR_CSS + script
+
+
+def _partner_meeting_standalone_html(con, week_start: str, report: dict) -> str:
+    """Fixスナップショット用の単体HTML（全社定例の_monthly_report_standalone_htmlと同型）。"""
+    pipeline = _partner_meeting_pipeline_lists(con)
+    def _plist(items):
+        return "".join(f'<li>{_esc(it["account_name"])} / {_esc(it["name"])}</li>' for it in items)
+    rows = []
+    for area in sfa_db.PARTNER_MEETING_AREAS:
+        label = _PARTNER_MEETING_AREA_LABELS[area]
+        rows.append(f'<tr><td>{_esc(label)}</td><td>{report.get(f"{area}_comment_html") or ""}</td></tr>')
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8">
+    <title>パートナー定例レポート {_esc(week_start)}</title></head><body style="font-family:sans-serif;padding:24px">
+    <h1>パートナー定例レポート：{_esc(week_start)}週</h1>
+    <h2>① Pipeline</h2>
+    <div style="display:flex;gap:24px"><div><h3>Sales</h3><ul>{_plist(pipeline["Sales"])}</ul></div>
+    <div><h3>Delivery</h3><ul>{_plist(pipeline["Delivery"])}</ul></div></div>
+    <h2>② テーマ別状況</h2>
+    <table border="1" cellpadding="8" style="border-collapse:collapse">
+    <tr><th>Area</th><th>Comment</th></tr>{"".join(rows)}</table>
     </body></html>"""
 
 
@@ -25334,6 +26036,18 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     except (ValueError, TypeError):
                         _mr_qoffset = 0
                     self._send(render(monthly_report_page(con, _mr_month, qoffset=_mr_qoffset), wide=True))
+                elif path == "/regular-meeting":
+                    self._send(render(regular_meeting_landing_page(con)))
+                elif path == "/partner-meeting":
+                    self._send(render(partner_meeting_index_page(con), wide=True))
+                elif (path.startswith("/partner-meeting/") and len(path.split("/")) == 3
+                      and _is_yyyymmdd(path.split("/")[2])):
+                    _pm_week = path.split("/")[2]
+                    try:
+                        _pm_qoffset = int(self._qs().get("qoffset", ["0"])[0])
+                    except (ValueError, TypeError):
+                        _pm_qoffset = 0
+                    self._send(render(partner_meeting_page(con, _pm_week, qoffset=_pm_qoffset), wide=True))
                 elif path == "/reports":
                     self._send(reports_index_page(con).encode("utf-8"))
                 elif path == "/reports/manage":
@@ -28463,6 +29177,80 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     if sfa_db.get_monthly_report(con, _mr_month):
                         sfa_db.reopen_monthly_report(con, _mr_month)
                     self._redirect(f"/monthly-report/{_mr_month}")
+
+                # ── パートナー定例（2026-10、週次。POSTは/monthly-reportの同名ルートと同型） ──
+                elif (path.startswith("/partner-meeting/") and path.endswith("/create")
+                      and len(path.split("/")) == 4 and _is_yyyymmdd(path.split("/")[2])):
+                    _pm_week = path.split("/")[2]
+                    if not sfa_db.get_partner_meeting_report(con, _pm_week):
+                        _prev = sfa_db.get_latest_partner_meeting_report_before(con, _pm_week)
+                        sfa_db.create_partner_meeting_report(con, _pm_week, carry_forward_from=_prev)
+                    self._redirect(f"/partner-meeting/{_pm_week}")
+                elif (path.startswith("/partner-meeting/") and path.endswith("/field")
+                      and len(path.split("/")) == 4 and _is_yyyymmdd(path.split("/")[2])):
+                    _pm_week = path.split("/")[2]
+                    _field = f.get("field", "")
+                    _value = f.get("value", "")
+                    _base_keys = ({f"{k}_html" for k in sfa_db.PARTNER_MEETING_FIELD_KEYS}
+                                  | {f"{k}_draft" for k in sfa_db.PARTNER_MEETING_FIELD_KEYS})
+                    _ok, _err = False, ""
+                    if _field not in _base_keys:
+                        _err = "不正なフィールド"
+                    else:
+                        _clean = _sanitize_rich_html(_value) if _field.endswith("_html") else _value
+                        _ok = sfa_db.update_partner_meeting_report_field(con, _pm_week, _field, _clean)
+                        if not _ok:
+                            _err = "確定済みのため編集できません（再オープンしてください）"
+                    _resp = json.dumps({"ok": _ok} if _ok else {"ok": False, "error": _err}, ensure_ascii=False)
+                    self._send(_resp.encode("utf-8"), ctype="application/json")
+                elif (path.startswith("/partner-meeting/") and path.endswith("/llm-format")
+                      and len(path.split("/")) == 4 and _is_yyyymmdd(path.split("/")[2])):
+                    _pm_week = path.split("/")[2]
+                    _area, _col, _draft = f.get("area", ""), f.get("col", ""), f.get("draft", "")
+                    _ok, _err, _html_out = False, "", ""
+                    _field_key = f"{_area}_{_col}"
+                    if _field_key not in sfa_db.PARTNER_MEETING_FIELD_KEYS:
+                        _err = "不正なフィールド"
+                    elif not (_draft or "").strip():
+                        _err = "自由記述が空です"
+                    else:
+                        _area_label = _PARTNER_MEETING_AREA_LABELS.get(_area, _area)
+                        _col_label = _PARTNER_MEETING_COL_LABELS.get(_col, _col)
+                        _prompt = (
+                            f"以下は社内のパートナー定例レポートの「{_area_label}」領域・「{_col_label}」欄に"
+                            f"書かれた自由記述です。表のセル幅に収まるよう、簡潔な箇条書き（「・」始まり、"
+                            f"2〜4行程度）に整形してください。HTMLタグは使わず、プレーンテキストの"
+                            f"箇条書きのみを出力してください。\n\n---\n{_draft}")
+                        _llm_out = _call_claude_haiku(_prompt, timeout=30, max_wait=35, max_tokens=500)
+                        if not _llm_out:
+                            _err = "LLM呼び出しに失敗しました（しばらくしてから再度お試しください）"
+                        else:
+                            _html_out = _sanitize_rich_html(
+                                "".join(f"<div>{_esc(line)}</div>" for line in _llm_out.splitlines() if line.strip()))
+                            _ok = sfa_db.update_partner_meeting_report_field(con, _pm_week, f"{_field_key}_html", _html_out)
+                            if _ok:
+                                sfa_db.update_partner_meeting_report_field(con, _pm_week, f"{_field_key}_draft", _draft)
+                            else:
+                                _err = "確定済みのため編集できません（再オープンしてください）"
+                    _resp = json.dumps({"ok": _ok, "html": _html_out} if _ok else {"ok": False, "error": _err},
+                                       ensure_ascii=False)
+                    self._send(_resp.encode("utf-8"), ctype="application/json")
+                elif (path.startswith("/partner-meeting/") and path.endswith("/fix")
+                      and len(path.split("/")) == 4 and _is_yyyymmdd(path.split("/")[2])):
+                    _pm_week = path.split("/")[2]
+                    _pm_report = sfa_db.get_partner_meeting_report(con, _pm_week)
+                    if _pm_report and not _pm_report.get("fixed_at"):
+                        _pm_snapshot = _partner_meeting_standalone_html(con, _pm_week, _pm_report)
+                        sfa_db.fix_partner_meeting_report(
+                            con, _pm_week, fixed_by=getattr(_request_ctx, "email", None) or "",
+                            snapshot_html=_pm_snapshot)
+                    self._redirect(f"/partner-meeting/{_pm_week}")
+                elif (path.startswith("/partner-meeting/") and path.endswith("/reopen")
+                      and len(path.split("/")) == 4 and _is_yyyymmdd(path.split("/")[2])):
+                    _pm_week = path.split("/")[2]
+                    if sfa_db.get_partner_meeting_report(con, _pm_week):
+                        sfa_db.reopen_partner_meeting_report(con, _pm_week)
+                    self._redirect(f"/partner-meeting/{_pm_week}")
 
                 # ── 社内PJ管理（#163、2026-09-06） ──
                 elif path == "/deal-issue-subitem/new":
