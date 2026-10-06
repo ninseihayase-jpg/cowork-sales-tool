@@ -530,6 +530,13 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> tuple[str, 
     ms_label = _norm_upd(parsed.get("next_milestone_label"))
     ms_type = _norm_upd(parsed.get("next_milestone_type"))
     memo_add = _norm_upd(parsed.get("memo_addition"))
+    # 2026-10-06ユーザー要望「活動日と種別も確認して」: 読み取れていても必ず人間の目で
+    # 確認させる対象を、次回MS3項目だけでなく活動日・種別（活動種別）にも広げる
+    # （Noneは「会話からは読み取れなかった」、それ以外は読み取れた値。confirm_itemsで使う）。
+    activity_date_val = parsed.get("activity_date")
+    activity_date_val = None if (not activity_date_val or activity_date_val == "【記載なし】") else activity_date_val
+    activity_type_val = parsed.get("activity_type")
+    activity_type_val = None if (not activity_type_val or activity_type_val == "【記載なし】") else activity_type_val
 
     lines = [
         "【SFA更新テンプレート】",
@@ -540,8 +547,8 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> tuple[str, 
         f"現状メモ: {cur_memo}",
         "",
         "─── 今回の活動 ───",
-        f"*活動日: {v(parsed.get('activity_date'))}*",
-        f"*種別: {v(parsed.get('activity_type'))}*　　＊{' / '.join(_atypes)}",
+        f"*活動日: {v(activity_date_val)}*",
+        f"*種別: {v(activity_type_val)}*　　＊{' / '.join(_atypes)}",
         f"相手: {v(parsed.get('contact_name'))}",
         f"内容: {v(parsed.get('activity_content'))}",
         "",
@@ -569,8 +576,13 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> tuple[str, 
     # 次回MSが空欄/誤りのままDB更新される事故が繰り返し起きたため、AIの読み取り精度に
     # 関わらず常に人間の目で確認させる。ステージは変更頻度が低く「変更なし」も正当な
     # 回答のため、AIが読み取れなかった時だけ確認を促す（次回MS3項目とは異なる扱い）。
+    # 2026-10-06ユーザー要望「活動日と種別も確認して」: 活動日・種別も同じ「読み取れて
+    # いても必ず確認」の対象に追加（年省略日付の誤推定バグ[[nego-collection-slack-bot-flow]]
+    # 等、AIの読み取り自体が誤っていてもテンプレート本文だけでは見落とされるため）。
     # 各要素は (フィールド名, 会話から読み取れた値 or None)。Noneは「読み取れず入力が必要」。
     confirm_items = [
+        ("活動日", activity_date_val),
+        ("種別", activity_type_val),
         ("次回MS日", None if ms_date == "-" else ms_date),
         ("次回MSラベル", None if ms_label == "-" else ms_label),
         ("次回MS種別", None if ms_type == "-" else ms_type),
@@ -1429,6 +1441,8 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 _poster = event.get("user")
                 _mention = f"<@{_poster}> " if _poster else ""
                 _examples = {
+                    "活動日": "活動日: 2026-10-06",
+                    "種別": "種別: 面談",
                     "次回MS日": "次回MS日: 2026-07-31",
                     "次回MSラベル": "次回MSラベル: (調整中)2次面談/デモあり",
                     "次回MS種別": "次回MS種別: アポ",
@@ -1443,7 +1457,7 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 _lines = "\n".join(_confirm_line(f, v) for f, v in confirm_items)
                 _has_blank = any(v is None for _, v in confirm_items)
                 post_message(channel, thread_ts,
-                    f"{_mention}⚠️ 次回MSの内容を確認してください（正しければそのまま「確定」、"
+                    f"{_mention}⚠️ 以下の内容を確認してください（正しければそのまま「確定」、"
                     "修正があれば該当行だけ返信してください）"
                     + ("。未読み取り項目は返信で埋めてください" if _has_blank else "")
                     + "。\n" + _lines)

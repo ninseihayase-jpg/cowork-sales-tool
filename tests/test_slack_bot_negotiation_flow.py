@@ -76,7 +76,8 @@ def test_draft_template_does_not_leak_none_for_unset_next_ms(monkeypatch, con):
 
 
 # ── draft_template: confirm_items（2026-09-10改訂: 次回MS3項目は読み取れていても
-#    必ず確認対象に含む。ステージは読み取れなかった時だけ含む） ──
+#    必ず確認対象に含む。ステージは読み取れなかった時だけ含む。2026-10-06さらに改訂:
+#    活動日・種別も同様に「読み取れていても必ず確認」の対象に追加） ──
 
 def test_draft_template_reports_blank_next_ms_and_stage_as_confirm_items(monkeypatch, con):
     parsed = {**AI_FILLED, "stage_update": None, "next_milestone_date": None,
@@ -85,8 +86,21 @@ def test_draft_template_reports_blank_next_ms_and_stage_as_confirm_items(monkeyp
     deal = {"id": 1, "deal_name": "X", "stage": "要件詰め"}
     _, confirm_items = slack_bot.draft_template("会話内容", deal, con)
     assert confirm_items == [
+        ("活動日", AI_FILLED["activity_date"]), ("種別", AI_FILLED["activity_type"]),
         ("次回MS日", None), ("次回MSラベル", None), ("次回MS種別", None), ("ステージ", None),
     ]
+
+
+def test_draft_template_reports_blank_activity_date_and_type_as_confirm_items(monkeypatch, con):
+    """2026-10-06ユーザー要望「活動日と種別も確認して」の回帰テスト:
+    読み取れなかった場合はNone(未読み取り)としてconfirm_itemsに含まれる。"""
+    parsed = {**AI_FILLED, "activity_date": None, "activity_type": "【記載なし】"}
+    monkeypatch.setattr(slack_bot, "_call_claude", lambda prompt: json.dumps(parsed))
+    deal = {"id": 1, "deal_name": "X", "stage": "提案"}
+    _, confirm_items = slack_bot.draft_template("会話内容", deal, con)
+    values = dict(confirm_items)
+    assert values["活動日"] is None
+    assert values["種別"] is None
 
 
 def test_draft_template_treats_literal_kisai_nashi_as_blank_too(monkeypatch):
@@ -111,6 +125,8 @@ def test_draft_template_always_confirms_next_ms_even_when_ai_filled_them(monkeyp
     deal = {"id": 1, "deal_name": "X", "stage": "要件詰め"}
     _, confirm_items = slack_bot.draft_template("会話内容", deal, con)
     assert confirm_items == [
+        ("活動日", AI_FILLED["activity_date"]),
+        ("種別", AI_FILLED["activity_type"]),
         ("次回MS日", "2026-10-01"),
         ("次回MSラベル", "次回打合せ"),
         ("次回MS種別", "アポ"),
@@ -412,10 +428,12 @@ def test_identifying_confirm_posts_next_ms_verification_even_when_ai_filled(monk
     event = {"channel": "C1", "text": "はい", "ts": "confirm_id1", "thread_ts": "t7", "user": "U1"}
     slack_bot.handle_message(event, con)
 
-    verify_msgs = [m for m in sent if "次回MSの内容を確認してください" in m.get("text", "")]
+    verify_msgs = [m for m in sent if "以下の内容を確認してください" in m.get("text", "")]
     assert len(verify_msgs) == 1
     body = verify_msgs[0]["text"]
     assert "<@U1>" in body
+    assert f"活動日: {AI_FILLED['activity_date']}" in body
+    assert f"種別: {AI_FILLED['activity_type']}" in body
     assert "次回MS日: 2026-10-01" in body
     assert "次回MSラベル: 次回打合せ" in body
     assert "次回MS種別: アポ" in body
