@@ -4537,12 +4537,20 @@ def monthly_report_track_a(con, report_month: str, qoffset: int = 0) -> dict:
 
 
 def _monthly_report_pipeline_lists(con) -> dict:
-    """❷Pipeline（Sales/Closing/Delivery）。list_deliveries()は既にcreated_at DESCで
-    返るため、ここでは確度バケット振り分けだけ行う（並べ替えは不要）。
+    """❷Pipeline（Sales/Closing/Delivery）。
+    2026-10-06ユーザー要望により、表示仕様を次の通りに変更:
+    - 完了済み(status='完了')のDeliveryは一覧から除外する（「Delivery案件は、完了した案件は
+      載せない」）。Sales/Closingは確度ステージ上まだ完了になり得ないため実質無害だが、
+      3バケットとも同一ロジックで統一的に除外する。
+    - 開始日(start_week)が古い順(昇順)に全バケットを並べ替える（「案件はすべて、開始日が
+      古いものから表示」）。start_weekが未設定（Sales段階ではまだスケジュール未確定の
+      ことが多い）の案件はソートキーとして扱えないため、常に末尾へ回す。
     start_week/end_week（2026-10-05追加）はClosing/Deliveryの開始日・終了日表示用。"""
     buckets: dict = {"Sales": [], "Closing": [], "Delivery": []}
     label_to_bucket = {"見込み(提案中)": "Sales", "見込み(クロージング)": "Closing", "確定": "Delivery"}
     for dv in sfa_db.list_deliveries(con):
+        if (dv.get("status") or "") == "完了":
+            continue
         label, _ = _delivery_confidence(dv.get("deal_stage") or "", dv.get("deal_status") or "open",
                                         dv.get("confidence_override"))
         bucket = label_to_bucket.get(label)
@@ -4554,6 +4562,15 @@ def _monthly_report_pipeline_lists(con) -> dict:
             "start_week": dv.get("start_week") or "",
             "end_week": dv.get("end_week") or "",
         })
+
+    def _start_sort_key(it: dict):
+        try:
+            return (0, date.fromisoformat(it["start_week"]))
+        except (ValueError, TypeError):
+            return (1, date.max)
+
+    for _bucket_items in buckets.values():
+        _bucket_items.sort(key=_start_sort_key)
     return buckets
 
 
@@ -4576,6 +4593,10 @@ _MONTHLY_REPORT_L1_COLORS = {
     "コスト削減": "#334155", "AX": "#64748b", "コンサルティング": "#94a3b8",
 }
 _MONTHLY_REPORT_L1_FALLBACK_COLORS = ["#cbd5e1", "#e2e8f0", "#f1f5f9"]
+# 2026-10-06ユーザー要望「目標は、点線ではなく、薄い水色とかで」: 目標バーはL1別の内訳では
+# なく単色の薄い水色で総額を一本のブロックとして表す（従来は各L1点線枠を積み上げていたが、
+# 目標は実績と違い内訳の裏付けが無い集計値のため、単色でよい）。
+_MONTHLY_REPORT_TARGET_COLOR = "#BFDBFE"
 
 
 def _monthly_report_l1_color(l1: str, l1_order: list) -> str:
@@ -4627,21 +4648,27 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
         parts = []
         if headroom > 0:
             parts.append(f'<div style="flex:{headroom} 1 0"></div>')
+        if dashed:
+            # 目標バーはL1別の点線枠の積み上げをやめ、単色（薄い水色）の単一ブロックに
+            # 簡素化した（2026-10-06ユーザー要望）。
+            if total > 0:
+                parts.append(
+                    f'<div style="flex:{total} 1 0;min-height:0;border-radius:2px;'
+                    f'background:{_MONTHLY_REPORT_TARGET_COLOR}"></div>')
+            return "".join(parts)
         for l1 in reversed(l1_order):
             v = by_l1.get(l1) or 0
             if v <= 0:
                 continue
             color = _monthly_report_l1_color(l1, l1_order)
             l1idx = l1_order.index(l1)
-            if dashed:
-                parts.append(
-                    f'<div style="flex:{v} 1 0;min-height:0;border-radius:2px;'
-                    f'border:1.5px dashed {color};box-sizing:border-box"></div>')
-            elif interactive:
+            if interactive:
+                _metric_js, _month_js = _esc(json.dumps(metric)), _esc(json.dumps(month))
                 parts.append(
                     f'<div style="flex:{v} 1 0;min-height:0;border-radius:2px;background:{color};'
-                    f'cursor:pointer" onmousemove="mrShowDeliveryTooltip(event,{_esc(json.dumps(metric))},'
-                    f'{_esc(json.dumps(month))},{l1idx})" onmouseleave="mrHideTooltip()"></div>')
+                    f'cursor:pointer" onmousemove="mrShowDeliveryTooltip(event,{_metric_js},{_month_js},{l1idx})" '
+                    f'onmouseleave="mrHideTooltip()" '
+                    f'onclick="mrPinTooltip(event,{_metric_js},{_month_js},{l1idx})"></div>')
             else:
                 parts.append(f'<div style="flex:{v} 1 0;min-height:0;border-radius:2px;background:{color}"></div>')
         return "".join(parts)
@@ -4693,9 +4720,15 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
         f'background:{_monthly_report_l1_color(l1, l1_order)}"></span>{_esc(l1)}</span>'
         for l1 in l1_order)
 
+    # 数値行の左に付けた「実績/目標」ラベル分(26px+gap6px)、棒グラフ行・月名行にも同じ幅の
+    # 透明スペーサーを入れて列位置を揃える（2026-10-06、ラベル追加に伴う整合）。
+    _mr_left_spacer = '<div style="flex-shrink:0;width:26px"></div>'
     month_row_html = f"""
-      <div style="display:grid;{grid_cols_style};column-gap:10px;margin-top:8px;flex-shrink:0">
-        {"".join(month_cells)}
+      <div style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;flex-shrink:0">
+        {_mr_left_spacer}
+        <div style="display:grid;{grid_cols_style};column-gap:10px;flex:1;min-width:0">
+          {"".join(month_cells)}
+        </div>
       </div>""" if show_month_labels else ""
 
     toggle_btn_html = (
@@ -4714,7 +4747,8 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap;flex-shrink:0">
         {legend}
         <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#8A8578">
-          <span style="display:inline-block;width:14px;border-top:2px dashed #94a3b8"></span>目標</span>
+          <span style="display:inline-block;width:10px;height:10px;border-radius:2px;
+            background:{_MONTHLY_REPORT_TARGET_COLOR}"></span>目標</span>
         <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px">
           <span style="width:8px;height:8px;border-radius:2px;background:{_ACTUAL_NUM_COLOR}"></span>
           <span style="color:#8A8578">実績値</span>
@@ -4722,12 +4756,21 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
           <span style="color:#8A8578">目標値</span>
         </span>
       </div>
-      <div style="display:grid;{grid_cols_style};column-gap:10px;margin-bottom:8px;flex-shrink:0">
-        {"".join(label_cells)}
+      <div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:8px;flex-shrink:0">
+        <div style="display:flex;flex-direction:column;gap:2px;flex-shrink:0;width:26px">
+          <div style="font-size:11px;font-weight:700;color:{_ACTUAL_NUM_COLOR}">実績</div>
+          <div style="font-size:10px;font-weight:700;color:{_TARGET_NUM_COLOR}">目標</div>
+        </div>
+        <div style="display:grid;{grid_cols_style};column-gap:10px;flex:1;min-width:0">
+          {"".join(label_cells)}
+        </div>
       </div>
-      <div style="display:grid;{grid_cols_style};column-gap:10px;flex:1;min-height:0;
-        border-bottom:1px solid #E8E3D9;padding-bottom:2px">
-        {"".join(bar_cells)}
+      <div style="display:flex;align-items:stretch;gap:6px;flex:1;min-height:0">
+        {_mr_left_spacer}
+        <div style="display:grid;{grid_cols_style};column-gap:10px;flex:1;min-width:0;
+          border-bottom:1px solid #E8E3D9;padding-bottom:2px">
+          {"".join(bar_cells)}
+        </div>
       </div>
       {month_row_html}
       {deal_list_html}
@@ -4800,7 +4843,7 @@ _MR_CSS = """<style>
 .mr-plist .acc{font-size:14px;white-space:nowrap;flex-shrink:0}
 .mr-plist .deal{font-size:13px;color:#2B2723;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   background:rgba(217,119,87,.12);padding:1px 6px;border-radius:4px}
-.mr-plist-date{font-size:11px;color:#8A8578;white-space:nowrap;flex-shrink:0;margin-left:auto}
+.mr-plist-date{font-size:11px;color:#8A8578;white-space:nowrap;flex-shrink:0}
 .mr-floating{position:fixed;z-index:500;width:360px;background:#fff;border:1px solid var(--border);
   border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.25);padding:14px;display:none}
 .mr-floating textarea{width:100%;box-sizing:border-box;height:110px;border:1px solid var(--border);
@@ -4885,7 +4928,7 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
         <div style="flex:1;min-height:0;display:flex;flex-direction:column">{sales_panel}</div>
       </div>
       <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">単位：万円。各月＝左が実績（事業種別L1積み上げ）、
-        右が目標（四半期ごとに入力した月次目標値、L1別の点線枠）。月表示は下段（売上）のみ、
+        右が目標（四半期ごとに入力した月次目標値の合計、薄い水色）。月表示は下段（売上）のみ、
         上下のグラフで列位置を揃えています。</div>
     </div>"""
 
@@ -4894,6 +4937,8 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     def _plist(items, *, with_dates: bool = False):
         # Closing/Deliveryのみ開始日・終了日(mm/dd~mm/dd)を付記（2026-10-05ユーザー要望。
         # スペースが限られるため簡易表記）。案件名(.deal)は薄いハイライトで視認性を上げる。
+        # 2026-10-06: 日付は案件名の左（アカウント名の直後）に配置する（ユーザー要望
+        # 「スケジュールは案件の左に配置」）。
         parts = []
         for it in items:
             date_html = ""
@@ -4902,8 +4947,8 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
                 if rng:
                     date_html = f'<span class="mr-plist-date">{_esc(rng)}</span>'
             parts.append(
-                f'<li><span class="acc">{_esc(it["account_name"])}</span>'
-                f'<span class="deal">{_esc(it["name"])}</span>{date_html}</li>')
+                f'<li><span class="acc">{_esc(it["account_name"])}</span>{date_html}'
+                f'<span class="deal">{_esc(it["name"])}</span></li>')
         return "".join(parts)
     pipeline_html = f"""
     <div class="card">
@@ -4916,7 +4961,7 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
         <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Delivery（受注済み）</div>
           <ul class="mr-plist">{_plist(pipeline["Delivery"], with_dates=True)}</ul></div>
       </div>
-      <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">金額は表示しません。各列ともSFA登録日の新しい順・全件表示（縦スクロール）。</div>
+      <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">金額は表示しません。各列とも開始日が古い順・全件表示（縦スクロール）。完了済みのDeliveryは表示しません。</div>
     </div>"""
 
     # ❸ テーマ別の足元状況・戦略方針
@@ -4984,8 +5029,14 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     var MR_L1_NAMES = {mr_l1_names_json};
     // ホバーで案件内訳を表示（2026-10-05、Hisho経営ダッシュボードcfShowDeliveryTooltipと
     // 同じ設計: l1idxはMR_L1_NAMESの添字、生のL1文字列を属性に直接埋め込まない）。
+    // 2026-10-06ユーザー要望「クリックするとこのフローティングを固定できる仕様」「はみ出し補正」:
+    // クリックで固定(mrPinned)すると、以後のホバー(mousemove/mouseleave)では内容を変えず、
+    // 同じセグメントを再クリックするか✕ボタン・枠外クリックで固定解除する。はみ出しは
+    // 各行のwhite-space:nowrapを外しmax-widthの範囲で折り返すことで解決（従来は折り返し
+    // 無効のまま横に突き抜けていた）。
+    var mrPinned = false;
     function mrL1NameOf(l1idx) {{ return (l1idx === null || l1idx === undefined) ? null : MR_L1_NAMES[l1idx]; }}
-    function mrShowDeliveryTooltip(evt, metric, month, l1idx) {{
+    function mrRenderTooltipContent(metric, month, l1idx, pinned) {{
       var tip = document.getElementById('mrTooltip');
       if (!tip) return;
       var l1 = mrL1NameOf(l1idx);
@@ -4993,27 +5044,69 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
       var rows = l1 ? list.filter(function(d) {{ return (d.l1 || '未設定') === l1; }}) : list;
       var fmt = function(v) {{ return Math.round(v).toLocaleString(); }};
       var esc = function(s) {{ var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }};
+      var closeBtn = pinned
+        ? '<span onclick="mrUnpinTooltip()" style="cursor:pointer;color:#8A8578;font-weight:400;margin-left:8px">✕</span>' : '';
+      var head = '<div style="padding:8px 10px;font-size:11px;color:#2B2723;font-weight:700;' +
+        'border-bottom:1px solid #E8E3D9;margin-bottom:2px;display:flex;justify-content:space-between;align-items:center">' +
+        '<span>' + esc(month) + (l1 ? ' ' + esc(l1) : '') + '</span>' + closeBtn + '</div>';
       if (!rows.length) {{
-        tip.innerHTML = '<div style="padding:8px 10px;color:#8A8578;font-size:11px">' + esc(month) + (l1 ? ' ' + esc(l1) : '') + ' 案件データなし</div>';
+        tip.innerHTML = head + '<div style="padding:8px 10px;color:#8A8578;font-size:11px">案件データなし</div>';
       }} else {{
-        tip.innerHTML = '<div style="padding:8px 10px;font-size:11px;color:#2B2723;font-weight:700;border-bottom:1px solid #E8E3D9;margin-bottom:2px">' +
-          esc(month) + (l1 ? ' ' + esc(l1) : '') + '</div>' +
-          rows.map(function(d) {{
-            return '<div style="padding:4px 10px;font-size:11px;color:#2B2723;white-space:nowrap">' +
+        tip.innerHTML = head + rows.map(function(d) {{
+            return '<div style="padding:4px 10px;font-size:11px;color:#2B2723;white-space:normal;word-break:break-word">' +
               esc(d.name) + ' <b>' + fmt(d.value) + '万</b></div>';
           }}).join('') + '<div style="height:6px"></div>';
       }}
-      tip.style.display = 'block';
-      var x = evt.clientX + 14, y = evt.clientY + 14;
-      if (x + 420 > window.innerWidth) x = evt.clientX - 420;
-      if (y + 160 > window.innerHeight) y = evt.clientY - 160;
+      tip.dataset.metric = metric; tip.dataset.month = month;
+      tip.dataset.l1idx = (l1idx === null || l1idx === undefined) ? '' : String(l1idx);
+    }}
+    function mrPositionTooltip(x0, y0) {{
+      var tip = document.getElementById('mrTooltip');
+      if (!tip) return;
+      var x = x0 + 14, y = y0 + 14;
+      var w = tip.offsetWidth || 320, h = tip.offsetHeight || 120;
+      if (x + w > window.innerWidth) x = x0 - w;
+      if (y + h > window.innerHeight) y = y0 - h;
       tip.style.left = Math.max(4, x) + 'px';
       tip.style.top = Math.max(4, y) + 'px';
     }}
+    function mrShowDeliveryTooltip(evt, metric, month, l1idx) {{
+      if (mrPinned) return;
+      mrRenderTooltipContent(metric, month, l1idx, false);
+      var tip = document.getElementById('mrTooltip');
+      tip.style.display = 'block';
+      mrPositionTooltip(evt.clientX, evt.clientY);
+    }}
     function mrHideTooltip() {{
+      if (mrPinned) return;
       var tip = document.getElementById('mrTooltip');
       if (tip) tip.style.display = 'none';
     }}
+    function mrPinTooltip(evt, metric, month, l1idx) {{
+      evt.stopPropagation();
+      var tip = document.getElementById('mrTooltip');
+      if (!tip) return;
+      var l1key = (l1idx === null || l1idx === undefined) ? '' : String(l1idx);
+      if (mrPinned && tip.dataset.metric === metric && tip.dataset.month === month && tip.dataset.l1idx === l1key) {{
+        mrUnpinTooltip();  // 固定中の同一セグメントを再クリック→固定解除
+        return;
+      }}
+      mrRenderTooltipContent(metric, month, l1idx, true);
+      tip.style.display = 'block';
+      tip.style.pointerEvents = 'auto';
+      mrPositionTooltip(evt.clientX, evt.clientY);
+      mrPinned = true;
+    }}
+    function mrUnpinTooltip() {{
+      mrPinned = false;
+      var tip = document.getElementById('mrTooltip');
+      if (tip) {{ tip.style.display = 'none'; tip.style.pointerEvents = 'none'; }}
+    }}
+    document.addEventListener('click', function(e) {{
+      if (!mrPinned) return;
+      if (e.target.closest('#mrTooltip')) return;
+      mrUnpinTooltip();
+    }});
     function mrToggleDealList(btn) {{
       var panel = btn.closest('.mr-bar-panel');
       if (!panel) return;
@@ -5100,7 +5193,8 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
 
     mr_tooltip_html = ('<div id="mrTooltip" style="position:fixed;display:none;z-index:500;'
                        'background:#fff;border:1px solid #E8E3D9;border-radius:8px;'
-                       'box-shadow:0 16px 48px rgba(0,0,0,.18);max-width:420px;pointer-events:none"></div>')
+                       'box-shadow:0 16px 48px rgba(0,0,0,.18);max-width:320px;overflow:hidden;'
+                       'pointer-events:none"></div>')
     return header + tabbar + tab_panels + floating_editor + mr_tooltip_html + _MR_CSS + script
 
 

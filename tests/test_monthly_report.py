@@ -230,6 +230,102 @@ def test_pipeline_buckets_exclude_proposal_and_invalid(db_path):
     assert "失注案件" not in all_names
 
 
+def test_pipeline_excludes_completed_delivery(db_path):
+    """2026-10-06ユーザー要望「Delivery案件は、完了した案件は載せない」の回帰テスト。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    d1 = sfa_db.upsert_deal(con, account_id=aid, deal_name="進行中案件", stage="受注")
+    dv1 = sfa_db.create_delivery(con, deal_id=d1, start_week="2026-09-07", end_week="2026-09-14")
+    d2 = sfa_db.upsert_deal(con, account_id=aid, deal_name="完了済み案件", stage="受注")
+    dv2 = sfa_db.create_delivery(con, deal_id=d2, start_week="2026-09-01", end_week="2026-09-07")
+    sfa_db.update_delivery(con, dv2, status="完了")
+
+    pl = webapp._monthly_report_pipeline_lists(con)
+    names = {it["name"] for it in pl["Delivery"]}
+    assert "進行中案件" in names
+    assert "完了済み案件" not in names
+
+
+def test_pipeline_sorted_by_start_date_ascending(db_path):
+    """2026-10-06ユーザー要望「案件はすべて、開始日が古いものから表示」の回帰テスト。
+    開始日未設定の案件は末尾へ回す。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    d_new = sfa_db.upsert_deal(con, account_id=aid, deal_name="新しい開始", stage="受注")
+    sfa_db.create_delivery(con, deal_id=d_new, start_week="2026-11-01", end_week="2026-12-01")
+    d_old = sfa_db.upsert_deal(con, account_id=aid, deal_name="古い開始", stage="受注")
+    sfa_db.create_delivery(con, deal_id=d_old, start_week="2026-08-01", end_week="2026-09-01")
+    d_mid = sfa_db.upsert_deal(con, account_id=aid, deal_name="中間開始", stage="受注")
+    sfa_db.create_delivery(con, deal_id=d_mid, start_week="2026-09-15", end_week="2026-10-01")
+    d_nodate = sfa_db.upsert_deal(con, account_id=aid, deal_name="日付未設定", stage="受注")
+    sfa_db.create_delivery(con, deal_id=d_nodate, start_week="", end_week="")
+
+    pl = webapp._monthly_report_pipeline_lists(con)
+    assert [it["name"] for it in pl["Delivery"]] == ["古い開始", "中間開始", "新しい開始", "日付未設定"]
+
+
+def test_pipeline_schedule_appears_before_deal_name_in_html(server, db_path):
+    """2026-10-06ユーザー要望「スケジュールは案件の左に配置」の回帰テスト。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, "2026-10")
+    aid = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="X案件", stage="受注")
+    sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-09-14")
+    con.close()
+
+    code, body = _get(server + "/monthly-report/2026-10", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    date_pos = html.index('class="mr-plist-date"')
+    deal_pos = html.index('class="deal"')
+    assert date_pos < deal_pos
+
+
+def test_chart_target_bar_is_light_blue_not_dashed(server, db_path):
+    """2026-10-06ユーザー要望「目標は、点線ではなく、薄い水色とかで」+「上部の数値の一番左に
+    『目標』『実績』と項目名を記載して」の回帰テスト。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, "2026-10")
+    aid = sfa_db.upsert_account(con, name="テスト社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="D", stage="受注", business_type_l1="コスト削減")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dvid, order_date="2026-09-15", fee_mode="total", fee_total=200)
+    sfa_db.upsert_monthly_targets(
+        con, [{"year": 2026, "month": 9, "metric": "order_value", "business_type_l1": "コスト削減",
+               "target_value": 100}],
+        updated_by=KEIEI_EMAIL)
+    con.close()
+
+    code, body = _get(server + "/monthly-report/2026-10", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    assert webapp._MONTHLY_REPORT_TARGET_COLOR in html
+    # 旧実装の目標バー(点線枠)の特徴的なスタイル文字列が残っていないこと
+    # （「dashed」という単語自体は他機能の無関係なCSSにも登場するため、この固有パターンで判定する）。
+    assert "border:1.5px dashed" not in html
+    assert ">実績<" in html and ">目標<" in html
+
+
+def test_chart_tooltip_supports_click_to_pin(server, db_path):
+    """2026-10-06ユーザー要望「案件表示は、クリックするとこのフローティングを固定できる仕様」
+    の回帰テスト。クリック用のmrPinTooltip呼び出しと固定解除関数がページに存在すること、
+    案件行がnowrapで折り返し不可（はみ出しの原因）になっていないことを確認する。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, "2026-10")
+    aid = sfa_db.upsert_account(con, name="テスト社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="D", stage="受注", business_type_l1="コスト削減")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dvid, order_date="2026-09-15", fee_mode="total", fee_total=200)
+    con.close()
+
+    code, body = _get(server + "/monthly-report/2026-10", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    assert "onclick=\"mrPinTooltip(event," in html
+    assert "function mrUnpinTooltip" in html
+    assert "white-space:nowrap" not in html.split("function mrRenderTooltipContent", 1)[1].split("function mrPositionTooltip", 1)[0]
+
+
 # ── 8. 目標値の保存・読み出し ──
 
 def test_targets_save_and_readback(server, db_path):
