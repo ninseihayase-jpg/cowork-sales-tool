@@ -337,3 +337,58 @@ def test_weekly_plan_full_flow_via_http(server, db_path):
     con9 = sfa_db.connect(db_path)
     assert sfa_db.get_weekly_task_plan(con9, plan_id) is None
     con9.close()
+
+
+def test_weekly_plan_reuses_kanban_picking_ui(server, db_path):
+    """2026-10-06ユーザー要望「最初のタスクを選ぶUIはすべて直近タスク設計を流用して」の
+    回帰テスト。看板(/tasks)のピック機構がpickmode=weeklyで正しく出し分けられ、
+    /tasks/weekly-plan/new(GET)がpicked済みタスクを持つ新規プランを作成しボードへ
+    リダイレクトすることを確認する。"""
+    con2 = sfa_db.connect(db_path)
+    acc = sfa_db.upsert_account(con2, name="A社")
+    did = sfa_db.upsert_deal(con2, account_id=acc, deal_name="D", stage="受注")
+    dvid = sfa_db.create_delivery(con2, deal_id=did, start_week="2026-10-05", end_week="2026-10-12")
+    tid = sfa_db.upsert_task(con2, title="T1", assignee="早瀬")
+    sfa_db.set_task_links(con2, tid, [("delivery", dvid)])
+    con2.close()
+
+    keiei = _header(KEIEI_EMAIL)
+
+    # 担当未選択 → ゲートポップアップに「週次タスク設計」ラベルが出る（直近タスク設計と混同しない）
+    code, body = _get(server + "/tasks?pick=1&pickmode=weekly", headers=keiei)
+    assert code == 200
+    html = body.decode()
+    assert "🗓️ 週次タスク設計" in html and "dpGatePop" in html
+
+    # 担当選択後 → ピックモードON、pickbarに「次へ（ボードへ）」が出る（直近タスク設計は「仕分けへ」）
+    code, body = _get(
+        server + "/tasks?assignee=" + urllib.parse.quote("早瀬") + "&pick=1&pickmode=weekly",
+        headers=keiei)
+    assert code == 200
+    html = body.decode()
+    assert "次へ（ボードへ）" in html
+    assert 'TC_PICK_MODE="weekly"' in html
+
+    # リスト画面の新規作成導線も看板ピックへのリンクに置き換わっている（手打ちフォームは撤去）
+    code, body = _get(server + "/tasks/weekly-plan", headers=keiei)
+    assert code == 200
+    assert "/tasks?pick=1&pickmode=weekly" in body.decode()
+
+    # 看板でチェックしたタスクを引っ提げて新規プラン作成(GET /tasks/weekly-plan/new)
+    code, body = _get(
+        server + "/tasks/weekly-plan/new?assignee=" + urllib.parse.quote("早瀬") + f"&picked={tid}",
+        headers=keiei)
+    assert code == 200  # urlopenが303を自動フォロー、最終到達先のボードページが200で返る
+    con3 = sfa_db.connect(db_path)
+    plans = sfa_db.list_weekly_task_plans(con3, "早瀬")
+    assert len(plans) == 1
+    items = sfa_db.list_weekly_task_plan_items(con3, plans[0]["id"])
+    assert len(items) == 1 and items[0]["task_id"] == tid
+    con3.close()
+
+    # assignee/pickedが欠けている場合は一覧へフォールバック(プランを作成しない)
+    code, _ = _get(server + "/tasks/weekly-plan/new", headers=keiei)
+    assert code == 200
+    con4 = sfa_db.connect(db_path)
+    assert len(sfa_db.list_weekly_task_plans(con4, "早瀬")) == 1  # 増えていない
+    con4.close()

@@ -380,7 +380,7 @@ def test_tasks_page_pick_bar_positions_below_nav_button_like_gate(con):
 def test_tasks_page_without_pick_param_starts_hidden(con):
     html = webapp.tasks_page(con)
     assert 'id="taskBoard">' in html  # picking クラス無し
-    assert 'id="dpPickBar" style="">' in html
+    assert 'id="dpPickBar" style=""' in html  # data-pick-mode属性が後続するため">"までは固定しない
 
 
 def test_daily_task_plan_view_page_renders_blocks_with_kanban_link(con):

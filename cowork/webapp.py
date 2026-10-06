@@ -10278,8 +10278,11 @@ function tcPickChanged(){
 }
 // 「今日明日」ボタン(#navDailyPickBtn)真下にフローティング要素を配置する共通関数
 // （ユーザー要望2026-08-31: 担当未選択ゲート(#dpGatePop)と同じ位置に統一）。
+// 2026-10-06: 「週次タスク設計」(#navWeeklyPickBtn)でも同じ機構を共有するため、
+// window.TC_PICK_MODEでどちらのボタンを基準にするか判定する。
 function dpPositionPop(el){
-  var btn=document.getElementById('navDailyPickBtn');
+  var btnId=(window.TC_PICK_MODE==='weekly')?'navWeeklyPickBtn':'navDailyPickBtn';
+  var btn=document.getElementById(btnId);
   if(!btn||!el) return;
   var r=btn.getBoundingClientRect();
   el.style.top=(r.bottom+6)+'px';
@@ -10287,11 +10290,23 @@ function dpPositionPop(el){
   if(left+w>window.innerWidth) left=window.innerWidth-w-8;
   el.style.left=Math.max(8,left)+'px';
 }
+// ピックバーは#101(直近タスク設計)/週次タスク設計で1つを共有しているため、担当が既に
+// 絞り込み中でページ再読み込み無しにモードを切り替えた場合、サーバ描画時の文言のまま
+// ズレることがある。トグルON時に毎回ラベル/ボタン文言をJS側で引き直す（2026-10-06）。
+function dpRefreshPickBarLabel(){
+  var lbl=document.getElementById('dpPickBarLabel'), btn=document.getElementById('dpPickGoBtn');
+  var isWeekly=(window.TC_PICK_MODE==='weekly');
+  var n=document.querySelectorAll('.tc-pick-cb:checked').length;
+  if(lbl) lbl.innerHTML=(isWeekly?'🗓️ 週次タスク設計':'📆 直近タスク設計')+' — 対象を選択中（担当: '+
+    _tcEsc(window.TC_ASSIGNEE||'')+'）: <span id="dpPickCount">'+n+'</span>件';
+  if(btn) btn.textContent=isWeekly?'次へ（ボードへ）':'次へ（仕分けへ）';
+}
 function tcToggleDailyPick(){
   var board=document.getElementById('taskBoard'), bar=document.getElementById('dpPickBar');
   if(!board||!bar) return false;
   var already=board.classList.contains('picking');
   if(!already){
+    window.TC_PICK_MODE='daily';   // 担当選択済みで即座にピック開始する経路でも正しいモードにする
     // #104: 担当が未確定のままチェックボックスは出さない。まず担当を選んでボードを
     // フィルタしてから始める（担当が既に絞り込み中ならそのまま即座にピック開始）。
     if(!window.TC_ASSIGNEE){ location.href='/tasks?pick=1'; return false; }
@@ -10299,7 +10314,7 @@ function tcToggleDailyPick(){
   var on=!already;
   board.classList.toggle('picking',on);
   bar.style.display=on?'flex':'none';
-  if(on) dpPositionPop(bar);
+  if(on){ dpPositionPop(bar); dpRefreshPickBarLabel(); }
   if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); tcPickChanged(); }
   return false;
 }
@@ -10309,6 +10324,36 @@ function tcGoDailyPlan(){
   var owner=window.TC_ASSIGNEE||'';
   if(!owner){ alert('担当が未選択です'); return; }
   location.href='/tasks/daily-plan?assignee='+encodeURIComponent(owner)+'&picked='+ids.join(',');
+}
+// 2026-10-06: 「週次タスク設計」の最初のタスク選択も、上のtcToggleDailyPick/tcGoDailyPlanと
+// 全く同じ看板ピック機構を流用する（ユーザー要望）。「今日明日」ボタンと同じ仕組みを
+// pickmode=weeklyで動かすだけの薄いラッパー。
+function tcToggleWeeklyPick(){
+  var board=document.getElementById('taskBoard'), bar=document.getElementById('dpPickBar');
+  if(!board||!bar) return false;
+  var already=board.classList.contains('picking');
+  if(!already){
+    window.TC_PICK_MODE='weekly';
+    if(!window.TC_ASSIGNEE){ location.href='/tasks?pick=1&pickmode=weekly'; return false; }
+  }
+  var on=!already;
+  board.classList.toggle('picking',on);
+  bar.style.display=on?'flex':'none';
+  if(on){ dpPositionPop(bar); dpRefreshPickBarLabel(); }
+  if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); tcPickChanged(); }
+  return false;
+}
+function tcGoWeeklyPlan(){
+  var ids=Array.prototype.map.call(document.querySelectorAll('.tc-pick-cb:checked'),function(cb){return cb.dataset.tid;});
+  if(!ids.length){ alert('タスクを1つ以上選んでください'); return; }
+  var owner=window.TC_ASSIGNEE||'';
+  if(!owner){ alert('担当が未選択です'); return; }
+  location.href='/tasks/weekly-plan/new?assignee='+encodeURIComponent(owner)+'&picked='+ids.join(',');
+}
+// ピックバーの「次へ」ボタンは1つを共有しているため、現在どちらのモードでピック中かを
+// window.TC_PICK_MODE（サーバがページ描画時に設定）で判定して振り分ける。
+function tcGoPick(){
+  if(window.TC_PICK_MODE==='weekly'){ tcGoWeeklyPlan(); } else { tcGoDailyPlan(); }
 }
 function taskDelete(id){ if(!confirm('このタスクを削除しますか？')) return;
   fetch('/task/'+id+'/delete',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})
@@ -11003,11 +11048,14 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
                project: str | None = None, urgency: str | None = None,
                pinned: bool = False, deleted: bool = False,
                link_type: str | None = None, link_id: int | None = None,
-               pick: bool = False, issue_company_function: str | None = None) -> str:
+               pick: bool = False, pick_mode: str = "daily",
+               issue_company_function: str | None = None) -> str:
     """タスクボード（状態別カンバン）。コンパクト折りたたみカード＋その場編集＋緊急度自動＋
     プロジェクト一覧（期限・状態別内訳）＋期限クイック/逆算推奨（#30）。"""
     if deleted:
         return tasks_deleted_page(con)
+    # 2026-10-06: 看板ピック機構(#101/#104)を「週次タスク設計」でも流用するためのモード切替。
+    _pick_mode = pick_mode if pick_mode == "weekly" else "daily"
     owners = sfa_db.get_master_list(con, "owners")
     cats = sfa_db.get_master_list(con, "task_categories")
     proj_objs = sfa_db.list_task_projects(con)
@@ -11393,7 +11441,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     quick_js = (
         f'<script>window._TC={{today:"{today}",d3:"{d3}",weekend:"{weekend}"}};'
         f'window.TC_LINK_FILTER={json.dumps({"type": link_type or "", "id": link_id or ""}, ensure_ascii=False)};'
-        f'window.TC_ASSIGNEE={json.dumps(assignee or "", ensure_ascii=False)};</script>')
+        f'window.TC_ASSIGNEE={json.dumps(assignee or "", ensure_ascii=False)};'
+        f'window.TC_PICK_MODE={json.dumps(_pick_mode, ensure_ascii=False)};</script>')
     # 上部集計ボックス（期限アラート＋最優先ピン件数。desk-tasksと同仕様・依頼者別内訳は無し）。
     agg = f"""
       <div class="desk-agg">
@@ -11410,6 +11459,11 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
     # 担当が未確定のまま(pick=1のみ)の間はチェックボックスを出さず、担当選択ゲートだけを表示する。
     _real_assignee = assignee if (assignee and assignee != "__none__") else None
     _picking_active = bool(pick and _real_assignee)
+    # 「週次タスク設計」の最初のタスク選択UIも、この看板ピック機構(#101/#104)をそのまま
+    # 流用する（ユーザー要望「最初のタスクを選ぶUIはすべて『直近タスク設計』を流用して」）。
+    # pick_modeで表示文言・遷移先のみ出し分け、仕組み自体(担当選択ゲート→チェックボックス→
+    # 「次へ」)は完全に共通（_pick_modeは関数冒頭で正規化済み）。
+    _pick_label = "🗓️ 週次タスク設計" if _pick_mode == "weekly" else "📆 直近タスク設計"
     if pick and not _real_assignee:
         # 担当未選択の間だけ出るゲート。従来はページ下部に張り付く横長バー(#dpPickBar)
         # だったため見つけにくかった（ユーザー報告2026-08-31）。「今日明日」ボタンの
@@ -11418,18 +11472,19 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
         pick_bar = (
             f'<div id="dpGateBackdrop" onclick="location.href=&#39;/tasks&#39;"></div>'
             f'<div id="dpGatePop">'
-            f'<b style="display:block;margin-bottom:6px;font-size:13px">📆 直近タスク設計<br>まず担当を選んでください</b>'
+            f'<b style="display:block;margin-bottom:6px;font-size:13px">{_pick_label}<br>まず担当を選んでください</b>'
             f'<select onchange="if(this.value) location.href=&#39;/tasks?assignee=&#39;+'
-            f'encodeURIComponent(this.value)+&#39;&pick=1&#39;" style="width:100%">'
+            f'encodeURIComponent(this.value)+&#39;&pick=1&pickmode={_pick_mode}&#39;" style="width:100%">'
             f'<option value="">担当を選択</option>{_gate_owner_opts}</select>'
             f'<button class="btn sec" type="button" style="margin-top:8px;width:100%" '
             f'onclick="location.href=&#39;/tasks&#39;">キャンセル</button></div>')
     else:
         pick_bar = (
-            f'<div id="dpPickBar" style="{"display:flex" if _picking_active else ""}">'
-            f'<b>📆 直近タスク設計 — 対象を選択中（担当: {_esc(_real_assignee or "")}）: '
+            f'<div id="dpPickBar" style="{"display:flex" if _picking_active else ""}" data-pick-mode="{_pick_mode}">'
+            f'<b id="dpPickBarLabel">{_pick_label} — 対象を選択中（担当: {_esc(_real_assignee or "")}）: '
             f'<span id="dpPickCount">0</span>件</b>'
-            f'<button class="btn" type="button" onclick="tcGoDailyPlan()">次へ（仕分けへ）</button>'
+            f'<button class="btn" type="button" id="dpPickGoBtn" onclick="tcGoPick()">'
+            f'{"次へ（ボードへ）" if _pick_mode == "weekly" else "次へ（仕分けへ）"}</button>'
             f'<button class="btn sec" type="button" onclick="tcToggleDailyPick()">キャンセル</button></div>')
     # 関連付けポップアップ(2026-08-27): カード上の「🔗関連」から商談/社内PJ/Delivery/開発案件へ
     # 紐づけできるように、task_formと同じピッカーをページに1回だけ埋め込む（prefix="tcLink"）。
@@ -11465,7 +11520,8 @@ def tasks_page(con, *, assignee: str | None = None, category: str | None = None,
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
             <a href="/tasks/daily-plan" onclick="return tcToggleDailyPick()" id="navDailyPickBtn"
                style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 直近タスク設計</a>
-            <a href="/tasks/weekly-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗓️ 週次タスク設計</a>
+            <a href="/tasks?pick=1&pickmode=weekly" onclick="return tcToggleWeeklyPick()" id="navWeeklyPickBtn"
+               style="padding:6px 12px;color:#4338ca;text-decoration:none">🗓️ 週次タスク設計</a>
           </span>
           <a class="btn sec" href="/tasks?deleted=1" style="font-size:12px">🗑 削除済み</a>
           {seed_btn}
@@ -12961,7 +13017,7 @@ def tasks_gantt_page(con, group_by: str = "type") -> str:
             <a href="/tasks/gantt" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📊 ガント</a>
             <a href="/tasks/capacity" style="padding:6px 12px;color:#4338ca;text-decoration:none">📅 容量</a>
             <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 直近タスク設計</a>
-            <a href="/tasks/weekly-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗓️ 週次タスク設計</a>
+            <a href="/tasks?pick=1&pickmode=weekly" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗓️ 週次タスク設計</a>
           </span>
           <a class="btn" href="/tasks/new">＋新規コンサルタスク</a>
         </span>
@@ -13027,7 +13083,7 @@ def tasks_capacity_page(con, *, horizon_days: int = 10) -> str:
           <a href="/tasks/gantt" style="padding:6px 12px;color:#4338ca;text-decoration:none">📊 ガント</a>
           <a href="/tasks/capacity" style="padding:6px 12px;background:#4f46e5;color:#fff;text-decoration:none">📅 容量</a>
           <a href="/tasks?pick=1" style="padding:6px 12px;color:#4338ca;text-decoration:none">📆 直近タスク設計</a>
-          <a href="/tasks/weekly-plan" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗓️ 週次タスク設計</a>
+          <a href="/tasks?pick=1&pickmode=weekly" style="padding:6px 12px;color:#4338ca;text-decoration:none">🗓️ 週次タスク設計</a>
         </span>
       </h2>
       <p class="muted" style="font-size:12px;margin:0 0 10px">担当者ごとの1日あたり作業可能時間（打ち合わせ除く）を、当日〜直近{horizon_days}営業日分で
@@ -14385,7 +14441,6 @@ def _wp_mmdd(s: str) -> str:
 
 
 def weekly_task_plan_list_page(con) -> str:
-    owners = sfa_db.get_master_list(con, "owners") or list(sfa_db.OWNERS)
     plans = sfa_db.list_weekly_task_plans(con)
     rows = "".join(
         f'<tr><td><a href="/tasks/weekly-plan/{p["id"]}">{_esc(p["label"] or "(無題)")}</a></td>'
@@ -14396,18 +14451,12 @@ def weekly_task_plan_list_page(con) -> str:
         f'<button type="submit" class="muted" style="background:none;border:0;cursor:pointer" title="削除">✕</button>'
         f'</form></td></tr>'
         for p in plans) or '<tr><td colspan="5" class="muted">まだプランがありません。</td></tr>'
-    _today_mon = _wp_monday_of(_today_jst()).isoformat()
     return f"""
     <div class="card">
       <h2 style="margin-top:0">🗓️ 週次タスク設計</h2>
       <p class="muted" style="font-size:13px">テーマ（Delivery/商談/社内PJ）ごとにマイルストンと今週のタスクを整理し、
         Slackメモ・日別タスク表として出力できます。既存の「直近タスク設計」（時間軸・Googleカレンダー連携）とは別の機能です。</p>
-      <form method="post" action="/tasks/weekly-plan/new" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <select name="owner" required><option value="">担当を選択</option>{_opt(owners, None)}</select>
-        <input type="text" name="label" placeholder="プラン名（例: 通常業務）" style="width:220px">
-        <input type="hidden" name="week_start" value="{_today_mon}">
-        <button class="btn" type="submit">＋ 新規プラン作成</button>
-      </form>
+      <a class="btn" href="/tasks?pick=1&pickmode=weekly">＋ 新規プラン作成（タスクを選ぶ）</a>
       <table style="width:100%;border-collapse:collapse;margin-top:16px">
         <tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">プラン名</th>
             <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)">担当</th>
@@ -24794,6 +24843,7 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                         link_type=(_tq.get("link_type", [""])[0] or None),
                         link_id=(int(_tq["link_id"][0]) if _tq.get("link_id", [""])[0].isdigit() else None),
                         pick=bool(_tq.get("pick", [""])[0]),
+                        pick_mode=(_tq.get("pickmode", ["daily"])[0] or "daily"),
                         issue_company_function=(_tq.get("issue_company_function", [""])[0] or None)),
                                       wide=True))
                 elif path == "/tasks/gantt":
@@ -24817,6 +24867,23 @@ def _make_handler(db_path: str, theme_client: ThemeDBClient | None):
                     self._send(render(daily_task_plan_view_page(con, int(path.split("/")[-1]))))
                 elif path == "/tasks/weekly-plan":
                     self._send(render(weekly_task_plan_list_page(con)))
+                elif path == "/tasks/weekly-plan/new":
+                    # 看板のピック機構(#101/#104)経由（ユーザー要望2026-10-06「最初のタスクを
+                    # 選ぶUIはすべて直近タスク設計を流用して」）。/tasks?pick=1&pickmode=weekly
+                    # →担当選択→チェックボックスで選択→ここへ遷移し、プランを作成して即ボードへ。
+                    _wpnq = self._qs()
+                    _wp_assignee = (_wpnq.get("assignee", [""])[0] or "").strip()
+                    _wp_picked = [int(x) for x in (_wpnq.get("picked", [""])[0] or "").split(",") if x.isdigit()]
+                    if not _wp_assignee or not _wp_picked:
+                        self._redirect("/tasks/weekly-plan")
+                    else:
+                        _wp_now = datetime.now(_JST)
+                        _wp_label = f"{_wp_assignee}/{_wp_now.month}/{_wp_now.day} {_wp_now:%H:%M}時点"
+                        _wp_pid = sfa_db.create_weekly_task_plan(
+                            con, _wp_assignee, _wp_label, _wp_monday_of(_today_jst()).isoformat())
+                        for _wp_tid in _wp_picked:
+                            sfa_db.add_weekly_task_plan_item(con, _wp_pid, _wp_tid)
+                        self._redirect(f"/tasks/weekly-plan/{_wp_pid}")
                 elif (path.startswith("/tasks/weekly-plan/") and path.endswith("/output")
                       and path.split("/")[3].isdigit()):
                     _wpo_week = int((self._qs().get("week", ["0"])[0] or "0"))
