@@ -424,6 +424,29 @@ def _call_claude(prompt: str) -> str:
     return result[0] or "{}"
 
 
+def _date_context_block() -> str:
+    """Claudeへの日付関連プロンプトに必ず含める「今日」のアンカー。
+    2026-10-06ユーザー報告: スレッドで年を省略した日付（例:「10/1」）を書くと、Claudeが
+    2024年等の誤った年で活動日を記録してしまうバグがあった。原因はコードの不具合ではなく、
+    プロンプトが「今日が何年何月か」を一切渡しておらず、Claudeが自分の学習データ上の
+    感覚で西暦を推測していたこと（秘書Bot(Hisho)の年省略日付バグ[[hisho-workstyle-year-bug-fix]]
+    と同根の「LLMへの指示不足」パターン）。今日の日付を明示し、年省略時の決定ルールも
+    明記することで、Claudeに西暦を自己推測させない。"""
+    import datetime
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))  # JST基準
+    weekday = "月火水木金土日"[now.weekday()]
+    today_str = now.strftime("%Y-%m-%d")
+    return (
+        f"【今日の日付】{today_str}（{weekday}曜日、日本時間）\n"
+        "日付に年が書かれていない場合（例:「10/1」）は、必ず上記の今日の日付を基準に西暦を"
+        "決定してください。自分の知識上の「現在の年」を使って推測しないこと。\n"
+        "- 活動日など、過去〜今日の出来事の日付: 今日の年を使う。ただしその月日が今日より"
+        "1ヶ月以上未来になってしまう場合は、前年の日付とみなす。\n"
+        "- 次回MS日など、今後の予定の日付: 今日の年を使う。ただしその月日が今日より"
+        "1ヶ月以上過去になってしまう場合は、翌年の日付とみなす。\n"
+    )
+
+
 def draft_template(thread_text: str, deal: dict | None, con=None) -> tuple[str, list[tuple[str, str | None]]]:
     """Claude でスレッド内容からSFA更新ドラフトを作成する。
     戻り値: (テンプレート本文, 確認が必要な項目のリスト[(フィールド名, 読み取れた値 or None)])。
@@ -454,6 +477,7 @@ def draft_template(thread_text: str, deal: dict | None, con=None) -> tuple[str, 
     prompt = f"""以下はSlackスレッドの会話内容と、現在のSFA商談情報です。
 スレッドの内容を分析し、SFA更新ドラフトをJSONで作成してください。
 
+{_date_context_block()}
 【現在の商談情報】
 {deal_info}
 
@@ -566,6 +590,7 @@ def draft_new_deal_template(thread_text: str, create_mode: str, con=None) -> str
     atypes_str = "・".join(_atypes)
 
     activity_json = ""
+    date_context = ""
     if create_mode == "deal_and_activity":
         activity_json = (
             '\n  "activity_date": "YYYY-MM-DD（読み取れなければ【記載なし】）",'
@@ -573,9 +598,12 @@ def draft_new_deal_template(thread_text: str, create_mode: str, con=None) -> str
             '\n  "contact_name": "相手の名前（読み取れなければ【記載なし】）",'
             '\n  "activity_content": "活動内容の要約",'
         )
+        # activity_date がある時だけ(年省略日付の誤推定バグ修正、2026-10-06)。
+        date_context = _date_context_block() + "\n"
 
     prompt = (
         "以下はSlackスレッドの会話内容です。新規商談を追加するための情報を抽出してJSONで回答してください。\n\n"
+        + date_context +
         "【スレッド内容】\n" + thread_text + "\n\n"
         "以下のJSONのみ出力（説明不要）:\n"
         "{\n"

@@ -350,3 +350,64 @@ def test_get_open_deal_by_id_returns_deal_for_open_deal(con):
     did = _deal(con)
     row = slack_bot._get_open_deal_by_id(con, did)
     assert row is not None and row["id"] == did
+
+
+# ── 年省略日付の誤推定バグ修正(2026-10-06) ──
+# 症状: スレッドで年を省略した日付（例:「10/1」）を書くと、Claudeへのプロンプトに
+# 「今日が何年か」が一切含まれていなかったため、2024年等の誤った年で活動日が記録された。
+# LLMの実際の応答自体は自動テスト不可なので（秘書Bot側の同根バグ修正時と同じ制約）、
+# プロンプトに正しく日付アンカーが渡っていることを確認する。
+
+def test_date_context_block_includes_actual_today():
+    import datetime
+    block = slack_bot._date_context_block()
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+    assert now.strftime("%Y-%m-%d") in block
+    assert "年省略" not in block or "年が書かれていない" in block  # 文言そのものは変わりうるので緩め
+    assert "西暦" in block
+
+
+def test_draft_template_prompt_includes_date_context(monkeypatch, con):
+    captured = {}
+
+    def _fake_call(prompt):
+        captured["prompt"] = prompt
+        return json.dumps(AI_FILLED)
+
+    monkeypatch.setattr(slack_bot, "_call_claude", _fake_call)
+    deal = {"id": 1, "deal_name": "X", "stage": "要件詰め",
+            "next_milestone_date": None, "next_milestone_label": None,
+            "next_milestone_type": None, "note": None}
+    slack_bot.draft_template("10/1 打ち合わせ実施", deal, con)
+    assert "今日の日付" in captured["prompt"]
+    assert "西暦" in captured["prompt"]
+
+
+def test_draft_new_deal_template_with_activity_includes_date_context(monkeypatch):
+    captured = {}
+
+    def _fake_call(prompt):
+        captured["prompt"] = prompt
+        return json.dumps({"account_name": "A社", "deal_name": "A社", "stage": "初回アポ実施",
+                            "owner": None, "note": None, "activity_date": "2026-10-01",
+                            "activity_type": "面談", "contact_name": None,
+                            "activity_content": "打ち合わせ"})
+
+    monkeypatch.setattr(slack_bot, "_call_claude", _fake_call)
+    slack_bot.draft_new_deal_template("10/1 A社と打ち合わせ", "deal_and_activity", None)
+    assert "今日の日付" in captured["prompt"]
+
+
+def test_draft_new_deal_template_without_activity_omits_date_context(monkeypatch):
+    """activity_dateを聞かないdeal_onlyモードでは、不要なプロンプト肥大を避けるため
+    日付アンカーを含めない（ゲーティングの確認）。"""
+    captured = {}
+
+    def _fake_call(prompt):
+        captured["prompt"] = prompt
+        return json.dumps({"account_name": "A社", "deal_name": "A社", "stage": "初回アポ実施",
+                            "owner": None, "note": None})
+
+    monkeypatch.setattr(slack_bot, "_call_claude", _fake_call)
+    slack_bot.draft_new_deal_template("A社と商談化", "deal_only", None)
+    assert "今日の日付" not in captured["prompt"]
