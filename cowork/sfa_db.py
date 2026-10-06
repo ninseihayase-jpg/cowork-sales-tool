@@ -3203,11 +3203,15 @@ def list_deal_milestones(con, deal_id: int) -> list[dict]:
 
 def bulk_deal_timeline(con) -> dict:
     """Hisho案件カレンダー(#166)向け: theme連携済みの全商談の活動履歴・MS一覧・最初の
-    活動日をまとめて返す（N+1回避のため3クエリで集計）。Hisho dashboard.htmlが
+    活動日・最古の受注日をまとめて返す（N+1回避のため4クエリで集計）。Hisho dashboard.htmlが
     `/api/deal_timeline` 経由でブラウザから直接フェッチする（既存の`/api/theme_deal_map`と
     同じ「Hisho DBへは同期せずSFA側APIを直接叩く」方式。INTEGRATION.md参照）。
     戻り値: {str(theme_id): {"deal_id","activities":[{date,type}],
-    "milestones":[{date,label,type,done}],"first_activity_date","updated_at"}}"""
+    "milestones":[{date,label,type,done}],"first_activity_date","earliest_order_date",
+    "updated_at"}}
+    2026-10-06追加: earliest_order_date（1商談に複数Delivery=1:N、最も古いorder_dateを採用。
+    ユーザー要望「受注案件のみ、その商談で最も古い受注日で経過日数カウントをストップする」。
+    deliveries.order_dateは手入力・未入力もあるためNULL/空は除外する）。"""
     deals = con.execute(
         "SELECT id, theme_id, updated_at FROM deals WHERE theme_id IS NOT NULL"
     ).fetchall()
@@ -3231,6 +3235,13 @@ def bulk_deal_timeline(con) -> dict:
         milestones_by_deal.setdefault(r["deal_id"], []).append(
             {"date": r["ms_date"], "label": r["ms_label"], "type": r["ms_type"], "done": r["done"]})
 
+    earliest_order_date_by_deal: dict[int, str] = {}
+    for r in con.execute(
+        f"SELECT deal_id, MIN(order_date) AS d FROM deliveries WHERE deal_id IN ({ph}) "
+        f"AND order_date IS NOT NULL AND order_date!='' GROUP BY deal_id", deal_ids
+    ):
+        earliest_order_date_by_deal[r["deal_id"]] = r["d"]
+
     result = {}
     for d in deals:
         acts = activities_by_deal.get(d["id"], [])
@@ -3239,6 +3250,7 @@ def bulk_deal_timeline(con) -> dict:
             "activities": acts,
             "milestones": milestones_by_deal.get(d["id"], []),
             "first_activity_date": acts[0]["date"] if acts else None,
+            "earliest_order_date": earliest_order_date_by_deal.get(d["id"]),
             "updated_at": d["updated_at"],
         }
     return result
@@ -5768,8 +5780,17 @@ def delivery_month_count(start_week: str | None, end_week: str | None,
 def delivery_display_fees(dv: dict) -> tuple:
     """一覧・出力の表示用 (fee_monthly, fee_total)。fee_modeの入力値を正とし、現在の月数
     （合計週数÷4。対象外期間があれば営業日ベースで除く）でもう一方を都度再計算する。個別編集
-    画面のライブ換算と一致させ、保存済み派生値（旧ロジックや週変更で古くなった値）とのズレを防ぐ。"""
+    画面のライブ換算と一致させ、保存済み派生値（旧ロジックや週変更で古くなった値）とのズレを防ぐ。
+    ただしfee_manual=1（個別編集画面で人間が非マスタ側を手修正済み）の場合は再計算せず保存値を
+    そのまま使う（2026-10-06ユーザー報告の修正: 手修正した固定報酬額/総額が受注高集計
+    （order_value_by_month等。Hishoダッシュボード・全社定例レポートが参照）では無視され、
+    月額×月数の自動計算値にすり替わって表示される不整合があった。個別編集画面のJS側
+    dvFeeRecalc()はfee_manualを尊重して手修正値を保持しているため、サーバー側もそれに揃える。
+    保存値が片方でも欠けている場合（通常は無いはずだが念のため）は従来通り自動計算にフォール
+    バックする）。"""
     months = delivery_month_count(dv.get("start_week"), dv.get("end_week"), _delivery_excluded_periods(dv))
+    if dv.get("fee_manual") and dv.get("fee_monthly") is not None and dv.get("fee_total") is not None:
+        return (dv.get("fee_monthly"), dv.get("fee_total"))
     if (dv.get("fee_mode") or "monthly") == "total":
         return compute_delivery_fee("total", None, dv.get("fee_total"), months)
     return compute_delivery_fee("monthly", dv.get("fee_monthly"), None, months)
@@ -5777,8 +5798,11 @@ def delivery_display_fees(dv: dict) -> tuple:
 
 def delivery_display_costs(dv: dict) -> tuple:
     """一覧・出力の表示用 (cost_monthly, cost_total)。外注費。delivery_display_feesと同じロジック
-    （cost_modeの入力値を正とし、現在の月数でもう一方を都度再計算する）。"""
+    （cost_modeの入力値を正とし、現在の月数でもう一方を都度再計算する。cost_manual=1の時は
+    再計算せず保存値をそのまま使う点も同様。2026-10-06修正、delivery_display_feesと同根）。"""
     months = delivery_month_count(dv.get("start_week"), dv.get("end_week"), _delivery_excluded_periods(dv))
+    if dv.get("cost_manual") and dv.get("cost_monthly") is not None and dv.get("cost_total") is not None:
+        return (dv.get("cost_monthly"), dv.get("cost_total"))
     if (dv.get("cost_mode") or "monthly") == "total":
         return compute_delivery_fee("total", None, dv.get("cost_total"), months)
     return compute_delivery_fee("monthly", dv.get("cost_monthly"), None, months)

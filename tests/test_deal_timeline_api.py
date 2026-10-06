@@ -106,6 +106,32 @@ def test_bulk_deal_timeline_milestone_done_flag_preserved(con):
     assert entry["milestones"][0]["done"] == 1
 
 
+# ── earliest_order_date（2026-10-06、Hisho案件カレンダーの経過日数キャップ用） ──
+
+def test_bulk_deal_timeline_earliest_order_date_picks_oldest_of_multiple_deliveries(con):
+    did = _deal(con, theme_id=505)
+    sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-01", end_week="2026-09-08")
+    dv1 = sfa_db.create_delivery(con, deal_id=did, start_week="2026-08-01", end_week="2026-08-08")
+    dv2 = sfa_db.create_delivery(con, deal_id=did, start_week="2026-10-01", end_week="2026-10-08")
+    sfa_db.update_delivery(con, dv1, order_date="2026-08-20")
+    sfa_db.update_delivery(con, dv2, order_date="2026-10-15")
+    entry = sfa_db.bulk_deal_timeline(con)["505"]
+    assert entry["earliest_order_date"] == "2026-08-20"
+
+
+def test_bulk_deal_timeline_earliest_order_date_none_when_unset(con):
+    did = _deal(con, theme_id=606)
+    sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-01", end_week="2026-09-08")
+    entry = sfa_db.bulk_deal_timeline(con)["606"]
+    assert entry["earliest_order_date"] is None
+
+
+def test_bulk_deal_timeline_earliest_order_date_none_when_no_deliveries(con):
+    _deal(con, theme_id=707)
+    entry = sfa_db.bulk_deal_timeline(con)["707"]
+    assert entry["earliest_order_date"] is None
+
+
 # ── HTTPルート ──
 
 def _run_server(db_path):

@@ -1956,6 +1956,65 @@ def test_delivery_display_fees_resolves_600_not_700_with_excluded_periods(con, a
     assert sfa_db.delivery_display_fees(dv) == (200.0, 600.0)
 
 
+def test_delivery_display_fees_respects_manual_override_of_total(con, acc_id):
+    """2026-10-06ユーザー報告の回帰テスト: 固定報酬額/総額を個別編集画面で手修正済み
+    (fee_manual=1)のDeliveryは、自動換算(月額×月数)に上書きされず保存値のまま報告されること。
+    手修正前は月額400万×3.75ヶ月(15週/4)=1500万に自動換算されるが、手修正後の保存値1100万を
+    そのまま尊重する（受注高集計(order_value_by_month)・全社定例レポート・Hishoダッシュボードは
+    すべてこの関数経由のため、ここで保存値を尊重しないとそれらの画面と個別編集画面の表示が
+    食い違っていた＝ユーザーが実際に遭遇した不整合）。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=400,
+                            start_week="2026-10-05", end_week="2027-01-15")
+    dv = sfa_db.get_delivery(con, dvid)
+    # 手修正前: 自動換算(400×3.75=1500)
+    assert sfa_db.delivery_display_fees(dv) == (400.0, 1500.0)
+
+    # 個別編集画面で総額を1100へ手修正(fee_manual=1が一緒に保存される、dvFeeManualFlagと同じ契約)
+    sfa_db.update_delivery(con, dvid, fee_total=1100, fee_manual=1)
+    dv2 = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_display_fees(dv2) == (400.0, 1100.0)
+
+
+def test_delivery_display_fees_manual_override_persists_through_schedule_change(con, acc_id):
+    """手修正済み(fee_manual=1)の総額は、その後に開始/終了日を変更して月数が変わっても
+    自動再計算に戻らない（個別編集画面のdvFeeRecalc()と同じ仕様: 手修正フラグはモード切替まで
+    維持される）。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=400, fee_total=1100, fee_manual=1,
+                            start_week="2026-10-05", end_week="2027-01-15")
+    sfa_db.update_delivery(con, dvid, start_week="2026-10-05", end_week="2027-03-15")  # 期間を延長
+    dv = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_display_fees(dv)[1] == 1100.0  # 期間延長後も手修正値のまま
+
+
+def test_delivery_display_costs_respects_manual_override_of_total(con, acc_id):
+    """delivery_display_feesと同根のバグ修正(外注費版)。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, cost_mode="monthly", cost_monthly=100,
+                            start_week="2026-10-05", end_week="2027-01-15")
+    dv = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_display_costs(dv) == (100.0, 375.0)  # 自動換算(100×3.75)
+
+    sfa_db.update_delivery(con, dvid, cost_total=250, cost_manual=1)
+    dv2 = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_display_costs(dv2) == (100.0, 250.0)  # 手修正値を尊重
+
+
+def test_delivery_display_fees_falls_back_to_auto_calc_when_manual_flag_set_but_value_missing(con, acc_id):
+    """fee_manual=1でも保存値が欠けている(通常は起こらないが念のため)場合は、クラッシュせず
+    従来通りの自動計算にフォールバックする。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_mode="monthly", fee_monthly=400, fee_total=None, fee_manual=1,
+                            start_week="2026-10-05", end_week="2027-01-15")
+    dv = sfa_db.get_delivery(con, dvid)
+    assert sfa_db.delivery_display_fees(dv) == (400.0, 1500.0)
+
+
 def test_delivery_weekly_productivity_prorates_revenue_and_workload_by_business_day_weight(con, acc_id):
     """継続的に毎週同じ稼働(40%)が続くケースでも、稼働累計が暦14週ぶん(560)には積み上がらず、
     有効週数12週ぶん(480)に正しく収まる（ユーザー報告2026-09-22の核心要件）。
