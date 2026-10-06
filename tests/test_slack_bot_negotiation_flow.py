@@ -117,6 +117,117 @@ def test_draft_template_always_confirms_next_ms_even_when_ai_filled_them(monkeyp
     ]  # ステージは読み取れているので含まれない
 
 
+# ── handle_message(pending確定): 選択肢外の値での確定ブロック(2026-10-06) ──
+# ユーザー報告: 「次回MS種別: メール」（アポ/タスクどちらでもない）とスレッドに書くと、
+# 確認もエラーも無いままms_type=NULLで保存されていた。ステージ・活動種別も同根のバグ
+# （apply_to_db内で無効値を黙ってデフォルト/無視へすり替えていた）があったため、
+# 3フィールドとも「選択肢外なら確定をブロックして再確認を促す」挙動を検証する。
+
+def test_confirm_blocked_when_next_ms_type_is_not_a_valid_option(monkeypatch, con):
+    did = _deal(con)
+    slack_bot.save_pending_thread(con, "t_inv1", "C1", did, "bot1", state="pending")
+    sent = _sent_messages(monkeypatch)
+    monkeypatch.setattr(slack_bot, "_bot_user_id", "BUID")
+
+    template_text = (
+        "【SFA更新テンプレート】\n内容: 打合せを実施。\n"
+        "ステージ: -\n次回MS日: 2026-12-01\n次回MSラベル: ベンダー候補選定\n次回MS種別: タスク\n"
+    )
+    monkeypatch.setattr(slack_bot, "get_thread_messages", lambda channel, ts: [
+        {"ts": "bot1", "bot_id": "B1", "text": template_text},
+        {"ts": "ov1", "user": "U1", "text": "次回MS種別: メール"},
+        {"ts": "confirm_inv1", "user": "U1", "text": "ok"},
+    ])
+
+    event = {"channel": "C1", "text": "ok", "ts": "confirm_inv1", "thread_ts": "t_inv1", "user": "U1"}
+    slack_bot.handle_message(event, con)
+
+    assert sfa_db.list_activities(con, did) == []
+    assert sfa_db.list_deal_milestones(con, did) == []  # 無効値のままNULL保存されていない
+    assert any("選択肢に無い値が入力されているため確定できません" in m.get("text", "") for m in sent)
+    assert any("次回MS種別「メール」は選択肢にありません" in m.get("text", "") for m in sent)
+    row = slack_bot.get_pending_thread(con, "t_inv1")
+    assert row["state"] == "pending"  # completedへ進んでいない
+
+
+def test_confirm_blocked_when_stage_override_is_not_a_valid_option(monkeypatch, con):
+    did = _deal(con, stage="要件詰め")
+    slack_bot.save_pending_thread(con, "t_inv2", "C1", did, "bot1", state="pending")
+    sent = _sent_messages(monkeypatch)
+    monkeypatch.setattr(slack_bot, "_bot_user_id", "BUID")
+
+    template_text = (
+        "【SFA更新テンプレート】\n内容: 打合せを実施。\n"
+        "ステージ: -\n次回MS日: 2026-12-01\n次回MSラベル: ベンダー候補選定\n次回MS種別: タスク\n"
+    )
+    monkeypatch.setattr(slack_bot, "get_thread_messages", lambda channel, ts: [
+        {"ts": "bot1", "bot_id": "B1", "text": template_text},
+        {"ts": "ov2", "user": "U1", "text": "ステージ: 存在しないステージ"},
+        {"ts": "confirm_inv2", "user": "U1", "text": "確定"},
+    ])
+
+    event = {"channel": "C1", "text": "確定", "ts": "confirm_inv2", "thread_ts": "t_inv2", "user": "U1"}
+    slack_bot.handle_message(event, con)
+
+    deal_after = sfa_db.get_deal(con, did)
+    assert deal_after["stage"] == "要件詰め"  # 変更されていない
+    assert any("ステージ「存在しないステージ」は選択肢にありません" in m.get("text", "") for m in sent)
+    row = slack_bot.get_pending_thread(con, "t_inv2")
+    assert row["state"] == "pending"
+
+
+def test_confirm_blocked_when_activity_type_override_is_not_a_valid_option(monkeypatch, con):
+    did = _deal(con)
+    slack_bot.save_pending_thread(con, "t_inv3", "C1", did, "bot1", state="pending")
+    sent = _sent_messages(monkeypatch)
+    monkeypatch.setattr(slack_bot, "_bot_user_id", "BUID")
+
+    template_text = (
+        "【SFA更新テンプレート】\n種別: 面談\n内容: 打合せを実施。\n"
+        "ステージ: -\n次回MS日: 2026-12-01\n次回MSラベル: ベンダー候補選定\n次回MS種別: タスク\n"
+    )
+    monkeypatch.setattr(slack_bot, "get_thread_messages", lambda channel, ts: [
+        {"ts": "bot1", "bot_id": "B1", "text": template_text},
+        {"ts": "ov3", "user": "U1", "text": "種別: チャット"},
+        {"ts": "confirm_inv3", "user": "U1", "text": "確定"},
+    ])
+
+    event = {"channel": "C1", "text": "確定", "ts": "confirm_inv3", "thread_ts": "t_inv3", "user": "U1"}
+    slack_bot.handle_message(event, con)
+
+    assert sfa_db.list_activities(con, did) == []
+    assert any("種別「チャット」は選択肢にありません" in m.get("text", "") for m in sent)
+    row = slack_bot.get_pending_thread(con, "t_inv3")
+    assert row["state"] == "pending"
+
+
+def test_confirm_succeeds_when_overridden_next_ms_type_is_valid(monkeypatch, con):
+    """有効な選択肢への上書きは従来通りブロックされず確定できること（回帰防止）。"""
+    did = _deal(con)
+    slack_bot.save_pending_thread(con, "t_valid1", "C1", did, "bot1", state="pending")
+    sent = _sent_messages(monkeypatch)
+    monkeypatch.setattr(slack_bot, "_bot_user_id", "BUID")
+
+    template_text = (
+        "【SFA更新テンプレート】\n内容: 打合せを実施。\n"
+        "ステージ: -\n次回MS日: 2026-12-01\n次回MSラベル: ベンダー候補選定\n次回MS種別: タスク\n"
+    )
+    monkeypatch.setattr(slack_bot, "get_thread_messages", lambda channel, ts: [
+        {"ts": "bot1", "bot_id": "B1", "text": template_text},
+        {"ts": "ov4", "user": "U1", "text": "次回MS種別: アポ"},
+        {"ts": "confirm_valid1", "user": "U1", "text": "確定"},
+    ])
+
+    event = {"channel": "C1", "text": "確定", "ts": "confirm_valid1", "thread_ts": "t_valid1", "user": "U1"}
+    slack_bot.handle_message(event, con)
+
+    assert any("SFA DB を更新しました" in m.get("text", "") for m in sent)
+    ms = sfa_db.list_deal_milestones(con, did)
+    assert len(ms) == 1 and ms[0]["ms_type"] == "アポ"
+    row = slack_bot.get_pending_thread(con, "t_valid1")
+    assert row["state"] == "completed"
+
+
 # ── handle_message(pending確定): 次回MS未入力での確定ブロック ──
 
 def test_confirm_blocked_when_next_ms_fields_missing(monkeypatch, con):

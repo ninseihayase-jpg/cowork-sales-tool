@@ -791,6 +791,40 @@ def collect_fields(messages: list[dict], bot_ts: str, confirm_ts: str) -> dict:
     return merged
 
 
+def _find_invalid_enum_fields(con: sqlite3.Connection, fields: dict) -> list[str]:
+    """確定前の選択肢妥当性チェック（2026-10-06ユーザー報告の修正）。
+
+    次回MS種別/ステージ/種別（活動種別）はいずれも選択肢（NEXT_MS_TYPES/deal_stages/
+    activity_types）が決まっているが、apply_to_db()はこれまで選択肢外の値を**黙って**
+    無効化・デフォルト値へすり替えていた（次回MS種別→None、ステージ→変更を無視、
+    種別→「メモ」に強制）。実例: スレッドで「次回MS種別: メール」（アポ/タスクどちらでも
+    ない）と上書きすると、確認もエラーも無いまま次回MSのms_typeがNULLで保存されていた。
+    _ms_missing（2026-09-09の次回MS未入力ブロック）と同じ思想で、確定前にこの関数で
+    選択肢妥当性も検証し、無効なら再確認を促して確定自体をブロックする（ユーザー要望
+    「この件に限らず、登録がNGになる場合は再確認してほしい」を受け、次回MS種別だけで
+    なくステージ・活動種別も同様に検証する）。「-」（変更なし）は常に有効な回答として
+    許容する。戻り値: 問題があれば説明行のリスト（空なら問題なし）。"""
+    from cowork import sfa_db as _sfa_db
+    invalid_lines = []
+    ms_type_val = fields.get("次回MS種別")
+    if ms_type_val and ms_type_val != "-" and ms_type_val not in _sfa_db.NEXT_MS_TYPES:
+        invalid_lines.append(
+            f"・次回MS種別「{ms_type_val}」は選択肢にありません（{'/'.join(_sfa_db.NEXT_MS_TYPES)}のいずれかで返信してください）")
+    stage_val = fields.get("ステージ")
+    if stage_val and stage_val != "-":
+        valid_stages = set(_sfa_db.get_master_list(con, "deal_stages") or _sfa_db.DEAL_STAGES)
+        if stage_val not in valid_stages:
+            invalid_lines.append(
+                f"・ステージ「{stage_val}」は選択肢にありません（{'/'.join(valid_stages)}のいずれかで返信してください）")
+    atype_val = fields.get("種別")
+    if atype_val:
+        valid_atypes = set(_sfa_db.get_master_list(con, "activity_types") or _sfa_db.ACTIVITY_TYPES)
+        if atype_val not in valid_atypes:
+            invalid_lines.append(
+                f"・種別「{atype_val}」は選択肢にありません（{'/'.join(valid_atypes)}のいずれかで返信してください）")
+    return invalid_lines
+
+
 # ── DB update ──────────────────────────────────────────────────────────────
 
 def apply_to_db(con: sqlite3.Connection, fields: dict, deal_id: int | None,
@@ -1189,6 +1223,13 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
                 "「内容: ...」の形式で返信して「確定」と再送してください。")
             return
 
+        _invalid_lines = _find_invalid_enum_fields(con, fields)
+        if _invalid_lines:
+            post_message(channel, thread_ts,
+                "❌ 選択肢に無い値が入力されているため確定できません。以下を修正してから、改めて"
+                "「確定」または「ok」と送ってください。\n" + "\n".join(_invalid_lines))
+            return
+
         # アカウントが既存か確認
         existing_acc = con.execute(
             "SELECT id FROM accounts WHERE name=?", (account_name,)
@@ -1320,6 +1361,12 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
         # 「はい」/「確定」/「ok」→ アカウント + 商談を作成
         fields = meta_dict.get("pending_fields", {})
         account_name = meta_dict.get("new_account_name", (fields.get("アカウント名") or "").strip())
+        _invalid_lines = _find_invalid_enum_fields(con, fields)
+        if _invalid_lines:
+            post_message(channel, thread_ts,
+                "❌ 選択肢に無い値が入力されているため確定できません。以下を修正してから、改めて"
+                "「確定」または「ok」と送ってください。\n" + "\n".join(_invalid_lines))
+            return
         try:
             new_deal_id = apply_to_db(con, fields, None, theme_client, meta=meta_str)
             mark_completed(con, thread_ts)
@@ -1520,6 +1567,15 @@ def handle_message(event: dict, con: sqlite3.Connection, theme_client=None):
         post_message(channel, thread_ts,
             "❌ 次回MSが未入力のため確定できません。以下を返信してから、改めて「確定」または「ok」と"
             "送ってください。\n" + _need_lines)
+        return
+
+    # 実事故対策(2026-10-06): 選択肢の無い値（例:「次回MS種別: メール」）で確定をブロックする
+    # （_find_invalid_enum_fields参照）。
+    _invalid_lines = _find_invalid_enum_fields(con, fields)
+    if _invalid_lines:
+        post_message(channel, thread_ts,
+            "❌ 選択肢に無い値が入力されているため確定できません。以下を修正してから、改めて"
+            "「確定」または「ok」と送ってください。\n" + "\n".join(_invalid_lines))
         return
 
     try:
