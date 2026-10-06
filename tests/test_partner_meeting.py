@@ -399,3 +399,69 @@ def test_monthly_report_delivery_also_shows_near_badges(server, db_path):
     code, body = _get(server + f"/monthly-report/{THIS_MONDAY[:7]}", headers=_header(KEIEI_EMAIL))
     assert code == 200
     assert "開始間近" in body.decode("utf-8")
+
+
+# ── 10. Deliveryは責任者バッジのみ表示（主担当バッジは出さない。2026-10-07実機フィードバック） ──
+
+def test_partner_meeting_delivery_shows_only_responsible_owner_badge(server, db_path):
+    con = sfa_db.connect(db_path)
+    sfa_db.create_partner_meeting_report(con, THIS_MONDAY)
+    aid = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="案件Z", stage="受注", owner="中島")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                                   end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=10)))
+    sfa_db.update_delivery(con, dvid, responsible_owner="高橋")
+    con.close()
+
+    code, body = _get(server + f"/partner-meeting/{THIS_MONDAY}", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    assert "高橋" in html  # 責任者は表示される
+    assert "中島" not in html  # 主担当は表示されない
+
+
+# ── 11. 全社定例・パートナー定例双方、案件名クリックでSFA詳細ページへ遷移できる ──
+
+def test_monthly_report_deal_name_links_to_delivery_detail(server, db_path):
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, THIS_MONDAY[:7])
+    aid = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="リンク確認案件", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                                   end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=5)))
+    con.close()
+
+    code, body = _get(server + f"/monthly-report/{THIS_MONDAY[:7]}", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    assert f'href="/delivery/{dvid}"' in body.decode("utf-8")
+
+
+def test_partner_meeting_sales_and_delivery_names_link_to_detail_pages(server, db_path):
+    con = sfa_db.connect(db_path)
+    sfa_db.create_partner_meeting_report(con, THIS_MONDAY)
+    aid = sfa_db.upsert_account(con, name="A社")
+    deal_id = sfa_db.upsert_deal(con, account_id=aid, deal_name="Sales案件", stage="提案", owner="吉江")
+    did2 = sfa_db.upsert_deal(con, account_id=aid, deal_name="Delivery案件", stage="受注", owner="吉江")
+    dvid = sfa_db.create_delivery(con, deal_id=did2, start_week=THIS_MONDAY,
+                                   end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=5)))
+    con.close()
+
+    code, body = _get(server + f"/partner-meeting/{THIS_MONDAY}", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    assert f'href="/deal/{deal_id}"' in html
+    assert f'href="/delivery/{dvid}"' in html
+
+
+def test_partner_meeting_productivity_name_links_to_delivery_detail(server, db_path):
+    con = sfa_db.connect(db_path)
+    sfa_db.create_partner_meeting_report(con, THIS_MONDAY)
+    aid = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="生産性リンク案件", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                                   end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=5)))
+    con.close()
+
+    code, body = _get(server + f"/partner-meeting/{THIS_MONDAY}", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    assert f'href="/delivery/{dvid}"' in body.decode("utf-8")

@@ -4582,6 +4582,7 @@ def _monthly_report_pipeline_lists(con) -> dict:
         if not bucket:
             continue
         buckets[bucket].append({
+            "id": dv["id"],
             "account_name": dv.get("account_name") or "",
             "name": dv.get("title") or dv.get("deal_name") or "",
             "start_week": dv.get("start_week") or "",
@@ -5111,7 +5112,8 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
                            if with_badges else "")
             parts.append(
                 f'<li>{date_html}{owner_html}{badges_html}<span class="acc">{_esc(it["account_name"])}</span>'
-                f'<span class="deal">{_esc(it["name"])}</span></li>')
+                f'<a class="deal" href="/delivery/{it["id"]}" style="text-decoration:none">'
+                f'{_esc(it["name"])}</a></li>')
         return "".join(parts)
     pipeline_html = f"""
     <div class="card">
@@ -5629,8 +5631,8 @@ def _partner_meeting_productivity_html(con) -> str:
             <div style="position:relative;display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;
               align-items:center;padding:14px 0;border-bottom:1px solid #F3F0E9">
               <div style="display:flex;align-items:center;gap:8px;min-width:0">{owner_html}
-                <span style="font-size:13px;font-weight:600;color:#2B2723;white-space:nowrap;
-                  overflow:hidden;text-overflow:ellipsis">{_esc(r["name"])}</span></div>
+                <a href="/delivery/{r['id']}" style="font-size:13px;font-weight:600;color:#2B2723;
+                  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none">{_esc(r["name"])}</a></div>
               <div style="position:relative;height:28px" title="{_esc(tip)}">
                 <div style="position:absolute;top:13px;height:2px;background:#D9D3C7;
                   left:{track_left}%;width:{track_width}%"></div>
@@ -5737,7 +5739,7 @@ def partner_meeting_page(con, week_start: str, *, qoffset: int = 0) -> str:
                 f'<span class="mr-plist-date" style="width:64px;flex-shrink:0">{_esc(it["stage"])}</span>'
                 f'<span class="mr-plist-owner">{_esc(it["owner"])}</span>'
                 f'<span class="acc">{_esc(it["account_name"])}</span>'
-                f'<span class="deal">{_esc(it["name"])}</span>'
+                f'<a class="deal" href="/deal/{it["id"]}" style="text-decoration:none">{_esc(it["name"])}</a>'
                 f'<span class="mono muted" style="margin-left:auto;font-size:11px;flex-shrink:0">{pv}</span></li>')
         return "".join(parts)
 
@@ -5751,9 +5753,8 @@ def partner_meeting_page(con, week_start: str, *, qoffset: int = 0) -> str:
             tip = f'期間: {rng or "未設定"} ／ 体制: {it["team"] or "未設定"} ／ 報酬総額: {it["fee_total"]:,.0f}万'
             parts.append(
                 f'<li title="{_esc(tip)}">{date_html}{resp_html}{it["near_badges"]}'
-                f'<span class="mr-plist-owner" style="background:#F3EFE7">{_esc(it["owner"])}</span>'
                 f'<span class="acc">{_esc(it["account_name"])}</span>'
-                f'<span class="deal">{_esc(it["name"])}</span></li>')
+                f'<a class="deal" href="/delivery/{it["id"]}" style="text-decoration:none">{_esc(it["name"])}</a></li>')
         return "".join(parts)
 
     pipeline_html = f"""
