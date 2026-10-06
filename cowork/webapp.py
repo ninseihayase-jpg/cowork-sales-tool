@@ -4622,11 +4622,14 @@ def _delivery_near_badges_html(start_week: str, end_week: str) -> str:
     Delivery。2026-10-07、パートナー定例❶Pipeline・全社定例❷Pipelineの両方のDelivery一覧
     で使う共通ヘルパー。ユーザー確定「両方に適用」）。
     当該週がちょうど開始週の場合は「開始間近」ではなく「Week1」を表示する
-    （2026-10-07実機フィードバック）。"""
+    （2026-10-07実機フィードバック）。
+    戻り値は常に`.mr-near-slot`（固定幅）でラップする——ワッペンが無い行でもその分の
+    横幅を確保し、後続のアカウント名の開始位置が行ごとに揃うようにする
+    （2026-10-07実機フィードバック「ワッペンがない場合も横幅は空白でとって」）。"""
     try:
         this_monday = date.fromisoformat(sfa_db._monday_of(_today_jst()))
     except (ValueError, TypeError):
-        return ""
+        return '<span class="mr-near-slot"></span>'
     window_end = this_monday + timedelta(days=14)
 
     def _parse(s: str):
@@ -4643,7 +4646,7 @@ def _delivery_near_badges_html(start_week: str, end_week: str) -> str:
         badges.append('<span class="mr-near-badge mr-near-start">開始間近</span>')
     if ed is not None and this_monday <= ed <= window_end:
         badges.append('<span class="mr-near-badge mr-near-end">終了間近</span>')
-    return "".join(badges)
+    return f'<span class="mr-near-slot">{"".join(badges)}</span>'
 
 
 def _partner_meeting_pipeline_lists(con) -> dict:
@@ -4735,7 +4738,11 @@ def _partner_meeting_productivity_rows(con) -> list:
     （確度='確定'・status!='完了'）のDeliveryについて、sfa_db.delivery_weekly_productivity()
     の既存ロジックをそのまま使って「当該週時点」「着地予想」を算出する（Delivery詳細ページの
     既存呼び出しパターン=weeksを契約終了週まで延長してから渡す、を踏襲）。
-    並び順（確定・2026-10-07ユーザー要望）: 当該週時点の生産性(current)降順、未算出(None)は末尾。"""
+    並び順（確定・2026-10-07ユーザー要望）: 当該週時点の生産性(current)降順、未算出(None)は末尾。
+    開始週が当該週より先（まだ開始していない＝売上が立っていない）案件は、"current"を常に
+    Noneにする（2026-10-07実機フィードバック「開始前の案件は、当該週時点の生産性は表示不要」。
+    アサイン等の都合でたまたまwork>0になり算出できてしまうケースがあっても、契約開始前の
+    数値をそのまま見せると誤解を招くため明示的に抑制する）。"""
     this_monday = sfa_db._monday_of(_today_jst())
     rows = []
     for dv in sfa_db.list_deliveries(con):
@@ -4755,10 +4762,13 @@ def _partner_meeting_productivity_rows(con) -> list:
             weeks = [this_monday]
         prod = sfa_db.delivery_weekly_productivity(con, dv["id"], weeks)
         current = prod["productivity"].get(this_monday)
+        if start_week and this_monday < start_week:
+            current = None
         forecast = prod["productivity"].get(weeks[-1])
         rows.append({
             "id": dv["id"],
             "owner": dv.get("responsible_owner") or "",
+            "account_name": dv.get("account_name") or "",
             "name": dv.get("title") or dv.get("deal_name") or "",
             "current": current, "forecast": forecast,
             "revenue": _delivery_fee_grand_total(dv),
@@ -5006,6 +5016,7 @@ _MR_CSS = """<style>
 .mr-near-start{color:#2563eb;background:#DBEAFE}
 .mr-near-end{color:#B91C1C;background:#FEE2E2}
 .mr-near-week1{color:#166534;background:#DCFCE7}
+.mr-near-slot{display:inline-flex;gap:4px;width:58px;flex-shrink:0;overflow:visible}
 .mr-floating{position:fixed;z-index:500;width:480px;background:#fff;border:1px solid var(--border);
   border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.25);padding:14px;display:none}
 .mr-floating textarea{width:100%;box-sizing:border-box;height:220px;border:1px solid var(--border);
@@ -5589,9 +5600,16 @@ def _partner_meeting_cell_html(area: str, col: str, html_val: str, draft_val: st
 def _partner_meeting_productivity_html(con) -> str:
     """④生産性ページ。モックアップ（Artifact確認済み、2026-10-07）通り: Delivery一覧を
     縦に並べ、左=生産性（当該週時点=実線丸・着地予想=点線丸）、右=売上(報酬総額)の横棒。
-    縦の閾値線(_PARTNER_PRODUCTIVITY_THRESHOLDS)は行リスト全体を貫通する1枚のオーバーレイ
-    として描画し、各行はそのオーバーレイより手前(z順で上)にレンダリングする（ユーザー要望
-    「閾値の線は、縦に貫通する線で引く」）。"""
+    2026-10-07さらなる実機フィードバックで以下を反映:
+    - アカウント名を各行に追記。
+    - 開始前（"current"がNone）の案件は実線丸・当該週↔着地予想を結ぶ線を描画しない
+      （着地予想の点線丸のみ表示）。
+    - 各丸の近くに生産性の数値ラベルを表示。
+    - 軸目盛・閾値の数値を約2倍のサイズに拡大。
+    - 縦スクロールしても軸目盛・閾値ラベル・縦の閾値線が常に見える位置に固定される
+      （軸目盛行はスクロール領域の外に出し、縦の閾値線はスクロール領域に重なる
+      兄弟要素として描画することで、行リストだけがその下でスクロールする）。
+    """
     rows = _partner_meeting_productivity_rows(con)
     thresholds = _PARTNER_PRODUCTIVITY_THRESHOLDS
 
@@ -5600,10 +5618,10 @@ def _partner_meeting_productivity_html(con) -> str:
 
     axis_row = "".join(
         f'<div style="position:absolute;top:0;transform:translateX(-50%);left:{v / 10}%;'
-        f'font-size:10px;color:#a8a296">{v}</div>' for v in (0, 250, 500, 750, 1000))
+        f'font-size:20px;color:#a8a296">{v}</div>' for v in (0, 250, 500, 750, 1000))
     threshold_label_row = "".join(
-        f'<div style="position:absolute;top:{0 if i % 2 == 0 else 12}px;transform:translateX(-50%);'
-        f'left:{val / 10}%;font-size:9px;font-weight:700;color:{color};white-space:nowrap">{val}</div>'
+        f'<div style="position:absolute;top:{0 if i % 2 == 0 else 22}px;transform:translateX(-50%);'
+        f'left:{val / 10}%;font-size:18px;font-weight:700;color:{color};white-space:nowrap">{val}</div>'
         for i, (val, _label, color) in enumerate(thresholds))
     threshold_overlay = "".join(
         f'<div style="position:absolute;top:0;bottom:0;left:{val / 10}%;width:0;'
@@ -5611,12 +5629,13 @@ def _partner_meeting_productivity_html(con) -> str:
         for val, _label, color in thresholds)
 
     if not rows:
-        rows_wrap = '<p class="muted" style="padding:14px 0">対象のDeliveryがありません。</p>'
+        rows_html = '<p class="muted" style="padding:14px 0">対象のDeliveryがありません。</p>'
     else:
         max_rev = max((r["revenue"] or 0) for r in rows) or 1.0
         max_rev_scaled = max_rev * 1.15
 
         def _row_html(r) -> str:
+            has_current = r["current"] is not None
             cur_pct, fc_pct = _pct(r["current"]), _pct(r["forecast"])
             track_left, track_width = min(cur_pct, fc_pct), abs(fc_pct - cur_pct)
             rev_pct = max(0.0, min(100.0, (r["revenue"] or 0) / max_rev_scaled * 100))
@@ -5624,41 +5643,49 @@ def _partner_meeting_productivity_html(con) -> str:
                 f'<span style="flex:0 0 auto;font-size:10px;color:#2B2723;background:#EEF1F6;'
                 f'padding:1px 6px;border-radius:4px;white-space:nowrap">{_esc(r["owner"])}</span>'
                 if r["owner"] else "")
-            cur_label = f'{r["current"]:.0f}' if r["current"] is not None else "未算出"
+            cur_label = f'{r["current"]:.0f}' if has_current else "未算出"
             fc_label = f'{r["forecast"]:.0f}' if r["forecast"] is not None else "未算出"
             tip = f'当該週 {cur_label} ／ 着地予想 {fc_label}'
+            track_html = (
+                f'<div style="position:absolute;top:13px;height:2px;background:#D9D3C7;'
+                f'left:{track_left}%;width:{track_width}%"></div>' if has_current else "")
+            cur_dot_html = (
+                f'<div style="position:absolute;top:6px;left:{cur_pct}%;transform:translateX(-50%);'
+                f'width:16px;height:16px;border-radius:50%;background:#2F8F7A;border:2px solid #2F8F7A"></div>'
+                f'<div style="position:absolute;top:26px;left:{cur_pct}%;transform:translateX(-50%);'
+                f'font-size:16px;font-weight:700;color:#2F8F7A;white-space:nowrap">{cur_label}</div>'
+                if has_current else "")
+            fc_dot_html = (
+                f'<div style="position:absolute;top:6px;left:{fc_pct}%;transform:translateX(-50%);'
+                f'width:16px;height:16px;border-radius:50%;background:#fff;border:2px dashed #2F8F7A"></div>'
+                f'<div style="position:absolute;top:26px;left:{fc_pct}%;'
+                f'transform:translateX(-50%);font-size:16px;font-weight:700;color:#2F8F7A;'
+                f'white-space:nowrap">{fc_label}</div>'
+                if r["forecast"] is not None else "")
             return f"""
             <div style="position:relative;display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;
-              align-items:center;padding:14px 0;border-bottom:1px solid #F3F0E9">
-              <div style="display:flex;align-items:center;gap:8px;min-width:0">{owner_html}
+              align-items:center;padding:14px 0 36px;border-bottom:1px solid #F3F0E9">
+              <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+                <div style="display:flex;align-items:center;gap:6px;min-width:0">{owner_html}
+                  <span style="font-size:10px;color:#8A8578;white-space:nowrap;overflow:hidden;
+                    text-overflow:ellipsis">{_esc(r["account_name"])}</span></div>
                 <a href="/delivery/{r['id']}" style="font-size:13px;font-weight:600;color:#2B2723;
-                  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none">{_esc(r["name"])}</a></div>
+                  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none">{_esc(r["name"])}</a>
+              </div>
               <div style="position:relative;height:28px" title="{_esc(tip)}">
-                <div style="position:absolute;top:13px;height:2px;background:#D9D3C7;
-                  left:{track_left}%;width:{track_width}%"></div>
-                <div style="position:absolute;top:6px;left:{cur_pct}%;transform:translateX(-50%);
-                  width:16px;height:16px;border-radius:50%;background:#2F8F7A;border:2px solid #2F8F7A"></div>
-                <div style="position:absolute;top:6px;left:{fc_pct}%;transform:translateX(-50%);
-                  width:16px;height:16px;border-radius:50%;background:#fff;border:2px dashed #2F8F7A"></div>
+                {track_html}{cur_dot_html}{fc_dot_html}
               </div>
               <div style="position:relative;height:28px;display:flex;align-items:center">
                 <div style="position:relative;flex:1 1 auto;height:16px;background:#F3F0E9;border-radius:3px">
                   <div style="position:absolute;top:0;left:0;bottom:0;width:{rev_pct}%;
                     background:#D97757;border-radius:3px"></div>
                 </div>
-                <div style="width:60px;text-align:right;font-size:12px;font-weight:700;color:#2B2723;
+                <div style="width:76px;text-align:right;font-size:24px;font-weight:700;color:#2B2723;
                   padding-left:8px">{r["revenue"]:,.0f}</div>
               </div>
             </div>"""
 
-        rows_wrap = f"""
-        <div style="position:relative">
-          <div style="position:absolute;inset:0;display:grid;grid-template-columns:200px 1fr 1fr;
-            gap:28px;pointer-events:none">
-            <div></div><div style="position:relative;height:100%">{threshold_overlay}</div><div></div>
-          </div>
-          {"".join(_row_html(r) for r in rows)}
-        </div>"""
+        rows_html = "".join(_row_html(r) for r in rows)
 
     legend_items = "".join(
         f'<div style="display:flex;gap:6px;align-items:center"><div style="width:10px;height:0;'
@@ -5675,14 +5702,20 @@ def _partner_meeting_productivity_html(con) -> str:
         <div style="font-size:13px;font-weight:700;color:#2B2723">案件別生産性</div>
         <div style="font-size:13px;font-weight:700;color:#2B2723">案件別売上総額</div>
       </div>
-      <div class="mr-table-scroll">
-        <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding:10px 0 2px">
-          <div></div><div style="position:relative;height:14px">{axis_row}</div><div></div>
+      <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding:14px 0 6px;flex-shrink:0">
+        <div></div><div style="position:relative;height:24px">{axis_row}</div><div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding-bottom:10px;flex-shrink:0">
+        <div></div><div style="position:relative;height:36px">{threshold_label_row}</div><div></div>
+      </div>
+      <div style="position:relative;flex:1;min-height:0">
+        <div style="position:absolute;inset:0;display:grid;grid-template-columns:200px 1fr 1fr;
+          gap:28px;pointer-events:none;z-index:2">
+          <div></div><div style="position:relative;height:100%">{threshold_overlay}</div><div></div>
         </div>
-        <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding-bottom:6px">
-          <div></div><div style="position:relative;height:24px">{threshold_label_row}</div><div></div>
+        <div class="mr-table-scroll" style="position:absolute;inset:0">
+          {rows_html}
         </div>
-        {rows_wrap}
       </div>
       <div style="display:flex;gap:22px;padding-top:16px;font-size:11px;color:#8A8578;align-items:center;flex-wrap:wrap;flex-shrink:0">
         <div style="display:flex;gap:6px;align-items:center">

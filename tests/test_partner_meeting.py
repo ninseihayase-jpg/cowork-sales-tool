@@ -465,3 +465,64 @@ def test_partner_meeting_productivity_name_links_to_delivery_detail(server, db_p
     code, body = _get(server + f"/partner-meeting/{THIS_MONDAY}", headers=_header(KEIEI_EMAIL))
     assert code == 200
     assert f'href="/delivery/{dvid}"' in body.decode("utf-8")
+
+
+# ── 13. 2026-10-07 3巡目フィードバック ──
+
+def test_near_badge_slot_wraps_output_even_when_empty():
+    """ワッペンが無い行でも横幅を確保する固定スロット（mr-near-slot）で常にラップする
+    回帰テスト（アカウント名の開始位置が行ごとに揃うようにするため）。"""
+    far = (date.fromisoformat(THIS_MONDAY) + timedelta(days=90)).isoformat()
+    html = webapp._delivery_near_badges_html(far, far)
+    assert html == '<span class="mr-near-slot"></span>'
+
+    near = (date.fromisoformat(THIS_MONDAY) + timedelta(days=7)).isoformat()
+    html2 = webapp._delivery_near_badges_html(near, "")
+    assert html2.startswith('<span class="mr-near-slot">') and "開始間近" in html2
+
+
+def test_productivity_rows_include_account_name(db_path):
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="テストアカウント")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="案件A", stage="受注", owner="吉江")
+    sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                            end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=5)))
+    rows = webapp._partner_meeting_productivity_rows(con)
+    assert rows[0]["account_name"] == "テストアカウント"
+
+
+def test_productivity_current_is_none_before_start_week(db_path):
+    """2026-10-07実機フィードバック「開始前の案件は、当該週時点の生産性は表示不要」の回帰テスト。
+    開始日が未来（まだ開始していない）のDeliveryは、たまたまwork>0で算出できてしまう場合でも
+    currentを強制的にNoneにする。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    future_start = sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=4))
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="未来案件", stage="受注", owner="吉江")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week=future_start,
+                                   end_week=sfa_db._monday_of(date.fromisoformat(future_start) + timedelta(weeks=10)))
+    sfa_db.update_delivery(con, dvid, fee_mode="total", fee_total=200)
+    rows = webapp._partner_meeting_productivity_rows(con)
+    row = next(r for r in rows if r["name"] == "未来案件")
+    assert row["current"] is None
+
+
+def test_productivity_html_axis_and_thresholds_outside_scroll_and_numbers_enlarged(db_path):
+    """2026-10-07実機フィードバック「縦スクロールした際、生産性の軸・閾値が固定表示される
+    ように」「数値を倍くらいのサイズに大きく」の回帰テスト。軸目盛・閾値ラベル行が
+    .mr-table-scroll（スクロール領域）の開始タグより前に出力されている（＝スクロール対象の
+    外にある）こと、主要な数値表示のフォントサイズが拡大されていることを確認する。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="案件A", stage="受注", owner="吉江")
+    sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                            end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=5)))
+    html = webapp._partner_meeting_productivity_html(con)
+    scroll_idx = html.index('class="mr-table-scroll"')
+    axis_idx = html.index(">0</div>")  # 軸目盛の"0"
+    threshold_idx = html.index(">150</div>")
+    assert axis_idx < scroll_idx
+    assert threshold_idx < scroll_idx
+    assert "font-size:20px" in html  # 軸目盛
+    assert "font-size:18px" in html  # 閾値ラベル
+    assert "font-size:24px" in html  # 売上総額の数値
