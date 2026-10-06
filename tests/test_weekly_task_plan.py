@@ -246,6 +246,27 @@ def test_tasks_page_filter_form_preserves_pick_state(con):
     assert 'name="pickmode" value="daily"' in html_daily
 
 
+def test_tasks_page_js_syncs_pick_fields_on_client_side_toggle(con):
+    """2026-10-06ユーザー報告の回帰テスト（上のサーバー側テストだけでは不十分だった実バグ）:
+    「担当フィルタ済みの状態でナビボタンからピックON/OFF」はページ再読み込み無しで
+    board.classListだけ切り替える経路(tcToggleDailyPick/tcToggleWeeklyPick)のため、
+    サーバーはpick=falseのまま描画しておりhiddenフィールド自体が最初から存在しない。
+    この経路でも_tcSyncFilterFormPickFields()がJS側でhiddenフィールドを都度同期する
+    実装になっていることを確認する（実際のクリック動作はPlaywrightで別途確認済み、
+    UI連携機能のため実機検証と静的検証を両方残す）。"""
+    html = webapp.tasks_page(con, assignee="早瀬")  # pick=False(デフォルト)で描画
+    # サーバー側では最初からhidden<input>が無い状態を再現（JSソース文字列中の
+    # querySelector('input[name="pick"]')等は別物なので、実際のinputタグの有無で判定する）。
+    assert '<input type="hidden" name="pick"' not in html
+    assert "function _tcSyncFilterFormPickFields" in html
+    assert "_tcSyncFilterFormPickFields(on)" in html
+    # 両トグル関数とも呼んでいること（どちらか一方だけ直すモレの再発防止）
+    daily_fn = html.split("function tcToggleDailyPick(){", 1)[1].split("function tcGoDailyPlan", 1)[0]
+    weekly_fn = html.split("function tcToggleWeeklyPick(){", 1)[1].split("function tcGoWeeklyPlan", 1)[0]
+    assert "_tcSyncFilterFormPickFields(on)" in daily_fn
+    assert "_tcSyncFilterFormPickFields(on)" in weekly_fn
+
+
 def test_milestone_chip_onclick_survives_special_characters(con):
     """回帰テスト: マイルストン名に二重引用符/&/'を含むと、onclick属性(json.dumps由来の
     二重引用符をそのまま埋め込んでいた旧実装)がHTML属性境界と衝突し属性が破損していた。

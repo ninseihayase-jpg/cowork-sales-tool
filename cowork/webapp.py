@@ -10425,6 +10425,27 @@ function dpRefreshPickBarLabel(){
     _tcEsc(window.TC_ASSIGNEE||'')+'）: <span id="dpPickCount">'+n+'</span>件';
   if(btn) btn.textContent=isWeekly?'次へ（ボードへ）':'次へ（仕分けへ）';
 }
+// フィルタ変更によるページ再読み込み(tasksFilterFormのGET submit)がpick/pickmodeを
+// 引き継げるよう、サーバー描画時に無かった場合でもJS側でhiddenフィールドを同期する
+// （2026-10-06追加分バグ: 担当フィルタ済みの状態でナビボタンからピックをON/OFFした時
+// （ページ再読み込み無し、tcToggleXXXPickがboard.classListだけ切り替える経路）は、
+// サーバーがpick=falseで描画済みのためhiddenフィールド自体が最初から存在せず、
+// フィルタをひとつ変えるたびにピックから抜けてしまっていた。フルページ再読み込みで
+// 入る経路（サーバー側で既にhiddenを出している）とは別にここでも同期する）。
+function _tcSyncFilterFormPickFields(on){
+  var f=document.getElementById('tasksFilterForm');
+  if(!f) return;
+  var pickEl=f.querySelector('input[name="pick"]'), modeEl=f.querySelector('input[name="pickmode"]');
+  if(on){
+    if(!pickEl){ pickEl=document.createElement('input'); pickEl.type='hidden'; pickEl.name='pick'; f.appendChild(pickEl); }
+    pickEl.value='1';
+    if(!modeEl){ modeEl=document.createElement('input'); modeEl.type='hidden'; modeEl.name='pickmode'; f.appendChild(modeEl); }
+    modeEl.value=window.TC_PICK_MODE||'daily';
+  } else {
+    if(pickEl) pickEl.remove();
+    if(modeEl) modeEl.remove();
+  }
+}
 function tcToggleDailyPick(){
   var board=document.getElementById('taskBoard'), bar=document.getElementById('dpPickBar');
   if(!board||!bar) return false;
@@ -10438,6 +10459,7 @@ function tcToggleDailyPick(){
   var on=!already;
   board.classList.toggle('picking',on);
   bar.style.display=on?'flex':'none';
+  _tcSyncFilterFormPickFields(on);
   // ピックを新規に開始する時だけクリア（フィルタ変更によるページ再読み込みはこの関数を
   // 経由しないため、その場合はクリアされず選択が引き継がれる）。
   if(on){ _tcPickClear(); dpPositionPop(bar); dpRefreshPickBarLabel(); }
@@ -10466,6 +10488,7 @@ function tcToggleWeeklyPick(){
   var on=!already;
   board.classList.toggle('picking',on);
   bar.style.display=on?'flex':'none';
+  _tcSyncFilterFormPickFields(on);
   if(on){ _tcPickClear(); dpPositionPop(bar); dpRefreshPickBarLabel(); }
   if(!on){ document.querySelectorAll('.tc-pick-cb:checked').forEach(function(cb){cb.checked=false;}); _tcPickClear(); tcPickChanged(); }
   return false;
