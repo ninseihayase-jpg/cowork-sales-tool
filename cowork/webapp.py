@@ -4542,10 +4542,12 @@ def _monthly_report_pipeline_lists(con) -> dict:
     - 完了済み(status='完了')のDeliveryは一覧から除外する（「Delivery案件は、完了した案件は
       載せない」）。Sales/Closingは確度ステージ上まだ完了になり得ないため実質無害だが、
       3バケットとも同一ロジックで統一的に除外する。
-    - 開始日(start_week)が古い順(昇順)に全バケットを並べ替える（「案件はすべて、開始日が
-      古いものから表示」）。start_weekが未設定（Sales段階ではまだスケジュール未確定の
-      ことが多い）の案件はソートキーとして扱えないため、常に末尾へ回す。
-    start_week/end_week（2026-10-05追加）はClosing/Deliveryの開始日・終了日表示用。"""
+    - 開始日(start_week)順に並べ替える。start_weekが未設定（Sales段階ではまだスケジュール
+      未確定のことが多い）の案件はソートキーとして扱えないため、常に末尾へ回す。
+    - 2026-10-07ユーザー要望「Deliveryは開始日の新しい順にしてほしい」により、Deliveryのみ
+      降順（新しい順）、Sales/Closingは引き続き昇順（古い順）とする。
+    start_week/end_week（2026-10-05追加）はClosing/Deliveryの開始日・終了日表示用。
+    responsible_owner（2026-10-07追加）はDeliveryの責任者バッジ表示用。"""
     buckets: dict = {"Sales": [], "Closing": [], "Delivery": []}
     label_to_bucket = {"見込み(提案中)": "Sales", "見込み(クロージング)": "Closing", "確定": "Delivery"}
     for dv in sfa_db.list_deliveries(con):
@@ -4561,16 +4563,18 @@ def _monthly_report_pipeline_lists(con) -> dict:
             "name": dv.get("title") or dv.get("deal_name") or "",
             "start_week": dv.get("start_week") or "",
             "end_week": dv.get("end_week") or "",
+            "responsible_owner": dv.get("responsible_owner") or "",
         })
 
-    def _start_sort_key(it: dict):
+    def _start_sort_key(it: dict, *, desc: bool):
         try:
-            return (0, date.fromisoformat(it["start_week"]))
+            ordinal = date.fromisoformat(it["start_week"]).toordinal()
         except (ValueError, TypeError):
-            return (1, date.max)
+            return (1, 0)
+        return (0, -ordinal if desc else ordinal)
 
-    for _bucket_items in buckets.values():
-        _bucket_items.sort(key=_start_sort_key)
+    for _bucket_name, _bucket_items in buckets.items():
+        _bucket_items.sort(key=lambda it: _start_sort_key(it, desc=(_bucket_name == "Delivery")))
     return buckets
 
 
@@ -4822,9 +4826,11 @@ _MR_CSS = """<style>
 .mr-plist .deal{font-size:13px;color:#2B2723;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   background:rgba(217,119,87,.12);padding:1px 6px;border-radius:4px}
 .mr-plist-date{font-size:11px;color:#8A8578;white-space:nowrap;flex-shrink:0}
-.mr-floating{position:fixed;z-index:500;width:360px;background:#fff;border:1px solid var(--border);
+.mr-plist-owner{font-size:10px;color:#2B2723;background:#EEF1F6;padding:1px 6px;border-radius:4px;
+  white-space:nowrap;flex-shrink:0}
+.mr-floating{position:fixed;z-index:500;width:480px;background:#fff;border:1px solid var(--border);
   border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.25);padding:14px;display:none}
-.mr-floating textarea{width:100%;box-sizing:border-box;height:110px;border:1px solid var(--border);
+.mr-floating textarea{width:100%;box-sizing:border-box;height:220px;border:1px solid var(--border);
   border-radius:6px;padding:8px;font-size:12px;font-family:inherit;resize:vertical}
 .mr-tabbar{display:flex;gap:20px;border-bottom:1px solid var(--border);margin:14px 0 16px}
 .mr-tab-btn{border:none;background:transparent;color:#8A8578;font-size:13px;font-weight:600;
@@ -4904,12 +4910,14 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
 
     # ❷ Pipeline
     pipeline = _monthly_report_pipeline_lists(con)
-    def _plist(items, *, with_dates: bool = False):
+    def _plist(items, *, with_dates: bool = False, with_owner: bool = False):
         # Closing/Deliveryのみ開始日・終了日(mm/dd~mm/dd)を付記（2026-10-05ユーザー要望。
         # スペースが限られるため簡易表記）。案件名(.deal)は薄いハイライトで視認性を上げる。
         # 2026-10-06: 日付はアカウント名の前（行の一番左）に配置する（ユーザー要望
         # 「日付はアカウントの前に表示」。当初は案件名の左＝アカウント名の直後だったが、
         # さらにアカウント名より前へ変更）。
+        # 2026-10-07: Deliveryのみ、期間(date_html)の直後に責任者バッジを付記する
+        # （ユーザー要望「Delivery案件に責任者も表示してほしい、期間の横に」）。
         parts = []
         for it in items:
             date_html = ""
@@ -4917,8 +4925,11 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
                 rng = _mr_fmt_week_range(it.get("start_week", ""), it.get("end_week", ""))
                 if rng:
                     date_html = f'<span class="mr-plist-date">{_esc(rng)}</span>'
+            owner_html = ""
+            if with_owner and (it.get("responsible_owner") or ""):
+                owner_html = f'<span class="mr-plist-owner">{_esc(it["responsible_owner"])}</span>'
             parts.append(
-                f'<li>{date_html}<span class="acc">{_esc(it["account_name"])}</span>'
+                f'<li>{date_html}{owner_html}<span class="acc">{_esc(it["account_name"])}</span>'
                 f'<span class="deal">{_esc(it["name"])}</span></li>')
         return "".join(parts)
     pipeline_html = f"""
@@ -4930,9 +4941,9 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
         <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Closing（クロージング）</div>
           <ul class="mr-plist">{_plist(pipeline["Closing"], with_dates=True)}</ul></div>
         <div class="mr-pipeline-col"><div style="font-size:12px;font-weight:700;margin-bottom:6px;flex-shrink:0">Delivery（受注済み）</div>
-          <ul class="mr-plist">{_plist(pipeline["Delivery"], with_dates=True)}</ul></div>
+          <ul class="mr-plist">{_plist(pipeline["Delivery"], with_dates=True, with_owner=True)}</ul></div>
       </div>
-      <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">金額は表示しません。各列とも開始日が古い順・全件表示（縦スクロール）。完了済みのDeliveryは表示しません。</div>
+      <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">金額は表示しません。全件表示（縦スクロール）。完了済みのDeliveryは表示しません。開始日はSales/Closingが古い順、Deliveryは新しい順です。</div>
     </div>"""
 
     # ❸ テーマ別の足元状況・戦略方針
@@ -5106,8 +5117,13 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
       var box = document.getElementById('mrFloating');
       var cell = document.getElementById('mrCell-' + area + '_' + col);
       var r = cell.getBoundingClientRect();
-      box.style.top = (r.bottom + 6) + 'px'; box.style.left = r.left + 'px';
       box.style.display = 'block';
+      // 2026-10-07にボックスを拡大したため、画面端でのはみ出しを防ぐクランプを追加。
+      var w = box.offsetWidth || 480, h = box.offsetHeight || 220;
+      var left = Math.min(r.left, window.innerWidth - w - 8);
+      var top = r.bottom + 6;
+      if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8);
+      box.style.left = Math.max(8, left) + 'px'; box.style.top = top + 'px';
       document.getElementById('mrDraftText').value = '';
       document.getElementById('mrDraftText').focus();
     }}
@@ -5151,6 +5167,11 @@ def monthly_report_page(con, report_month: str, *, qoffset: int = 0) -> str:
     function mrSwitchTab(n) {{
       document.querySelectorAll('.mr-tab-panel').forEach(function(p, i) {{ p.classList.toggle('active', i === n - 1); }});
       document.querySelectorAll('.mr-tab-btn').forEach(function(b, i) {{ b.classList.toggle('active', i === n - 1); }});
+      // 固定ボックスは❶業績推移グラフ専用のため、タブ切替時は全て閉じる（2026-10-07修正:
+      // position:fixedでdocument.bodyに直付けされており、タブパネルのdisplay切替と独立に
+      // 表示され続けてしまい、他タブに「ピンがはみ出て残る」不具合があった）。
+      Object.keys(mrPinnedBoxes).forEach(mrUnpinBox);
+      mrHideTooltip();
       mrSyncTabHeight();
     }}
     window.addEventListener('resize', mrSyncTabHeight);

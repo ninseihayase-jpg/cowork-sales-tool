@@ -246,9 +246,9 @@ def test_pipeline_excludes_completed_delivery(db_path):
     assert "完了済み案件" not in names
 
 
-def test_pipeline_sorted_by_start_date_ascending(db_path):
-    """2026-10-06ユーザー要望「案件はすべて、開始日が古いものから表示」の回帰テスト。
-    開始日未設定の案件は末尾へ回す。"""
+def test_pipeline_delivery_sorted_by_start_date_descending(db_path):
+    """2026-10-07ユーザー要望「Deliveryは開始日の新しい順にしてほしい」の回帰テスト。
+    開始日未設定の案件は（新しい順でも）常に末尾へ回す。"""
     con = sfa_db.connect(db_path)
     aid = sfa_db.upsert_account(con, name="A社")
     d_new = sfa_db.upsert_deal(con, account_id=aid, deal_name="新しい開始", stage="受注")
@@ -261,7 +261,40 @@ def test_pipeline_sorted_by_start_date_ascending(db_path):
     sfa_db.create_delivery(con, deal_id=d_nodate, start_week="", end_week="")
 
     pl = webapp._monthly_report_pipeline_lists(con)
-    assert [it["name"] for it in pl["Delivery"]] == ["古い開始", "中間開始", "新しい開始", "日付未設定"]
+    assert [it["name"] for it in pl["Delivery"]] == ["新しい開始", "中間開始", "古い開始", "日付未設定"]
+
+
+def test_pipeline_sales_and_closing_still_sorted_ascending(db_path):
+    """Delivery以外（Sales/Closing）は引き続き開始日が古い順のまま（降順化の対象外）。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    d_new = sfa_db.upsert_deal(con, account_id=aid, deal_name="新しいクロージング", stage="クロージング")
+    sfa_db.create_delivery(con, deal_id=d_new, start_week="2026-11-01", end_week="2026-12-01")
+    d_old = sfa_db.upsert_deal(con, account_id=aid, deal_name="古いクロージング", stage="クロージング")
+    sfa_db.create_delivery(con, deal_id=d_old, start_week="2026-08-01", end_week="2026-09-01")
+
+    pl = webapp._monthly_report_pipeline_lists(con)
+    assert [it["name"] for it in pl["Closing"]] == ["古いクロージング", "新しいクロージング"]
+
+
+def test_pipeline_delivery_shows_responsible_owner_badge(server, db_path):
+    """2026-10-07ユーザー要望「Delivery案件に責任者バッジを期間の横に表示してほしい」の回帰テスト。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, "2026-10")
+    aid = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="X案件", stage="受注")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week="2026-09-07", end_week="2026-09-14")
+    sfa_db.update_delivery(con, dvid, responsible_owner="山田")
+    con.close()
+
+    code, body = _get(server + "/monthly-report/2026-10", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    assert '<span class="mr-plist-owner">山田</span>' in html
+    date_pos = html.index('class="mr-plist-date"')
+    owner_pos = html.index('class="mr-plist-owner"')
+    acc_pos = html.index('class="acc"')
+    assert date_pos < owner_pos < acc_pos
 
 
 def test_pipeline_schedule_appears_before_account_name_in_html(server, db_path):
@@ -347,6 +380,37 @@ def test_chart_tooltip_supports_multiple_draggable_pins(server, db_path):
     # （mrPinnedBoxes[key]で個別管理、mrUnpinToolTip的な単一グローバル状態は使わない）。
     assert "mrPinned = false" not in html
     assert "mrPinned &&" not in html
+
+
+def test_tab_switch_clears_pinned_boxes(server, db_path):
+    """2026-10-07ユーザー要望「ピン留めが他タブに残って表示されてしまう」の回帰テスト。
+    mrSwitchTabが固定ボックスを全てクリアする（mrUnpinBoxをmrPinnedBoxesの全キーに適用）
+    実装になっていることをソースレベルで確認する（実クリックはPlaywright側のE2Eで確認済み）。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, "2026-10")
+    con.close()
+
+    code, body = _get(server + "/monthly-report/2026-10", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    switch_tab_js = html.split("function mrSwitchTab", 1)[1].split("function mrOpenEditor", 1)[0]
+    assert "Object.keys(mrPinnedBoxes).forEach(mrUnpinBox)" in switch_tab_js
+
+
+def test_floating_editor_box_enlarged(server, db_path):
+    """2026-10-07ユーザー要望「❸の自由記述入力欄をもっと大きくしてほしい」の回帰テスト。
+    旧サイズ(width:360px/height:110px)より明確に拡大されていることを確認する。"""
+    con = sfa_db.connect(db_path)
+    sfa_db.create_monthly_report(con, "2026-10")
+    con.close()
+
+    code, body = _get(server + "/monthly-report/2026-10", headers=_header(KEIEI_EMAIL))
+    assert code == 200
+    html = body.decode("utf-8")
+    assert "width:360px" not in html
+    assert "height:110px" not in html
+    assert ".mr-floating{position:fixed;z-index:500;width:480px" in html
+    assert "height:220px" in html
 
 
 def test_chart_deal_display_toggle_feature_removed(server, db_path):
