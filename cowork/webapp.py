@@ -4866,7 +4866,11 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
     label_cells = []
     bar_cells = []
     month_cells = []
-    for m in months:
+    for _i, m in enumerate(months):
+        # 月と月の区切りが分かりやすいよう、最後の月以外は右端に薄い縦線を引く
+        # （2026-10-07ユーザー要望「月と月の間に薄く縦線を引いて」）。column-gap(10px)の
+        # 中央付近に来るよう、gap側の余白を半分ずつ使ってborder-rightで表現する。
+        _sep = "" if _i == len(months) - 1 else "border-right:1px solid #ECE8DE;padding-right:5px;margin-right:5px"
         actual = actual_by_month.get(m) or {}
         target = target_by_month.get(m) or {}
         actual_total = sum(actual.values())
@@ -4879,7 +4883,7 @@ def _monthly_report_stacked_bar_panel_html(title: str, months: list, l1_order: l
           <div class="mono" style="font-size:13px;font-weight:700;color:{_TARGET_NUM_COLOR}">{_esc(target_label)}</div>
         </div>""")
         bar_cells.append(f"""
-        <div style="display:flex;justify-content:center;gap:8px;height:100%">
+        <div style="display:flex;justify-content:center;gap:8px;height:100%;{_sep}">
           <div style="display:flex;flex-direction:column;width:44px;height:100%">{_flex_segs_html(actual, dashed=False, month=m)}</div>
           <div style="display:flex;flex-direction:column;width:44px;height:100%">{_flex_segs_html(target, dashed=True, month=m)}</div>
         </div>""")
@@ -5636,6 +5640,7 @@ def _partner_meeting_productivity_html(con) -> str:
 
         def _row_html(r) -> str:
             has_current = r["current"] is not None
+            has_forecast = r["forecast"] is not None
             cur_pct, fc_pct = _pct(r["current"]), _pct(r["forecast"])
             track_left, track_width = min(cur_pct, fc_pct), abs(fc_pct - cur_pct)
             rev_pct = max(0.0, min(100.0, (r["revenue"] or 0) / max_rev_scaled * 100))
@@ -5643,12 +5648,17 @@ def _partner_meeting_productivity_html(con) -> str:
                 f'<span style="flex:0 0 auto;font-size:10px;color:#2B2723;background:#EEF1F6;'
                 f'padding:1px 6px;border-radius:4px;white-space:nowrap">{_esc(r["owner"])}</span>'
                 if r["owner"] else "")
-            cur_label = f'{r["current"]:.0f}' if has_current else "未算出"
-            fc_label = f'{r["forecast"]:.0f}' if r["forecast"] is not None else "未算出"
+            cur_label = f'{r["current"]:.0f}万' if has_current else "未算出"
+            fc_label = f'{r["forecast"]:.0f}万' if has_forecast else "未算出"
             tip = f'当該週 {cur_label} ／ 着地予想 {fc_label}'
             track_html = (
                 f'<div style="position:absolute;top:13px;height:2px;background:#D9D3C7;'
                 f'left:{track_left}%;width:{track_width}%"></div>' if has_current else "")
+            # ドット2つが近接していると数値ラベルが重なって読めなくなるため（2026-10-07
+            # 実機フィードバック「数値が被ってる」）、2つの丸の間隔がおおむねラベル1個分
+            # 未満（%軸上で7ポイント未満）の時だけ着地予想ラベルを1段下にずらす。
+            labels_overlap = has_current and has_forecast and abs(cur_pct - fc_pct) < 7
+            fc_label_top = 48 if labels_overlap else 26
             cur_dot_html = (
                 f'<div style="position:absolute;top:6px;left:{cur_pct}%;transform:translateX(-50%);'
                 f'width:16px;height:16px;border-radius:50%;background:#2F8F7A;border:2px solid #2F8F7A"></div>'
@@ -5658,30 +5668,31 @@ def _partner_meeting_productivity_html(con) -> str:
             fc_dot_html = (
                 f'<div style="position:absolute;top:6px;left:{fc_pct}%;transform:translateX(-50%);'
                 f'width:16px;height:16px;border-radius:50%;background:#fff;border:2px dashed #2F8F7A"></div>'
-                f'<div style="position:absolute;top:26px;left:{fc_pct}%;'
+                f'<div style="position:absolute;top:{fc_label_top}px;left:{fc_pct}%;'
                 f'transform:translateX(-50%);font-size:16px;font-weight:700;color:#2F8F7A;'
                 f'white-space:nowrap">{fc_label}</div>'
-                if r["forecast"] is not None else "")
+                if has_forecast else "")
+            row_bottom_pad = 58 if labels_overlap else 36
             return f"""
             <div style="position:relative;display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;
-              align-items:center;padding:14px 0 36px;border-bottom:1px solid #F3F0E9">
+              align-items:center;padding:14px 0 {row_bottom_pad}px;border-bottom:1px solid #F3F0E9">
               <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
                 <div style="display:flex;align-items:center;gap:6px;min-width:0">{owner_html}
-                  <span style="font-size:10px;color:#8A8578;white-space:nowrap;overflow:hidden;
-                    text-overflow:ellipsis">{_esc(r["account_name"])}</span></div>
-                <a href="/delivery/{r['id']}" style="font-size:13px;font-weight:600;color:#2B2723;
+                  <span style="font-size:13px;font-weight:700;color:#2B2723;white-space:nowrap;
+                    overflow:hidden;text-overflow:ellipsis">{_esc(r["account_name"])}</span></div>
+                <a href="/delivery/{r['id']}" style="font-size:12px;color:#8A8578;
                   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none">{_esc(r["name"])}</a>
               </div>
               <div style="position:relative;height:28px" title="{_esc(tip)}">
-                {track_html}{cur_dot_html}{fc_dot_html}
+                {track_html}{fc_dot_html}{cur_dot_html}
               </div>
               <div style="position:relative;height:28px;display:flex;align-items:center">
                 <div style="position:relative;flex:1 1 auto;height:16px;background:#F3F0E9;border-radius:3px">
                   <div style="position:absolute;top:0;left:0;bottom:0;width:{rev_pct}%;
                     background:#D97757;border-radius:3px"></div>
                 </div>
-                <div style="width:76px;text-align:right;font-size:24px;font-weight:700;color:#2B2723;
-                  padding-left:8px">{r["revenue"]:,.0f}</div>
+                <div style="width:104px;text-align:right;font-size:24px;font-weight:700;color:#2B2723;
+                  padding-left:8px;white-space:nowrap">{r["revenue"]:,.0f}万</div>
               </div>
             </div>"""
 
@@ -8129,11 +8140,14 @@ def delivery_form(con, delivery_id: int) -> str:
                             f'<br><span style="font-size:9px;opacity:.7">累{_num_pct(_cmg)}万</span></td>')
 
             _p = _prod["productivity"].get(w)
-            _cw = _prod["cum_workload"].get(w, 0.0)
-            _p_title = f' title="累計限界利益{_num_pct(_cmg)}万 ÷ 累計稼働率{_num_pct(_cw)}%（月換算）"' if _p is not None else ""
+            # 稼働率の表示は月換算（%週累計÷4）にする（2026-10-07ユーザー要望「累計稼働率の
+            # 表示に違和感」。生産性の計算式(cum_margin*400/cum_workload)自体は従来通り
+            # 生の%週累計(cum_workload)を使う——変更するのは表示だけ）。
+            _cw_month = _prod["cum_workload"].get(w, 0.0) / 4
+            _p_title = f' title="累計限界利益{_num_pct(_cmg)}万 ÷ 累計稼働率{_num_pct(_cw_month)}%（月換算）"' if _p is not None else ""
             _prod_cells += (f'<td style="text-align:center;white-space:nowrap;background:#f5f0ff"{_p_title}>'
                              f'{(_num0(_p) + "万") if _p is not None else "·"}'
-                             f'<br><span style="font-size:9px;opacity:.7">稼{_num_pct(_cw)}%</span></td>')
+                             f'<br><span style="font-size:9px;opacity:.7">稼{_num_pct(_cw_month)}%</span></td>')
 
             _wp = _prod["weekly_productivity"].get(w)
             _ww = _prod["weekly_workload"].get(w, 0.0)
@@ -8142,13 +8156,13 @@ def delivery_form(con, delivery_id: int) -> str:
                              f'<br><span style="font-size:9px;opacity:.7">週{_num_pct(_ww)}%</span></td>')
 
         _final_p = _prod["productivity"].get(_last_wk)
-        _final_w = _prod["cum_workload"].get(_last_wk, 0.0)
-        _final_html = (f'{_num0(_final_p)}万<br><span style="font-size:9px;opacity:.7">稼{_num_pct(_final_w)}%</span>'
+        _final_w_month = _prod["cum_workload"].get(_last_wk, 0.0) / 4
+        _final_html = (f'{_num0(_final_p)}万<br><span style="font-size:9px;opacity:.7">稼{_num_pct(_final_w_month)}%</span>'
                        if _final_p is not None else "·")
         _final_mg = _prod["cum_margin"].get(_last_wk)
         _final_mg_html = f'{_num_pct(_final_mg)}万' if _final_mg is not None else "·"
         _label_title_rev = "限界利益＝売上－外注費－想定経費。週別＝その週の限界利益、累計＝開始からその週までの累計。"
-        _label_title_prod = "累計生産性＝月100%稼働あたりの限界利益単価＝累計限界利益×400÷累計稼働率（%週）÷4ヶ月換算。累計稼働率＝開始からその週までの稼働率(%週)累計。"
+        _label_title_prod = "累計生産性＝月100%稼働あたりの限界利益単価＝累計限界利益×400÷累計稼働率（%週）÷4ヶ月換算。表示されている累計稼働率は月換算値（%週累計÷4）——例えば150%は「1.5ヶ月ぶんの100%稼働に相当」の意味。"
         _label_title_work = "週別生産性＝その週単体を月100%稼働に換算した場合の限界利益単価（非累計）。週別稼働率＝その週単体の稼働率。"
         grows = (f'<tr>{_sticky_label("週別限界利益/累計限界利益", "#f0f7ff", _label_title_rev)}'
                  f'{_sticky_final(_final_mg_html, "#f0f7ff", "最終着地の累計限界利益")}{_rev_cells}</tr>'
@@ -9163,13 +9177,16 @@ def delivery_form(con, delivery_id: int) -> str:
         if(i===weeks.length-1){{ finalP=cp; finalW=runningWork; finalMg=runningMargin; }}
         revRow += '<td style="text-align:center;white-space:nowrap;background:#f0f7ff" title="売上'+_r1(rev)+'万－外注費'+_r1(cost)+'万－経費'+_r1(exp)+'万＝限界利益累計'+_r1(runningMargin)+'万（想定経費（総額）='+_r1(expenseTotal)+'万）">'
           +(margin?_r1(margin)+'万':'·')+'<br><span style="font-size:9px;opacity:.7">累'+_r1(runningMargin)+'万</span></td>';
+        // 表示する稼働率は月換算（%週累計÷4）にする（2026-10-07ユーザー要望。生産性の計算式
+        // (cp=runningMargin*400/runningWork)自体は生の%週累計(runningWork)のまま使う）。
+        var runningWorkMonth = runningWork/4;
         prodRow += '<td style="text-align:center;white-space:nowrap;background:#f5f0ff"'
-          +(cp!==null?' title="累計限界利益'+_r1(runningMargin)+'万 ÷ 累計稼働率'+_r1(runningWork)+'%（月換算）"':'')+'>'
-          +(cp!==null?cp+'万':'·')+'<br><span style="font-size:9px;opacity:.7">稼'+_r1(runningWork)+'%</span></td>';
+          +(cp!==null?' title="累計限界利益'+_r1(runningMargin)+'万 ÷ 累計稼働率'+_r1(runningWorkMonth)+'%（月換算）"':'')+'>'
+          +(cp!==null?cp+'万':'·')+'<br><span style="font-size:9px;opacity:.7">稼'+_r1(runningWorkMonth)+'%</span></td>';
         workRow += '<td style="text-align:center;white-space:nowrap;background:#f0fdf4">'+(wp!==null?wp+'万':'·')
           +'<br><span style="font-size:9px;opacity:.7">週'+_r1(work)+'%</span></td>';
       }});
-      var finalHtml = finalP!==null ? (finalP+'万<br><span style="font-size:9px;opacity:.7">稼'+_r1(finalW)+'%</span>') : '·';
+      var finalHtml = finalP!==null ? (finalP+'万<br><span style="font-size:9px;opacity:.7">稼'+_r1(finalW/4)+'%</span>') : '·';
       var finalMgHtml = _r1(finalMg)+'万';
       var stickyLabel = function(text, bg, title){{
         return '<th style="text-align:left;white-space:nowrap;width:'+LABEL_W+'px;position:sticky;left:0;'
@@ -9189,7 +9206,7 @@ def delivery_form(con, delivery_id: int) -> str:
             +(partial?' title="対象外期間により有効週数='+_r1(wgt)+'（営業日ベース按分）"':'')+'>'+(+p[1])+'/'+(+p[2])+mark+'</th>';}}).join('')+'</tr>'
         +'<tr>'+stickyLabel('週別限界利益/累計限界利益','#f0f7ff','限界利益＝売上－外注費－想定経費（絶対額）。週別＝その週の限界利益、累計＝開始からその週までの累計。')
           +stickyFinal(finalMgHtml,'#f0f7ff')+revRow+'</tr>'
-        +'<tr>'+stickyLabel('累計生産性/累計稼働率','#f5f0ff','累計生産性＝月100%稼働あたりの限界利益単価＝累計限界利益×400÷累計稼働率（%週）÷4ヶ月換算。累計稼働率＝開始からその週までの稼働率(%週)累計。')
+        +'<tr>'+stickyLabel('累計生産性/累計稼働率','#f5f0ff','累計生産性＝月100%稼働あたりの限界利益単価＝累計限界利益×400÷累計稼働率（%週）÷4ヶ月換算。表示されている累計稼働率は月換算値（%週累計÷4）。')
           +stickyFinal(finalHtml,'#f5f0ff')+prodRow+'</tr>'
         +'<tr>'+stickyLabel('週別生産性/週別稼働率','#f0fdf4','週別生産性＝その週単体を月100%稼働に換算した場合の限界利益単価（非累計）。週別稼働率＝その週単体の稼働率。')
           +stickyFinal('·','#f0fdf4')+workRow+'</tr>';

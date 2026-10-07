@@ -526,3 +526,50 @@ def test_productivity_html_axis_and_thresholds_outside_scroll_and_numbers_enlarg
     assert "font-size:20px" in html  # 軸目盛
     assert "font-size:18px" in html  # 閾値ラベル
     assert "font-size:24px" in html  # 売上総額の数値
+
+
+# ── 14. 2026-10-07 4巡目フィードバック ──
+
+def test_productivity_values_have_unit_suffix(db_path):
+    """2026-10-07実機フィードバック「生産性、売上総額、に単位をつけて」の回帰テスト。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="案件A", stage="受注", owner="吉江")
+    sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                            end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=5)))
+    html = webapp._partner_meeting_productivity_html(con)
+    assert "未算出" in html or "万</div>" in html  # 当該週/着地予想のどちらかの数値に万が付く
+    assert "万</div>" in html  # 売上総額欄にも万が付く
+
+
+def test_productivity_labels_stagger_when_dots_are_close(db_path):
+    """2026-10-07実機フィードバック「生産性の数値が被ってる」の回帰テスト。当該週時点と
+    着地予想のドット位置が近い（%軸上で7ポイント未満）場合は、着地予想の数値ラベルを
+    1段下にずらして重なりを避ける。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    base = date.fromisoformat(THIS_MONDAY)
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="近接案件", stage="受注", owner="吉江")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week=sfa_db._monday_of(base - timedelta(weeks=4)),
+                                   end_week=sfa_db._monday_of(base + timedelta(weeks=4)))
+    sfa_db.update_delivery(con, dvid, fee_mode="total", fee_total=400)
+    w0 = sfa_db._monday_of(base - timedelta(weeks=4))
+    for i in range(9):
+        wk = sfa_db._monday_of(date.fromisoformat(w0) + timedelta(weeks=i))
+        sfa_db.add_delivery_assignment(con, delivery_id=dvid, role="PM", owner="高橋",
+                                        from_week=wk, to_week=wk, fte_pct=50)
+    html = webapp._partner_meeting_productivity_html(con)
+    assert "top:48px" in html  # 均一稼働のため当該週と着地予想がほぼ同値→スタガー発動
+
+
+def test_productivity_account_name_more_prominent_than_deal_name(db_path):
+    """2026-10-07実機フィードバック「アカウントの表記をもう少し目立たせて」の回帰テスト。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="強調確認社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="案件A", stage="受注", owner="吉江")
+    sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                            end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=5)))
+    html = webapp._partner_meeting_productivity_html(con)
+    acc_idx = html.index("強調確認社")
+    acc_style_start = html.rindex("<span", 0, acc_idx)
+    assert "font-size:13px;font-weight:700;color:#2B2723" in html[acc_style_start:acc_idx]

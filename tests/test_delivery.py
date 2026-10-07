@@ -1892,6 +1892,25 @@ def test_delivery_form_renders_three_row_layout(con, acc_id):
     assert "週別生産性/週別稼働率" in html
 
 
+def test_delivery_form_cumulative_workload_display_is_month_converted(con, acc_id):
+    """2026-10-07実機フィードバック「累計稼働率の表示が直感と合わない（600%等）」の回帰テスト。
+    生産性の計算式自体は生の%週累計(cum_workload)を使うが、画面に表示する「稼XX%」は
+    月換算値(cum_workload÷4)にする。100%×2週=200(%週累計)なら月換算は50%。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_total=200, fee_mode="total", expected_expense_total=0,
+                            start_week="2026-06-01", end_week="2026-06-08")
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
+                                    to_week="2026-06-08", fte_pct=100)
+    grid = sfa_db.delivery_grid(con, dvid)
+    prod = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
+    assert prod["cum_workload"][grid["weeks"][-1]] == 200.0  # 生の計算値自体は変更していない
+
+    html = webapp.delivery_form(con, dvid)
+    assert "稼50%" in html  # 200÷4=50（月換算の表示）
+    assert "稼200%" not in html  # 旧表示（生の%週累計）は出なくなっている
+
+
 def test_delivery_form_renders_excluded_period_calendar_widget(con, acc_id):
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")

@@ -495,3 +495,14 @@ def test_sharepoint_stub_failure_does_not_block_fix(server, db_path, monkeypatch
     con2 = sfa_db.connect(db_path)
     r = sfa_db.get_monthly_report(con2, "2026-10")
     assert r["fixed_at"]
+
+
+# ── 11. 月と月の間に薄い縦線（2026-10-07実機フィードバック） ──
+
+def test_stacked_bar_panel_draws_separator_between_months():
+    """「月と月の間に薄く縦線を引いて」の回帰テスト。最後の月以外は右端にborder-rightの
+    区切り線を引く（❶❸双方・パートナー定例③で流用する共通関数のため、ここで1箇所検証すれば足りる）。"""
+    months = ["2026-07", "2026-08", "2026-09"]
+    html = webapp._monthly_report_stacked_bar_panel_html(
+        "受注高", months, ["コスト削減"], {}, {}, metric="order_value")
+    assert html.count("border-right:1px solid #ECE8DE") == len(months) - 1
