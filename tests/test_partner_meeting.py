@@ -556,10 +556,14 @@ def test_productivity_labels_stagger_when_dots_are_close(db_path):
     w0 = sfa_db._monday_of(base - timedelta(weeks=4))
     for i in range(9):
         wk = sfa_db._monday_of(date.fromisoformat(w0) + timedelta(weeks=i))
+        # 最終週だけ稼働率を変えて、当該週時点と着地予想を「近いが完全一致ではない」値にする
+        # （完全一致だと2026-10-07の別要望によりドット1つに統合される仕様のため、このテストは
+        # 意図的に僅差を作ってスタガー表示そのものを検証する）。
+        pct = 55 if i == 8 else 50
         sfa_db.add_delivery_assignment(con, delivery_id=dvid, role="PM", owner="高橋",
-                                        from_week=wk, to_week=wk, fte_pct=50)
+                                        from_week=wk, to_week=wk, fte_pct=pct)
     html = webapp._partner_meeting_productivity_html(con)
-    assert "top:48px" in html  # 均一稼働のため当該週と着地予想がほぼ同値→スタガー発動
+    assert "top:48px" in html  # 近接だが非同値のためスタガー発動
 
 
 def test_productivity_account_name_more_prominent_than_deal_name(db_path):
@@ -573,3 +577,63 @@ def test_productivity_account_name_more_prominent_than_deal_name(db_path):
     acc_idx = html.index("強調確認社")
     acc_style_start = html.rindex("<span", 0, acc_idx)
     assert "font-size:13px;font-weight:700;color:#2B2723" in html[acc_style_start:acc_idx]
+
+
+def test_productivity_merges_dot_when_current_equals_forecast(db_path):
+    """2026-10-07実機フィードバック「かぶっててワケ分からない。現状と着地が同じなら、
+    一つだけでok」の回帰テスト。均一稼働で当該週時点＝着地予想（四捨五入後も同値）になる
+    ケースでは、点線丸（着地予想）を描画せず実線丸1つだけにする。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    base = date.fromisoformat(THIS_MONDAY)
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="均一稼働案件", stage="受注", owner="吉江")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week=sfa_db._monday_of(base - timedelta(weeks=4)),
+                                   end_week=sfa_db._monday_of(base + timedelta(weeks=4)))
+    sfa_db.update_delivery(con, dvid, fee_mode="total", fee_total=400)
+    w0 = sfa_db._monday_of(base - timedelta(weeks=4))
+    for i in range(9):
+        wk = sfa_db._monday_of(date.fromisoformat(w0) + timedelta(weeks=i))
+        sfa_db.add_delivery_assignment(con, delivery_id=dvid, role="PM", owner="高橋",
+                                        from_week=wk, to_week=wk, fte_pct=50)
+    rows = webapp._partner_meeting_productivity_rows(con)
+    row = next(r for r in rows if r["name"] == "均一稼働案件")
+    assert round(row["current"]) == round(row["forecast"])  # 前提: 均一稼働なので同値になる
+
+    html = webapp._partner_meeting_productivity_html(con)
+    row_idx = html.index("均一稼働案件")
+    row_html = html[row_idx:row_idx + 600]
+    assert "border:2px dashed #2F8F7A" not in row_html  # 点線丸(着地予想)は描画されない
+    assert row_html.count("border:2px solid #2F8F7A") == 1  # 実線丸(当該週時点)は1つだけ
+
+
+# ── 15. 2026-10-07: 請求/実稼働の切り替え ──
+
+def test_partner_meeting_productivity_rows_basis_actual_vs_billing(db_path):
+    """2026-10-07ユーザー要望「生産性を計算しているすべての場所で、請求/実稼働で切り替えて
+    計算・表示できるように」の回帰テスト（パートナー定例④）。"""
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="乖離案件", stage="受注", owner="吉江")
+    dvid = sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                                   end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=1)))
+    sfa_db.update_delivery(con, dvid, fee_mode="total", fee_total=200)
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, role="PM", owner="吉江",
+                                    from_week=THIS_MONDAY, to_week=THIS_MONDAY, fte_pct=100, fte_billing=50)
+    rows_actual = webapp._partner_meeting_productivity_rows(con, basis="actual")
+    rows_billing = webapp._partner_meeting_productivity_rows(con, basis="billing")
+    r_a = next(r for r in rows_actual if r["name"] == "乖離案件")
+    r_b = next(r for r in rows_billing if r["name"] == "乖離案件")
+    assert r_a["current"] != r_b["current"]
+
+
+def test_partner_meeting_productivity_html_has_basis_toggle(db_path):
+    con = sfa_db.connect(db_path)
+    aid = sfa_db.upsert_account(con, name="A社")
+    did = sfa_db.upsert_deal(con, account_id=aid, deal_name="案件A", stage="受注", owner="吉江")
+    sfa_db.create_delivery(con, deal_id=did, start_week=THIS_MONDAY,
+                            end_week=sfa_db._monday_of(date.fromisoformat(THIS_MONDAY) + timedelta(weeks=5)))
+    html = webapp._partner_meeting_productivity_html(con)
+    assert 'id="pmProdRows-actual"' in html
+    assert 'id="pmProdRows-billing"' in html
+    assert "pmProdSwitchBasis('actual')" in html
+    assert "pmProdSwitchBasis('billing')" in html

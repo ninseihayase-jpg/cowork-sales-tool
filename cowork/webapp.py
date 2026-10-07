@@ -4733,7 +4733,7 @@ def _partner_meeting_pipeline_lists(con) -> dict:
     return {"Sales": sales, "Delivery": delivery}
 
 
-def _partner_meeting_productivity_rows(con) -> list:
+def _partner_meeting_productivity_rows(con, *, basis: str = "actual") -> list:
     """パートナー定例④生産性ページ。Pipeline❶のDeliveryバケットと同じ抽出条件
     （確度='確定'・status!='完了'）のDeliveryについて、sfa_db.delivery_weekly_productivity()
     の既存ロジックをそのまま使って「当該週時点」「着地予想」を算出する（Delivery詳細ページの
@@ -4742,7 +4742,10 @@ def _partner_meeting_productivity_rows(con) -> list:
     開始週が当該週より先（まだ開始していない＝売上が立っていない）案件は、"current"を常に
     Noneにする（2026-10-07実機フィードバック「開始前の案件は、当該週時点の生産性は表示不要」。
     アサイン等の都合でたまたまwork>0になり算出できてしまうケースがあっても、契約開始前の
-    数値をそのまま見せると誤解を招くため明示的に抑制する）。"""
+    数値をそのまま見せると誤解を招くため明示的に抑制する）。
+    basis（2026-10-07追加、ユーザー要望「請求/実稼働で切り替えて計算・表示できるように」）:
+    "actual"（既定・実稼働率ベース）または"billing"（請求率ベース）。
+    sfa_db.delivery_weekly_productivity()にそのまま渡す。"""
     this_monday = sfa_db._monday_of(_today_jst())
     rows = []
     for dv in sfa_db.list_deliveries(con):
@@ -4760,7 +4763,7 @@ def _partner_meeting_productivity_rows(con) -> list:
             weeks = sorted(set(sfa_db._weeks_from(sfa_db._monday_of(sd), n)) | {this_monday})
         except (ValueError, TypeError):
             weeks = [this_monday]
-        prod = sfa_db.delivery_weekly_productivity(con, dv["id"], weeks)
+        prod = sfa_db.delivery_weekly_productivity(con, dv["id"], weeks, basis=basis)
         current = prod["productivity"].get(this_monday)
         if start_week and this_monday < start_week:
             current = None
@@ -5614,7 +5617,6 @@ def _partner_meeting_productivity_html(con) -> str:
       （軸目盛行はスクロール領域の外に出し、縦の閾値線はスクロール領域に重なる
       兄弟要素として描画することで、行リストだけがその下でスクロールする）。
     """
-    rows = _partner_meeting_productivity_rows(con)
     thresholds = _PARTNER_PRODUCTIVITY_THRESHOLDS
 
     def _pct(v) -> float:
@@ -5632,9 +5634,14 @@ def _partner_meeting_productivity_html(con) -> str:
         f'border-left:1.5px dashed {color};opacity:.6"></div>'
         for val, _label, color in thresholds)
 
-    if not rows:
-        rows_html = '<p class="muted" style="padding:14px 0">対象のDeliveryがありません。</p>'
-    else:
+    def _build_rows_html(rows: list) -> str:
+        """生産性の行リストHTMLを組み立てる（2026-10-07追加: 請求/実稼働の切り替えトグル用に
+        切り出し。切り替え自体はJSでの表示/非表示だけで行い、両basisぶんを事前にサーバー側で
+        レンダリングしておく——Delivery詳細ページのJSライブ再計算とは異なり、パートナー定例④は
+        元々ライブ編集が無い静的ページのため、この方式がこのページの既存アーキテクチャと
+        最も整合する）。"""
+        if not rows:
+            return '<p class="muted" style="padding:14px 0">対象のDeliveryがありません。</p>'
         max_rev = max((r["revenue"] or 0) for r in rows) or 1.0
         max_rev_scaled = max_rev * 1.15
 
@@ -5650,14 +5657,20 @@ def _partner_meeting_productivity_html(con) -> str:
                 if r["owner"] else "")
             cur_label = f'{r["current"]:.0f}万' if has_current else "未算出"
             fc_label = f'{r["forecast"]:.0f}万' if has_forecast else "未算出"
-            tip = f'当該週 {cur_label} ／ 着地予想 {fc_label}'
+            # 当該週時点と着地予想が同じ値（四捨五入後の表示が一致）なら、2つ重ねて出さず
+            # 実線丸1つだけ表示する（2026-10-07実機フィードバック「かぶっててワケ分からない。
+            # 現状と着地が同じなら、一つだけでok」）。
+            same_value = has_current and has_forecast and cur_label == fc_label
+            tip = (f'当該週時点＝着地予想 {cur_label}' if same_value
+                   else f'当該週 {cur_label} ／ 着地予想 {fc_label}')
+            show_fc = has_forecast and not same_value
             track_html = (
                 f'<div style="position:absolute;top:13px;height:2px;background:#D9D3C7;'
-                f'left:{track_left}%;width:{track_width}%"></div>' if has_current else "")
+                f'left:{track_left}%;width:{track_width}%"></div>' if has_current and show_fc else "")
             # ドット2つが近接していると数値ラベルが重なって読めなくなるため（2026-10-07
             # 実機フィードバック「数値が被ってる」）、2つの丸の間隔がおおむねラベル1個分
             # 未満（%軸上で7ポイント未満）の時だけ着地予想ラベルを1段下にずらす。
-            labels_overlap = has_current and has_forecast and abs(cur_pct - fc_pct) < 7
+            labels_overlap = has_current and show_fc and abs(cur_pct - fc_pct) < 7
             fc_label_top = 48 if labels_overlap else 26
             cur_dot_html = (
                 f'<div style="position:absolute;top:6px;left:{cur_pct}%;transform:translateX(-50%);'
@@ -5671,7 +5684,7 @@ def _partner_meeting_productivity_html(con) -> str:
                 f'<div style="position:absolute;top:{fc_label_top}px;left:{fc_pct}%;'
                 f'transform:translateX(-50%);font-size:16px;font-weight:700;color:#2F8F7A;'
                 f'white-space:nowrap">{fc_label}</div>'
-                if has_forecast else "")
+                if show_fc else "")
             row_bottom_pad = 58 if labels_overlap else 36
             return f"""
             <div style="position:relative;display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;
@@ -5696,7 +5709,10 @@ def _partner_meeting_productivity_html(con) -> str:
               </div>
             </div>"""
 
-        rows_html = "".join(_row_html(r) for r in rows)
+        return "".join(_row_html(r) for r in rows)
+
+    rows_html_actual = _build_rows_html(_partner_meeting_productivity_rows(con, basis="actual"))
+    rows_html_billing = _build_rows_html(_partner_meeting_productivity_rows(con, basis="billing"))
 
     legend_items = "".join(
         f'<div style="display:flex;gap:6px;align-items:center"><div style="width:10px;height:0;'
@@ -5706,7 +5722,15 @@ def _partner_meeting_productivity_html(con) -> str:
 
     return f"""
     <div class="card">
-      <h3 style="margin:0 0 10px;font-size:14px;flex-shrink:0">④ 生産性</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;flex-shrink:0">
+        <h3 style="margin:0 0 10px;font-size:14px">④ 生産性</h3>
+        <div style="display:flex;gap:0;margin-bottom:10px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+          <button type="button" id="pmProdBasisActualBtn" class="btn" style="border:none;border-radius:0;font-size:11px"
+            onclick="pmProdSwitchBasis('actual')">実稼働ベース</button>
+          <button type="button" id="pmProdBasisBillingBtn" class="btn sec" style="border:none;border-radius:0;font-size:11px"
+            onclick="pmProdSwitchBasis('billing')">請求ベース</button>
+        </div>
+      </div>
       <div style="display:grid;grid-template-columns:200px 1fr 1fr;gap:28px;padding-bottom:10px;
         border-bottom:1px solid #EEEAE1;flex-shrink:0">
         <div></div>
@@ -5725,7 +5749,8 @@ def _partner_meeting_productivity_html(con) -> str:
           <div></div><div style="position:relative;height:100%">{threshold_overlay}</div><div></div>
         </div>
         <div class="mr-table-scroll" style="position:absolute;inset:0">
-          {rows_html}
+          <div id="pmProdRows-actual">{rows_html_actual}</div>
+          <div id="pmProdRows-billing" style="display:none">{rows_html_billing}</div>
         </div>
       </div>
       <div style="display:flex;gap:22px;padding-top:16px;font-size:11px;color:#8A8578;align-items:center;flex-wrap:wrap;flex-shrink:0">
@@ -5741,8 +5766,19 @@ def _partner_meeting_productivity_html(con) -> str:
         <div style="width:1px;height:14px;background:#E7E3DA"></div>{legend_items}
       </div>
       <div class="muted" style="font-size:10px;margin-top:10px;flex-shrink:0">生産性はsfa_db.delivery_weekly_productivity()
-        （累計限界利益×400÷累計稼働率）をそのまま使用。並び順は当該週時点の生産性降順。</div>
-    </div>"""
+        （累計限界利益×400÷累計稼働率）をそのまま使用。並び順は当該週時点の生産性降順。
+        「実稼働ベース/請求ベース」切り替えは稼働率に何を使うか（fte_pct/fte_billing）の違いで、
+        並び順・生産性・着地予想の値がベースごとに変わります。</div>
+    </div>
+    <script>
+    function pmProdSwitchBasis(basis) {{
+      document.getElementById('pmProdRows-actual').style.display = (basis === 'actual') ? '' : 'none';
+      document.getElementById('pmProdRows-billing').style.display = (basis === 'billing') ? '' : 'none';
+      document.getElementById('pmProdBasisActualBtn').classList.toggle('sec', basis !== 'actual');
+      document.getElementById('pmProdBasisBillingBtn').classList.toggle('sec', basis !== 'billing');
+    }}
+    pmProdSwitchBasis('actual');
+    </script>"""
 
 
 def partner_meeting_page(con, week_start: str, *, qoffset: int = 0) -> str:
@@ -8449,7 +8485,16 @@ def delivery_form(con, delivery_id: int) -> str:
         </div>
       </div>
 
-      <h3 style="margin:16px 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-top:16px">
+        <h3 style="margin:0 0 6px;font-size:14px">プレビュー（週別・このDelivery分）</h3>
+        <div style="display:flex;gap:0;margin-bottom:6px;border:1px solid #e6e9f0;border-radius:6px;overflow:hidden">
+          <button type="button" id="dvProdBasisActualBtn" class="btn" style="border:none;border-radius:0;font-size:11px"
+            onclick="dvSetProdBasis('actual')">実稼働ベース</button>
+          <button type="button" id="dvProdBasisBillingBtn" class="btn sec" style="border:none;border-radius:0;font-size:11px"
+            onclick="dvSetProdBasis('billing')">請求ベース</button>
+        </div>
+      </div>
+      <p class="muted" style="font-size:11px;margin:0 0 6px">「累計生産性/累計稼働率」「週別生産性/週別稼働率」の稼働率に何を使うか（実稼働率/請求率）を切り替えられます。</p>
       <div id="dvPreview">{grid_html}</div>
 
       <div style="{'border:1px solid #fde68a;background:#fffbeb;border-radius:8px;padding:8px 12px;margin-top:16px' if _hl_receipts else 'margin-top:16px'}">
@@ -9095,6 +9140,16 @@ def delivery_form(con, delivery_id: int) -> str:
     function _esc3(s){{ return String(s).replace(/[&<>]/g,function(c){{return{{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c];}}); }}
     function _isoAdd(iso,wks){{ var p=iso.split('-'); var d=new Date(+p[0],+p[1]-1,+p[2]); d.setDate(d.getDate()+wks*7);
       return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }}
+    // 生産性の稼働率ベース（2026-10-07追加、ユーザー要望「請求/実稼働で切り替え」）。
+    // renderPreview()は入力のたびに何度も呼ばれるため、選択状態はこの外側の変数で保持する。
+    var dvProdBasis = 'actual';
+    function dvSetProdBasis(basis) {{
+      dvProdBasis = basis;
+      var aBtn = document.getElementById('dvProdBasisActualBtn'), bBtn = document.getElementById('dvProdBasisBillingBtn');
+      if (aBtn) aBtn.classList.toggle('sec', basis !== 'actual');
+      if (bBtn) bBtn.classList.toggle('sec', basis !== 'billing');
+      renderPreview();
+    }}
     // クライアント側でプレビューを再構築（メンバー選択・稼働率の編集に即追従）。行=メンバー(未定は役割)。
     function renderPreview(){{
       var box=document.getElementById('dvPreview'); if(!box) return;
@@ -9123,8 +9178,10 @@ def delivery_form(con, delivery_id: int) -> str:
       var weeks=[], w=minW, g=0; while(w<=maxW && g<520){{ weeks.push(w); w=_isoAdd(w,1); g++; }}
       // 週別売上・累計生産性（サーバ側delivery_weekly_productivity()と同じ式。#dvPreviewは
       // このJS関数で丸ごと再構築されるため、サーバ側で算出した行もここに含めないと消える）。
-      var weeklyActual={{}}; weeks.forEach(function(k){{ weeklyActual[k]=0; }});
-      rows.forEach(function(r){{ weeks.forEach(function(k){{ var c=r.cells[k]; if(c) weeklyActual[k]+=(c.a||0); }}); }});
+      var weeklyActual={{}}, weeklyBilling={{}}; weeks.forEach(function(k){{ weeklyActual[k]=0; weeklyBilling[k]=0; }});
+      rows.forEach(function(r){{ weeks.forEach(function(k){{ var c=r.cells[k]; if(c){{ weeklyActual[k]+=(c.a||0); weeklyBilling[k]+=(c.b||0); }} }}); }});
+      // 生産性の計算に使う稼働率マップ（実稼働/請求、2026-10-07追加のトグルで切替）。
+      var weeklyWork = (dvProdBasis==='billing') ? weeklyBilling : weeklyActual;
       var feeEl=document.getElementById('dvFeeTotal'), feeTotal=feeEl?(parseFloat(feeEl.value)||0):0;
       var costEl=document.getElementById('dvCostTotal'), costTotal=costEl?(parseFloat(costEl.value)||0):0;
       var expEl=document.getElementById('dvExpectedExpense'), expenseTotal=expEl&&expEl.value!==''?parseFloat(expEl.value):(feeTotal*0.05);
@@ -9157,7 +9214,7 @@ def delivery_form(con, delivery_id: int) -> str:
         if(!isNaN(_pImpact) && !isNaN(_pRatio)) performanceFeeTotal=Math.round(_pImpact*_pRatio)/100;
       }}
       var lastStaffedWk=null;
-      weeks.forEach(function(k){{ if((weeklyActual[k]||0)>0) lastStaffedWk=k; }});
+      weeks.forEach(function(k){{ if((weeklyWork[k]||0)>0) lastStaffedWk=k; }});
       var runningMargin=0, runningWork=0, revRow='', prodRow='', workRow='', finalP=null, finalW=0, finalMg=0;
       var LABEL_W=150, FINAL_W=90;
       weeks.forEach(function(k,i){{
@@ -9167,7 +9224,7 @@ def delivery_form(con, delivery_id: int) -> str:
         var cost = revWeeksSet[k] ? perWeightCost*wgt : 0;
         var exp = revWeeksSet[k] ? perWeightExpense*wgt : 0;
         var margin = rev - cost - exp;
-        var work = (weeklyActual[k]||0)*wgt;
+        var work = (weeklyWork[k]||0)*wgt;
         runningMargin+=margin; runningWork+=work;
         // ×400 = ÷4(%週→%月換算) ÷ (1/100)。100%で4週(1ヶ月)働けば月額報酬(の限界利益分)と
         // 一致する自己整合性チェック（#189フォローアップ）。生産性の「/100%」表記・小数点以下は

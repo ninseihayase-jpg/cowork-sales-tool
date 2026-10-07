@@ -1911,6 +1911,43 @@ def test_delivery_form_cumulative_workload_display_is_month_converted(con, acc_i
     assert "稼200%" not in html  # 旧表示（生の%週累計）は出なくなっている
 
 
+def test_delivery_weekly_productivity_basis_switches_actual_vs_billing(con, acc_id):
+    """2026-10-07ユーザー要望「生産性を計算しているすべての場所で、請求/実稼働で切り替えて
+    計算・表示できるように」の回帰テスト。basis="billing"は請求率(fte_billing)を、
+    デフォルト("actual")は実稼働率(fte_pct)を稼働量の集計に使う。両者が異なれば
+    cum_workload/productivityも異なる値になる。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    sfa_db.update_delivery(con, dvid, fee_total=200, fee_mode="total", expected_expense_total=0,
+                            start_week="2026-06-01", end_week="2026-06-08")
+    # 実稼働100% / 請求50%（意図的に乖離させる）
+    sfa_db.add_delivery_assignment(con, delivery_id=dvid, owner="早瀬", from_week="2026-06-01",
+                                    to_week="2026-06-08", fte_pct=100, fte_billing=50)
+    grid = sfa_db.delivery_grid(con, dvid)
+    prod_actual = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
+    prod_billing = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"], basis="billing")
+    last = grid["weeks"][-1]
+    assert prod_actual["basis"] == "actual"
+    assert prod_billing["basis"] == "billing"
+    assert prod_actual["cum_workload"][last] == 200.0   # 100%×2週
+    assert prod_billing["cum_workload"][last] == 100.0  # 50%×2週
+    assert prod_actual["productivity"][last] != prod_billing["productivity"][last]
+    # 既定(basis省略)は従来通りactual相当であること（後方互換）
+    prod_default = sfa_db.delivery_weekly_productivity(con, dvid, grid["weeks"])
+    assert prod_default["cum_workload"][last] == prod_actual["cum_workload"][last]
+
+
+def test_delivery_form_has_basis_toggle_ui(con, acc_id):
+    """請求/実稼働の切り替えボタンとJS側のweeklyBilling集計がDelivery詳細ページに
+    存在すること。"""
+    did = _deal(con, acc_id, "受注", status="open")
+    dvid = sfa_db.create_delivery(con, deal_id=did, title="X")
+    html = webapp.delivery_form(con, dvid)
+    assert 'dvSetProdBasis(\'actual\')' in html
+    assert 'dvSetProdBasis(\'billing\')' in html
+    assert "weeklyBilling" in html
+
+
 def test_delivery_form_renders_excluded_period_calendar_widget(con, acc_id):
     did = _deal(con, acc_id, "受注", status="open")
     dvid = sfa_db.create_delivery(con, deal_id=did, title="X")

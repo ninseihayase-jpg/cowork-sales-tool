@@ -6577,9 +6577,15 @@ def delivery_grid(con, delivery_id: int) -> dict:
     return {"weeks": weeks, "owners": owners, "cells": cells}
 
 
-def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dict:
+def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str], *, basis: str = "actual") -> dict:
     """週別限界利益・累計生産性（2026-09-21〜、対象外期間の営業日按分は#189〜、限界利益ベース化は
     #189フォローアップ2026-09-23〜）。
+
+    basis（2026-10-07追加、ユーザー要望「生産性を計算しているすべての場所で、請求/実稼働で
+    切り替えて計算・表示できるように」）: 稼働率の集計に`delivery_grid()`の`cells[ow][wk]`の
+    どちらを使うかを選ぶ。"actual"（既定・従来動作、実稼働率(fte_pct)ベース）または
+    "billing"（請求率(fte_billing、未設定時はfte_pctにフォールバック＝_billing_of()と同じ
+    解決順）ベース）。デフォルトは"actual"で、既存の呼び出し元の挙動は変えない。
 
     週別売上＝fee_total（案件総額報酬）を、契約期間（deliveries.start_week〜end_week。未設定なら
     weeksの全期間＝アサイン実働の最小〜最大）内の週に、各週の「有効週数」（対象外期間なしなら
@@ -6638,8 +6644,10 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
     per_weight_expense = (expense_total / total_weight) if total_weight > 0 else 0.0
     revenue_weeks_set = set(revenue_weeks_list)
 
+    if basis not in ("actual", "billing"):
+        basis = "actual"
     grid = delivery_grid(con, delivery_id)
-    weekly_actual_total = {wk: sum((grid["cells"].get(ow, {}).get(wk) or {}).get("actual", 0.0)
+    weekly_actual_total = {wk: sum((grid["cells"].get(ow, {}).get(wk) or {}).get(basis, 0.0)
                                     for ow in grid["owners"]) for wk in weeks}
 
     # 成果報酬（想定インパクト×比率）は固定報酬(fee_total、上で既に週按分済み)とは別建てで、
@@ -6682,7 +6690,8 @@ def delivery_weekly_productivity(con, delivery_id: int, weeks: list[str]) -> dic
         cum_margin[wk] = round(running_margin, 1)
         cum_workload[wk] = round(running_work, 1)
         productivity[wk] = round(running_margin * 400 / running_work, 1) if running_work > 0 else None
-    return {"weeks": weeks, "fee_total": fee_total, "cost_total": cost_total, "expense_total": expense_total,
+    return {"weeks": weeks, "basis": basis, "fee_total": fee_total, "cost_total": cost_total,
+            "expense_total": expense_total,
             "weekly_revenue": weekly_revenue, "cum_revenue": cum_revenue,
             "weekly_cost": weekly_cost, "cum_cost": cum_cost,
             "weekly_expense": weekly_expense, "cum_expense": cum_expense,
